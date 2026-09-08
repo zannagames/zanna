@@ -292,7 +292,38 @@ Steps landed so far, each gate-green with the default pipeline unchanged unless 
   block-local DCE and the move-chain folder seed from it instead of "every allocatable register
   is live at every exit" (`test_x86_phys_liveness`).
 
-Everything from B2 onward, and Phase 3 from C8b on, is open.
+- **C8b — x86-64 on the function-wide allocator.** `x86_64/ra/LiveIntervals` is the interval
+  model (positions in reverse post-order, range lists with holes from the CFG liveness solution,
+  memory address registers as reads, fixed ranges from `effectsOf` including the implicit
+  RAX/RDX/RCX effects and the call argument reads, `rt_native_eh_push`/`setjmp` positions, hints
+  from `MOVrr`/`MOVSDrr`/`PX_COPY` pairs including the entry copies from the argument registers);
+  `x86_64/ra/GlobalAllocator` runs the shared assigner and rewrites: operand substitution,
+  reloads and stores around spilled operands into temporaries free at the instruction (pool,
+  then the reserved R10/R11, then a pool register saved to a fresh slot and restored — never a
+  register the instruction touches), `PX_COPY` through the shared sequentializer, per-class
+  placeholder slots (`ra/SpillSlots.hpp`). Deleted: `ra/Allocator`, `ra/Coalescer`, `ra/Spiller`,
+  the first/last-touch `LiveIntervals`, `RegAllocLinear.cpp`, the pin machinery
+  (`common/ra/GlobalPinning.hpp` → `LoopDepths.hpp` keeps `computeLoopDepths`),
+  `common/ra/ArchTraits.hpp`, `ZANNA_NO_GLOBAL_RA`, the stale `il_codegen_x86_64` CMake target,
+  and the tests that pinned the block-local shapes (`test_x86_global_ra`,
+  `test_codegen_x86_64_spiller`, `test_codegen_x86_64_coalescer`, `test_ra_victim_selection`);
+  `test_codegen_x86_64_allocator`, `test_codegen_x86_64_live_intervals`,
+  `test_regalloc_consistency`, and four `test_x86_backend_regressions` cases were re-derived.
+  The native run of `42_try_catch_promises` caught a latent bug in the shared core: a value
+  read by a longjmp handler has a hole over the protected body (no CFG edge models the
+  longjmp), so a body-local value could share and overwrite its slot. EH-crossing values now
+  keep private slots on both backends (`test_interval_assign`). Two hand-built test modules
+  (`test_regalloc_stress`, `test_cf_stress`) spelled their branch targets with raw IL block
+  names where the IL bridge emits `.L_<function>_<block>`; the MIR control-flow graph resolves
+  labels exactly, so those loops were invisible to liveness and the block-local allocator had
+  only masked it by spilling everything across blocks. Lowering now canonicalises a raw block
+  name on `br`/`cbr`/`switch_i32` to the block's MIR label, and the library entry points
+  (`emitModuleToAssembly`, `emitFunctionToAssembly`) run the MIR verifier after every stage
+  when `ZANNA_VERIFY_MIR` is set, as the pipeline already did. `test_abi_probe` and two
+  `test_cf_stress` counts were re-derived (pass-through arguments need no move; an empty
+  block is threaded away; the last switch case may fall through under `jne`).
+
+Everything from B2 onward, and Phase 3 from C9 on, is open.
 
 ## Context
 

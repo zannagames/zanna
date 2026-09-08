@@ -284,6 +284,19 @@ struct TestContext {
         }
     }
 
+    void checkTrue(const char *caseName, bool condition, const char *what) {
+        auto &cat = categories[static_cast<std::size_t>(currentCat)];
+        ++cat.total;
+        if (condition) {
+            ++cat.pass;
+        } else {
+            ++cat.fail;
+            ++globalFail;
+            std::cerr << "FAIL [" << cat.name << "] " << caseName << "\n"
+                      << "  expected " << what << "\n";
+        }
+    }
+
     void checkCount(const char *caseName,
                     const std::string &asmText,
                     const std::string &pattern,
@@ -659,12 +672,17 @@ void testSwitchI32(TestContext &ctx) {
 
     const auto text = compileToAsm(m);
 
-    // Should have 4 CMP + JE pairs for the 4 cases
+    // Four compares, each followed by an equality branch. The peephole may
+    // invert the last one so its case falls through (`jne default`), so count
+    // both spellings: three `je` and four equality branches in total.
     ctx.checkAsm("cmp_1", text, "$1,");
     ctx.checkAsm("cmp_2", text, "$2,");
     ctx.checkAsm("cmp_3", text, "$3,");
     ctx.checkAsm("cmp_5", text, "$5,");
-    ctx.checkCount("je_count", text, "je ", 4);
+    ctx.checkCount("je_count", text, "je ", 3);
+    ctx.checkTrue("eq_branch_count",
+                  countOccurrences(text, "je ") + countOccurrences(text, "jne ") >= 4,
+                  "four equality branches (je or jne)");
     // Default: jmp at the end
     ctx.checkAsm("default_jmp", text, "jmp ");
     // Multiple return points
@@ -860,8 +878,10 @@ void testEmptyBlockFallthrough(TestContext &ctx) {
 
     ctx.checkAsm("compiles", text, "empty_fallthru");
     ctx.checkAsm("has_ret", text, "ret");
-    // Should have at least 2 jmp instructions (entry→mid, mid→exit)
-    ctx.checkCount("jmp_count", text, "jmp ", 2);
+    // The empty middle block is threaded away: entry jumps straight to the
+    // exit block, so exactly one jump survives and no jump names `mid`.
+    ctx.checkCount("jmp_count", text, "jmp ", 1);
+    ctx.checkAsm("jmp_to_exit", text, "jmp .L_empty_fallthru_exit_blk");
 }
 
 /// Test 11: Both branches of cbr go to the same target.

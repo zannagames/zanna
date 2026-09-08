@@ -1062,10 +1062,18 @@ MFunction LowerILToMIR::lower(const ILFunction &func) {
                  * @param edgeIndex Matching successor metadata index.
                  */
                 auto rewriteLabelOperand = [&](ILValue &labelValue, std::size_t edgeIndex) {
-                    if (edgeIndex >= ilBlock.terminatorEdges.size() ||
-                        labelValue.kind != ILValue::Kind::LABEL) {
+                    if (labelValue.kind != ILValue::Kind::LABEL)
                         return;
+                    // A target spelled with the raw IL block name (hand-built
+                    // modules; the IL bridge already emits the ".L_<fn>_<block>"
+                    // form) is canonicalised to the block's MIR label so the
+                    // control-flow graph resolves it.
+                    if (const auto rawIt = blockInfo_.find(labelValue.label);
+                        rawIt != blockInfo_.end()) {
+                        labelValue.label = result.blocks[rawIt->second.index].label;
                     }
+                    if (edgeIndex >= ilBlock.terminatorEdges.size())
+                        return;
                     const std::string helperLabel = buildEdgeCopyBlock(
                         result, ilBlock.terminatorEdges[edgeIndex], result.blocks[idx]);
                     if (!helperLabel.empty()) {
@@ -1120,8 +1128,8 @@ MFunction LowerILToMIR::lower(const ILFunction &func) {
     if (nullTrapRequested_) {
         MBasicBlock trapBlock{};
         trapBlock.label = ".Ltrap_null_" + result.name;
-        trapBlock.append(MInstr::make(
-            MOpcode::CALL, std::vector<Operand>{x64::makeLabelOperand("rt_trap_null")}));
+        trapBlock.append(MInstr::make(MOpcode::CALL,
+                                      std::vector<Operand>{x64::makeLabelOperand("rt_trap_null")}));
         trapBlock.append(MInstr::make(MOpcode::UD2));
         result.addBlock(std::move(trapBlock));
     }

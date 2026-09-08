@@ -42,7 +42,8 @@ specific specs [x86_64.md](../../specs/x86_64.md) and
 
 | File                  | Purpose                                         |
 |-----------------------|-------------------------------------------------|
-| `ArchTraits.hpp`      | Architecture trait definitions for register alloc |
+| `IntervalAssign.hpp`  | Shared position/range model, whole-interval linear scan, slot sharing |
+| `LoopDepths.hpp`      | Per-block natural-loop nesting depth             |
 | `CfgExtract.hpp`      | Shared MIR successor extraction for RA liveness  |
 | `DataflowLiveness.hpp`| Dataflow-based liveness analysis                |
 
@@ -283,11 +284,10 @@ macOS support is Apple Silicon/ARM64 only.
 
 | File                    | Purpose                        |
 |-------------------------|--------------------------------|
-| `Allocator.hpp/cpp`     | Linear scan register allocator |
-| `Coalescer.hpp/cpp`     | Copy coalescing                |
-| `LiveIntervals.hpp/cpp` | Live interval computation      |
-| `Liveness.hpp/cpp`      | Liveness analysis              |
-| `Spiller.hpp/cpp`       | Spill code insertion           |
+| `GlobalAllocator.hpp/cpp` | Function-wide interval allocator (shared core, PX_COPY lowering, spill-around temporaries) |
+| `LiveIntervals.hpp/cpp` | Positions, range lists with holes, fixed physical ranges, call/EH positions, hints |
+| `Liveness.hpp/cpp`      | CFG liveness (per-block vreg live-in/out) |
+| `SpillSlots.hpp`        | Spill-slot placeholder operands and load/store builders |
 
 ### Binary Encoder (`binenc/`)
 

@@ -528,31 +528,6 @@ target_link_libraries(zanna_bytecode
         PUBLIC zanna_il_core zanna_il_verify
         PRIVATE zanna_support il_vm zanna_common_opts)
 
-add_library(il_codegen_x86_64 STATIC
-        codegen/x86_64/AsmEmitter.cpp
-        codegen/x86_64/Backend.cpp
-        codegen/x86_64/CallLowering.cpp
-        codegen/x86_64/FrameLowering.cpp
-        codegen/x86_64/ISel.cpp
-        codegen/x86_64/LowerDiv.cpp
-        codegen/x86_64/LowerILToMIR.cpp
-        codegen/x86_64/MachineIR.cpp
-        codegen/x86_64/Peephole.cpp
-        codegen/x86_64/RegAllocLinear.cpp
-        codegen/x86_64/ra/Allocator.cpp
-        codegen/x86_64/ra/Coalescer.cpp
-        codegen/x86_64/ra/LiveIntervals.cpp
-        codegen/x86_64/ra/Spiller.cpp
-        codegen/x86_64/TargetX64.cpp
-        common/Mangle.cpp)
-set_target_properties(il_codegen_x86_64 PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(il_codegen_x86_64 PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/zanna>)
-target_link_libraries(il_codegen_x86_64 PRIVATE zanna_common_opts)
-add_dependencies(il_codegen_x86_64 gen_x86_64_encodings generate_runtime_registry)
-
 add_library(zanna_cmd_arm64 STATIC
         tools/zanna/cmd_codegen_arm64.cpp)
 target_link_libraries(zanna_cmd_arm64 PRIVATE zanna_common_opts zanna_common zanna_codegen_common il_tools_common il_codegen_aarch64 il_transform zanna::il_full)

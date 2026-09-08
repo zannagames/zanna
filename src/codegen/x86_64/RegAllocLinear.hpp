@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/codegen/x86_64/RegAllocLinear.hpp
-// Purpose: Declare the linear-scan register allocator facade for x86-64.
+// Purpose: Declare the register allocation entry point and result shape for x86-64.
 // Key invariants:
 //   - Live intervals are computed before allocation.
 //   - Spill slots are assigned monotonically per register class.
@@ -14,10 +14,10 @@
 // Ownership/Lifetime:
 //   - Functions operate directly on the supplied MFunction; return results by value.
 //   - No persistent allocator state between calls.
-// Links: src/codegen/x86_64/RegAllocLinear.cpp,
+// Links: src/codegen/x86_64/ra/GlobalAllocator.cpp,
 //        src/codegen/x86_64/MachineIR.hpp,
 //        src/codegen/x86_64/TargetX64.hpp,
-//        src/codegen/x86_64/ra/Allocator.hpp
+//        src/codegen/x86_64/ra/GlobalAllocator.hpp
 //
 //===----------------------------------------------------------------------===//
 

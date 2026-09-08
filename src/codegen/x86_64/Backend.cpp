@@ -29,6 +29,7 @@
 #include "CallLowering.hpp"
 #include "FrameLowering.hpp"
 #include "ISel.hpp"
+#include "MirVerify.hpp"
 #include "Peephole.hpp"
 #include "RegAllocLinear.hpp"
 #include "Scheduler.hpp"
@@ -527,8 +528,7 @@ bool legalizeModuleToMIR(const ILModule &mod,
          */
         auto legalizeNext = [&]() {
             for (;;) {
-                const std::size_t index =
-                    nextIndex.fetch_add(1, std::memory_order_relaxed);
+                const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);
                 if (index >= mod.funcs.size())
                     return;
                 try {
@@ -665,16 +665,17 @@ bool allocateModuleMIR(std::vector<MFunction> &mir,
     for (auto &fn : mir) {
         for (auto &block : fn.blocks) {
             auto &instrs = block.instructions;
-            instrs.erase(std::remove_if(instrs.begin(),
-                                        instrs.end(),
-                                        /// @brief Identifies allocator-produced no-op register copies.
-                                        /// @param instr Instruction to inspect.
-                                        /// @return `true` when the instruction is an identity move.
-                                        [](const MInstr &instr) {
-                                            return peephole::isIdentityMovRR(instr) ||
-                                                   peephole::isIdentityMovSDRR(instr);
-                                        }),
-                         instrs.end());
+            instrs.erase(
+                std::remove_if(instrs.begin(),
+                               instrs.end(),
+                               /// @brief Identifies allocator-produced no-op register copies.
+                               /// @param instr Instruction to inspect.
+                               /// @return `true` when the instruction is an identity move.
+                               [](const MInstr &instr) {
+                                   return peephole::isIdentityMovRR(instr) ||
+                                          peephole::isIdentityMovSDRR(instr);
+                               }),
+                instrs.end());
         }
     }
 
@@ -800,6 +801,65 @@ CodegenResult emitMIRToAssembly(const std::vector<MFunction> &mir,
     return result;
 }
 
+/// @brief Run the MIR verifier over @p mir at @p stage when `ZANNA_VERIFY_MIR`
+///        is set, so the library entry points fail as loudly as the pipeline.
+/// @param mir Functions to verify.
+/// @param frames Frame summaries parallel to @p mir.
+/// @param stage Pipeline stage the functions have reached.
+/// @param target ABI description for the post-RA rules.
+/// @param errors Destination diagnostic; every violation, one per line.
+/// @return @c true when verification was skipped or passed.
+static bool verifyModuleIfRequested(const std::vector<MFunction> &mir,
+                                    const std::vector<FrameInfo> &frames,
+                                    VerifyStage stage,
+                                    const TargetInfo &target,
+                                    std::string &errors) {
+    if (!mirVerificationRequested())
+        return true;
+    common::Diagnostics diags{};
+    bool ok = true;
+    for (std::size_t i = 0; i < mir.size() && i < frames.size(); ++i)
+        ok = verifyMir(mir[i], frames[i], stage, target, diags) && ok;
+    if (ok)
+        return true;
+    std::ostringstream out;
+    for (const std::string &line : diags.errors())
+        out << line << '\n';
+    errors = out.str();
+    return false;
+}
+
+/// @brief Allocate, schedule, optimize and emit legalized MIR, verifying after
+///        every stage when requested.
+/// @param mir Legalized functions to finish in place.
+/// @param frames Frame summaries parallel to @p mir.
+/// @param roData Read-only literal pool populated by legalization.
+/// @param target ABI description.
+/// @param opt Backend options.
+/// @return Assembly text, or the first stage diagnostic in @c errors.
+static CodegenResult finishModuleToAssembly(std::vector<MFunction> &mir,
+                                            std::vector<FrameInfo> &frames,
+                                            const AsmEmitter::RoDataPool &roData,
+                                            const TargetInfo &target,
+                                            const CodegenOptions &opt) {
+    std::string errors;
+    if (!verifyModuleIfRequested(mir, frames, VerifyStage::PostLegalize, target, errors))
+        return CodegenResult{{}, errors};
+    if (!allocateModuleMIR(mir, frames, target, opt, errors))
+        return CodegenResult{{}, errors};
+    if (!verifyModuleIfRequested(mir, frames, VerifyStage::PostRA, target, errors))
+        return CodegenResult{{}, errors};
+    if (!scheduleModuleMIR(mir, opt, errors))
+        return CodegenResult{{}, errors};
+    if (!verifyModuleIfRequested(mir, frames, VerifyStage::PostSchedule, target, errors))
+        return CodegenResult{{}, errors};
+    if (!optimizeModuleMIR(mir, opt, errors))
+        return CodegenResult{{}, errors};
+    if (!verifyModuleIfRequested(mir, frames, VerifyStage::PostPeephole, target, errors))
+        return CodegenResult{{}, errors};
+    return emitMIRToAssembly(mir, roData, target, opt);
+}
+
 /// @copydoc emitFunctionToAssembly
 CodegenResult emitFunctionToAssembly(const ILFunction &func, const CodegenOptions &opt) {
     const TargetInfo &target = selectTarget(opt.targetABI);
@@ -811,13 +871,7 @@ CodegenResult emitFunctionToAssembly(const ILFunction &func, const CodegenOption
     module.funcs.push_back(func);
     if (!legalizeModuleToMIR(module, target, opt, roData, mir, frames, errors))
         throwLegalizationDiagnostic(errors);
-    if (!allocateModuleMIR(mir, frames, target, opt, errors))
-        return CodegenResult{{}, errors};
-    if (!scheduleModuleMIR(mir, opt, errors))
-        return CodegenResult{{}, errors};
-    if (!optimizeModuleMIR(mir, opt, errors))
-        return CodegenResult{{}, errors};
-    return emitMIRToAssembly(mir, roData, target, opt);
+    return finishModuleToAssembly(mir, frames, roData, target, opt);
 }
 
 /// @copydoc emitModuleToAssembly
@@ -829,13 +883,7 @@ CodegenResult emitModuleToAssembly(const ILModule &mod, const CodegenOptions &op
     std::string errors;
     if (!legalizeModuleToMIR(mod, target, opt, roData, mir, frames, errors))
         throwLegalizationDiagnostic(errors);
-    if (!allocateModuleMIR(mir, frames, target, opt, errors))
-        return CodegenResult{{}, errors};
-    if (!scheduleModuleMIR(mir, opt, errors))
-        return CodegenResult{{}, errors};
-    if (!optimizeModuleMIR(mir, opt, errors))
-        return CodegenResult{{}, errors};
-    return emitMIRToAssembly(mir, roData, target, opt);
+    return finishModuleToAssembly(mir, frames, roData, target, opt);
 }
 
 /// @copydoc emitMIRToBinary
@@ -947,6 +995,7 @@ BinaryEmitResult emitMIRToBinary(const std::vector<MFunction> &mir,
             /// Empty on success; diagnostic otherwise.
             std::string error;
         };
+
         std::vector<EncodedFunction> encoded(mir.size());
         std::atomic_size_t nextIndex{0};
         std::atomic_bool failed{false};
@@ -960,8 +1009,7 @@ BinaryEmitResult emitMIRToBinary(const std::vector<MFunction> &mir,
          */
         auto encodeNext = [&]() {
             while (!failed.load(std::memory_order_relaxed)) {
-                const std::size_t index =
-                    nextIndex.fetch_add(1, std::memory_order_relaxed);
+                const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);
                 if (index >= mir.size())
                     return;
                 encoded[index].error = encodeOne(index, encoded[index].text, nullptr);

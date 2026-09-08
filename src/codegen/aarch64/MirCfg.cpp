@@ -18,7 +18,7 @@
 //   - Value semantics; no shared state.
 // Links: src/codegen/aarch64/MirCfg.hpp, src/codegen/aarch64/ra/Liveness.cpp,
 //        src/codegen/common/ra/CfgExtract.hpp,
-//        src/codegen/common/ra/GlobalPinning.hpp (computeLoopDepths)
+//        src/codegen/common/ra/LoopDepths.hpp (computeLoopDepths)
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,7 +27,7 @@
 #include "codegen/aarch64/ra/Liveness.hpp"
 #include "codegen/common/ra/CfgExtract.hpp"
 #include "codegen/common/ra/DataflowLiveness.hpp"
-#include "codegen/common/ra/GlobalPinning.hpp"
+#include "codegen/common/ra/LoopDepths.hpp"
 
 #include <algorithm>
 

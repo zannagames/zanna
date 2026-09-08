@@ -190,7 +190,7 @@ class PassManager {
   `ZANNA_NO_POST_SCHED_PEEPHOLE` skip one AArch64 pipeline stage each
   (`CodegenPipeline.cpp`), and `ZANNA_NO_PH_{REORDER,LOOPHOIST,PERBLOCK,DCE_CFG,FPSTORES,BRANCH}`
   skip one sub-stage of the full peephole (`Peephole.cpp`). Together with the older
-  `ZANNA_NO_ADDR_FOLDS`, `ZANNA_NO_GLOBAL_RA` (x86-64 only), `ZANNA_NO_JUMP_TABLES`, `ZANNA_NO_IF_CONVERT`,
+  `ZANNA_NO_ADDR_FOLDS`, `ZANNA_NO_JUMP_TABLES`, `ZANNA_NO_IF_CONVERT`,
   `ZANNA_NO_ABI_COPYFWD`, `ZANNA_NO_LOAD_FUSE`, `ZANNA_NO_RETAIN_ELIDE` they let a miscompile
   be bisected against a program-level oracle (VM vs native output) without rebuilding the
   compiler. Set the variable to any value, e.g. `ZANNA_NO_PEEPHOLE=1 zanna build …`.
@@ -591,30 +591,33 @@ MOV %dest, [%base + disp]
 
 ## Register Allocation
 
-### Linear Scan Algorithm
+### Function-wide interval allocation (both backends)
 
-The backend uses **linear scan register allocation**:
+Both backends allocate registers function-wide with one shared core
+(`src/codegen/common/ra/IntervalAssign.hpp`, ADR 0338): every virtual register gets one interval
+with holes over a linear position space (blocks in reverse post-order, one read and one write
+position per instruction, an exit position per block), the whole-interval linear scan assigns a
+register or spills the value everywhere (hints from copies, callee-saved preference across
+calls, weight-based eviction, fixed ranges for the physical registers the lowered code names or
+clobbers), and spilled values of one class share frame slots first-fit by non-intersection,
+hottest first. A value live across `rt_native_eh_push`/`setjmp` is never given a register and
+keeps a private slot: the longjmp into its handler is an edge no CFG models. Each backend owns
+its interval builder (`aarch64/ra/LiveIntervals`, `x86_64/ra/LiveIntervals`, from the CFG
+liveness solution and the effects model) and its rewrite (`aarch64/ra/GlobalAllocator`,
+`x86_64/ra/GlobalAllocator`): operand substitution, a reload before every use and a store
+after every definition of a spilled value into a temporary that is free at that instruction,
+and the lowering of every parallel copy (`ParallelCopy` / `PX_COPY`) through
+`common/ra/ParallelCopy.hpp`.
 
-```cpp
-class LinearScanAllocator {
-    AllocationResult run();
-};
-```
-
-**Algorithm overview:**
-
-1. **Compute live intervals** for each virtual register
-2. **Walk instructions** in block order
-3. **Expire old intervals** and release physical registers
-4. **Allocate registers** or **spill to stack**
-5. **Insert spill code** (loads/stores)
-6. **Resolve parallel copies** by coalescing or emitting moves
-
-**Performance optimizations:**
-
-- **Active sets** use `std::unordered_set<uint16_t>` for O(1) insert/remove operations
-- **Caller-saved register lookup** uses precomputed `std::bitset<32>` for O(1) membership checks
-- **Deterministic allocation** via sorted free-register pools
+x86-64 specifics: the pool excludes RSP, RBP, and the reserved R10/R11 (which serve as
+emergency temporaries within one instruction, exactly as the division and jump-table
+sequences use them); a temporary never names a register the instruction reads or writes,
+explicitly or implicitly (RAX/RDX of a division, RCX of a shift, the argument registers of a
+call); when every register of a class is occupied across an instruction, a pool register is
+saved to a fresh slot before it and restored after it; memory address registers are reads;
+spill slots are RBP-relative placeholders (`ra/SpillSlots.hpp`, one namespace per class) that
+frame lowering maps to final offsets; `AllocationResult` reports the assignment map and the
+slot counts per class.
 
 ### AArch64 function-wide allocation (ADR 0338)
 
@@ -705,72 +708,13 @@ enum class RegClass {
 
 - `RSP`: Stack pointer (never allocated)
 
-### Live Interval Analysis
-
-```cpp
-class LiveIntervals {
-    struct Interval {
-        size_t start;  // First definition
-        size_t end;    // Last use
-    };
-
-    std::unordered_map<uint16_t, Interval> intervals_;
-};
-```
-
-Intervals track the lifetime of each virtual register within a function.
-
-### Spilling
-
-When no free registers are available:
-
-1. **Select victim**: Virtual register with furthest end point
-2. **Allocate stack slot**: 8-byte aligned slot in spill area
-3. **Insert spill store**: Before victim's definition
-4. **Insert reload**: Before each use of victim
-
-**Spill code example:**
-
-```text
-# Before allocation
-ADDrr %v1, %v2
-
-# After spilling %v1
-MOV [rbp - 8], %rax    # Spill
-ADDrr %rax, %rdx       # Use RAX instead of %v1
-MOV %rax, [rbp - 8]    # Reload (if needed later)
-```
-
-### Coalescing
-
-The `Coalescer` attempts to eliminate `PX_COPY` instructions:
-
-```cpp
-class Coalescer {
-    bool tryCoalesce(MInstr& copy,
-                     std::unordered_map<uint16_t, VirtualAllocation>& states);
-};
-```
-
-**Coalescing conditions:**
-
-- Source and destination are both virtual registers
-- Destination has not been allocated yet
-- No interference in live ranges
-
-**When successful:**
-
-```text
-PX_COPY %v2, %v1  → (eliminated, %v2 uses same phys reg as %v1)
-```
-
 ### Allocation Result
 
 ```cpp
 struct AllocationResult {
-    std::unordered_map<uint16_t, PhysReg> vregToPhys;  // Assignments
-    std::vector<SpillSlot> spillSlots;                 // Spill slots
-    std::vector<PhysReg> usedCalleeSaved;              // Callee-saved used
+    std::unordered_map<uint16_t, PhysReg> vregToPhys;  // Assigned registers (spilled values absent)
+    int spillSlotsGPR;                                 // 8-byte GPR spill slots
+    int spillSlotsXMM;                                 // 8-byte XMM spill slots
 };
 ```
 
@@ -1237,10 +1181,10 @@ src/codegen/
     │   ├── RegAllocPass.hpp/cpp   # Register allocation pass
     │   └── SchedulerPass.hpp/cpp  # Post-RA scheduling pass
     └── ra/                        # Register allocation internals
-        ├── Allocator.hpp/cpp      # Linear scan allocator
-        ├── Coalescer.hpp/cpp      # Copy coalescing
-        ├── LiveIntervals.hpp/cpp  # Live interval analysis
-        └── Spiller.hpp/cpp        # Spill code insertion
+        ├── GlobalAllocator.hpp/cpp # Function-wide interval allocator and PX_COPY lowering
+        ├── LiveIntervals.hpp/cpp  # Interval model (positions, ranges with holes, fixed ranges)
+        ├── Liveness.hpp/cpp       # CFG liveness (per-block vreg live-in/out)
+        └── SpillSlots.hpp         # Spill-slot placeholders and load/store builders
 ```
 
 ### Key Files by Functionality
@@ -1267,10 +1211,10 @@ src/codegen/
 
 **Register Allocation:**
 
-- `ra/Allocator.hpp` — Linear scan algorithm
-- `ra/Coalescer.hpp` — Copy coalescing
-- `ra/LiveIntervals.hpp` — Liveness analysis
-- `ra/Spiller.hpp` — Spill code insertion
+- `ra/GlobalAllocator.hpp` — Function-wide interval allocator (shared core in `common/ra/IntervalAssign.hpp`)
+- `ra/LiveIntervals.hpp` — Interval model
+- `ra/Liveness.hpp` — CFG liveness
+- `ra/SpillSlots.hpp` — Spill-slot placeholders
 
 **ABI & Frame:**
 

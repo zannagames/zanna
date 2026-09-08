@@ -12,10 +12,6 @@
 
 #include "tests/TestHarness.hpp"
 
-#include <cstdlib>
-#ifdef _WIN32
-#include "tests/common/PosixCompat.h"
-#endif
 
 #include "codegen/x86_64/AsmEmitter.hpp"
 #include "codegen/x86_64/Backend.hpp"
@@ -1491,7 +1487,7 @@ TEST(X86BackendRegressions, CompareBranchFoldPreservesLiveBooleanResult) {
     }));
 }
 
-TEST(X86BackendRegressions, RegAllocSpillsLiveValueBeforePhysicalRdxClobber) {
+TEST(X86BackendRegressions, RegAllocKeepsValuesOutOfAnExplicitlyClobberedRegister) {
     MFunction fn{};
     fn.name = "phys_rdx_clobber";
 
@@ -1515,31 +1511,18 @@ TEST(X86BackendRegressions, RegAllocSpillsLiveValueBeforePhysicalRdxClobber) {
         MInstr::make(MOpcode::RET)};
     fn.blocks.push_back(std::move(entry));
 
-    (void)allocate(fn, sysvTarget());
+    const AllocationResult result = allocate(fn, sysvTarget());
 
-    const auto &instructions = fn.blocks.front().instructions;
-    const auto xorIt =
-        std::find_if(instructions.begin(), instructions.end(), [](const MInstr &instr) {
-            if (instr.opcode != MOpcode::XORrr32 || instr.operands.empty())
-                return false;
-            const auto *dst = std::get_if<OpReg>(&instr.operands[0]);
-            return dst && dst->isPhys && static_cast<PhysReg>(dst->idOrPhys) == PhysReg::RDX;
-        });
-    ASSERT_TRUE(xorIt != instructions.end());
-
-    bool spilledRdxBeforeClobber = false;
-    for (auto it = instructions.begin(); it != xorIt; ++it) {
-        if (it->opcode != MOpcode::MOVrm || it->operands.size() < 2)
-            continue;
-        const auto *src = std::get_if<OpReg>(&it->operands[1]);
-        if (src && src->isPhys && static_cast<PhysReg>(src->idOrPhys) == PhysReg::RDX) {
-            spilledRdxBeforeClobber = true;
-        }
+    // The explicit write to RDX is a fixed range: no value that is live across
+    // it may be assigned RDX (a spilled value would have no register at all).
+    for (uint16_t id = 1; id <= 4; ++id) {
+        const auto it = result.vregToPhys.find(id);
+        if (it != result.vregToPhys.end())
+            EXPECT_NE(static_cast<int>(it->second), static_cast<int>(PhysReg::RDX));
     }
-    EXPECT_TRUE(spilledRdxBeforeClobber);
 }
 
-TEST(X86BackendRegressions, RegAllocSpillsLiveValuesBeforeImplicitDivClobber) {
+TEST(X86BackendRegressions, RegAllocKeepsValuesOutOfImplicitDivisionClobbers) {
     MFunction fn{};
     fn.name = "implicit_div_clobber";
 
@@ -1561,28 +1544,17 @@ TEST(X86BackendRegressions, RegAllocSpillsLiveValuesBeforeImplicitDivClobber) {
         MInstr::make(MOpcode::RET)};
     fn.blocks.push_back(std::move(entry));
 
-    (void)allocate(fn, sysvTarget());
+    const AllocationResult result = allocate(fn, sysvTarget());
 
-    const auto &instructions = fn.blocks.front().instructions;
-    const auto divIt =
-        std::find_if(instructions.begin(), instructions.end(), [](const MInstr &instr) {
-            return instr.opcode == MOpcode::IDIVrm;
-        });
-    ASSERT_TRUE(divIt != instructions.end());
-
-    bool spilledRax = false;
-    bool spilledRdx = false;
-    for (auto it = instructions.begin(); it != divIt; ++it) {
-        if (it->opcode != MOpcode::MOVrm || it->operands.size() < 2)
+    // IDIV reads and writes RAX:RDX implicitly (effects model): neither may
+    // hold a value that is live across it.
+    for (uint16_t id = 1; id <= 4; ++id) {
+        const auto it = result.vregToPhys.find(id);
+        if (it == result.vregToPhys.end())
             continue;
-        const auto *src = std::get_if<OpReg>(&it->operands[1]);
-        if (!src || !src->isPhys)
-            continue;
-        spilledRax = spilledRax || static_cast<PhysReg>(src->idOrPhys) == PhysReg::RAX;
-        spilledRdx = spilledRdx || static_cast<PhysReg>(src->idOrPhys) == PhysReg::RDX;
+        EXPECT_NE(static_cast<int>(it->second), static_cast<int>(PhysReg::RAX));
+        EXPECT_NE(static_cast<int>(it->second), static_cast<int>(PhysReg::RDX));
     }
-    EXPECT_TRUE(spilledRax);
-    EXPECT_TRUE(spilledRdx);
 }
 
 TEST(X86BackendRegressions, RegAllocDoesNotAllocateFixedScratchRegisters) {
@@ -1603,36 +1575,20 @@ TEST(X86BackendRegressions, RegAllocDoesNotAllocateFixedScratchRegisters) {
     entry.instructions.push_back(MInstr::make(MOpcode::RET));
     fn.blocks.push_back(std::move(entry));
 
-    (void)allocate(fn, win64Target());
+    const AllocationResult result = allocate(fn, win64Target());
 
-    for (const auto &block : fn.blocks) {
-        for (const auto &instr : block.instructions) {
-            for (const auto &operand : instr.operands) {
-                const auto *reg = std::get_if<OpReg>(&operand);
-                if (!reg || !reg->isPhys || reg->cls != RegClass::GPR)
-                    continue;
-                EXPECT_NE(static_cast<PhysReg>(reg->idOrPhys), PhysReg::R10);
-                EXPECT_NE(static_cast<PhysReg>(reg->idOrPhys), PhysReg::R11);
-            }
-        }
+    for (const auto &[id, reg] : result.vregToPhys) {
+        EXPECT_NE(static_cast<int>(reg), static_cast<int>(PhysReg::R10));
+        EXPECT_NE(static_cast<int>(reg), static_cast<int>(PhysReg::R11));
     }
 }
 
-TEST(X86BackendRegressions, CoalescerPreservesSpilledMemorySourceCycles) {
-    // This test exercises the coalescer's spilled-memory cycle resolution,
-    // which only engages when cross-block values hold spill homes. Global
-    // pinning would keep both values in callee-saved registers and bypass the
-    // path under test, so disable it for this allocation.
-    setenv("ZANNA_NO_GLOBAL_RA", "1", 1);
-
-    struct EnvReset {
-        ~EnvReset() {
-            unsetenv("ZANNA_NO_GLOBAL_RA");
-        }
-    } envReset;
-
+TEST(X86BackendRegressions, ParallelCopySwapPreservesBothValues) {
+    // A PX_COPY swap between two live values lowers to a cycle break (three
+    // moves through a free register, or memory when none is free); the add
+    // that follows reads the swapped values, and no PX_COPY survives.
     MFunction fn{};
-    fn.name = "px_copy_spilled_swap";
+    fn.name = "px_copy_swap";
 
     const Operand v1 = makeVRegOperand(RegClass::GPR, 1);
     const Operand v2 = makeVRegOperand(RegClass::GPR, 2);
@@ -1643,46 +1599,29 @@ TEST(X86BackendRegressions, CoalescerPreservesSpilledMemorySourceCycles) {
                           MInstr::make(MOpcode::MOVri, {v2, makeImmOperand(2)}),
                           MInstr::make(MOpcode::JMP, {makeLabelOperand(".L_px_swap")})};
 
-    MBasicBlock filler{};
-    filler.label = ".L_px_filler";
-    filler.instructions = {MInstr::make(MOpcode::RET)};
-
     MBasicBlock swap{};
     swap.label = ".L_px_swap";
-    swap.instructions = {MInstr::make(MOpcode::PX_COPY, {v1, v2, v2, v1}),
-                         MInstr::make(MOpcode::ADDrr, {v1, v2}),
-                         MInstr::make(MOpcode::RET)};
+    swap.instructions = {
+        MInstr::make(MOpcode::PX_COPY, {v1, v2, v2, v1}),
+        MInstr::make(MOpcode::ADDrr, {v1, v2}),
+        MInstr::make(MOpcode::MOVrr,
+                     {makePhysRegOperand(RegClass::GPR, static_cast<uint16_t>(PhysReg::RAX)), v1}),
+        MInstr::make(MOpcode::RET)};
 
-    fn.blocks = {entry, filler, swap};
+    fn.blocks = {entry, swap};
 
-    (void)allocate(fn, sysvTarget());
+    const AllocationResult result = allocate(fn, sysvTarget());
+    ASSERT_TRUE(result.vregToPhys.count(1) == 1u);
+    ASSERT_TRUE(result.vregToPhys.count(2) == 1u);
+    EXPECT_NE(static_cast<int>(result.vregToPhys.at(1)), static_cast<int>(result.vregToPhys.at(2)));
 
-    const auto &instructions = fn.blocks[2].instructions;
-    std::vector<int64_t> loadDispsBeforeFirstStore;
-    std::optional<int64_t> firstStoreDisp;
-    for (const auto &instr : instructions) {
-        if (instr.opcode == MOpcode::MOVrm) {
-            const auto *mem = std::get_if<OpMem>(&instr.operands[0]);
-            if (mem && mem->base.isPhys &&
-                static_cast<PhysReg>(mem->base.idOrPhys) == PhysReg::RBP && mem->disp < 0) {
-                firstStoreDisp = mem->disp;
-            }
-            break;
-        }
-        if (instr.opcode != MOpcode::MOVmr || instr.operands.size() < 2) {
-            continue;
-        }
-        const auto *mem = std::get_if<OpMem>(&instr.operands[1]);
-        if (mem && mem->base.isPhys && static_cast<PhysReg>(mem->base.idOrPhys) == PhysReg::RBP &&
-            mem->disp < 0) {
-            loadDispsBeforeFirstStore.push_back(mem->disp);
-        }
+    std::size_t moves = 0;
+    for (const auto &instr : fn.blocks[1].instructions) {
+        EXPECT_NE(instr.opcode, MOpcode::PX_COPY);
+        if (instr.opcode == MOpcode::MOVrr)
+            ++moves;
     }
-    ASSERT_TRUE(firstStoreDisp.has_value());
-    EXPECT_NE(std::find(loadDispsBeforeFirstStore.begin(),
-                        loadDispsBeforeFirstStore.end(),
-                        *firstStoreDisp),
-              loadDispsBeforeFirstStore.end());
+    EXPECT_GE(moves, 3u); // the swap; the move into RAX is an identity once v1 is hinted there
 }
 
 TEST(X86BackendRegressions, RegAllocPreservesCallerSavedLiveOutAcrossCall) {
@@ -1703,14 +1642,7 @@ TEST(X86BackendRegressions, RegAllocPreservesCallerSavedLiveOutAcrossCall) {
 
     fn.blocks = {entry, join};
 
-    (void)allocate(fn, sysvTarget());
-
-    const auto &instructions = fn.blocks.front().instructions;
-    const auto callIt =
-        std::find_if(instructions.begin(), instructions.end(), [](const MInstr &instr) {
-            return instr.opcode == MOpcode::CALL;
-        });
-    ASSERT_TRUE(callIt != instructions.end());
+    const AllocationResult result = allocate(fn, sysvTarget());
 
     const auto isCallerSaved = [](PhysReg reg) {
         return reg == PhysReg::RAX || reg == PhysReg::RDI || reg == PhysReg::RSI ||
@@ -1718,27 +1650,13 @@ TEST(X86BackendRegressions, RegAllocPreservesCallerSavedLiveOutAcrossCall) {
                reg == PhysReg::R9 || reg == PhysReg::R10 || reg == PhysReg::R11;
     };
 
-    bool preservedBeforeCall = false;
-    for (auto it = instructions.begin(); it != callIt; ++it) {
-        if (it->opcode == MOpcode::MOVrr && it->operands.size() >= 2) {
-            const auto *dst = std::get_if<OpReg>(&it->operands[0]);
-            const auto *src = std::get_if<OpReg>(&it->operands[1]);
-            if (dst && src && dst->isPhys && src->isPhys) {
-                const auto dstReg = static_cast<PhysReg>(dst->idOrPhys);
-                const auto srcReg = static_cast<PhysReg>(src->idOrPhys);
-                preservedBeforeCall =
-                    preservedBeforeCall || (isCallerSaved(srcReg) && !isCallerSaved(dstReg));
-            }
-        }
-        if (it->opcode == MOpcode::MOVrm && it->operands.size() >= 2) {
-            const auto *src = std::get_if<OpReg>(&it->operands[1]);
-            if (src && src->isPhys) {
-                preservedBeforeCall =
-                    preservedBeforeCall || isCallerSaved(static_cast<PhysReg>(src->idOrPhys));
-            }
-        }
-    }
-    EXPECT_TRUE(preservedBeforeCall);
+    // The value that crosses the call lives in a callee-saved register (or
+    // in memory); it is never left in a caller-saved one across the call.
+    const auto it = result.vregToPhys.find(1);
+    if (it != result.vregToPhys.end())
+        EXPECT_FALSE(isCallerSaved(it->second));
+    else
+        EXPECT_GT(result.spillSlotsGPR, 0);
 }
 
 TEST(X86BackendRegressions, LivenessCfgResolvesSplitLocalSelectLabels) {

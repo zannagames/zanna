@@ -4,11 +4,8 @@ add_library(zanna_codegen_x86_64 STATIC
         AsmEmitter.cpp
         ../../common/Mangle.cpp
         asmfmt/Format.cpp
-        RegAllocLinear.cpp
-        ra/Allocator.cpp
-        ra/Coalescer.cpp
         ra/LiveIntervals.cpp
-        ra/Spiller.cpp
+        ra/GlobalAllocator.cpp
         ra/Liveness.cpp
         FrameLowering.cpp
         CallLowering.cpp

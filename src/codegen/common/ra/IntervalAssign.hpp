@@ -243,11 +243,21 @@ class IntervalAssigner {
     /// @brief Group the spilled intervals of class @p cls (or every class
     ///        with kAnyClass) into shared slots: hottest first, first-fit by
     ///        non-intersection. Each group is a vector of interval indices.
+    /// @details An interval live across a setjmp-like call keeps a private
+    ///          slot: the longjmp that returns into its reader is an edge no
+    ///          CFG models, so its range has a hole over the protected region
+    ///          where another value could otherwise reuse the slot and
+    ///          overwrite it before the handler reads it.
     [[nodiscard]] std::vector<std::vector<std::size_t>> shareSlots(unsigned cls) const {
         std::vector<std::size_t> spilled;
+        std::vector<std::vector<std::size_t>> groups;
         for (std::size_t i = 0; i < intervals_.size(); ++i) {
-            if (assigned_[i] == kNoReg && !intervals_[i].live.empty() &&
-                (cls == kAnyClass || intervals_[i].cls == cls))
+            if (assigned_[i] != kNoReg || intervals_[i].live.empty() ||
+                (cls != kAnyClass && intervals_[i].cls != cls))
+                continue;
+            if (intervals_[i].crossesEhPush)
+                groups.push_back({i});
+            else
                 spilled.push_back(i);
         }
         std::sort(spilled.begin(), spilled.end(), [&](std::size_t a, std::size_t b) {
@@ -279,8 +289,7 @@ class IntervalAssigner {
                 slots.push_back(std::move(s));
             }
         }
-        std::vector<std::vector<std::size_t>> groups;
-        groups.reserve(slots.size());
+        groups.reserve(groups.size() + slots.size());
         for (Slot &s : slots)
             groups.push_back(std::move(s.occupants));
         return groups;
@@ -353,7 +362,8 @@ class IntervalAssigner {
         double bestWeight = std::numeric_limits<double>::infinity();
         std::vector<std::size_t> bestConflicts;
         for (unsigned r : pool) {
-            if (fixed_[r].intersects(iv.live))
+            if (!regs_.allocatable[r] || regs_.classOf[r] != iv.cls ||
+                fixed_[r].intersects(iv.live))
                 continue;
             double weight = 0.0;
             std::vector<std::size_t> conflicts;

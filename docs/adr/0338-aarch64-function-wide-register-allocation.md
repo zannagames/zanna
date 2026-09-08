@@ -1,7 +1,7 @@
 # ADR 0338: AArch64 function-wide register allocation
 
 Status: Implemented (default since Phase 3 C6 of the backend codegen review; the block-local
-path was deleted in Phase 3 C7)
+path was deleted in Phase 3 C7; x86-64 adopted the same model through the shared core in C8)
 
 ## Context
 

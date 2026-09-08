@@ -18,7 +18,7 @@
 //   - Value-owned containers valid for the lifetime of the LivenessAnalysis instance.
 // Links: src/codegen/x86_64/ra/Liveness.cpp,
 //        src/codegen/x86_64/MachineIR.hpp,
-//        src/codegen/x86_64/ra/Allocator.hpp
+//        src/codegen/x86_64/ra/LiveIntervals.hpp
 //
 //===----------------------------------------------------------------------===//
 

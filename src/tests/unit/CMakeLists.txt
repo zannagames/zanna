@@ -589,28 +589,12 @@ if (NOT TARGET test_codegen_x86_64_live_intervals)
     zanna_add_ctest(test_codegen_x86_64_live_intervals test_codegen_x86_64_live_intervals)
 endif ()
 
-if (NOT TARGET test_codegen_x86_64_spiller)
-    zanna_add_test(
-            test_codegen_x86_64_spiller
-            ${ZANNA_TESTS_DIR}/unit/test_codegen_x86_64_spiller.cpp)
-    target_link_libraries(test_codegen_x86_64_spiller PRIVATE zanna_codegen_x86_64)
-    zanna_add_ctest(test_codegen_x86_64_spiller test_codegen_x86_64_spiller)
-endif ()
-
 if (NOT TARGET test_codegen_x86_64_allocator)
     zanna_add_test(
             test_codegen_x86_64_allocator
             ${ZANNA_TESTS_DIR}/unit/test_codegen_x86_64_allocator.cpp)
     target_link_libraries(test_codegen_x86_64_allocator PRIVATE zanna_codegen_x86_64)
     zanna_add_ctest(test_codegen_x86_64_allocator test_codegen_x86_64_allocator)
-endif ()
-
-if (NOT TARGET test_codegen_x86_64_coalescer)
-    zanna_add_test(
-            test_codegen_x86_64_coalescer
-            ${ZANNA_TESTS_DIR}/unit/test_codegen_x86_64_coalescer.cpp)
-    target_link_libraries(test_codegen_x86_64_coalescer PRIVATE zanna_codegen_x86_64)
-    zanna_add_ctest(test_codegen_x86_64_coalescer test_codegen_x86_64_coalescer)
 endif ()
 
 if (NOT TARGET test_codegen_x86_64_lowering_rules)
@@ -635,14 +619,6 @@ if (NOT TARGET test_x86_backend_regressions)
             ${ZANNA_TESTS_DIR}/unit/codegen/test_x86_backend_regressions.cpp)
     target_link_libraries(test_x86_backend_regressions PRIVATE zanna_codegen_x86_64)
     zanna_add_ctest(test_x86_backend_regressions test_x86_backend_regressions)
-endif ()
-
-if (NOT TARGET test_x86_global_ra)
-    zanna_add_test(
-            test_x86_global_ra
-            ${ZANNA_TESTS_DIR}/unit/codegen/test_x86_global_ra.cpp)
-    target_link_libraries(test_x86_global_ra PRIVATE zanna_codegen_x86_64)
-    zanna_add_ctest(test_x86_global_ra test_x86_global_ra)
 endif ()
 
 if (NOT TARGET test_x86_codegen_stats)
@@ -741,6 +717,14 @@ if (NOT TARGET test_dataflow_liveness)
     zanna_add_ctest(test_dataflow_liveness test_dataflow_liveness)
 endif ()
 
+if (NOT TARGET test_interval_assign)
+    zanna_add_test(
+            test_interval_assign
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_interval_assign.cpp)
+    target_link_libraries(test_interval_assign PRIVATE zanna_codegen_common)
+    zanna_add_ctest(test_interval_assign test_interval_assign)
+endif ()
+
 if (NOT TARGET test_parallel_copy)
     zanna_add_test(
             test_parallel_copy
@@ -771,14 +755,6 @@ if (NOT TARGET test_shared_frame_layout)
             ${ZANNA_TESTS_DIR}/unit/codegen/test_shared_frame_layout.cpp)
     target_link_libraries(test_shared_frame_layout PRIVATE il_codegen_aarch64)
     zanna_add_ctest(test_shared_frame_layout test_shared_frame_layout)
-endif ()
-
-if (NOT TARGET test_ra_victim_selection)
-    zanna_add_test(
-            test_ra_victim_selection
-            ${ZANNA_TESTS_DIR}/unit/codegen/test_ra_victim_selection.cpp)
-    target_link_libraries(test_ra_victim_selection PRIVATE zanna_codegen_common)
-    zanna_add_ctest(test_ra_victim_selection test_ra_victim_selection)
 endif ()
 
 if (NOT TARGET test_aarch64_opcode_def)

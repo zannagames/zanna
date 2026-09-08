@@ -404,8 +404,11 @@ TEST(Arm64GlobalRegAlloc, MemoryToMemoryCopyRoutesThroughX17) {
     EXPECT_TRUE(sawX17Load);
     EXPECT_TRUE(sawX17Store);
 
-    // When the copied value dies at the copy, the two memory homes are one
-    // slot and the copy is an identity: no instruction at all.
+    // Both values cross an EH push, so each keeps a private slot even though
+    // the copied value dies at the copy: a longjmp into a handler is an edge
+    // no CFG models, and a shared slot could be overwritten inside the
+    // protected region before the handler reads it. The copy is therefore a
+    // memory-to-memory move.
     MFunction shared = function({
         block("entry",
               {ins(MOpcode::MovRI, {v(1), imm(7)}),
@@ -420,8 +423,8 @@ TEST(Arm64GlobalRegAlloc, MemoryToMemoryCopyRoutesThroughX17) {
     shared.isLeaf = false;
     GlobalAllocator sharedAlloc(shared, target());
     const auto stats = sharedAlloc.run();
-    EXPECT_EQ(sharedAlloc.spillOffset(1), sharedAlloc.spillOffset(10));
-    EXPECT_EQ(stats.edgeMoves, 0u);
+    EXPECT_NE(sharedAlloc.spillOffset(1), sharedAlloc.spillOffset(10));
+    EXPECT_GT(stats.edgeMoves, 0u);
     EXPECT_TRUE(verifiesPostRA(shared));
 }
 

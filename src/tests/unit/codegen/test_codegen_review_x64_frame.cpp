@@ -11,9 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 #include "codegen/x86_64/FrameLowering.hpp"
-#include "codegen/x86_64/ra/Spiller.hpp"
 #include "codegen/x86_64/LowerILToMIR.hpp"
 #include "codegen/x86_64/MachineIR.hpp"
+#include "codegen/x86_64/ra/SpillSlots.hpp"
 #include "tests/TestHarness.hpp"
 
 #include <algorithm>
@@ -354,13 +354,9 @@ TEST(X64FrameLowering, MixedAllocaSizesDoNotOverlap) {
 // ---------------------------------------------------------------------------
 
 TEST(X64FrameLowering, GprAndXmmSpillPlaceholdersAreDisjoint) {
-    zanna::codegen::x64::ra::Spiller spiller;
-
-    zanna::codegen::x64::ra::SpillPlan gprPlan{true, 0};
-    zanna::codegen::x64::ra::SpillPlan xmmPlan{true, 0};
-
-    const MInstr gprStore = spiller.makeStore(RegClass::GPR, gprPlan, PhysReg::RAX);
-    const MInstr xmmStore = spiller.makeStore(RegClass::XMM, xmmPlan, PhysReg::XMM0);
+    const MInstr gprStore = zanna::codegen::x64::ra::makeSpillStore(RegClass::GPR, 0, PhysReg::RAX);
+    const MInstr xmmStore =
+        zanna::codegen::x64::ra::makeSpillStore(RegClass::XMM, 0, PhysReg::XMM0);
 
     const auto *gprMem = std::get_if<OpMem>(&gprStore.operands[0]);
     const auto *xmmMem = std::get_if<OpMem>(&xmmStore.operands[0]);

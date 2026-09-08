@@ -7,8 +7,14 @@
 //
 // File: tests/codegen/x86_64/test_abi_probe.cpp
 // Purpose: Ensure the x86-64 backend honours the SysV ABI when marshalling
-// Key invariants: The emitted assembly must move integer arguments into
+//          call arguments: parameters that already sit in their argument
+//          register are forwarded without a move, and a permutation of the
+//          arguments writes every argument register before the call.
+// Key invariants:
+//   - probe_caller has no move between its label and the call.
+//   - probe_rotator writes RDI..R9 and XMM0..XMM5 before the call.
 // Ownership/Lifetime: The test builds an IL module locally and inspects the
+//   assembly text it produces.
 // Links: src/codegen/x86_64/CallLowering.cpp, src/codegen/x86_64/FrameLowering.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -37,11 +43,12 @@ namespace {
     return value;
 }
 
-[[nodiscard]] ILModule makeProbeModule() {
-    ILModule module{};
-
+/// @brief One function that forwards its six integer and six double
+///        parameters to `rt_probe_echo`, in order when @p rotate is false and
+///        rotated by one position within each class when true.
+[[nodiscard]] ILFunction makeProbeFunction(const char *name, bool rotate) {
     ILFunction func{};
-    func.name = "probe_caller";
+    func.name = name;
 
     ILBlock entry{};
     entry.name = func.name;
@@ -60,10 +67,12 @@ namespace {
     callInstr.ops.push_back(makeLabel("rt_probe_echo"));
 
     for (int i = 0; i < 6; ++i) {
-        callInstr.ops.push_back(makeParam(i, ILValue::Kind::I64));
+        const int id = rotate ? (i + 1) % 6 : i;
+        callInstr.ops.push_back(makeParam(id, ILValue::Kind::I64));
     }
     for (int i = 0; i < 6; ++i) {
-        callInstr.ops.push_back(makeParam(6 + i, ILValue::Kind::F64));
+        const int id = 6 + (rotate ? (i + 1) % 6 : i);
+        callInstr.ops.push_back(makeParam(id, ILValue::Kind::F64));
     }
 
     ILInstr retInstr{};
@@ -73,7 +82,13 @@ namespace {
     entry.instrs.push_back(retInstr);
 
     func.blocks.push_back(entry);
-    module.funcs.push_back(func);
+    return func;
+}
+
+[[nodiscard]] ILModule makeProbeModule() {
+    ILModule module{};
+    module.funcs.push_back(makeProbeFunction("probe_caller", false));
+    module.funcs.push_back(makeProbeFunction("probe_rotator", true));
     return module;
 }
 
@@ -88,31 +103,47 @@ template <std::size_t N>
     return true;
 }
 
-[[nodiscard]] bool verifyProbeAssembly(const std::string &asmText) {
-#ifdef _WIN32
-    // Windows x64 ABI: first 4 integer args in RCX, RDX, R8, R9
-    // first 4 float args in XMM0-XMM3, rest on stack
-    constexpr std::array<std::string_view, 4> kGprPatterns{", %rcx", ", %rdx", ", %r8", ", %r9"};
-    constexpr std::array<std::string_view, 4> kXmmPatterns{"%xmm0", "%xmm1", "%xmm2", "%xmm3"};
-#else
-    // SysV ABI: first 6 integer args in RDI, RSI, RDX, RCX, R8, R9
-    // first 8 float args in XMM0-XMM7
-    // Note: the register allocator and peephole optimizer eliminate identity
-    // moves (e.g. when a parameter already resides in the correct ABI
-    // register for the call).  When all XMM params are pass-through (same
-    // register for entry and call), no XMM instructions appear at all.
-    // We verify GPR registers that require shuffling are present.
-    constexpr std::array<std::string_view, 4> kGprPatterns{"%rdi", "%rsi", "%rcx", "%r9"};
-#endif
+/// @brief The body of function @p name up to and including its call.
+[[nodiscard]] std::string bodyBeforeCall(const std::string &asmText, const std::string &name) {
+    const std::size_t begin = asmText.find(name + ":\n");
+    if (begin == std::string::npos)
+        return {};
+    const std::size_t call = asmText.find("callq rt_probe_echo", begin);
+    if (call == std::string::npos)
+        return {};
+    return asmText.substr(begin, call - begin);
+}
 
-    // Stack alignment is now handled statically by FrameLowering (outgoing arg
-    // area folded into frameSize), so no dynamic "addq $-8, %rsp" is expected.
-    return asmText.find("callq rt_probe_echo") != std::string::npos &&
-           containsAll(asmText, kGprPatterns)
-#ifdef _WIN32
-           && containsAll(asmText, kXmmPatterns)
-#endif
-        ;
+[[nodiscard]] bool verifyProbeAssembly(const std::string &asmText) {
+    // SysV ABI: integer arguments in RDI, RSI, RDX, RCX, R8, R9 and doubles
+    // in XMM0-XMM5. The test targets Linux explicitly, so the Win64 order is
+    // not in play here.
+    //
+    // probe_caller passes every parameter through in place: the allocator
+    // assigns each parameter its own argument register from the entry copy
+    // hint, so nothing writes an argument register before the call.
+    constexpr std::array<std::string_view, 6> kGprPatterns{
+        ", %rdi", ", %rsi", ", %rdx", ", %rcx", ", %r8", ", %r9"};
+    constexpr std::array<std::string_view, 6> kXmmPatterns{
+        ", %xmm0", ", %xmm1", ", %xmm2", ", %xmm3", ", %xmm4", ", %xmm5"};
+    const std::string passThrough = bodyBeforeCall(asmText, "probe_caller");
+    if (passThrough.empty())
+        return false;
+    for (const std::string_view pattern : kGprPatterns) {
+        if (passThrough.find(pattern) != std::string::npos)
+            return false;
+    }
+    for (const std::string_view pattern : kXmmPatterns) {
+        if (passThrough.find(pattern) != std::string::npos)
+            return false;
+    }
+
+    // probe_rotator needs a real permutation of both classes: every argument
+    // register is written before the call.
+    const std::string rotated = bodyBeforeCall(asmText, "probe_rotator");
+    if (rotated.empty())
+        return false;
+    return containsAll(rotated, kGprPatterns) && containsAll(rotated, kXmmPatterns);
 }
 
 } // namespace
