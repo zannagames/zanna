@@ -599,7 +599,7 @@ MOV %dest, [%base + disp]
 ### Function-wide interval allocation (both backends)
 
 Both backends allocate registers function-wide with one shared core
-(`src/codegen/common/ra/IntervalAssign.hpp`, ADR 0338): every virtual register gets one interval
+(`src/codegen/common/ra/IntervalAssign.hpp`, ADR 0339): every virtual register gets one interval
 with holes over a linear position space (blocks in reverse post-order, one read and one write
 position per instruction, an exit position per block), the whole-interval linear scan assigns a
 register or spills the value everywhere (hints from copies, callee-saved preference across
@@ -624,7 +624,7 @@ spill slots are RBP-relative placeholders (`ra/SpillSlots.hpp`, one namespace pe
 frame lowering maps to final offsets; `AllocationResult` reports the assignment map and the
 slot counts per class.
 
-### AArch64 function-wide allocation (ADR 0338)
+### AArch64 function-wide allocation (ADR 0339)
 
 The AArch64 backend allocates function-wide; the block-local path was deleted in Phase 3 C7.
 Lowering produces block parameters as virtual registers, every branch argument list as one
@@ -752,7 +752,7 @@ projects, at `-O0` and `-O2`, for both targets. Regenerate and compare with
 | openworld_slice | x64 | O0 | 8185 | 218 | 236 | 0 | 87 | 2864 |
 | openworld_slice | x64 | O2 | 7344 | 184 | 203 | 0 | 89 | 2496 |
 
-After the Phase 3 C6 flip (function-wide allocation by default, ADR 0338) the AArch64 rows read:
+After the Phase 3 C6 flip (function-wide allocation by default, ADR 0339) the AArch64 rows read:
 
 | program | arch | opt | instrs | frameLoads+Stores | offsetPrefixes | spillSlots | frameBytes |
 |---|---|---|---:|---:|---:|---:|---:|

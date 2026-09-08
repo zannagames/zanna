@@ -1211,6 +1211,15 @@ int64_t rt_canvas3d_get_texture_upload_pending_bytes(void *o) {
     return 0;
 }
 
+/// @brief Stub for `Canvas3D.NoteCameraCut` — the camera-cut residency hint (ADR 0338).
+///
+/// Silent stub.
+///
+/// @param o Canvas3D handle (ignored).
+void rt_canvas3d_note_camera_cut(void *o) {
+    (void)o;
+}
+
 /// @brief Stub for `Canvas3D.SetTextureStreaming` — would normally enable
 ///        automatic TextureAsset3D mip-residency streaming.
 ///

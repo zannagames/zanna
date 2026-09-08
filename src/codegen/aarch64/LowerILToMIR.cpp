@@ -15,7 +15,7 @@
 //   - Every IL temporary keeps one virtual register for the whole function;
 //     blocks are lowered in reverse post-order so definitions precede uses.
 //   - Block parameters are virtual registers written by ParallelCopy edges;
-//     lowering allocates no frame slot for values (ADR 0338).
+//     lowering allocates no frame slot for values (ADR 0339).
 // Ownership/Lifetime:
 //   - All state is local to lowerFunction(); the LowerILToMIR object is stateless.
 // Links: src/codegen/aarch64/LowerILToMIR.hpp,

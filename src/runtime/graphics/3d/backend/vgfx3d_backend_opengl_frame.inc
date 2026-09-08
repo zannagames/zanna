@@ -1045,6 +1045,7 @@ static void gl_capture_presented_frame(gl_context_t *ctx) {
 static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chain) {
     int use_postfx;
 
+    gl_end_cut_budget_override(ctx);
     if (!ctx || ctx->rtt_active)
         return;
     if (!gl_make_current(ctx))

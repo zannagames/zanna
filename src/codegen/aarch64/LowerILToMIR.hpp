@@ -59,7 +59,7 @@ class LowerILToMIR {
     ///        runtime-string materialisation; the pointed-to map must outlive the lowerer.
     /// @details Block parameters become virtual registers and branch arguments
     ///          become ParallelCopy edges; the function-wide register allocator
-    ///          (ra/GlobalAllocator.hpp) resolves both (ADR 0338).
+    ///          (ra/GlobalAllocator.hpp) resolves both (ADR 0339).
     explicit LowerILToMIR(const TargetInfo &ti,
                           const std::unordered_map<std::string, std::size_t>
                               *stringLiteralByteLengths = nullptr) noexcept

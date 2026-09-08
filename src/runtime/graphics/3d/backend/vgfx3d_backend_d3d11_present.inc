@@ -1736,6 +1736,7 @@ static void d3d11_present_swapchain_classified(d3d11_context_t *ctx, int offscre
 static void d3d11_present_internal(d3d11_context_t *ctx, const vgfx3d_postfx_chain_t *chain) {
     int use_postfx;
 
+    d3d11_end_cut_budget_override(ctx);
     if (!ctx || ctx->rtt_active || ctx->frame_active || !ctx->frame_pending_present)
         return;
     ctx->frame_pending_present = 0;
@@ -2020,7 +2021,8 @@ static int8_t d3d11_prepare_shadow_frame(void *ctx_ptr,
         return 0;
     if (slots <= VGFX3D_CSM_SLOTS)
         return 1;
-    ctx->shadow_atlas_rows = (slots - VGFX3D_CSM_SLOTS + 3) / 4;
+    ctx->shadow_atlas_rows = (slots - VGFX3D_CSM_SLOTS + VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS - 1) /
+                             VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS;
     if (ctx->shadow_atlas_rows < 2)
         ctx->shadow_atlas_rows = 2;
     return SUCCEEDED(d3d11_ensure_shadow_atlas(ctx, atlas_resolution, atlas_resolution)) ? 1 : 0;

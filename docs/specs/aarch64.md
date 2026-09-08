@@ -151,7 +151,7 @@ MIR opcode categories:
 
 | File | Purpose |
 |------|---------|
-| `src/codegen/aarch64/ra/GlobalAllocator.hpp`/`.cpp` | Function-wide interval allocator: whole-interval linear scan, spill-everywhere with shared slots, ParallelCopy lowering (ADR 0338) |
+| `src/codegen/aarch64/ra/GlobalAllocator.hpp`/`.cpp` | Function-wide interval allocator: whole-interval linear scan, spill-everywhere with shared slots, ParallelCopy lowering (ADR 0339) |
 | `src/codegen/aarch64/ra/LiveIntervals.hpp`/`.cpp` | Positions, range lists with holes, fixed physical ranges, call and EH positions |
 | `src/codegen/aarch64/ra/Liveness.hpp`/`.cpp` | CFG liveness (per-block vreg live-in/out) |
 | `src/codegen/aarch64/PhysLiveness.hpp`/`.cpp` | Post-RA physical-register liveness for the peepholes |

@@ -21,7 +21,7 @@
 /// @file
 /// @brief Declares the AArch64 machine-register allocation pipeline pass.
 ///
-/// The pass invokes the function-wide interval allocator (ADR 0338)
+/// The pass invokes the function-wide interval allocator (ADR 0339)
 /// independently for every lowered MIR function.
 
 namespace zanna::codegen::aarch64::passes {

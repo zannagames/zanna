@@ -173,7 +173,7 @@ Phase 2.5 (differential coverage) is implemented:
   After the fixes the first 400 seeds agree on VM, native -O0, and native -O2.
 
 Phase 3 (function-wide register allocation, C1) is complete on both backends; the results
-table is in `docs/internals/backend.md` ("Codegen statistics baseline") and the model is ADR 0338.
+table is in `docs/internals/backend.md` ("Codegen statistics baseline") and the model is ADR 0339.
 Steps, each gate-green with the default pipeline unchanged unless stated:
 
 - **C0 — metrics.** `aarch64/passes/CodegenStatsPass` and `x86_64/passes/CodegenStatsPass` print
@@ -254,7 +254,7 @@ Steps, each gate-green with the default pipeline unchanged unless stated:
 - **C6 — the flip.** The function-wide allocator is the AArch64 default at every `-O` level;
   `ZANNA_LOCAL_RA=1` / `PipelineOptions::localRegAlloc` brings the whole retired path back
   (frame-slot lowering, block-local allocator with its `ZANNA_NO_GLOBAL_RA` toggle, phi-slot
-  peephole stages) for bisecting until C7. ADR 0338 records the decision. The seven old-shape
+  peephole stages) for bisecting until C7. ADR 0339 records the decision. The seven old-shape
   tests (`test_aarch64_cross_block_reload`, `test_codegen_arm64_cross_block_phi_spill`,
   `test_codegen_arm64_spill_fpr`, `test_aarch64_frame_spill_reuse`, `test_regalloc_aarch64_linear`,
   `test_aarch64_phi_coalescer`, `test_aarch64_global_liveness`) pin the old path explicitly so it

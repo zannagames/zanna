@@ -720,8 +720,35 @@ static uint64_t gl_get_texture_upload_pending_bytes(void *ctx_ptr) {
 ///              @c UINT64_MAX means unlimited.
 static void gl_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
-    if (ctx)
+    if (!ctx)
+        return;
+    /* ADR 0338: a value set during a cut override is the one restored at present. */
+    if (ctx->texture_upload_cut_override)
+        ctx->texture_upload_saved_budget_bytes = bytes;
+    else
         ctx->texture_upload_budget_bytes = bytes;
+}
+
+/// @brief Backend `note_camera_cut` (ADR 0338): lift the upload budget until the next present.
+/// @param ctx_ptr Borrowed OpenGL context.
+static void gl_note_camera_cut(void *ctx_ptr) {
+    gl_context_t *ctx = (gl_context_t *)ctx_ptr;
+    if (!ctx)
+        return;
+    if (!ctx->texture_upload_cut_override) {
+        ctx->texture_upload_saved_budget_bytes = ctx->texture_upload_budget_bytes;
+        ctx->texture_upload_cut_override = 1;
+    }
+    ctx->texture_upload_budget_bytes = UINT64_MAX;
+}
+
+/// @brief End a camera-cut override at present: the caller's budget comes back.
+/// @param ctx Borrowed OpenGL context.
+static void gl_end_cut_budget_override(gl_context_t *ctx) {
+    if (!ctx || !ctx->texture_upload_cut_override)
+        return;
+    ctx->texture_upload_budget_bytes = ctx->texture_upload_saved_budget_bytes;
+    ctx->texture_upload_cut_override = 0;
 }
 
 /// @brief Upload more of an in-progress native compressed texture, bounded by the upload budget.

@@ -260,8 +260,35 @@ static uint64_t metal_get_texture_upload_pending_bytes(void *ctx_ptr) {
 /// @param bytes Maximum bytes to upload during a frame; `UINT64_MAX` represents no finite cap.
 static void metal_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
-    if (ctx)
+    if (!ctx)
+        return;
+    /* ADR 0338: a value set during a cut override is the one restored at present. */
+    if (ctx.textureUploadCutOverride)
+        ctx.textureUploadSavedBudgetBytes = bytes;
+    else
         ctx.textureUploadBudgetBytes = bytes;
+}
+
+/// @brief Backend `note_camera_cut` (ADR 0338): lift the upload budget until the next present.
+/// @param ctx_ptr Borrowed `VGFXMetalContext`.
+static void metal_note_camera_cut(void *ctx_ptr) {
+    VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
+    if (!ctx)
+        return;
+    if (!ctx.textureUploadCutOverride) {
+        ctx.textureUploadSavedBudgetBytes = ctx.textureUploadBudgetBytes;
+        ctx.textureUploadCutOverride = YES;
+    }
+    ctx.textureUploadBudgetBytes = UINT64_MAX;
+}
+
+/// @brief End a camera-cut override at present: the caller's budget comes back.
+/// @param ctx Borrowed `VGFXMetalContext`.
+static void metal_end_cut_budget_override(VGFXMetalContext *ctx) {
+    if (!ctx || !ctx.textureUploadCutOverride)
+        return;
+    ctx.textureUploadBudgetBytes = ctx.textureUploadSavedBudgetBytes;
+    ctx.textureUploadCutOverride = NO;
 }
 
 /// @brief Upload more of an in-progress native compressed texture, bounded by the upload budget.

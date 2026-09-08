@@ -577,6 +577,7 @@ static void metal_present(void *backend_ctx) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)backend_ctx;
         id<MTLTexture> final_texture = nil;
+        metal_end_cut_budget_override(ctx);
         vgfx3d_postfx_chain_t stored_chain = {0};
         const vgfx3d_postfx_chain_t *chain = NULL;
 
@@ -2491,6 +2492,7 @@ static void metal_present_postfx(void *backend_ctx, const vgfx3d_postfx_chain_t 
 
         if (!ctx)
             return;
+        metal_end_cut_budget_override(ctx);
         final_texture = metal_encode_postfx_if_needed(ctx, postfx);
         if (!final_texture) {
             metal_present(backend_ctx);

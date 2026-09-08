@@ -300,8 +300,10 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "ClientToScreen",
         "ClipCursor",
         "CloseClipboard",
+        "CreateIconIndirect",
         "CreateWindowExW",
         "DefWindowProcW",
+        "DestroyIcon",
         "DestroyWindow",
         "DispatchMessageW",
         "EmptyClipboard",
@@ -337,6 +339,7 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "RegisterRawInputDevices",
         "ReleaseCapture",
         "ReleaseDC",
+        "SendMessageW",
         "SetClipboardData",
         "SetCapture",
         "SetCursor",
@@ -356,6 +359,7 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "UpdateWindow",
     };
     static const std::unordered_set<std::string> gdi32 = {
+        "CreateBitmap",
         "CreateCompatibleDC",
         "CreateDIBSection",
         "DeleteDC",

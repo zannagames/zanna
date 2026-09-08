@@ -20,7 +20,7 @@ add_library(il_codegen_aarch64 STATIC
         fastpaths/FastPaths_Memory.cpp
         fastpaths/FastPaths_Return.cpp
         LowerOvf.cpp
-        # Register allocator (function-wide, ADR 0338)
+        # Register allocator (function-wide, ADR 0339)
         ra/RegPools.cpp
         ra/OperandRoles.cpp
         ra/Liveness.cpp

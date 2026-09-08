@@ -37,7 +37,7 @@
 //        src/codegen/common/ra/IntervalAssign.hpp,
 //        src/codegen/common/ra/ParallelCopy.hpp,
 //        src/codegen/x86_64/ra/SpillSlots.hpp,
-//        docs/adr/0338-aarch64-function-wide-register-allocation.md
+//        docs/adr/0339-aarch64-function-wide-register-allocation.md
 //
 //===----------------------------------------------------------------------===//
 

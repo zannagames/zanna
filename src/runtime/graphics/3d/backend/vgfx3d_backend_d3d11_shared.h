@@ -69,8 +69,12 @@ extern "C" {
 #define VGFX3D_D3D11_TONEMAP_MODE_MAX 2
 #define VGFX3D_D3D11_BLOOM_MIP_COUNT_MAX 6
 #define VGFX3D_D3D11_BLOOM_MIN_DOWNSAMPLE_EXTENT 8
+/* Fixed tile grid for the non-CSM shadow slots. COLUMNS * ROWS must cover
+ * VGFX3D_MAX_SHADOW_LIGHTS - VGFX3D_CSM_SLOTS; the backend asserts this. The
+ * atlas texture itself is allocated with only as many rows as the frame needs
+ * (see d3d11_prepare_shadow_frame), so ROWS is the compile-time ceiling. */
 #define VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS 4
-#define VGFX3D_D3D11_SHADOW_ATLAS_ROWS 2
+#define VGFX3D_D3D11_SHADOW_ATLAS_ROWS 4
 #define VGFX3D_D3D11_FRAME_TIMING_PENDING_POLL_LIMIT 120u
 #define VGFX3D_D3D11_DEPTH_PROBE_PENDING_POLL_LIMIT 120u
 #define VGFX3D_D3D11_SSR_STEPS_MIN 8

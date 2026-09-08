@@ -138,7 +138,7 @@ Targeting AAPCS64 (Apple Silicon, Linux ARM64).
 
 | File                       | Purpose                                      |
 |----------------------------|----------------------------------------------|
-| `ra/GlobalAllocator.hpp/cpp` | Function-wide interval allocator (linear scan, spill-everywhere, ParallelCopy lowering; ADR 0338) |
+| `ra/GlobalAllocator.hpp/cpp` | Function-wide interval allocator (linear scan, spill-everywhere, ParallelCopy lowering; ADR 0339) |
 | `ra/LiveIntervals.hpp/cpp` | Positions, per-vreg range lists with holes, fixed physical ranges, call/EH positions |
 | `ra/Liveness.hpp/cpp`      | CFG liveness (per-block vreg live-in/out)   |
 | `ra/OpcodeClassify.hpp`    | Opcode classification (call, terminator, mem)|

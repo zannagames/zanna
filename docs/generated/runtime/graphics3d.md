@@ -229,6 +229,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-drawpoint3d"></a>`DrawPoint3D` | `void(obj,i64,i64)` | `Zanna.Graphics3D.Canvas3D.DrawPoint3D` |
 | <a id="zanna-graphics3d-canvas3d-backendsupports"></a>`BackendSupports` | `i1(str)` | `Zanna.Graphics3D.Canvas3D.BackendSupports` |
 | <a id="zanna-graphics3d-canvas3d-settextureuploadbudget"></a>`SetTextureUploadBudget` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetTextureUploadBudget` |
+| <a id="zanna-graphics3d-canvas3d-notecameracut"></a>`NoteCameraCut` | `void()` | `Zanna.Graphics3D.Canvas3D.NoteCameraCut` |
 | <a id="zanna-graphics3d-canvas3d-settexturestreaming"></a>`SetTextureStreaming` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetTextureStreaming` |
 | <a id="zanna-graphics3d-canvas3d-settexturestreamingbias"></a>`SetTextureStreamingBias` | `void(f64)` | `Zanna.Graphics3D.Canvas3D.SetTextureStreamingBias` |
 | <a id="zanna-graphics3d-canvas3d-screenshot"></a>`Screenshot` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics3D.Canvas3D.Screenshot` |
@@ -2875,6 +2876,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-backendstatechanges"></a>`Zanna.Graphics3D.Canvas3D.get_BackendStateChanges` | `i64(obj)` | `rt_canvas3d_get_backend_state_changes` |
 | `Zanna.Graphics3D.Canvas3D.SetTextureUploadBudget` | `void(obj,i64)` | `rt_canvas3d_set_texture_upload_budget` |
 | <a id="zanna-graphics3d-canvas3d-get-textureuploadpendingbytes"></a>`Zanna.Graphics3D.Canvas3D.get_TextureUploadPendingBytes` | `i64(obj)` | `rt_canvas3d_get_texture_upload_pending_bytes` |
+| `Zanna.Graphics3D.Canvas3D.NoteCameraCut` | `void(obj)` | `rt_canvas3d_note_camera_cut` |
 | `Zanna.Graphics3D.Canvas3D.SetTextureStreaming` | `void(obj,i1)` | `rt_canvas3d_set_texture_streaming` |
 | `Zanna.Graphics3D.Canvas3D.SetTextureStreamingBias` | `void(obj,f64)` | `rt_canvas3d_set_texture_streaming_bias` |
 | <a id="zanna-graphics3d-canvas3d-get-texturestreamingdemotions"></a>`Zanna.Graphics3D.Canvas3D.get_TextureStreamingDemotions` | `i64(obj)` | `rt_canvas3d_get_texture_streaming_demotions` |

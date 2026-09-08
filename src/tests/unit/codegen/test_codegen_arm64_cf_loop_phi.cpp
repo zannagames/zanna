@@ -71,7 +71,7 @@ TEST(Arm64CLI, CF_Loop_Phi) {
 
 TEST(Arm64CLI, CF_Loop_Phi_NoHeaderReloads) {
     // The loop-carried parameters stay in registers for the whole loop: the
-    // function-wide allocator (ADR 0338) gives each one a register, so the
+    // function-wide allocator (ADR 0339) gives each one a register, so the
     // header reloads nothing from the frame and the back edge is a plain
     // branch to the header.
     const std::string in = outPath("arm64_cf_loop_pair.il");

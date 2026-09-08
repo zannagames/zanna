@@ -353,4 +353,5 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 
 - [ADR 0337](0337-expanded-shadow-atlas-capacity.md) — Full fixture shadow capacity with prepared atlas storage
 
-- [ADR 0338](0338-aarch64-function-wide-register-allocation.md) — AArch64 function-wide register allocation over intervals with holes and ParallelCopy edges
+- [ADR 0338](0338-camera-cut-residency-hint.md) — Camera-cut residency hint: unbudgeted uploads, flare fade-in, 2048-entry texture caches
+- [ADR 0339](0339-aarch64-function-wide-register-allocation.md) — AArch64 function-wide register allocation over intervals with holes and ParallelCopy edges

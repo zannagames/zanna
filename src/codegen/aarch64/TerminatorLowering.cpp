@@ -14,7 +14,7 @@
 //     branch targets and phi-edge vreg mappings are fully resolved.
 //   - SSA phi-edge copies are one ParallelCopy onto the target's parameter
 //     vregs in the predecessor (or edge split) block; the register allocator
-//     sequentializes it (ADR 0338).
+//     sequentializes it (ADR 0339).
 //   - Switch trees with >3 cases are lowered to a recursive binary search
 //     over new auxiliary blocks.
 //

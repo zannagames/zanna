@@ -256,6 +256,9 @@ extern void rt_obj_free(void *obj);
 @property(nonatomic) uint64_t frameSerial;
 @property(nonatomic) uint64_t textureUploadBytes;
 @property(nonatomic) uint64_t textureUploadBudgetBytes;
+/* ADR 0338: the camera-cut override — the budget the caller last set, restored at present. */
+@property(nonatomic) uint64_t textureUploadSavedBudgetBytes;
+@property(nonatomic) BOOL textureUploadCutOverride;
 @property(nonatomic, strong) id<MTLSamplerState> sharedSampler;
 @property(nonatomic, strong) id<MTLSamplerState> cubeSampler;
 @property(nonatomic, strong) id<MTLTexture> defaultCubemap;
@@ -570,6 +573,7 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .show_gpu_layer = metal_show_gpu_layer,
     .hide_gpu_layer = metal_hide_gpu_layer,
     .set_texture_upload_budget = metal_set_texture_upload_budget,
+    .note_camera_cut = metal_note_camera_cut,
     .get_texture_upload_pending_bytes = metal_get_texture_upload_pending_bytes,
     .get_texture_upload_bytes = metal_get_texture_upload_bytes,
     .get_native_texture_caps = metal_get_native_texture_caps,

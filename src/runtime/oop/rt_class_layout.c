@@ -73,7 +73,7 @@ static int layout_reserve_locked(int64_t class_id) {
         memcpy(grown, g_layouts, (size_t)g_layout_capacity * sizeof(rt_class_layout_t));
         free(g_layouts);
     }
-    __atomic_store_n(&g_layouts, grown, __ATOMIC_RELEASE);
+    rt_atomic_store_ptr((void *volatile *)&g_layouts, grown, __ATOMIC_RELEASE);
     __atomic_store_n(&g_layout_capacity, new_cap, __ATOMIC_RELEASE);
     return 1;
 }
@@ -148,7 +148,8 @@ const rt_class_layout_t *rt_obj_class_layout_get(int64_t class_id) {
     int64_t cap = __atomic_load_n(&g_layout_capacity, __ATOMIC_ACQUIRE);
     if (class_id >= cap)
         return NULL;
-    rt_class_layout_t *table = __atomic_load_n(&g_layouts, __ATOMIC_ACQUIRE);
+    rt_class_layout_t *table = (rt_class_layout_t *)rt_atomic_load_ptr(
+        (void *const volatile *)&g_layouts, __ATOMIC_ACQUIRE);
     if (!table)
         return NULL;
     const rt_class_layout_t *layout = &table[class_id];

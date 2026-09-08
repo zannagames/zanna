@@ -24,7 +24,7 @@
 //   - Header-only. The assigner borrows the interval vector for its lifetime.
 // Links: src/codegen/aarch64/ra/GlobalAllocator.hpp,
 //        src/codegen/x86_64/ra/GlobalAllocator.hpp,
-//        docs/adr/0338-aarch64-function-wide-register-allocation.md
+//        docs/adr/0339-aarch64-function-wide-register-allocation.md
 //
 //===----------------------------------------------------------------------===//
 

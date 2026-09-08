@@ -1053,6 +1053,9 @@ int canvas3d_queue_screen_line(rt_canvas3d *c,
 static void canvas3d_advance_frame_serial(rt_canvas3d *c) {
     if (!c)
         return;
+    /* ADR 0338: the cut hint applies to exactly the frame that follows it. */
+    c->camera_cut_active = c->camera_cut_pending;
+    c->camera_cut_pending = 0;
     if (c->frame_serial > 0 && c->frame_serial < INT64_MAX) {
         c->frame_serial++;
         return;
