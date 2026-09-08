@@ -19,8 +19,9 @@
 //     write so live-out values extend to it and live-in values start at
 //     base[b]. Blocks are numbered in reverse post-order over MirCfg (sorted
 //     successors), so positions are deterministic.
-//   - A range list is sorted, disjoint, and merged; two values may share a
-//     register iff their range lists do not intersect.
+//   - The position and range model is the shared one
+//     (common/ra/IntervalAssign.hpp): a range list is sorted, disjoint, and
+//     merged; two values may share a register iff their lists do not intersect.
 //   - Every register fact comes from ra::operandRoles (virtual operands) and
 //     effectsOf (physical registers, call argument reads and clobbers,
 //     return reads, reserved scratch clobbers); the model keeps no opcode
@@ -42,6 +43,7 @@
 
 #include "codegen/aarch64/MachineIR.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
+#include "codegen/common/ra/IntervalAssign.hpp"
 
 #include <array>
 #include <cstddef>
@@ -56,55 +58,16 @@
 namespace zanna::codegen::aarch64::ra {
 
 /// @brief A position in the function's linear order (see the file header).
-using Pos = uint32_t;
+using Pos = zanna::codegen::ra::Pos;
 
 /// @brief Sentinel for "no position".
-inline constexpr Pos kNoPos = std::numeric_limits<Pos>::max();
+inline constexpr Pos kNoPos = zanna::codegen::ra::kNoPos;
 
 /// @brief One inclusive live range `[start, end]` in positions.
-struct LiveRange {
-    Pos start{0};
-    Pos end{0};
-};
+using LiveRange = zanna::codegen::ra::LiveRange;
 
-/// @brief Sorted, disjoint, merged list of live ranges.
-struct RangeList {
-    std::vector<LiveRange> ranges;
-
-    /// @brief Add `[start, end]`, merging with overlapping or adjacent ranges.
-    void add(Pos start, Pos end);
-
-    /// @brief Union another list in.
-    void addAll(const RangeList &other);
-
-    /// @brief Whether @p pos lies in some range.
-    [[nodiscard]] bool contains(Pos pos) const noexcept;
-
-    /// @brief Whether any position lies in both lists.
-    [[nodiscard]] bool intersects(const RangeList &other) const noexcept;
-
-    /// @brief First position (in @p other's order) that lies in both lists,
-    ///        or kNoPos.
-    [[nodiscard]] Pos firstIntersection(const RangeList &other) const noexcept;
-
-    /// @brief Whether the list is empty.
-    [[nodiscard]] bool empty() const noexcept {
-        return ranges.empty();
-    }
-
-    /// @brief Smallest position (kNoPos when empty).
-    [[nodiscard]] Pos start() const noexcept {
-        return ranges.empty() ? kNoPos : ranges.front().start;
-    }
-
-    /// @brief Largest position (kNoPos when empty).
-    [[nodiscard]] Pos end() const noexcept {
-        return ranges.empty() ? kNoPos : ranges.back().end;
-    }
-
-    /// @brief Render as `[a,b] [c,d] …` for diagnostics and tests.
-    [[nodiscard]] std::string toString() const;
-};
+/// @brief Sorted, disjoint, merged list of live ranges (shared model).
+using RangeList = zanna::codegen::ra::RangeList;
 
 /// @brief The interval of one virtual register plus what the allocator needs
 ///        to place it.

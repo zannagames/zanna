@@ -27,6 +27,7 @@
 
 #include "codegen/x86_64/MirCfg.hpp"
 #include "codegen/x86_64/OperandRoles.hpp"
+#include "codegen/x86_64/PhysLiveness.hpp"
 #include "codegen/x86_64/ra/Liveness.hpp"
 
 #include <algorithm>
@@ -289,47 +290,6 @@ void checkStructure(const MFunction &fn, Reporter &report) {
 // -----------------------------------------------------------------------------
 // Post-RA rules
 // -----------------------------------------------------------------------------
-
-struct PhysLiveness {
-    std::vector<PhysRegMask> liveIn;
-    std::vector<PhysRegMask> liveOut;
-};
-
-[[nodiscard]] PhysLiveness computePhysLiveness(const MFunction &fn, const TargetInfo &target) {
-    const std::size_t n = fn.blocks.size();
-    const MirCfg cfg(fn);
-    const auto &succs = cfg.successors();
-
-    std::vector<PhysRegMask> gen(n, 0);
-    std::vector<PhysRegMask> kill(n, 0);
-    for (std::size_t bi = 0; bi < n; ++bi) {
-        for (const auto &mi : fn.blocks[bi].instructions) {
-            const InstrEffects fx = effectsOf(mi, target);
-            gen[bi] |= fx.uses & ~kill[bi];
-            kill[bi] |= fx.defs;
-        }
-    }
-
-    PhysLiveness result;
-    result.liveIn.assign(n, 0);
-    result.liveOut.assign(n, 0);
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (std::size_t bi = n; bi-- > 0;) {
-            PhysRegMask out = 0;
-            for (std::size_t s : succs[bi])
-                out |= result.liveIn[s];
-            const PhysRegMask in = gen[bi] | (out & ~kill[bi]);
-            if (out != result.liveOut[bi] || in != result.liveIn[bi]) {
-                result.liveOut[bi] = out;
-                result.liveIn[bi] = in;
-                changed = true;
-            }
-        }
-    }
-    return result;
-}
 
 void checkPostRA(const MFunction &fn,
                  const FrameInfo &frame,

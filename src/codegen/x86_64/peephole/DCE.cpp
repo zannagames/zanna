@@ -181,16 +181,6 @@ void addReturnUsedRegs(const TargetInfo &target, RegMask &usedRegs) {
         addReg(usedRegs, static_cast<uint16_t>(reg));
 }
 
-/// @brief Seed @p liveRegs with the registers conservatively live at block exit.
-/// @details Delegates to @ref addReturnUsedRegs and explicitly reinforces the
-///          RSP invariant used by frame-manipulating blocks.
-/// @param target ABI return and callee-saved register metadata.
-/// @param liveRegs Liveness mask extended in place.
-void addExitLiveRegs(const TargetInfo &target, RegMask &liveRegs) {
-    addReturnUsedRegs(target, liveRegs);
-    addReg(liveRegs, static_cast<uint16_t>(PhysReg::RSP));
-}
-
 /// @brief Marks every allocator-visible physical register live.
 /// @param liveRegs Liveness mask extended in place.
 void addAllAllocatableRegs(RegMask &liveRegs) {
@@ -235,29 +225,29 @@ void collectImplicitUses(const MInstr &instr,
 ///          flags-live flag. Instructions that define only dead registers
 ///          (and lack observable side effects) are marked for removal. The
 ///          single backward pass naturally propagates uses across earlier
-///          definitions. @p preservePhysRegsAtExit seeds the initial live set
+///          definitions. @p exitLive seeds the initial live set
 ///          with every allocatable register for blocks whose successor
 ///          liveness is unavailable.
 /// @param instrs Block instructions, mutated in place.
 /// @param stats Pass-wide statistics accumulator.
 /// @param target Calling-convention metadata for implicit-use computation.
-/// @param preservePhysRegsAtExit Whether to seed every allocatable register live.
+/// @param exitLive Solved exit-live mask, or null for the conservative seed.
 /// @return Number of instructions eliminated.
 std::size_t runBlockDCE(std::vector<MInstr> &instrs,
                         PeepholeStats &stats,
                         const TargetInfo &target,
-                        bool preservePhysRegsAtExit) {
+                        const PhysRegMask *exitLive) {
     if (instrs.empty())
         return 0;
 
     std::size_t eliminated = 0;
 
     RegMask liveRegs = 0;
-    if (preservePhysRegsAtExit) {
+    if (exitLive != nullptr) {
+        liveRegs = *exitLive;
+    } else {
         addAllAllocatableRegs(liveRegs);
         addReg(liveRegs, static_cast<uint16_t>(PhysReg::RSP));
-    } else {
-        addExitLiveRegs(target, liveRegs);
     }
     bool flagsLive = false;
 

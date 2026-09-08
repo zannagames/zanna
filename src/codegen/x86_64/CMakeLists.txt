@@ -15,6 +15,7 @@ add_library(zanna_codegen_x86_64 STATIC
         OperandRoles.cpp
         MirCfg.cpp
         MirVerify.cpp
+        PhysLiveness.cpp
         PreRegAllocOpt.cpp
         ISel.cpp
         LowerDiv.cpp

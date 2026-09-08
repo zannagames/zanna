@@ -250,6 +250,7 @@ macOS support is Apple Silicon/ARM64 only.
 | `OperandUtils.hpp`         | Operand manipulation utilities       |
 | `Peephole.hpp/cpp`         | Peephole optimizations               |
 | `OperandRoles.hpp/cpp`     | Per-operand use/def role classification |
+| `PhysLiveness.hpp/cpp`     | Post-RA physical-register liveness and the block exit-live seed |
 | `PreRegAllocOpt.hpp/cpp`   | Pre-register-allocation optimization |
 | `Scheduler.hpp/cpp`        | Instruction scheduling               |
 

@@ -40,79 +40,9 @@
 #include <unordered_set>
 
 /// @file
-/// @brief Implements RangeList and LiveIntervals::build().
+/// @brief Implements LiveIntervals::build().
 
 namespace zanna::codegen::aarch64::ra {
-
-// -----------------------------------------------------------------------------
-// RangeList
-// -----------------------------------------------------------------------------
-
-/// @copydoc RangeList::add
-void RangeList::add(Pos start, Pos end) {
-    if (end < start)
-        std::swap(start, end);
-    // Position of the first range whose end is not before start - 1 (the
-    // first range that may overlap or touch the new one).
-    auto it = std::lower_bound(ranges.begin(), ranges.end(), start, [](const LiveRange &r, Pos s) {
-        return r.end + 1 < s;
-    });
-    LiveRange merged{start, end};
-    auto eraseBegin = it;
-    while (it != ranges.end() && it->start <= merged.end + 1) {
-        merged.start = std::min(merged.start, it->start);
-        merged.end = std::max(merged.end, it->end);
-        ++it;
-    }
-    it = ranges.erase(eraseBegin, it);
-    ranges.insert(it, merged);
-}
-
-/// @copydoc RangeList::addAll
-void RangeList::addAll(const RangeList &other) {
-    for (const LiveRange &r : other.ranges)
-        add(r.start, r.end);
-}
-
-/// @copydoc RangeList::contains
-bool RangeList::contains(Pos pos) const noexcept {
-    auto it = std::upper_bound(
-        ranges.begin(), ranges.end(), pos, [](Pos p, const LiveRange &r) { return p < r.start; });
-    if (it == ranges.begin())
-        return false;
-    --it;
-    return it->start <= pos && pos <= it->end;
-}
-
-/// @copydoc RangeList::firstIntersection
-Pos RangeList::firstIntersection(const RangeList &other) const noexcept {
-    // Walk other's ranges (usually the short list) and binary-search this one.
-    for (const LiveRange &o : other.ranges) {
-        auto it =
-            std::lower_bound(ranges.begin(), ranges.end(), o.start, [](const LiveRange &r, Pos s) {
-                return r.end < s;
-            });
-        if (it != ranges.end() && it->start <= o.end)
-            return std::max(it->start, o.start);
-    }
-    return kNoPos;
-}
-
-/// @copydoc RangeList::intersects
-bool RangeList::intersects(const RangeList &other) const noexcept {
-    return firstIntersection(other) != kNoPos;
-}
-
-/// @copydoc RangeList::toString
-std::string RangeList::toString() const {
-    std::ostringstream os;
-    for (std::size_t i = 0; i < ranges.size(); ++i) {
-        if (i)
-            os << ' ';
-        os << '[' << ranges[i].start << ',' << ranges[i].end << ']';
-    }
-    return os.str();
-}
 
 // -----------------------------------------------------------------------------
 // LiveIntervals

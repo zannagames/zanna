@@ -109,13 +109,8 @@ GlobalAllocationStats GlobalAllocator::run() {
     stats_.vregs = n;
     assigned_.assign(n, kNone);
     slotOffset_.assign(n, 0);
-    for (std::size_t o = 0; o < 64; ++o) {
-        occupied_[o] = intervals_.fixed(static_cast<PhysReg>(o));
-        assignedTo_[o].clear();
-    }
 
     assign();
-    assignSlots();
     rewrite();
     finish();
     return stats_;
@@ -179,186 +174,79 @@ void GlobalAllocator::noteUse(PhysReg reg) {
 }
 
 // -----------------------------------------------------------------------------
-// Assignment
+// Assignment and spill slots (shared core)
 // -----------------------------------------------------------------------------
 
-/// @brief Whole-interval linear scan in (start, id) order.
+/// @brief Run the shared whole-interval linear scan and lay out the spill
+///        slots: hottest spills first, first-fit sharing among non-intersecting
+///        intervals, so the hottest slots sit nearest x29.
 void GlobalAllocator::assign() {
+    using zanna::codegen::ra::IntervalAssigner;
+    using zanna::codegen::ra::IntervalInfo;
+    using zanna::codegen::ra::kAnyClass;
+    using zanna::codegen::ra::kNoReg;
+    using zanna::codegen::ra::RegisterFile;
+
     const auto &vregs = intervals_.vregs();
-    std::vector<std::size_t> order;
-    order.reserve(vregs.size());
-    for (std::size_t i = 0; i < vregs.size(); ++i) {
-        if (!vregs[i].live.empty())
-            order.push_back(i);
-    }
-    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
-        const Pos sa = vregs[a].live.start();
-        const Pos sb = vregs[b].live.start();
-        if (sa != sb)
-            return sa < sb;
-        return vregs[a].id < vregs[b].id;
-    });
-    for (std::size_t idx : order)
-        assignOne(idx);
-}
-
-/// @brief Give interval @p idx a register, spilling it or evicting lighter
-///        occupants when every candidate is taken.
-void GlobalAllocator::assignOne(std::size_t idx) {
-    const auto &vregs = intervals_.vregs();
-    const VRegInterval &iv = vregs[idx];
-
-    if (iv.crossesEhPush) {
-        ++stats_.spilled;
-        return; // EH-1: memory-homed across setjmp.
+    std::vector<IntervalInfo> infos;
+    infos.reserve(vregs.size());
+    for (const VRegInterval &iv : vregs) {
+        IntervalInfo info;
+        info.id = iv.id;
+        info.cls = static_cast<unsigned>(iv.cls);
+        info.live = iv.live;
+        info.weight = iv.weight;
+        info.crossesCall = iv.crossesCall;
+        info.crossesEhPush = iv.crossesEhPush;
+        info.hintPhys = iv.hasPhysHint() ? static_cast<unsigned>(ord(iv.hintPhys)) : kNoReg;
+        info.hintIds.assign(iv.hintVRegs.begin(), iv.hintVRegs.end());
+        infos.push_back(std::move(info));
     }
 
-    // Candidate order: hints, then the class pool with callee-saved registers
-    // first when the interval is live across a call.
-    std::vector<PhysReg> candidates;
-    candidates.reserve(orderFor(iv.cls).size() + 4);
-    /// Append a candidate once.
-    const auto push = [&](PhysReg r) {
-        if (!allocatable_[ord(r)] || classOf(r) != iv.cls)
-            return;
-        if (std::find(candidates.begin(), candidates.end(), r) == candidates.end())
-            candidates.push_back(r);
-    };
-    if (iv.hasPhysHint())
-        push(iv.hintPhys);
-    for (uint16_t h : iv.hintVRegs) {
-        const std::size_t hi = intervals_.indexOf(h);
-        if (hi != SIZE_MAX && assigned_[hi] != kNone)
-            push(assigned_[hi]);
+    RegisterFile regs;
+    regs.orderByClass.resize(2);
+    for (PhysReg r : gprOrder_)
+        regs.orderByClass[static_cast<unsigned>(RegClass::GPR)].push_back(
+            static_cast<unsigned>(ord(r)));
+    for (PhysReg r : fprOrder_)
+        regs.orderByClass[static_cast<unsigned>(RegClass::FPR)].push_back(
+            static_cast<unsigned>(ord(r)));
+    regs.allocatable.assign(64, 0);
+    regs.calleeSaved.assign(64, 0);
+    regs.classOf.assign(64, static_cast<unsigned>(RegClass::GPR));
+    for (std::size_t o = 0; o < 64; ++o) {
+        regs.allocatable[o] = allocatable_[o] ? 1 : 0;
+        regs.calleeSaved[o] = calleeSaved_[o] ? 1 : 0;
+        regs.classOf[o] = static_cast<unsigned>(o < 32 ? RegClass::GPR : RegClass::FPR);
     }
-    const auto &pool = orderFor(iv.cls);
-    if (iv.crossesCall) {
-        for (PhysReg r : pool)
-            if (calleeSaved_[ord(r)])
-                push(r);
-        for (PhysReg r : pool)
-            if (!calleeSaved_[ord(r)])
-                push(r);
-    } else {
-        for (PhysReg r : pool)
-            push(r);
+    std::vector<RangeList> fixed(64);
+    for (std::size_t o = 0; o < 64; ++o)
+        fixed[o] = intervals_.fixed(static_cast<PhysReg>(o));
+
+    IntervalAssigner assigner(infos, std::move(regs), std::move(fixed));
+    assigner.run();
+
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+        const unsigned r = assigner.assigned(i);
+        assigned_[i] = r == kNoReg ? kNone : static_cast<PhysReg>(r);
     }
+    stats_.spilled = assigner.spilledCount();
+    for (std::size_t o = 0; o < 64; ++o)
+        occupied_[o] = assigner.occupied(static_cast<unsigned>(o));
 
-    for (PhysReg r : candidates) {
-        if (!occupied_[ord(r)].intersects(iv.live)) {
-            place(idx, r);
-            return;
-        }
-    }
-
-    // Every candidate conflicts: find the register whose conflicting
-    // occupants are lightest; a fixed conflict makes a register unusable.
-    PhysReg best = kNone;
-    double bestWeight = std::numeric_limits<double>::infinity();
-    std::vector<std::size_t> bestConflicts;
-    for (PhysReg r : pool) {
-        if (intervals_.fixed(r).intersects(iv.live))
-            continue;
-        double weight = 0.0;
-        std::vector<std::size_t> conflicts;
-        for (std::size_t j : assignedTo_[ord(r)]) {
-            const VRegInterval &other = vregs[j];
-            if (other.live.end() < iv.live.start() || iv.live.end() < other.live.start())
-                continue;
-            if (other.live.intersects(iv.live)) {
-                weight += other.weight;
-                conflicts.push_back(j);
-            }
-        }
-        if (weight < bestWeight) {
-            bestWeight = weight;
-            best = r;
-            bestConflicts = std::move(conflicts);
-        }
-    }
-
-    if (best == kNone || bestWeight >= iv.weight) {
-        ++stats_.spilled;
-        return;
-    }
-    for (std::size_t j : bestConflicts)
-        unassign(j);
-    place(idx, best);
-}
-
-/// @brief Record the assignment of interval @p idx to @p reg.
-void GlobalAllocator::place(std::size_t idx, PhysReg reg) {
-    assigned_[idx] = reg;
-    occupied_[ord(reg)].addAll(intervals_.vregs()[idx].live);
-    assignedTo_[ord(reg)].push_back(idx);
-}
-
-/// @brief Evict interval @p idx (it is spilled from now on) and rebuild its
-///        register's occupancy from the remaining occupants.
-void GlobalAllocator::unassign(std::size_t idx) {
-    const PhysReg reg = assigned_[idx];
-    assigned_[idx] = kNone;
-    ++stats_.spilled;
-    auto &list = assignedTo_[ord(reg)];
-    list.erase(std::remove(list.begin(), list.end(), idx), list.end());
-    RangeList occ = intervals_.fixed(reg);
-    for (std::size_t j : list)
-        occ.addAll(intervals_.vregs()[j].live);
-    occupied_[ord(reg)] = std::move(occ);
-}
-
-// -----------------------------------------------------------------------------
-// Spill slots
-// -----------------------------------------------------------------------------
-
-/// @brief First-fit shared slots for the spilled intervals, hottest first.
-void GlobalAllocator::assignSlots() {
-    const auto &vregs = intervals_.vregs();
-    std::vector<std::size_t> spilled;
-    for (std::size_t i = 0; i < vregs.size(); ++i) {
-        if (assigned_[i] == kNone && !vregs[i].live.empty())
-            spilled.push_back(i);
-    }
-    std::sort(spilled.begin(), spilled.end(), [&](std::size_t a, std::size_t b) {
-        if (vregs[a].weight != vregs[b].weight)
-            return vregs[a].weight > vregs[b].weight;
-        return vregs[a].id < vregs[b].id;
-    });
-
-    struct Slot {
-        RangeList occ;
-        std::vector<std::size_t> occupants;
-    };
-
-    std::vector<Slot> slots;
-    for (std::size_t idx : spilled) {
-        bool placed = false;
-        for (Slot &s : slots) {
-            if (!s.occ.intersects(vregs[idx].live)) {
-                s.occ.addAll(vregs[idx].live);
-                s.occupants.push_back(idx);
-                placed = true;
-                break;
-            }
-        }
-        if (!placed) {
-            Slot s;
-            s.occ = vregs[idx].live;
-            s.occupants.push_back(idx);
-            slots.push_back(std::move(s));
-        }
-    }
-
-    for (const Slot &s : slots) {
+    // Slots: every class shares one 8-byte slot pool (an FPR spill is a D
+    // register); groups come back hottest first.
+    const auto groups = assigner.shareSlots(kAnyClass);
+    for (const auto &group : groups) {
         std::vector<uint32_t> keys;
-        keys.reserve(s.occupants.size());
-        for (std::size_t idx : s.occupants)
+        keys.reserve(group.size());
+        for (std::size_t idx : group)
             keys.push_back(vregs[idx].id);
         const int off = fb_.addSharedSpill(keys);
-        for (std::size_t idx : s.occupants)
+        for (std::size_t idx : group)
             slotOffset_[idx] = off;
     }
-    stats_.spillSlots = slots.size();
+    stats_.spillSlots = groups.size();
 }
 
 // -----------------------------------------------------------------------------

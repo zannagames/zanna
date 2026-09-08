@@ -8,9 +8,9 @@
 // File: src/codegen/aarch64/ra/GlobalAllocator.hpp
 // Purpose: Function-wide register allocator for AArch64 MIR lowered in the
 //          edge-copy mode (block parameters are virtual registers, branch
-//          arguments are ParallelCopy edges). Two phases: whole-interval
-//          linear scan over intervals with holes (assign or spill
-//          everywhere, weight-based eviction, hints), then a rewrite that
+//          arguments are ParallelCopy edges). Two phases: the shared
+//          whole-interval linear scan (common/ra/IntervalAssign.hpp: assign
+//          or spill everywhere, weight-based eviction, hints), then a rewrite that
 //          replaces operands, reloads and stores spilled values around each
 //          instruction, lowers every ParallelCopy through the shared
 //          sequentializer, and lays out shared spill slots.
@@ -46,6 +46,7 @@
 #include "codegen/aarch64/MachineIR.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/aarch64/ra/LiveIntervals.hpp"
+#include "codegen/common/ra/IntervalAssign.hpp"
 
 #include <array>
 #include <cstddef>
@@ -112,20 +113,15 @@ class GlobalAllocator {
     std::array<bool, 64> calleeSaved_{};
     std::array<bool, 64> savedUsed_{};
 
-    std::vector<PhysReg> assigned_; ///< Per interval index; SP = no register.
-    std::vector<int> slotOffset_;   ///< Per interval index; 0 = no slot.
-    std::array<RangeList, 64> occupied_;
-    std::array<std::vector<std::size_t>, 64> assignedTo_;
+    std::vector<PhysReg> assigned_;      ///< Per interval index; SP = no register.
+    std::vector<int> slotOffset_;        ///< Per interval index; 0 = no slot.
+    std::array<RangeList, 64> occupied_; ///< Per ordinal after assignment (fixed + assigned).
 
     uint32_t nextTempSlotKey_{0xFFFF0000u};
     GlobalAllocationStats stats_{};
 
     void buildPools();
     void assign();
-    void assignOne(std::size_t idx);
-    void place(std::size_t idx, PhysReg reg);
-    void unassign(std::size_t idx);
-    void assignSlots();
     void rewrite();
     void rewriteBlock(std::size_t bi);
     void lowerParallelCopy(std::size_t bi,

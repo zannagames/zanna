@@ -34,6 +34,8 @@
 #include "peephole/MovFolding.hpp"
 #include "peephole/PeepholeCommon.hpp"
 
+#include "codegen/x86_64/PhysLiveness.hpp"
+
 #include <algorithm>
 
 /**
@@ -56,36 +58,6 @@ namespace ph = peephole;
 /// pathological cases where rewrites keep enabling each other.
 static constexpr std::size_t kMaxIterations = 100;
 
-/// @brief Determine if @p blockIndex can pass control to another block.
-/// @details Scans backward from the block's terminator: RET or UD2 are
-///          absorbing (no successor), JMP/JCC explicitly transfer, and a
-///          fall-through case is detected when the block has a subsequent
-///          sibling. Used by DCE to know whether instructions in this block
-///          can be safely deleted (their effects need not be observable on
-///          paths that abort here).
-/// @param fn Function being inspected.
-/// @param blockIndex Index of the block in question.
-/// @return True when control may exit this block to another block.
-static bool blockMayTransferControl(const MFunction &fn, std::size_t blockIndex) {
-    if (blockIndex >= fn.blocks.size())
-        return false;
-
-    const auto &instrs = fn.blocks[blockIndex].instructions;
-    for (auto it = instrs.rbegin(); it != instrs.rend(); ++it) {
-        switch (it->opcode) {
-            case MOpcode::RET:
-            case MOpcode::UD2:
-                return false;
-            case MOpcode::JMP:
-            case MOpcode::JCC:
-                return true;
-            default:
-                break;
-        }
-    }
-    return blockIndex + 1 < fn.blocks.size();
-}
-
 /// @brief Runs per-block rewrite passes (strength reduction, identity elimination,
 /// move folding, DCE). Returns the number of transformations applied.
 /// @param fn Function whose blocks are rewritten in place.
@@ -97,11 +69,17 @@ static std::size_t runBlockRewrites(MFunction &fn,
                                     const TargetInfo &target) {
     std::size_t before = stats.total();
 
+    // One liveness solve per sweep: the rewrites below never add an
+    // upward-exposed read to a block, so a block's exit-live mask computed
+    // here stays a superset of the truth while earlier blocks are rewritten.
+    const PhysLiveness liveness = computePhysLiveness(fn, target);
+
     for (std::size_t blockIndex = 0; blockIndex < fn.blocks.size(); ++blockIndex) {
         auto &block = fn.blocks[blockIndex];
         auto &instrs = block.instructions;
         if (instrs.empty())
             continue;
+        const PhysRegMask exitLive = blockExitLive(fn, blockIndex, target, liveness);
 
         // Pass 1: Build register constant map and apply rewrites
         ph::RegConstMap knownConsts;
@@ -156,7 +134,7 @@ static std::size_t runBlockRewrites(MFunction &fn,
         }
 
         // Pass 2: Try to fold consecutive moves.
-        (void)ph::foldConsecutiveMoves(instrs, stats);
+        (void)ph::foldConsecutiveMoves(instrs, stats, &exitLive);
 
         // Pass 3: Mark identity moves for removal
         for (std::size_t i = 0; i < instrs.size(); ++i) {
@@ -178,7 +156,7 @@ static std::size_t runBlockRewrites(MFunction &fn,
         // Pass 5: Dead code elimination
         ph::forwardFrameStoreLoads(instrs, stats);
         ph::eliminateDeadFrameStores(instrs, stats);
-        ph::runBlockDCE(instrs, stats, target, blockMayTransferControl(fn, blockIndex));
+        ph::runBlockDCE(instrs, stats, target, &exitLive);
     }
 
     return stats.total() - before;

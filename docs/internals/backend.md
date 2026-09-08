@@ -230,7 +230,9 @@ class PassManager {
   live at an exit only when some
   successor actually reads it; at a return the epilogue restores it, so a value left there is
   dead. Each peephole stage (`runPerBlockRewrites`, the CFG-aware DCE, `runPostSchedulePeephole`)
-  solves liveness once on the shape it is given; the loop and phi-join forwarders publish no
+  solves liveness once on the shape it is given. x86-64 has the same solver and seed
+  (`src/codegen/x86_64/PhysLiveness.hpp`, masks instead of sets); its block-local DCE and
+  move-chain folder read `blockExitLive` too. The loop and phi-join forwarders publish no
   metadata of their own. Consumers: `foldComputeIntoTarget`, `tryMaddFusion`,
   `tryFoldConsecutiveMoves`, `tryFoldImmThenMove`, `tryTbzTbnzFusion`, `tryCsetBranchFusion`,
   the division strength reductions, and both DCE variants. The verifier's post-RA dataflow rules

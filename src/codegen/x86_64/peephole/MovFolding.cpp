@@ -240,18 +240,23 @@ bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs, std::size_t idx, Peeph
 /// @param instrs Block instruction vector mutated in place.
 /// @param stats Statistics incremented once for each folded pair.
 /// @return Number of adjacent pairs folded.
-std::size_t foldConsecutiveMoves(std::vector<MInstr> &instrs, PeepholeStats &stats) {
+std::size_t foldConsecutiveMoves(std::vector<MInstr> &instrs,
+                                 PeepholeStats &stats,
+                                 const PhysRegMask *exitLive) {
     if (instrs.size() < 2)
         return 0;
 
     std::vector<RegMask> usedBeforeDefFrom(instrs.size() + 1, 0);
     std::vector<RegMask> callBeforeDefFrom(instrs.size() + 1, 0);
 
-    // A branch/fallthrough successor may consume a register without any use in
-    // this instruction list. Seeding every physical register as live-at-exit
-    // keeps those values intact; a later in-block definition still kills the
-    // old value and permits a safe fold before that definition.
-    RegMask usedBeforeDef = mayCarryValuesAtExit(instrs) ? allPhysicalRegMask() : 0;
+    // A successor may consume a register without any use in this instruction
+    // list: start from the solved exit-live mask when the caller has one.
+    // Without it, seeding every physical register as live-at-exit keeps those
+    // values intact; a later in-block definition still kills the old value
+    // and permits a safe fold before that definition.
+    RegMask usedBeforeDef = exitLive != nullptr            ? *exitLive
+                            : mayCarryValuesAtExit(instrs) ? allPhysicalRegMask()
+                                                           : 0;
     RegMask callBeforeDef = 0;
     const RegMask argRegs = allArgRegMask();
     for (std::size_t i = instrs.size(); i-- > 0;) {

@@ -36,17 +36,17 @@ namespace zanna::codegen::x64::peephole {
 ///          and removes instructions whose tracked register and flag outputs
 ///          are unused. Side-effecting instructions and RSP modifications are
 ///          retained. Labels conservatively make every allocatable register
-///          live; @p preservePhysRegsAtExit applies the same policy at entry to
-///          the backward sweep.
-/// @param instrs                Instruction list being scanned (mutated in place).
-/// @param stats                 Peephole statistics counter (incremented per removal).
-/// @param target                Target ABI metadata for identifying call-clobber
-///                              and callee-saved registers.
-/// @param preservePhysRegsAtExit Seed all allocatable registers live when true.
+///          live. The backward sweep starts from @p exitLive, the block's
+///          solved exit-live mask (`blockExitLive`), or, when null, from the
+///          conservative seed (every allocatable register plus RSP).
+/// @param instrs   Instruction list being scanned (mutated in place).
+/// @param stats    Peephole statistics counter (incremented per removal).
+/// @param target   Target ABI metadata for implicit call/return uses.
+/// @param exitLive Optional exit-live mask of the enclosing block.
 /// @return Number of instructions removed.
 std::size_t runBlockDCE(std::vector<MInstr> &instrs,
                         PeepholeStats &stats,
                         const TargetInfo &target,
-                        bool preservePhysRegsAtExit = false);
+                        const PhysRegMask *exitLive = nullptr);
 
 } // namespace zanna::codegen::x64::peephole

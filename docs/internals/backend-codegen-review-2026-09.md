@@ -281,7 +281,18 @@ Steps landed so far, each gate-green with the default pipeline unchanged unless 
   (loop-carried parameters never touch the frame; no `ldp`, no `[x29, #-…]`) were re-derived
   on the remaining path. Net −2,650 lines.
 
-Everything from B2 onward, and Phase 3 from C8 on, is open.
+- **C8a — shared assignment core, x86-64 physical liveness.** The position/range model and
+  the whole-interval linear scan (hints, callee-saved preference across calls, weight-based
+  eviction, fixed physical ranges) plus the first-fit slot sharing moved into
+  `common/ra/IntervalAssign.hpp` (`RangeList`, `IntervalInfo`, `RegisterFile`,
+  `IntervalAssigner`); the AArch64 allocator builds `IntervalInfo`s from its intervals and reads
+  the assignment back, byte-for-byte identical output on the four demos at `-O0` and `-O2`.
+  x86-64 gained `PhysLiveness.{hpp,cpp}` (`computePhysLiveness`, moved out of the verifier, and
+  `blockExitLive` = solved live-out ∪ RSP/RBP ∪ return registers at a function exit); the
+  block-local DCE and the move-chain folder seed from it instead of "every allocatable register
+  is live at every exit" (`test_x86_phys_liveness`).
+
+Everything from B2 onward, and Phase 3 from C8b on, is open.
 
 ## Context
 

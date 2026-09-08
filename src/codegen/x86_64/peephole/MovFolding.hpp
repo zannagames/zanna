@@ -53,12 +53,16 @@ namespace zanna::codegen::x64::peephole {
 /// @details Equivalent to applying @ref tryFoldConsecutiveMoves across the
 ///          block, but avoids rescanning the tail of long blocks for each
 ///          candidate pair by precomputing suffix use-before-definition and
-///          call-before-definition masks. Branching and fallthrough blocks
-///          conservatively seed every physical register as live at exit because
-///          the post-RA block-local pass does not own a successor liveness map.
-/// @param instrs Instruction list being scanned (mutated in place).
-/// @param stats  Peephole statistics counter (incremented on each fold).
+///          call-before-definition masks. The scan starts from @p exitLive,
+///          the block's solved exit-live mask (`blockExitLive`); without one,
+///          branching and fallthrough blocks conservatively seed every
+///          physical register as live at exit.
+/// @param instrs   Instruction list being scanned (mutated in place).
+/// @param stats    Peephole statistics counter (incremented on each fold).
+/// @param exitLive Optional exit-live mask of the enclosing block.
 /// @return Number of folds applied.
-std::size_t foldConsecutiveMoves(std::vector<MInstr> &instrs, PeepholeStats &stats);
+std::size_t foldConsecutiveMoves(std::vector<MInstr> &instrs,
+                                 PeepholeStats &stats,
+                                 const PhysRegMask *exitLive = nullptr);
 
 } // namespace zanna::codegen::x64::peephole

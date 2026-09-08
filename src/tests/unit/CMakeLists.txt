@@ -717,6 +717,14 @@ if (NOT TARGET test_x86_peephole)
     zanna_add_ctest(test_x86_peephole test_x86_peephole)
 endif ()
 
+if (NOT TARGET test_x86_phys_liveness)
+    zanna_add_test(
+            test_x86_phys_liveness
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_x86_phys_liveness.cpp)
+    target_link_libraries(test_x86_phys_liveness PRIVATE zanna_codegen_x86_64)
+    zanna_add_ctest(test_x86_phys_liveness test_x86_phys_liveness)
+endif ()
+
 if (NOT TARGET test_x86_mir_verify)
     zanna_add_test(
             test_x86_mir_verify
