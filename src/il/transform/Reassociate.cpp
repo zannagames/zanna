@@ -196,6 +196,25 @@ bool canonicalizeTree(BasicBlock &block,
     });
     std::sort(nodes.begin(), nodes.end());
 
+    // Leaves are ordered by temp id, and id order stops matching block order
+    // once an earlier pass renumbers or inlines: a leaf defined late in the
+    // block can therefore be handed to an internal node that runs before it.
+    // Check the whole assignment before mutating anything and fall back to
+    // sorting the root's operands rather than emit a use before its definition.
+    auto definedAtOrAfter = [&defs](const Value &leaf, std::size_t nodeIndex) {
+        if (leaf.kind != Value::Kind::Temp)
+            return false;
+        const auto it = defs.find(leaf.id);
+        return it != defs.end() && it->second >= nodeIndex;
+    };
+    for (std::size_t nodePos = 0; nodePos < nodes.size(); ++nodePos) {
+        const std::size_t leafIndex = leaves.size() - 2 - nodePos;
+        if (definedAtOrAfter(leaves[leafIndex], nodes[nodePos]))
+            return canonicalizeOperands(root);
+        if (nodePos == 0 && definedAtOrAfter(leaves.back(), nodes[nodePos]))
+            return canonicalizeOperands(root);
+    }
+
     bool changed = false;
     Value accumulated;
     for (std::size_t nodePos = 0; nodePos < nodes.size(); ++nodePos) {

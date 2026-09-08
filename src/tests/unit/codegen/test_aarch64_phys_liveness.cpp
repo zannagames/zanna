@@ -122,7 +122,8 @@ TEST(AArch64PhysLiveness, SuccessorRedefinitionKillsTheRegister) {
 TEST(AArch64PhysLiveness, CallClobberKillsCallerSavedAndReadsArguments) {
     // x10 is read after the call, but the call clobbers it: not live-in.
     // x0 is an argument register the call reads (every argument register
-    // counts as read, `Bl` carries no arity): live-in.
+    // counts as read for a callee of unknown arity, `Bl` carries none):
+    // live-in.
     MFunction fn = function({
         block("entry", {movri(PhysReg::X0, 0), movri(PhysReg::X10, 1), br("next")}),
         block("next",
@@ -142,6 +143,35 @@ TEST(AArch64PhysLiveness, CallClobberKillsCallerSavedAndReadsArguments) {
     });
     const PhysLiveness slv = computePhysLiveness(saved, target());
     EXPECT_TRUE(slv.liveOut[0].contains(PhysReg::X20));
+}
+
+TEST(AArch64PhysLiveness, NoReturnTrapCallReadsOnlyItsArguments) {
+    // The shared overflow trap takes no arguments, so its call reads no
+    // argument register: a loop that can trap must not see its scratch
+    // registers pinned live around the back edge by the trap block.
+    MFunction fn = function({
+        block("entry", {movri(PhysReg::X5, 1), br("loop")}),
+        block("loop",
+              {ins(MOpcode::AndRI, {x(PhysReg::X5), x(PhysReg::X5), MOperand::immOp(1)}),
+               bcond("trap"),
+               br("loop")}),
+        block("trap", {ins(MOpcode::Bl, {label("rt_trap_ovf")})}),
+    });
+    const PhysLiveness lv = computePhysLiveness(fn, target());
+    EXPECT_FALSE(lv.liveIn[2].contains(PhysReg::X0));
+    EXPECT_FALSE(lv.liveIn[2].contains(PhysReg::X5));
+    EXPECT_FALSE(lv.liveIn[2].contains(PhysReg::V0));
+
+    // The two-argument bounds trap reads x0 and x1 but not x2.
+    MFunction oob = function({
+        block("entry",
+              {movri(PhysReg::X0, 1), movri(PhysReg::X1, 2), movri(PhysReg::X2, 3), br("trap")}),
+        block("trap", {ins(MOpcode::Bl, {label("rt_arr_oob_panic")})}),
+    });
+    const PhysLiveness olv = computePhysLiveness(oob, target());
+    EXPECT_TRUE(olv.liveIn[1].contains(PhysReg::X0));
+    EXPECT_TRUE(olv.liveIn[1].contains(PhysReg::X1));
+    EXPECT_FALSE(olv.liveIn[1].contains(PhysReg::X2));
 }
 
 TEST(AArch64PhysLiveness, ReturnReadsTheResultRegisters) {

@@ -28,6 +28,7 @@
 #include "tests/TestHarness.hpp"
 
 #include <limits>
+#include <unordered_set>
 
 using namespace il::core;
 
@@ -309,6 +310,44 @@ TEST(Reassociate, EquivalentTreesReceiveTheSameAssociation) {
     for (const auto &instr : mod.functions.front().blocks.front().instructions)
         addCount += instr.op == Opcode::Add;
     EXPECT_EQ(addCount, 2u);
+}
+
+TEST(Reassociate, LeafDefinedAfterInternalNodeIsNotHoistedIntoIt) {
+    // %200 has a higher temp id than %176 but is defined earlier, so ranking
+    // the leaves by id would hand %176 to %174, which runs before %176 exists.
+    Module mod;
+    Function fn;
+    fn.name = "test";
+    fn.retType = Type(Type::Kind::I64);
+    fn.params = {{"x", Type(Type::Kind::I64), 0}};
+    BasicBlock entry;
+    entry.label = "entry";
+    entry.instructions.push_back(makeBinary(Opcode::Mul, 200, Value::temp(0), Value::constInt(3)));
+    entry.instructions.push_back(
+        makeBinary(Opcode::Add, 174, Value::temp(200), Value::constInt(74)));
+    entry.instructions.push_back(makeBinary(Opcode::Mul, 176, Value::temp(0), Value::constInt(10)));
+    entry.instructions.push_back(makeBinary(Opcode::Add, 178, Value::temp(174), Value::temp(176)));
+    Instr ret;
+    ret.op = Opcode::Ret;
+    ret.operands = {Value::temp(178)};
+    entry.instructions.push_back(std::move(ret));
+    entry.terminated = true;
+    fn.blocks.push_back(std::move(entry));
+    mod.functions.push_back(std::move(fn));
+
+    il::transform::reassociate(mod);
+
+    const auto &block = mod.functions.front().blocks.front();
+    std::unordered_set<unsigned> defined;
+    for (const auto &instr : block.instructions) {
+        for (const auto &operand : instr.operands) {
+            if (operand.kind != Value::Kind::Temp || operand.id == 0)
+                continue;
+            EXPECT_TRUE(defined.count(operand.id) == 1);
+        }
+        if (instr.result)
+            defined.insert(*instr.result);
+    }
 }
 
 int main(int argc, char **argv) {

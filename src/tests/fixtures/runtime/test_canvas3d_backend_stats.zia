@@ -1,10 +1,20 @@
-// ============================================================================
-// MODULE: test_canvas3d_backend_stats
-// PURPOSE: Regress the Canvas3D Backend* telemetry surface (GAP-10). On GPU
-//          backends the counters must move (draw calls, cache hit+miss across
-//          two frames, a classified present path); on the software backend the
-//          hook is absent and every counter must stay at its documented zero.
-// ============================================================================
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_canvas3d_backend_stats.zia
+// Purpose: GPU telemetry and bounded static-geometry residency regression.
+// Key invariants: Software counters stay zero; unchanged GPU geometry remains
+//   resident through 512 identities, mutations invalidate only their own mesh,
+//   and a larger working set still exercises bounded eviction without dropped draws.
+// Ownership/Lifetime: The fixture owns its canvas, meshes and materials.
+// Links: src/runtime/graphics/3d/backend/vgfx3d_backend.h,
+//   docs/internals/graphics3d-architecture.md.
+//
+//===----------------------------------------------------------------------===//
 
 module test_canvas3d_backend_stats;
 
@@ -23,6 +33,43 @@ func drawFrame(canvas: Canvas3D, cam: Camera3D, mesh: Mesh3D, mat: Material3D) {
     canvas.DrawMesh(mesh, Mat4.Translate(0.0, 0.0, 0.0 - 3.0), mat);
     canvas.End();
     canvas.Flip();
+}
+
+func drawWorkingSet(canvas: Canvas3D, cam: Camera3D, meshes: List[Mesh3D], mat: Material3D) {
+    canvas.Poll();
+    canvas.Clear(0.1, 0.1, 0.12);
+    canvas.Begin(cam);
+    for i in 0..meshes.length() {
+        canvas.DrawMesh(meshes.get(i), Mat4.Translate((i % 32) * 0.1 - 1.55,
+                        (i / 32) * 0.1 - 0.95, -4.0), mat);
+    }
+    canvas.End();
+    canvas.Flip();
+}
+
+func residencyGate(canvas: Canvas3D, cam: Camera3D, mat: Material3D) -> Boolean {
+    var meshes: List[Mesh3D] = [];
+    for _ in 0..512 { meshes.add(Mesh3D.Box(0.07, 0.07, 0.02)); }
+    for _ in 0..3 { drawWorkingSet(canvas, cam, meshes, mat); }
+    var misses = canvas.BackendMeshCacheMisses;
+    var hits = canvas.BackendMeshCacheHits;
+    for _ in 0..3 { drawWorkingSet(canvas, cam, meshes, mat); }
+    if canvas.BackendMeshCacheMisses != misses or canvas.BackendMeshCacheHits - hits < 1536 {
+        fail("512 unchanged static meshes did not remain resident");return false;
+    }
+    Mesh3D.Transform(meshes.get(0), Mat4.Translate(0.001, 0.0, 0.0));
+    drawWorkingSet(canvas, cam, meshes, mat);
+    if canvas.BackendMeshCacheMisses - misses != 1 {
+        fail("a one-mesh mutation refreshed unrelated geometry");return false;
+    }
+    for _ in 0..128 { meshes.add(Mesh3D.Box(0.07, 0.07, 0.02)); }
+    for _ in 0..3 { drawWorkingSet(canvas, cam, meshes, mat); }
+    misses = canvas.BackendMeshCacheMisses;
+    drawWorkingSet(canvas, cam, meshes, mat);
+    if canvas.BackendMeshCacheMisses <= misses or canvas.BackendDroppedDraws != 0 {
+        fail("640-mesh working set did not exercise bounded eviction without drops");return false;
+    }
+    return true;
 }
 
 func start() {
@@ -62,5 +109,6 @@ func start() {
         fail("GPU backend dropped draws in a well-formed frame");
         return;
     }
+    if residencyGate(canvas, cam, mat) == false { return; }
     Say("PASS: backend stats (" + canvas.Backend + ")");
 }

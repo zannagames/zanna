@@ -528,6 +528,15 @@ VSCN saves the current vertex layout as `vgfx3d_vertex_le_v2` and serializes mat
 
 All three GPU backends now share the same material contract: the legacy Blinn-Phong path remains for compatibility, and `Material3D.NewPBR` uses the same direct-light metallic/roughness PBR path across Metal, D3D11, and OpenGL.
 
+All three GPU backends retain at most 512 static geometry entries, using the
+shared `VGFX3D_STATIC_MESH_CACHE_CAPACITY` limit and bounded LRU eviction. The
+larger working set accommodates authored venues with separate main/shadow detail
+meshes; the former 256-entry limit could repeatedly upload unchanged stadium
+geometry. This is an entry-count bound, not a byte budget. Identity/revision
+checks still refresh mutated meshes and reject reused handles. The native backend
+stats fixture checks 512-entry residency, single-mesh invalidation and eviction
+for a 640-entry working set.
+
 Metal, D3D11, and OpenGL now all use small shared helper layers to keep target selection, frame-history updates, cache growth, and upload/readback policy consistent with the portable tests. Metal also now caches morph payloads by `morph_key` / `morph_revision`, applies morph normal deltas in the MSL vertex path, and keeps mipmapped texture/cubemap caches pruned by frame age.
 
 For D3D11 specifically, the CPU and HLSL sides also share explicit packed `float4` layouts for morph weights, material custom parameters, and per-slot material UV transforms.

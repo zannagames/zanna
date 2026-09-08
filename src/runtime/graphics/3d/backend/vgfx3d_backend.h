@@ -585,7 +585,9 @@ typedef struct vgfx3d_camera_params {
 } vgfx3d_camera_params_t;
 
 /// Maximum resident static geometry entries on each GPU backend (not a byte budget).
-#define VGFX3D_STATIC_MESH_CACHE_CAPACITY 256
+/// Authored stadiums exceed 256 identities once shadow and main-view detail bands
+/// are included. Retain that working set while keeping LRU eviction bounded.
+#define VGFX3D_STATIC_MESH_CACHE_CAPACITY 512
 
 /*==========================================================================
  * Lighting parameters — set before begin_frame

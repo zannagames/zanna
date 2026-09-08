@@ -25,6 +25,8 @@
 
 #include "il/runtime/RuntimeNameMap.hpp"
 
+#include <cstddef>
+#include <optional>
 #include <string_view>
 
 /// @file
@@ -50,6 +52,37 @@ namespace zanna::codegen::common {
     if (auto mapped = il::runtime::mapCanonicalRuntimeName(callee))
         return isNoReturnRuntimeSymbol(*mapped);
     return isNoReturnRuntimeSymbol(callee);
+}
+
+/// @brief Number of integer-class arguments a no-return helper reads.
+/// @details Every helper in the set takes only integer or pointer
+///          parameters, so this is exactly the count of argument registers a
+///          call reads. The counts mirror the C prototypes in
+///          src/runtime/core/rt_trap.h, src/runtime/core/rt_error.h, and
+///          src/runtime/arrays/rt_array.h.
+/// @param symbol Canonical runtime symbol spelling (see isNoReturnRuntimeSymbol).
+/// @return The arity, or `std::nullopt` when @p symbol is not a no-return helper.
+[[nodiscard]] inline std::optional<std::size_t> noReturnRuntimeSymbolIntArgCount(
+    std::string_view symbol) noexcept {
+    if (symbol == "rt_trap_ovf" || symbol == "rt_trap_div0" || symbol == "rt_trap_null")
+        return 0;
+    if (symbol == "rt_trap_raise_error" || symbol == "rt_trap_string" || symbol == "rt_trap")
+        return 1;
+    if (symbol == "rt_arr_oob_panic")
+        return 2;
+    return std::nullopt;
+}
+
+/// @brief Integer-argument arity of a direct call target, when it is a
+///        no-return helper.
+/// @param callee Callee spelling as written on the call; aliases are
+///        canonicalized first.
+/// @return See noReturnRuntimeSymbolIntArgCount().
+[[nodiscard]] inline std::optional<std::size_t> noReturnRuntimeCalleeIntArgCount(
+    std::string_view callee) {
+    if (auto mapped = il::runtime::mapCanonicalRuntimeName(callee))
+        return noReturnRuntimeSymbolIntArgCount(*mapped);
+    return noReturnRuntimeSymbolIntArgCount(callee);
 }
 
 } // namespace zanna::codegen::common

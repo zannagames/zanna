@@ -360,10 +360,23 @@ InstrEffects effectsOf(const MInstr &instr, const TargetInfo &target) {
             fx.isCall = true;
             fx.isNoReturn = isNoReturnCall(instr);
             fx.mem = InstrEffects::Mem::Barrier;
-            for (PhysReg reg : target.intArgOrder)
-                fx.uses.add(reg);
-            for (PhysReg reg : target.f64ArgOrder)
-                fx.uses.add(reg);
+            // A `Bl` carries no arity, so a call reads every argument
+            // register unless the callee is a no-return helper whose fixed
+            // prototype is known: those take only integer arguments, and a
+            // trap block reached from a hot loop must not pin the loop's
+            // scratch registers as live.
+            const std::optional<std::size_t> knownIntArgs =
+                fx.isNoReturn ? common::noReturnRuntimeCalleeIntArgCount(instr.ops[0].label)
+                              : std::nullopt;
+            if (knownIntArgs.has_value()) {
+                for (std::size_t i = 0; i < *knownIntArgs && i < target.intArgOrder.size(); ++i)
+                    fx.uses.add(target.intArgOrder[i]);
+            } else {
+                for (PhysReg reg : target.intArgOrder)
+                    fx.uses.add(reg);
+                for (PhysReg reg : target.f64ArgOrder)
+                    fx.uses.add(reg);
+            }
             fx.uses.add(PhysReg::SP);
             fx.defs |= callClobberSet(target);
             break;
