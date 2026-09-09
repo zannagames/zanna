@@ -65,36 +65,6 @@ namespace {
            opc == MOpcode::JumpTable;
 }
 
-/// @brief Return true if @p opc is a memory access through an arbitrary base register.
-/// @details FP-relative dead-store optimizations cannot prove that a base-relative
-///          access does not alias an address-taken local or spill slot, so these
-///          opcodes act as barriers for frame-slot store facts.
-/// @param opc Opcode to classify.
-/// @return `true` for recognized loads and stores through an arbitrary base GPR.
-[[nodiscard]] bool isBaseRelativeMemory(MOpcode opc) noexcept {
-    switch (opc) {
-        case MOpcode::LdrRegBaseImm:
-        case MOpcode::Ldr8RegBaseImm:
-        case MOpcode::Ldr16RegBaseImm:
-        case MOpcode::Ldr32RegBaseImm:
-        case MOpcode::LdrFprBaseImm:
-        case MOpcode::StrRegBaseImm:
-        case MOpcode::Str8RegBaseImm:
-        case MOpcode::Str16RegBaseImm:
-        case MOpcode::Str32RegBaseImm:
-        case MOpcode::StrFprBaseImm:
-        case MOpcode::LdrRegBaseRegLsl:
-        case MOpcode::Ldr32RegBaseRegLsl:
-        case MOpcode::LdrFprBaseRegLsl:
-        case MOpcode::StrRegBaseRegLsl:
-        case MOpcode::Str32RegBaseRegLsl:
-        case MOpcode::StrFprBaseRegLsl:
-            return true;
-        default:
-            return false;
-    }
-}
-
 /// @brief Add @p rhs to @p lhs while rejecting signed overflow.
 /// @param lhs Base FP-relative byte offset.
 /// @param rhs Positive access width or adjacent-slot delta.
@@ -209,6 +179,18 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats) {
             auto [isUse, isDef] = classifyOperand(instr, i);
             if (isDef) {
                 uint32_t key = regKey(op);
+                invalidateDependents(key);
+                copyOrigin.erase(key);
+            }
+        }
+
+        // A wide immediate or large frame offset expands through the reserved
+        // scratch registers at emit time, after this pass has run: a copy
+        // recorded in or from X9/X16/X17 is stale past such an instruction
+        // (calls already cleared the map at the control boundary above).
+        if (emitTimeScratchClobber(instr) || instr.opc == MOpcode::JumpTable) {
+            for (PhysReg scratch : {kScratchGPR, kScratchGPR2, kScratchGPR3}) {
+                const uint32_t key = regKey(MOperand::regOp(scratch));
                 invalidateDependents(key);
                 copyOrigin.erase(key);
             }
@@ -532,7 +514,10 @@ std::size_t eliminateDeadFpStores(std::vector<MInstr> &instrs, PeepholeStats &st
             continue;
         }
 
-        if (isControlBoundary(instr.opc) || isBaseRelativeMemory(instr.opc)) {
+        // A narrower access reads or writes part of a slot; a base-relative
+        // access may alias any slot. Both end every pending store fact.
+        if (isControlBoundary(instr.opc) || isBaseRelativeMemory(instr.opc) ||
+            isSubWordFrameAccess(instr.opc)) {
             lastStore.clear();
             continue;
         }

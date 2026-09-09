@@ -34,6 +34,7 @@
 #include "codegen/common/ra/DataflowLiveness.hpp"
 
 #include <algorithm>
+#include <utility>
 
 /// @file
 /// @brief Implements AArch64 CFG extraction and backward virtual-register liveness.
@@ -116,26 +117,40 @@ void LivenessAnalysis::computeLiveOutSets(const MFunction &func) {
     std::vector<std::unordered_set<uint16_t>> genGPR(N), killGPR(N);
     std::vector<std::unordered_set<uint16_t>> genFPR(N), killFPR(N);
 
+    // An instruction reads all of its operands before it writes any of them,
+    // so its uses are upward-exposed unless an EARLIER instruction in the
+    // block defined the value. Collect the whole instruction first: walking
+    // the operands in order would let a destination that precedes a source
+    // of the same register (`ParallelCopy %v, %v` on a back edge that
+    // carries an unchanged loop parameter, `add %v, %v, #1` on a live-in
+    // value) kill the register before its own read is seen and drop the
+    // value from the block's live-in set.
+    std::vector<std::pair<uint16_t, bool>> uses; // (vreg, isFPR)
+    std::vector<std::pair<uint16_t, bool>> defs;
     for (std::size_t i = 0; i < N; ++i) {
         for (const auto &mi : func.blocks[i].instrs) {
+            uses.clear();
+            defs.clear();
             for (std::size_t k = 0; k < mi.ops.size(); ++k) {
                 const auto &op = mi.ops[k];
                 if (op.kind != MOperand::Kind::Reg || op.reg.isPhys)
                     continue;
-
                 const uint16_t vid = op.reg.idOrPhys;
                 const bool fprClass = (op.reg.cls == RegClass::FPR);
-                auto &genSet = fprClass ? genFPR[i] : genGPR[i];
-                auto &killSet = fprClass ? killFPR[i] : killGPR[i];
-
-                auto [isUse, isDef] = operandRoles(mi, k);
-
-                if (isUse && killSet.find(vid) == killSet.end())
-                    genSet.insert(vid);
-
+                const auto [isUse, isDef] = operandRoles(mi, k);
+                if (isUse)
+                    uses.emplace_back(vid, fprClass);
                 if (isDef)
-                    killSet.insert(vid);
+                    defs.emplace_back(vid, fprClass);
             }
+            for (const auto &[vid, fprClass] : uses) {
+                auto &genSet = fprClass ? genFPR[i] : genGPR[i];
+                const auto &killSet = fprClass ? killFPR[i] : killGPR[i];
+                if (killSet.find(vid) == killSet.end())
+                    genSet.insert(vid);
+            }
+            for (const auto &[vid, fprClass] : defs)
+                (fprClass ? killFPR[i] : killGPR[i]).insert(vid);
         }
     }
 

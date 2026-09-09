@@ -1,0 +1,77 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/e2e/loop_flag_not_hoisted.zia
+// Purpose: VM/native regression for loop-carried flags: booleans set before a
+//          loop and replaced by a constant on some iterations only. The
+//          AArch64 post-allocation constant hoist once moved the in-loop
+//          constant into the preheader and erased the initial value (Legacy
+//          Baseball then loaded the bases on every pitch and rendered its
+//          left-handed starter right-handed).
+// Key invariants: A flag the loop never touches on the taken path keeps the
+//                 value it had before the loop.
+// Ownership/Lifetime: Fixture owns a small list of event objects; no display.
+// Links: src/codegen/aarch64/peephole/LoopOpt.cpp,
+//        src/tests/unit/codegen/test_codegen_arm64_peephole_subpasses.cpp
+//
+//===----------------------------------------------------------------------===//
+module loop_flag_not_hoisted;
+bind Zanna.Terminal as T;
+bind Zanna.System.Environment as E;
+
+class Ev {
+    expose var kind: Integer = 0;
+    expose var inZone: Boolean = false;
+    expose var plateX: Integer = 0;
+    expose var plateZ: Integer = 0;
+    expose var side: String = "L";
+}
+
+func check(events: List[Ev]) -> Boolean {
+    var everyOutside = true;
+    var handed = true;
+    var found = false;
+    var releases = 0;
+    var results = 0;
+    for i in 0..events.length() {
+        var ev = events.get(i);
+        if ev.kind == 1 || ev.kind == 2 {
+            if ev.inZone ||
+               (ev.plateX >= -7 && ev.plateX <= 7 &&
+                ev.plateZ >= 15 && ev.plateZ <= 35) {
+                everyOutside = false;
+            }
+            if ev.kind == 1 {
+                releases = releases + 1;
+                if ev.side != "L" || ev.plateX >= -7 {
+                    handed = false;
+                }
+            }
+        }
+        if ev.kind == 2 { results = results + 1; }
+        if ev.kind == 9 { found = true; }
+    }
+    T.Say("outside=" + (everyOutside ? "true" : "false") +
+          " handed=" + (handed ? "true" : "false") +
+          " found=" + (found ? "true" : "false") +
+          " rel=" + releases + " res=" + results);
+    return everyOutside && handed && !found && releases == 4 && results == 4;
+}
+
+func main() {
+    var evs: List[Ev] = [];
+    for k in 0..4 {
+        var r = new Ev(); r.kind = 1; r.plateX = -12 - k; r.plateZ = 20; evs.add(r);
+        var s = new Ev(); s.kind = 2; s.plateX = -12; s.plateZ = 20; evs.add(s);
+        var w = new Ev(); w.kind = 3; w.plateX = 0; w.plateZ = 20; w.inZone = true; evs.add(w);
+    }
+    if check(evs) == false {
+        T.Say("RESULT: fail (loop-carried flag)");
+        E.Exit(1);
+    }
+    T.Say("RESULT: ok");
+}

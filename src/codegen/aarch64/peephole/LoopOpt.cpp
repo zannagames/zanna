@@ -11,7 +11,10 @@
 // Key invariants:
 //   - Only hoists MovRI to callee-saved registers (x19-x28).
 //   - The register must be defined only by MovRI with the same immediate value
-//     throughout the loop body.
+//     throughout the loop body, and must not be live into the loop header:
+//     a loop-carried value (`found = false; loop { if c { found = true } }`)
+//     is not a loop-invariant constant even though its only in-loop
+//     definition is one immediate.
 //   - Edges, dominators, and natural loops come from the shared MirCfg; the
 //     pass keeps no private CFG builder.
 //
@@ -27,6 +30,7 @@
 #include "PeepholeCommon.hpp"
 #include "codegen/aarch64/InstrEffects.hpp"
 #include "codegen/aarch64/MirCfg.hpp"
+#include "codegen/aarch64/PhysLiveness.hpp"
 
 #include <algorithm>
 #include <unordered_map>
@@ -67,7 +71,7 @@ namespace {
 } // namespace
 
 /// @copydoc hoistLoopConstants
-std::size_t hoistLoopConstants(MFunction &fn) {
+std::size_t hoistLoopConstants(MFunction &fn, const TargetInfo *target) {
     if (fn.blocks.size() < 3)
         return 0;
 
@@ -131,6 +135,16 @@ std::size_t hoistLoopConstants(MFunction &fn) {
 
     if (loops.empty())
         return 0;
+
+    // A register live into a header holds a value from outside the loop (or
+    // from the previous iteration) that the in-loop MovRI overwrites only on
+    // the paths that execute it. Hoisting that MovRI into the preheader would
+    // clobber the incoming value before the loop starts. The solve happens
+    // once per function; the rewrites below only insert immediates into
+    // preheaders and erase in-loop copies of them, which never adds an
+    // upward-exposed read to a header.
+    const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
+    const PhysLiveness liveness = computePhysLiveness(fn, effectiveTarget);
 
     std::unordered_map<uint32_t, int64_t> globallyHoisted;
 
@@ -290,6 +304,10 @@ std::size_t hoistLoopConstants(MFunction &fn) {
             // that block (e.g., mutually exclusive if/else branches where only
             // one side has the MovRI). Refuse to hoist in this case.
             if (info.useWithoutDefBlocks > 0)
+                continue;
+            // A loop-carried value is not a loop-invariant constant.
+            if (loop.header < liveness.liveIn.size() &&
+                liveness.liveIn[loop.header].contains(static_cast<PhysReg>(phys)))
                 continue;
 
             auto git = globallyHoisted.find(phys);

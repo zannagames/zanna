@@ -581,6 +581,53 @@ TEST(SCCP, EntryBlockParamsAreOverdefinedInputs) {
     EXPECT_NE(findBlock(function, "done"), nullptr);
 }
 
+TEST(SCCP, ZeroOperandTrapKindIsOverdefinedAndKeepsTheLoopAlive) {
+    // After native EH lowering a handler reads `trap.kind` with no operand.
+    // The read has no inputs to raise it, so it must be overdefined outright;
+    // otherwise the loop condition fed by it never resolves, the back edge
+    // never becomes executable, and the counter folds to its initial value
+    // (the -O1/-O2 native build of the IL kernel differential spun forever).
+    const std::string text = "il 0.3.0\n"
+                             "func @main() -> i64 {\n"
+                             "entry:\n"
+                             "  br loop(0)\n"
+                             "loop(%i:i64):\n"
+                             "  %k = trap.kind\n"
+                             "  %m = and %k, 1\n"
+                             "  %j = iadd.ovf %i, %m\n"
+                             "  %done = scmp_ge %j, 4\n"
+                             "  cbr %done, exit(%j), loop(%j)\n"
+                             "exit(%r:i64):\n"
+                             "  ret %r\n"
+                             "}\n";
+    std::istringstream input(text);
+    Module module;
+    ASSERT_TRUE(il::io::Parser::parse(input, module));
+    ASSERT_TRUE(il::verify::Verifier::verify(module));
+    il::transform::sccp(module);
+    ASSERT_TRUE(il::verify::Verifier::verify(module));
+    auto &function = module.functions.front();
+    auto *loop = findBlock(function, "loop");
+    ASSERT_NE(loop, nullptr);
+    ASSERT_EQ(loop->instructions.back().op, Opcode::CBr);
+    EXPECT_EQ(loop->instructions.back().operands[0].kind, Value::Kind::Temp);
+    // The loop-carried argument stays the computed temp, not the constant 0.
+    EXPECT_EQ(loop->instructions.back().brArgs[1][0].kind, Value::Kind::Temp);
+    // The counter's own use is the damage a bottom `trap.kind` did: with the
+    // back edge never activated, %i folded to its initial 0 here.
+    const Instr *add = nullptr;
+    for (const auto &instr : loop->instructions) {
+        if (instr.op == Opcode::IAddOvf)
+            add = &instr;
+    }
+    ASSERT_NE(add, nullptr);
+    ASSERT_EQ(add->operands.size(), 2u);
+    EXPECT_EQ(add->operands[0].kind, Value::Kind::Temp);
+    auto *exit = findBlock(function, "exit");
+    ASSERT_NE(exit, nullptr);
+    EXPECT_EQ(exit->instructions.back().operands[0].kind, Value::Kind::Temp);
+}
+
 int main(int argc, char **argv) {
     zanna_test::init(&argc, argv);
     return zanna_test::run_all_tests();

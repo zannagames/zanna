@@ -139,12 +139,46 @@ using zanna::codegen::common::removeMarkedInstructions;
 ///         @p reg. Implicit call clobbers are not modeled here.
 [[nodiscard]] bool definesReg(const MInstr &instr, const MOperand &reg) noexcept;
 
+/// @brief Test whether an instruction writes a physical register implicitly:
+///        through the reserved emit-time scratch registers (a wide immediate
+///        or large frame offset expands through X9/X16/X17 after the peephole
+///        runs; a jump table uses X16/X17) or through a call's clobber set.
+/// @param instr Instruction inspected.
+/// @param reg Physical register to query.
+/// @return `true` when @p reg may be overwritten by @p instr without appearing
+///         among its explicit destination operands.
+/// @note Any register-tracking rewrite that survives across @p instr must
+///       treat this as a definition, exactly like definesReg(); the store/load
+///       forwarder once kept a value in X9 across a wide-offset frame store
+///       whose expansion clobbered it.
+[[nodiscard]] bool clobbersImplicitly(const MInstr &instr, const MOperand &reg) noexcept;
+
 /// @brief Test whether an instruction explicitly reads a physical register.
 /// @param instr Instruction whose explicit source operands are inspected.
 /// @param reg Physical register to query.
 /// @return `true` when a recognized source operand of @p instr matches @p reg.
 /// @note Implicit ABI operands of calls and returns are not modeled.
 [[nodiscard]] bool usesReg(const MInstr &instr, const MOperand &reg) noexcept;
+
+/// @brief Test whether an opcode accesses memory through an arbitrary base
+///        register (immediate or scaled-index form, any width).
+/// @details The frame-slot rewrites (store/load forwarding, dead frame-store
+///          elimination) cannot prove such an access does not alias an
+///          address-taken local or spill slot, so it is a barrier for every
+///          frame-slot fact. One definition serves both passes; the two
+///          private copies it replaces had drifted apart (one lacked the
+///          scaled-index forms).
+/// @param opc Opcode to classify.
+/// @return `true` for every recognized base-relative load or store.
+[[nodiscard]] bool isBaseRelativeMemory(MOpcode opc) noexcept;
+
+/// @brief Test whether an opcode is a sub-word (1/2/4-byte) frame-slot access.
+/// @details Frame-slot facts are keyed by 8-byte slot; a narrower access to a
+///          slot reads or writes part of it, so the passes above treat it as
+///          touching the whole slot rather than modelling partial overlap.
+/// @param opc Opcode to classify.
+/// @return `true` for `Ldr8/16/32RegFpImm` and `Str8/16/32RegFpImm`.
+[[nodiscard]] bool isSubWordFrameAccess(MOpcode opc) noexcept;
 
 /// @brief Classify one opcode operand position as an explicit use and/or definition.
 /// @param instr Instruction supplying the opcode-specific operand convention.

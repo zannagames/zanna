@@ -71,6 +71,60 @@ bool definesReg(const MInstr &instr, const MOperand &reg) noexcept {
     return false;
 }
 
+/// @copydoc isBaseRelativeMemory
+bool isBaseRelativeMemory(MOpcode opc) noexcept {
+    switch (opc) {
+        case MOpcode::LdrRegBaseImm:
+        case MOpcode::Ldr8RegBaseImm:
+        case MOpcode::Ldr16RegBaseImm:
+        case MOpcode::Ldr32RegBaseImm:
+        case MOpcode::LdrFprBaseImm:
+        case MOpcode::StrRegBaseImm:
+        case MOpcode::Str8RegBaseImm:
+        case MOpcode::Str16RegBaseImm:
+        case MOpcode::Str32RegBaseImm:
+        case MOpcode::StrFprBaseImm:
+        case MOpcode::LdrRegBaseRegLsl:
+        case MOpcode::Ldr32RegBaseRegLsl:
+        case MOpcode::LdrFprBaseRegLsl:
+        case MOpcode::StrRegBaseRegLsl:
+        case MOpcode::Str32RegBaseRegLsl:
+        case MOpcode::StrFprBaseRegLsl:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @copydoc isSubWordFrameAccess
+bool isSubWordFrameAccess(MOpcode opc) noexcept {
+    switch (opc) {
+        case MOpcode::Ldr8RegFpImm:
+        case MOpcode::Ldr16RegFpImm:
+        case MOpcode::Ldr32RegFpImm:
+        case MOpcode::Str8RegFpImm:
+        case MOpcode::Str16RegFpImm:
+        case MOpcode::Str32RegFpImm:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @copydoc clobbersImplicitly
+bool clobbersImplicitly(const MInstr &instr, const MOperand &reg) noexcept {
+    if (!isPhysReg(reg) || reg.reg.cls != RegClass::GPR)
+        return false;
+    const auto phys = static_cast<PhysReg>(reg.reg.idOrPhys);
+    if (instr.opc == MOpcode::Bl || instr.opc == MOpcode::Blr)
+        return phys <= PhysReg::X17 || phys == PhysReg::X30;
+    if (instr.opc == MOpcode::JumpTable)
+        return phys == kScratchGPR2 || phys == kScratchGPR3;
+    if (emitTimeScratchClobber(instr))
+        return phys == kScratchGPR || phys == kScratchGPR2 || phys == kScratchGPR3;
+    return false;
+}
+
 /// @copydoc usesReg
 bool usesReg(const MInstr &instr, const MOperand &reg) noexcept {
     if (!isPhysReg(reg))

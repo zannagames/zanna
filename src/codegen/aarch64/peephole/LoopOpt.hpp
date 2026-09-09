@@ -23,6 +23,7 @@
 #pragma once
 
 #include "../MachineIR.hpp"
+#include "../TargetAArch64.hpp"
 
 #include <cstddef>
 
@@ -39,8 +40,15 @@ namespace zanna::codegen::aarch64::peephole {
 /// appropriate definition, and the layout predecessor must be a valid
 /// preheader. Successful hoists update allocator live-through metadata.
 ///
+/// A register that is live into the loop header carries a value from the
+/// preheader (or around the back edge) that the in-loop constant replaces
+/// only on some paths; such registers are never hoisted. Liveness comes from
+/// `computePhysLiveness` under @p target (the Darwin AAPCS64 singleton when
+/// @p target is null, matching the per-block stage).
+///
 /// @param[in,out] fn Post-allocation function whose constants may be relocated.
+/// @param target ABI model for the physical-liveness solve; may be null.
 /// @return Number of distinct register constants hoisted.
-std::size_t hoistLoopConstants(MFunction &fn);
+std::size_t hoistLoopConstants(MFunction &fn, const TargetInfo *target = nullptr);
 
 } // namespace zanna::codegen::aarch64::peephole

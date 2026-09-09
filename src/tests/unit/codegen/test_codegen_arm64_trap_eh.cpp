@@ -207,7 +207,11 @@ TEST(Arm64CLI, TrapFromErrAcceptsNonEntryBlockParam) {
     ASSERT_EQ(cmd_codegen_arm64(4, const_cast<char **>(argv)), 0);
     const std::string asmText = readFile(out);
     EXPECT_TRUE(hasExactCall(asmText, "rt_trap_raise_error"));
-    const std::string preCall = sliceBeforeCall(asmText, "Lfail", "rt_trap_raise_error");
+    // The function-wide allocator (ADR 0339) hints the block parameter into
+    // x0, so the edge copy `mov x0, x1` lands in the entry block and `Lfail`
+    // holds only the call: the argument must be prepared somewhere on the
+    // path from entry to the call, not necessarily inside `Lfail`.
+    const std::string preCall = sliceBeforeCall(asmText, "Lentry", "rt_trap_raise_error");
     EXPECT_TRUE(preparesX0(preCall));
 }
 

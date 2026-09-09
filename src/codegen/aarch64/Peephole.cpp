@@ -108,6 +108,13 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
     // One liveness solve for the stage: the rewrites below never add an
     // upward-exposed read to a block, so a block's exit-live set computed
     // here stays a superset of the truth while earlier blocks are rewritten.
+    // Why that holds: copy propagation only substitutes an origin register
+    // that the block already read at the copy itself (and forgets origins
+    // across every explicit or implicit redefinition), compute-into-target
+    // folding keeps the folded instruction's sources, the forwarders replace
+    // a reload with a read of a register the block already stored, and the
+    // remaining rewrites only delete instructions or narrow immediates. None
+    // of them introduces a read of a register the block did not read before.
     const PhysLiveness liveness = computePhysLiveness(fn, effectiveTarget);
 
     for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
@@ -316,10 +323,11 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
         stats.blocksReordered = static_cast<int>(ph::reorderBlocks(fn));
 
     // Pass 0.5: Hoist loop-invariant MovRI out of loop bodies.
-    // LoopOpt now rejects merge-like headers, non-preheader entries, and uses
-    // that can observe the value before a dominating definition inside the loop.
+    // LoopOpt rejects merge-like headers, non-preheader entries, uses that can
+    // observe the value before a dominating definition inside the loop, and
+    // registers live into the header (loop-carried values).
     if (!peepholeStageDisabled("LOOPHOIST"))
-        stats.loopConstsHoisted = static_cast<int>(ph::hoistLoopConstants(fn));
+        stats.loopConstsHoisted = static_cast<int>(ph::hoistLoopConstants(fn, target));
 
     // Passes 0.9 through 4.6: local per-block rewrites (division strength reduction,
     // constant-aware rewrites, fusions, identity removal, local DCE/flag DCE).

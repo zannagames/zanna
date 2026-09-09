@@ -151,8 +151,11 @@ TEST(Arm64FP, SitofpConversion) {
     const std::string asmText = readFile(out);
     // Expect scvtf dN, xM
     EXPECT_NE(asmText.find("scvtf d"), std::string::npos);
-    // Return value should go through v0
-    EXPECT_NE(asmText.find("fmov d0"), std::string::npos);
+    // Return value goes through v0: converted straight into d0 (the result
+    // is hinted into the return register, ADR 0339) or moved there.
+    const bool returnsInD0 = asmText.find("scvtf d0") != std::string::npos ||
+                             asmText.find("fmov d0") != std::string::npos;
+    EXPECT_TRUE(returnsInD0);
 }
 
 // Test 6: FP to integer conversion (fptosi)

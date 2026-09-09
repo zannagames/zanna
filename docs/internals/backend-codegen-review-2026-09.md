@@ -13,6 +13,66 @@ at every step.
 
 ## Status
 
+### 2026-09-08 — three -O1 miscompiles behind the Legacy Baseball symptoms
+
+The native game loaded the bases on every pitch and rendered its left-handed starter
+right-handed while the whole VM probe sweep stayed green. All three were compiler defects,
+each reproduced headlessly (`probes/watch3d_lefty_probe.zia`, `probes/walk_staging_probe.zia`,
+`probes/hardening_sim_probe.zia`, `probes/watch3d_release_lead_probe.zia` diverge VM vs native
+`-O1`) and each fixed with a test that fails before the fix:
+
+- **AArch64 liveness killed a self copy before its read** (`ra/Liveness.cpp`). Gen/kill walked
+  operands in order, so `ParallelCopy %v, %v` on a back edge carrying an unchanged loop parameter
+  killed the register before its own use; the body lost the value from live-out and the allocator
+  reused its callee-saved register (`type_book.ensure` trapped on a pointer-valued list index).
+  Uses are now collected before defs per instruction, as the x86-64 twin does.
+  Tests: `test_aarch64_live_intervals` `SelfCopyOnTheBackEdgeKeepsTheParameterLiveThroughTheBody`,
+  e2e `loop_param_self_copy.zia` (VM + native O0/O1/O2).
+- **SCCP left a zero-operand `trap.kind` at bottom** (`il/transform/SCCP.cpp`). Native EH lowering
+  emits `trap.kind` with no operand; nothing could ever raise it, the compare it fed never
+  resolved, the back edge never became executable and the loop counter folded to 0 (the IL
+  kernel differential spun forever at `-O1`). Zero-operand unfoldable results are overdefined;
+  `TrapKind`/`ErrGetMsg` join the always-overdefined list.
+  Test: `test_il_sccp_phi_branch` `ZeroOperandTrapKindIsOverdefinedAndKeepsTheLoopAlive`.
+- **Post-RA loop hoisting clobbered loop-carried flags** (`peephole/LoopOpt.cpp`). A `MovRI` to a
+  callee-saved register inside a loop was hoisted into the preheader when the register had no
+  other in-loop definition and no in-loop read, without asking whether the register was live
+  into the header. Under the function-wide allocator the idiom
+  `found = false; for … { if … { found = true } }` lands in exactly that shape, so every such
+  flag became its in-loop constant before the loop ran (the stage's `freeBase` flag awarded a
+  base every pitch; `leftHandedDefense`'s `found` flag looked the home pitcher up on the away
+  roster). The hoist now refuses any register in `PhysLiveness::liveIn[header]`.
+  Tests: `test_codegen_arm64_peephole_subpasses` `LoopConstHoistLeavesLoopCarriedFlagAlone` /
+  `LoopConstHoistStillHoistsATrueInvariant`, e2e `loop_flag_not_hoisted.zia`, and the RA oracle
+  below (seeds 396 and 991 fail without the guard).
+
+Closing the class rather than the instances:
+
+- **The RA oracle now runs the peephole stage** (`test_regalloc_aarch64_oracle.cpp`): every seed
+  is re-interpreted after `runPeephole` (verified with the PostRA rule set, as the pipeline does
+  before ExpandPseudos); `ZANNA_RA_ORACLE_DUMP=<seed>` prints both forms. Its first run found
+  the next hazard: **`forwardStoreLoads` kept a value in X9 across a wide-offset frame store whose
+  emit-time expansion clobbers X9** (review item A4's residue). `PeepholeCommon::clobbersImplicitly`
+  now models the reserved-scratch and call clobbers for the forwarder and for `propagateCopies`
+  (`StoreLoadForwardingStopsAtScratchClobberingAccess`,
+  `CopyPropagationForgetsScratchAfterWideAccess`).
+- **B2 closed**: `isBaseRelativeMemory` has one definition in `PeepholeCommon` (with the scaled-index
+  forms both private copies disagreed on); `fpStoreRange` knows the 1/2/4-byte frame stores and
+  `eliminateDeadFpStores` treats any sub-word frame access as a barrier
+  (`StoreLoadForwardingStopsAtSubWordStoreIntoTheSlot`, `DeadFrameStoreSurvivesASubWordLoadOfTheSlot`).
+- The IL kernel differential gained a `CarriedFlag` shape (a recursive leaf keeps the call from
+  inlining), and six real language fixtures now run natively at O1/O2 against their VM result
+  (`native_run_zia_<fixture>_O1/O2`, label `differential`).
+- The five AArch64 asm-text tests left red by the allocator landing were expectation drift (values
+  hinted straight into x0/d0, block parameters in registers); they now assert the transport
+  semantics instead of one instruction in one block.
+- The game repo gained `scripts/run_probes_native.sh`, a VM-versus-native parity lane over the
+  sim/stage probes, opt-in from `build_baseball.sh` via `ZANNA_BASEBALL_PARITY=1`.
+
+Still open from this pass: item 16 (AArch64 call-site argument masks) is now the main quality
+gap — `effectsOf(Bl)` reads every argument register, so call-heavy loops spill needlessly and
+feed the frame-slot forwarders above.
+
 Phase 1 items **A1**, **A2**, **A3**, and the interim form of **A4** are implemented (each with a
 regression test that fails before the fix):
 

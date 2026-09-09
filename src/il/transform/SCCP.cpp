@@ -1473,7 +1473,13 @@ class SCCPSolver {
             return;
         }
 
-        if (isAlwaysOverdefined(instr.op) || anyOverdefined || allConstants)
+        // An instruction with no operands that did not fold to a constant has
+        // no input that could ever raise it later; leaving it at the bottom
+        // of the lattice would make every branch fed by it look unreachable
+        // (a zero-operand `trap.kind` after native EH lowering pinned a loop
+        // counter to its initial value this way).
+        const bool noInputs = instr.operands.empty();
+        if (isAlwaysOverdefined(instr.op) || anyOverdefined || allConstants || noInputs)
             markOverdefined(*instr.result);
     }
 
@@ -1508,6 +1514,8 @@ class SCCPSolver {
             case Opcode::ErrGetCode:
             case Opcode::ErrGetIp:
             case Opcode::ErrGetLine:
+            case Opcode::ErrGetMsg:
+            case Opcode::TrapKind:
             // Runtime checks
             case Opcode::IdxChk:
                 return true;

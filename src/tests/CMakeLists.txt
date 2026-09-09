@@ -1163,6 +1163,67 @@ foreach (opt_level IN ITEMS O0 O1 O2)
             LABELS "zia;native_run;optimization" TIMEOUT 60)
 endforeach ()
 
+# Register-allocation regression: a parameter read after a loop that never
+# modifies it must survive the loop body on every backend and level.
+set(LOOP_PARAM_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/e2e/loop_param_self_copy.zia")
+add_test(NAME zia_loop_param_self_copy_vm
+        COMMAND $<TARGET_FILE:zanna> run "${LOOP_PARAM_FIXTURE}")
+set_tests_properties(zia_loop_param_self_copy_vm PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok" LABELS "zia;codegen" TIMEOUT 30)
+foreach (opt_level IN ITEMS O0 O1 O2)
+    add_test(NAME native_run_loop_param_self_copy_${opt_level}
+            COMMAND ${CMAKE_COMMAND}
+            -DZANNA_EXE=$<TARGET_FILE:zanna>
+            -DTEST_FILE=${LOOP_PARAM_FIXTURE}
+            -DOUT_EXE=${CMAKE_BINARY_DIR}/loop_param_self_copy_${opt_level}${CMAKE_EXECUTABLE_SUFFIX}
+            -DOPT_FLAG=-${opt_level}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_native_run.cmake
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(native_run_loop_param_self_copy_${opt_level} PROPERTIES
+            LABELS "zia;native_run;codegen" TIMEOUT 60)
+endforeach ()
+
+# Post-RA peephole regression: a flag initialised before a loop and replaced
+# by a constant on some trips must keep its initial value (loop hoisting).
+set(LOOP_FLAG_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/e2e/loop_flag_not_hoisted.zia")
+add_test(NAME zia_loop_flag_not_hoisted_vm
+        COMMAND $<TARGET_FILE:zanna> run "${LOOP_FLAG_FIXTURE}")
+set_tests_properties(zia_loop_flag_not_hoisted_vm PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok" LABELS "zia;codegen" TIMEOUT 30)
+foreach (opt_level IN ITEMS O0 O1 O2)
+    add_test(NAME native_run_loop_flag_not_hoisted_${opt_level}
+            COMMAND ${CMAKE_COMMAND}
+            -DZANNA_EXE=$<TARGET_FILE:zanna>
+            -DTEST_FILE=${LOOP_FLAG_FIXTURE}
+            -DOUT_EXE=${CMAKE_BINARY_DIR}/loop_flag_not_hoisted_${opt_level}${CMAKE_EXECUTABLE_SUFFIX}
+            -DOPT_FLAG=-${opt_level}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_native_run.cmake
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(native_run_loop_flag_not_hoisted_${opt_level} PROPERTIES
+            LABELS "zia;native_run;codegen" TIMEOUT 60)
+endforeach ()
+
+# Whole-program VM/native differential on real language fixtures: the IL
+# kernel differential is synthetic, and the -O1 miscompiles of 2026-09-08
+# (loop-carried flags, self-copied loop parameters) only showed on programs
+# with classes, lists and nested control flow. Each fixture prints
+# `RESULT: ok` under the VM; the native builds at O1 and O2 must too.
+foreach (fixture IN ITEMS 06_control_flow 10_for_break_continue 12_list_map_stats
+        14_class_methods 18_numeric_algorithms 29_control_flow_advanced)
+    foreach (opt_level IN ITEMS O1 O2)
+        add_test(NAME native_run_zia_${fixture}_${opt_level}
+                COMMAND ${CMAKE_COMMAND}
+                -DZANNA_EXE=$<TARGET_FILE:zanna>
+                -DTEST_FILE=${ZIA_LANG_TESTS_DIR}/${fixture}.zia
+                -DOUT_EXE=${CMAKE_BINARY_DIR}/zia_${fixture}_${opt_level}${CMAKE_EXECUTABLE_SUFFIX}
+                -DOPT_FLAG=-${opt_level}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_native_run.cmake
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(native_run_zia_${fixture}_${opt_level} PROPERTIES
+                LABELS "zia;native_run;codegen;differential" TIMEOUT 120)
+    endforeach ()
+endforeach ()
+
 if (NOT WIN32)
     add_test(NAME native_run_zia_42_try_catch_promises
             COMMAND ${CMAKE_COMMAND}

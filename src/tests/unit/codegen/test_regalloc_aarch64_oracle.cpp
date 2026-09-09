@@ -32,6 +32,7 @@
 
 #include "codegen/aarch64/FrameBuilder.hpp"
 #include "codegen/aarch64/MirVerify.hpp"
+#include "codegen/aarch64/Peephole.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/aarch64/passes/PassManager.hpp"
 #include "codegen/aarch64/ra/GlobalAllocator.hpp"
@@ -290,6 +291,38 @@ class Interpreter {
                 cmpA_ = static_cast<int64_t>(a);
                 cmpB_ = static_cast<int64_t>(b);
                 return true;
+            case MOpcode::TstRR:
+                // The peephole rewrites `cmp x, #0` as `tst x, x`; the oracle
+                // observes the AND result against zero.
+                if (!read(mi.ops[0], a, err) || !read(mi.ops[1], b, err))
+                    return false;
+                cmpA_ = static_cast<int64_t>(a & b);
+                cmpB_ = 0;
+                return true;
+            case MOpcode::AndRRR:
+                if (!read(mi.ops[1], a, err) || !read(mi.ops[2], b, err))
+                    return false;
+                write(mi.ops[0], a & b);
+                return true;
+            case MOpcode::OrrRRR:
+                if (!read(mi.ops[1], a, err) || !read(mi.ops[2], b, err))
+                    return false;
+                write(mi.ops[0], a | b);
+                return true;
+            case MOpcode::AndRI:
+                if (!read(mi.ops[1], a, err))
+                    return false;
+                write(mi.ops[0], a & static_cast<uint64_t>(mi.ops[2].imm));
+                return true;
+            case MOpcode::Tbz:
+            case MOpcode::Tbnz: {
+                if (!read(mi.ops[0], a, err))
+                    return false;
+                const bool set = ((a >> static_cast<unsigned>(mi.ops[2].imm)) & 1u) != 0;
+                if (set == (mi.opc == MOpcode::Tbnz))
+                    return jumpTo(mi.ops[1].label, jump, err);
+                return true;
+            }
             case MOpcode::Cset: {
                 const bool taken = evalCond(mi.ops[1].cond, err);
                 if (!err.empty())
@@ -786,7 +819,7 @@ class Generator {
 };
 
 /// @brief Run one seed: generate, interpret, allocate, verify, interpret, compare.
-bool checkSeed(uint64_t seed, std::string &why) {
+bool checkSeed(uint64_t seed, std::string &why, bool &peepholeUnchecked) {
     Generator gen(seed);
     MFunction fn = gen.build();
 
@@ -836,6 +869,56 @@ bool checkSeed(uint64_t seed, std::string &why) {
         why = os.str();
         return false;
     }
+
+    // The -O1 peephole stack rewrites the allocated function in place
+    // (loop-constant hoisting, copy propagation, store/reload forwarding,
+    // dead-code removal); it must keep the meaning too. The pipeline runs it
+    // before ExpandPseudos, so its output is held to the PostRA rule set, as
+    // in CodegenPipeline. The interpreter
+    // covers the subset those rewrites emit for this generator; a seed that
+    // reaches an opcode it does not model is reported as unchecked rather
+    // than passed.
+    MFunction optimized = allocated;
+    try {
+        (void)runPeephole(optimized, &darwinTarget());
+    } catch (const std::exception &ex) {
+        why = std::string("peephole threw: ") + ex.what();
+        return false;
+    }
+    // Triage aid: `ZANNA_RA_ORACLE_DUMP=<seed>` prints the allocated and the
+    // peepholed function so a failing seed can be diffed by hand.
+    if (const char *dumpSeed = std::getenv("ZANNA_RA_ORACLE_DUMP")) {
+        if (std::strtoull(dumpSeed, nullptr, 10) == seed) {
+            std::cerr << "=== seed " << seed << " after RA ===\n"
+                      << toString(allocated) << "=== seed " << seed << " after peephole ===\n"
+                      << toString(optimized);
+        }
+    }
+    {
+        passes::Diagnostics diags;
+        if (!verifyMir(optimized, VerifyStage::PostRA, darwinTarget(), diags)) {
+            std::ostringstream os;
+            diags.flush(os, &os);
+            why = "peephole output does not verify: " + os.str();
+            return false;
+        }
+    }
+    Interpreter afterPeephole(optimized);
+    const RunResult peepholed = afterPeephole.run();
+    if (!peepholed.ok) {
+        if (peepholed.error.rfind("unsupported opcode", 0) == 0) {
+            peepholeUnchecked = true;
+            return true;
+        }
+        why = "post-peephole interpretation failed: " + peepholed.error;
+        return false;
+    }
+    if (peepholed.x0 != expected.x0) {
+        std::ostringstream os;
+        os << "result mismatch after peephole: expected " << expected.x0 << " got " << peepholed.x0;
+        why = os.str();
+        return false;
+    }
     return true;
 }
 
@@ -870,9 +953,14 @@ TEST(Arm64GlobalRegAllocOracle, InterpreterAgreesWithItselfOnAStraightLine) {
 TEST(Arm64GlobalRegAllocOracle, RandomFunctionsKeepTheirMeaning) {
     const unsigned seeds = seedCount();
     unsigned failures = 0;
+    unsigned peepholeChecked = 0;
     for (unsigned seed = 1; seed <= seeds; ++seed) {
         std::string why;
-        if (!checkSeed(seed, why)) {
+        bool peepholeUnchecked = false;
+        const bool ok = checkSeed(seed, why, peepholeUnchecked);
+        if (ok && !peepholeUnchecked)
+            ++peepholeChecked;
+        if (!ok) {
             ++failures;
             std::cerr << "seed " << seed << ": " << why << "\n";
             if (failures > 5)
@@ -880,6 +968,10 @@ TEST(Arm64GlobalRegAllocOracle, RandomFunctionsKeepTheirMeaning) {
         }
     }
     EXPECT_EQ(failures, 0u);
+    // Most seeds must survive the peephole stage under the interpreter, or
+    // the -O1 rewrites are not really being checked.
+    std::cerr << "peephole-checked seeds: " << peepholeChecked << " / " << seeds << "\n";
+    EXPECT_GT(peepholeChecked, seeds / 2);
 }
 
 int main(int argc, char **argv) {

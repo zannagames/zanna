@@ -67,7 +67,12 @@ TEST(Arm64CLI, Select_ConstArms) {
     EXPECT_TRUE(hasCompare);
     EXPECT_NE(asmText.find("b."), std::string::npos);
     EXPECT_NE(asmText.find("Ljoin:"), std::string::npos);
-    EXPECT_NE(asmText.find(" mov x0, x"), std::string::npos);
+    // The join parameter is hinted into x0 (ADR 0339): the arms materialise
+    // `mov x0, #1` / `mov x0, #0` directly, or an older shape moves a
+    // register into x0 at the join. Either transport is legal.
+    const bool returnsThroughX0 = asmText.find(" mov x0, x") != std::string::npos ||
+                                  asmText.find(" mov x0, #") != std::string::npos;
+    EXPECT_TRUE(returnsThroughX0);
     const bool hasSpillTransport =
         asmText.find(" str x") != std::string::npos || asmText.find(" ldr x") != std::string::npos;
     const bool hasEdgeSplit = asmText.find(".Ledge_") != std::string::npos;

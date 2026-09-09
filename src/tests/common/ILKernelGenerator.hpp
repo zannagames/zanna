@@ -54,6 +54,9 @@ enum class KernelShape : unsigned {
     BitMix,           ///< and/or/xor/shift mixing (never trapping).
     EhCatch,          ///< eh.push around a division that traps every fourth trip; the
                       ///< handler reads a value defined before the push and resumes.
+    CarriedFlag,      ///< Inner loop over a flag initialised outside the loop and replaced
+                      ///< by a constant on some trips only; the flag is read after the loop
+                      ///< (the shape a post-RA constant hoist must not touch).
     Count             ///< Number of shapes.
 };
 

@@ -277,6 +277,11 @@ PhysReg GlobalAllocator::pickTemp(RegClass cls,
         noteUse(r);
         return r;
     }
+    // Reserved scratch as the last resort. ExpandPseudosPass picks the
+    // scratch for a wide immediate or large offset around whatever is live
+    // at that point (scratchLiveAfter), and the post-RA verifier's
+    // SCRATCH-CLOBBER rule checks the result, so a temporary handed out here
+    // is safe even on an instruction that later expands.
     for (PhysReg r : reservedScratchFor(cls)) {
         if (excluded(r))
             continue;

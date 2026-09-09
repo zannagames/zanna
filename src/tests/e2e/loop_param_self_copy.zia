@@ -1,0 +1,46 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/e2e/loop_param_self_copy.zia
+// Purpose: VM/native regression for a parameter that is read after a loop it
+//          never modifies. The back edge carries the value through a self
+//          parallel copy; the AArch64 liveness once killed it there and the
+//          body's scratch register overwrote it (rt_list_get trapped on a
+//          pointer-valued index at Legacy Baseball boot).
+// Key invariants: The index read after the loop is the parameter, not a
+//                 register the loop body reused.
+// Ownership/Lifetime: Fixture owns two module lists; no display or files.
+// Links: src/codegen/aarch64/ra/Liveness.cpp,
+//        src/tests/unit/codegen/test_aarch64_live_intervals.cpp
+//
+//===----------------------------------------------------------------------===//
+module loop_param_self_copy;
+bind Zanna.Terminal as T;
+bind Zanna.System.Environment as E;
+
+var faces_: List[Any] = [];
+var tried_: List[Boolean] = [];
+
+func ensure(role: Integer) -> Boolean {
+    while faces_.length() <= 5 {
+        faces_.add(null);
+        tried_.add(false);
+    }
+    if tried_.get(role) { return faces_.get(role) != null; }
+    tried_.set(role, true);
+    return true;
+}
+
+func main() {
+    var first = ensure(2);
+    var second = ensure(2);
+    if first != true || second != false {
+        T.Say("RESULT: fail (loop parameter)");
+        E.Exit(1);
+    }
+    T.Say("RESULT: ok");
+}

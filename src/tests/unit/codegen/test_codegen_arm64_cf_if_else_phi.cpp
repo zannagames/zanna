@@ -59,7 +59,12 @@ TEST(Arm64CLI, CF_IfElse_Phi) {
     EXPECT_EQ(asmText.find(".edge.t."), std::string::npos);
     EXPECT_EQ(asmText.find(".edge.f."), std::string::npos);
     EXPECT_NE(asmText.find("Ljoin:"), std::string::npos);
-    EXPECT_NE(asmText.find(" mov x0, x"), std::string::npos);
+    // The join parameter is hinted into x0 (ADR 0339): the arms materialise
+    // `mov x0, #1` / `mov x0, #2` directly, or an older shape moves a
+    // register into x0 at the join. Either transport is legal.
+    const bool returnsThroughX0 = asmText.find(" mov x0, x") != std::string::npos ||
+                                  asmText.find(" mov x0, #") != std::string::npos;
+    EXPECT_TRUE(returnsThroughX0);
     const bool hasSpillTransport =
         asmText.find(" str x") != std::string::npos || asmText.find(" ldr x") != std::string::npos;
     const bool hasEdgeSplit = asmText.find(".Ledge_") != std::string::npos;
@@ -103,8 +108,17 @@ TEST(Arm64CLI, CF_BlockParamUsedInDominatedSuccessor) {
     const std::string useBlock = blockText("Luse:");
     ASSERT_FALSE(carrierBlock.empty());
     ASSERT_FALSE(useBlock.empty());
-    EXPECT_NE(carrierBlock.find("str x"), std::string::npos);
-    EXPECT_NE(useBlock.find("ldr x"), std::string::npos);
+    // The carried parameter reaches the return register in `use`, either
+    // straight from the register the allocator gave it (`mov x0, x1`) or,
+    // under an allocator that homes block parameters in the frame, through
+    // a reload. What must not happen is `use` returning without touching x0.
+    const bool carriedReachesX0 = useBlock.find("mov x0") != std::string::npos ||
+                                  useBlock.find("ldr x0") != std::string::npos;
+    EXPECT_TRUE(carriedReachesX0);
+    EXPECT_NE(useBlock.find("ret"), std::string::npos);
+    // Whatever transport is used, the carrier block itself computes nothing
+    // but its branch: the value arrives from the predecessors.
+    EXPECT_EQ(carrierBlock.find("add "), std::string::npos);
 }
 
 int main(int argc, char **argv) {

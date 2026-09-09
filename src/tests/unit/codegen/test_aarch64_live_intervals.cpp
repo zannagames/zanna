@@ -232,6 +232,43 @@ TEST(AArch64LiveIntervals, LoopCarriedParameterCoversTheBackEdge) {
     EXPECT_EQ(hints.size(), 2u);
 }
 
+TEST(AArch64LiveIntervals, SelfCopyOnTheBackEdgeKeepsTheParameterLiveThroughTheBody) {
+    // A loop parameter the body never changes reaches the header again
+    // through a self parallel copy in the latch. The copy's destination
+    // precedes its source, so a gen/kill walk in operand order kills the
+    // value before seeing its own read; the latch then has no upward-exposed
+    // use, the body's live-out loses the value, and the body gets a hole in
+    // which the allocator hands its register to a temporary (Legacy
+    // Baseball's type_book.ensure trapped on a pointer-valued index this way).
+    // entry(0): mov v1,#0 ; pcopy v10<-v1 ; br header       base 0, exit 7
+    // header(1): cmp v10,#10 ; b.ge exit                     base 8, exit 13
+    // exit(4): mov x0,v10 ; ret                              base 14, exit 19
+    // body(2): mov v11,#1 ; br latch                         base 20, exit 25
+    // latch(3): pcopy v10<-v10 ; br header                   base 26, exit 31
+    MFunction fn = function({
+        block("entry",
+              {ins(MOpcode::MovRI, {v(1), imm(0)}),
+               ins(MOpcode::ParallelCopy, {v(10), v(1)}),
+               ins(MOpcode::Br, {label("header")})}),
+        block("header",
+              {ins(MOpcode::CmpRI, {v(10), imm(10)}),
+               ins(MOpcode::BCond, {MOperand::condOp("ge"), label("exit")})}),
+        block("body", {ins(MOpcode::MovRI, {v(11), imm(1)}), ins(MOpcode::Br, {label("latch")})}),
+        block("latch",
+              {ins(MOpcode::ParallelCopy, {v(10), v(10)}), ins(MOpcode::Br, {label("header")})}),
+        block("exit", {ins(MOpcode::MovRR, {x(PhysReg::X0), v(10)}), ins(MOpcode::Ret, {})}),
+    });
+    LiveIntervals li;
+    li.build(fn, target());
+    ASSERT_EQ(li.positions().rpo, (std::vector<std::size_t>{0, 1, 4, 2, 3}));
+    EXPECT_EQ(li.positions().blockBase[2], 20u);
+    EXPECT_EQ(li.positions().blockBase[3], 26u);
+    // v10 is live from the entry copy through the header and the exit read,
+    // then through the whole body and latch: no hole at [20,25].
+    EXPECT_EQ(ranges(li, 10), "[3,14] [20,31]");
+    EXPECT_EQ(ranges(li, 11), "[21,21]");
+}
+
 TEST(AArch64LiveIntervals, DiamondLeavesAHoleOnTheUntakenArm) {
     // entry(0): mov v1,#1 ; mov v2,#2 ; cbz v1, right   base 0 (3 instrs) exit 7
     // left(1): mov v3,#3 ; pcopy v20<-v3 ; br join      base 8 exit 15

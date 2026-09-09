@@ -48,30 +48,6 @@ namespace {
     return true;
 }
 
-/// @brief Return true when @p opcode may access memory through a non-FP base.
-/// @details Store-load forwarding for FP-relative slots cannot prove these
-///          accesses do not alias an address-taken stack object, so they act as
-///          conservative scan barriers.
-/// @param opcode Opcode to classify.
-/// @return `true` for recognized scalar loads and stores through an arbitrary GPR.
-[[nodiscard]] bool isBaseRelativeMemory(MOpcode opcode) noexcept {
-    switch (opcode) {
-        case MOpcode::LdrRegBaseImm:
-        case MOpcode::Ldr8RegBaseImm:
-        case MOpcode::Ldr16RegBaseImm:
-        case MOpcode::Ldr32RegBaseImm:
-        case MOpcode::LdrFprBaseImm:
-        case MOpcode::StrRegBaseImm:
-        case MOpcode::Str8RegBaseImm:
-        case MOpcode::Str16RegBaseImm:
-        case MOpcode::Str32RegBaseImm:
-        case MOpcode::StrFprBaseImm:
-            return true;
-        default:
-            return false;
-    }
-}
-
 } // namespace
 
 /// @brief Merge two adjacent `LDR`/`STR` instructions into a single `LDP`/`STP`.
@@ -165,6 +141,15 @@ bool tryLdpStpMerge(std::vector<MInstr> &instrs, std::size_t idx, PeepholeStats 
 static bool fpStoreRange(const MInstr &ins, int64_t &start, int64_t &end) {
     int64_t width = 0;
     switch (ins.opc) {
+        case MOpcode::Str8RegFpImm:
+            width = 1;
+            break;
+        case MOpcode::Str16RegFpImm:
+            width = 2;
+            break;
+        case MOpcode::Str32RegFpImm:
+            width = 4;
+            break;
         case MOpcode::StrRegFpImm:
         case MOpcode::StrFprFpImm:
             width = 8;
@@ -176,7 +161,7 @@ static bool fpStoreRange(const MInstr &ins, int64_t &start, int64_t &end) {
         default:
             return false;
     }
-    const std::size_t offIndex = width == 8 ? 1u : 2u;
+    const std::size_t offIndex = width == 16 ? 2u : 1u;
     if (ins.ops.size() <= offIndex || ins.ops[offIndex].kind != MOperand::Kind::Imm)
         return false;
     start = ins.ops[offIndex].imm;
@@ -242,7 +227,11 @@ std::size_t forwardStoreLoads(std::vector<MInstr> &instrs, PeepholeStats &stats)
                 continue;
             }
 
-            if (definesReg(next, storeReg))
+            // The stored register must still hold the value at every
+            // forwarded load: an explicit redefinition ends the window, and so
+            // does an implicit one (a wide-offset access or wide immediate
+            // expanding through the reserved scratch registers, a call).
+            if (definesReg(next, storeReg) || clobbersImplicitly(next, storeReg))
                 break;
 
             if (next.opc == MOpcode::Bl || next.opc == MOpcode::Blr)

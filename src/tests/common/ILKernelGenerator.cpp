@@ -238,6 +238,62 @@ class StageWriter {
         finish(t("m"), i, n);
     }
 
+    void carriedFlag(const std::string &s, const std::string &i, std::size_t n, unsigned leafId) {
+        // flag starts at `init` outside the inner loop and becomes `hit` on
+        // the trips where a hash of (k, i) is zero mod 4; the loop reads it
+        // only after it exits. The in-loop definition is a single constant,
+        // so a post-allocation hoist that ignores header liveness would move
+        // it into the preheader and erase `init`. A leaf call inside the loop
+        // keeps the flag live across a call, which is what places it in a
+        // callee-saved register (the only class the hoist considers).
+        const long long trips = pick(3, 9);
+        const long long init = pick(0, 1) == 0 ? 0 : pick(2, 99);
+        const long long hit = init + pick(1, 50);
+        out_ << "  br " << l("fh") << "(" << s << ", " << i << ", 0, " << init << ")\n\n";
+        out_ << l("fh") << "(" << t("fs") << ": i64, " << t("fi") << ": i64, " << t("fk")
+             << ": i64, " << t("fl") << ": i64):\n";
+        out_ << "  " << t("fdone") << " = scmp_ge " << t("fk") << ", " << trips << "\n";
+        out_ << "  cbr " << t("fdone") << ", " << l("fx") << "(" << t("fs") << ", " << t("fi")
+             << ", " << t("fl") << "), " << l("fb") << "(" << t("fs") << ", " << t("fi") << ", "
+             << t("fk") << ", " << t("fl") << ")\n\n";
+        out_ << l("fb") << "(" << t("bs") << ": i64, " << t("bi") << ": i64, " << t("bk")
+             << ": i64, " << t("bl") << ": i64):\n";
+        out_ << "  " << t("ba") << " = and " << t("bs") << ", 1048575\n";
+        out_ << "  " << t("br") << " = call @leaf" << leafId << "(" << t("ba") << ", " << t("bk")
+             << ")\n";
+        out_ << "  " << t("bh") << " = xor " << t("br") << ", " << t("bi") << "\n";
+        out_ << "  " << t("bm") << " = and " << t("bh") << ", 3\n";
+        out_ << "  " << t("bz") << " = icmp_eq " << t("bm") << ", 0\n";
+        out_ << "  cbr " << t("bz") << ", " << l("fset") << "(" << t("bs") << ", " << t("bi")
+             << ", " << t("bk") << "), " << l("fkeep") << "(" << t("bs") << ", " << t("bi") << ", "
+             << t("bk") << ", " << t("bl") << ")\n\n";
+        out_ << l("fset") << "(" << t("ss") << ": i64, " << t("si") << ": i64, " << t("sk")
+             << ": i64):\n";
+        out_ << "  br " << l("flat") << "(" << t("ss") << ", " << t("si") << ", " << t("sk") << ", "
+             << hit << ")\n\n";
+        out_ << l("fkeep") << "(" << t("ks") << ": i64, " << t("ki") << ": i64, " << t("kk")
+             << ": i64, " << t("kl") << ": i64):\n";
+        out_ << "  br " << l("flat") << "(" << t("ks") << ", " << t("ki") << ", " << t("kk") << ", "
+             << t("kl") << ")\n\n";
+        out_ << l("flat") << "(" << t("ls") << ": i64, " << t("li") << ": i64, " << t("lk")
+             << ": i64, " << t("ll") << ": i64):\n";
+        // A second call in the latch makes the flag call-crossing on the back
+        // edge as well, so the allocator homes it in a callee-saved register
+        // at the header: the register class the hoist considers.
+        out_ << "  " << t("lc") << " = call @leaf" << leafId << "(" << t("ls") << ", " << t("lk")
+             << ")\n";
+        out_ << "  " << t("ls1") << " = and " << t("lc") << ", " << kSumMask << "\n";
+        out_ << "  " << t("lk1") << " = iadd.ovf " << t("lk") << ", 1\n";
+        out_ << "  br " << l("fh") << "(" << t("ls1") << ", " << t("li") << ", " << t("lk1") << ", "
+             << t("ll") << ")\n\n";
+        out_ << l("fx") << "(" << t("xs") << ": i64, " << t("xi") << ": i64, " << t("xl")
+             << ": i64):\n";
+        out_ << "  " << t("xw") << " = imul.ovf " << t("xl") << ", 977\n";
+        out_ << "  " << t("acc") << " = iadd.ovf " << t("xs") << ", " << t("xw") << "\n";
+        out_ << "  " << t("m") << " = and " << t("acc") << ", " << kSumMask << "\n";
+        finish(t("m"), t("xi"), n);
+    }
+
     void ehCatch(const std::string &s, const std::string &i, std::size_t n) {
         // A native EH frame around a division whose divisor is zero every
         // fourth trip. A handler may read only its own parameters, so the
@@ -291,6 +347,28 @@ class StageWriter {
 };
 
 /// @brief Emit a leaf helper `@leafN(%x, %k) -> i64` with a two-way diamond.
+/// @brief Emit a self-recursive leaf `@leaf<id>(a, b)`: `b` steps down to
+///        zero, adding a seeded increment to `a` on each step. The inliner
+///        never inlines a recursive callee, so a call to it survives every
+///        pipeline level and keeps the caller's values live across a call.
+void emitRecursiveLeaf(std::ostringstream &out, std::mt19937_64 &rng, unsigned id) {
+    std::uniform_int_distribution<long long> stepDist(1, 31);
+    const long long step = stepDist(rng);
+    out << "func @leaf" << id << "(i64 %a, i64 %b) -> i64 {\n";
+    out << "entry(%a: i64, %b: i64):\n";
+    out << "  %done = scmp_le %b, 0\n";
+    out << "  cbr %done, base(%a), step(%a, %b)\n";
+    out << "base(%r: i64):\n";
+    out << "  %m = and %r, 1048575\n";
+    out << "  ret %m\n";
+    out << "step(%a1: i64, %b1: i64):\n";
+    out << "  %a2 = iadd.ovf %a1, " << step << "\n";
+    out << "  %b2 = isub.ovf %b1, 1\n";
+    out << "  %r2 = call @leaf" << id << "(%a2, %b2)\n";
+    out << "  ret %r2\n";
+    out << "}\n\n";
+}
+
 void emitLeaf(std::ostringstream &out, std::mt19937_64 &rng, unsigned id) {
     std::uniform_int_distribution<long long> small(2, 9);
     std::uniform_int_distribution<long long> bit(0, 4);
@@ -337,6 +415,8 @@ const char *kernelShapeName(KernelShape shape) noexcept {
             return "bit-mix";
         case KernelShape::EhCatch:
             return "eh-catch";
+        case KernelShape::CarriedFlag:
+            return "carried-flag";
         case KernelShape::Count:
             break;
     }
@@ -368,6 +448,8 @@ KernelProgram generateKernelProgram(std::uint64_t seed) {
     for (std::size_t k = 0; k < stageCount; ++k) {
         if (program.shapes[k] == KernelShape::LeafCall)
             emitLeaf(out, rng, leafCount++);
+        else if (program.shapes[k] == KernelShape::CarriedFlag)
+            emitRecursiveLeaf(out, rng, leafCount++);
     }
 
     out << "func @main() -> i64 {\n";
@@ -415,6 +497,9 @@ KernelProgram generateKernelProgram(std::uint64_t seed) {
                 break;
             case KernelShape::EhCatch:
                 w.ehCatch(s, i, stageCount);
+                break;
+            case KernelShape::CarriedFlag:
+                w.carriedFlag(s, i, stageCount, leafId++);
                 break;
             case KernelShape::BitMix:
             case KernelShape::Count:

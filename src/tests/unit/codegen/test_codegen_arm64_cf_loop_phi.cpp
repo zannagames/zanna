@@ -105,7 +105,13 @@ TEST(Arm64CLI, CF_Loop_Phi_NoHeaderReloads) {
     const std::string asmText = readFile(out);
     EXPECT_NE(asmText.find("Lbody:\n"), std::string::npos);
     EXPECT_NE(asmText.find("b Lbody\n"), std::string::npos);
-    EXPECT_EQ(asmText.find("ldp x"), std::string::npos);
+    // No frame traffic inside the function body: the only pair loads are the
+    // epilogue's callee-saved / frame-record restores.
+    for (std::size_t pos = asmText.find("ldp x"); pos != std::string::npos;
+         pos = asmText.find("ldp x", pos + 1)) {
+        const std::string line = asmText.substr(pos, asmText.find('\n', pos) - pos);
+        EXPECT_TRUE(line.find("[sp") != std::string::npos);
+    }
     EXPECT_EQ(asmText.find("[x29, #-"), std::string::npos);
 }
 
