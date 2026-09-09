@@ -102,7 +102,7 @@ static int gl_build_scene_target_set(
 
     gl.GenTextures(1, &candidate.motion_tex);
     gl.BindTexture(GL_TEXTURE_2D, candidate.motion_tex);
-    gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    gl.TexImage2D(GL_TEXTURE_2D, 0, color_format, width, height, 0, GL_RGBA, color_type, NULL);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -613,6 +613,12 @@ static void destroy_taa_targets(gl_context_t *ctx) {
         ctx->taa_history_tex[i] = 0;
         ctx->taa_history_fbo[i] = 0;
     }
+    if (ctx->taa_history_depth_tex)
+        gl.DeleteTextures(1, &ctx->taa_history_depth_tex);
+    if (ctx->taa_history_depth_fbo)
+        gl.DeleteFramebuffers(1, &ctx->taa_history_depth_fbo);
+    ctx->taa_history_depth_tex = 0;
+    ctx->taa_history_depth_fbo = 0;
     ctx->taa_history_width = 0;
     ctx->taa_history_height = 0;
     ctx->taa_history_parity = 0;
@@ -629,6 +635,8 @@ static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h) {
     gl_framebuffer_state_t saved;
     GLuint candidate_tex[2] = {0, 0};
     GLuint candidate_fbo[2] = {0, 0};
+    GLuint candidate_depth_tex = 0;
+    GLuint candidate_depth_fbo = 0;
     GLuint previous_tex[2];
     GLuint previous_fbo[2];
     const int hdr = ctx ? ctx->scene_hdr_active : 0;
@@ -637,8 +645,9 @@ static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h) {
 
     if (!gl_target_extent_is_valid(ctx, w, h) || !ctx->taa_program)
         return -1;
-    if (ctx->taa_history_fbo[0] && ctx->taa_history_fbo[1] && ctx->taa_history_tex[0] &&
-        ctx->taa_history_tex[1] && ctx->taa_history_width == w && ctx->taa_history_height == h &&
+    if (ctx->taa_history_depth_tex && ctx->taa_history_depth_fbo && ctx->taa_history_fbo[0] &&
+        ctx->taa_history_fbo[1] && ctx->taa_history_tex[0] && ctx->taa_history_tex[1] &&
+        ctx->taa_history_width == w && ctx->taa_history_height == h &&
         ctx->taa_history_hdr == (int8_t)hdr) {
         return 0;
     }
@@ -661,16 +670,39 @@ static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h) {
         if (!candidate_fbo[i] || !candidate_tex[i] ||
             gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
             !gl_upload_ok()) {
-            for (int32_t release = 0; release < 2; release++) {
-                if (candidate_tex[release])
-                    gl.DeleteTextures(1, &candidate_tex[release]);
-                if (candidate_fbo[release])
-                    gl.DeleteFramebuffers(1, &candidate_fbo[release]);
-            }
-            gl_restore_framebuffer_state(&saved);
-            return -1;
+            goto fail;
         }
     }
+    gl.GenFramebuffers(1, &candidate_depth_fbo);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_depth_fbo);
+    gl.GenTextures(1, &candidate_depth_tex);
+    gl.BindTexture(GL_TEXTURE_2D, candidate_depth_tex);
+    gl.TexImage2D(
+        GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, w, h, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.FramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, candidate_depth_tex, 0);
+    gl.DrawBuffer(GL_NONE);
+    gl.ReadBuffer(GL_NONE);
+    if (!candidate_depth_fbo || !candidate_depth_tex ||
+        gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok())
+        goto fail;
+    if ((GLuint)saved.draw_framebuffer == ctx->taa_history_depth_fbo && ctx->taa_history_depth_fbo)
+        saved.draw_framebuffer = (GLint)candidate_depth_fbo;
+    if ((GLuint)saved.read_framebuffer == ctx->taa_history_depth_fbo && ctx->taa_history_depth_fbo)
+        saved.read_framebuffer = (GLint)candidate_depth_fbo;
+    if ((GLuint)saved.texture_binding_2d == ctx->taa_history_depth_tex &&
+        ctx->taa_history_depth_tex)
+        saved.texture_binding_2d = (GLint)candidate_depth_tex;
+    if (ctx->taa_history_depth_tex)
+        gl.DeleteTextures(1, &ctx->taa_history_depth_tex);
+    if (ctx->taa_history_depth_fbo)
+        gl.DeleteFramebuffers(1, &ctx->taa_history_depth_fbo);
+    ctx->taa_history_depth_tex = candidate_depth_tex;
+    ctx->taa_history_depth_fbo = candidate_depth_fbo;
     memcpy(previous_tex, ctx->taa_history_tex, sizeof(previous_tex));
     memcpy(previous_fbo, ctx->taa_history_fbo, sizeof(previous_fbo));
     for (int32_t i = 0; i < 2; i++) {
@@ -694,6 +726,20 @@ static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h) {
     ctx->taa_history_hdr = (int8_t)hdr;
     gl_restore_framebuffer_state(&saved);
     return 0;
+
+fail:
+    if (candidate_depth_tex)
+        gl.DeleteTextures(1, &candidate_depth_tex);
+    if (candidate_depth_fbo)
+        gl.DeleteFramebuffers(1, &candidate_depth_fbo);
+    for (int32_t i = 0; i < 2; i++) {
+        if (candidate_tex[i])
+            gl.DeleteTextures(1, &candidate_tex[i]);
+        if (candidate_fbo[i])
+            gl.DeleteFramebuffers(1, &candidate_fbo[i]);
+    }
+    gl_restore_framebuffer_state(&saved);
+    return -1;
 }
 
 /// @brief Draw one fullscreen bloom pass (down- or upsample) into a mip FBO.
@@ -821,8 +867,8 @@ static GLuint gl_encode_taa_pass(gl_context_t *ctx,
     int32_t read_slot;
     float jitter_delta[2];
 
-    if (!ctx || !source_tex || !ctx->scene_depth_tex || !ctx->scene_motion_tex ||
-        ensure_taa_targets(ctx, width, height) != 0)
+    if (!ctx || !gl.BlitFramebuffer || !source_tex || !ctx->scene_depth_tex ||
+        !ctx->scene_motion_tex || ensure_taa_targets(ctx, width, height) != 0)
         return 0;
 
     write_slot = ctx->taa_history_parity ? 1 : 0;
@@ -847,6 +893,7 @@ static GLuint gl_encode_taa_pass(gl_context_t *ctx,
     bind_texture_unit(ctx->taa_uHistTex, 1, GL_TEXTURE_2D, ctx->taa_history_tex[read_slot]);
     bind_texture_unit(ctx->taa_uMotionTex, 2, GL_TEXTURE_2D, ctx->scene_motion_tex);
     bind_texture_unit(ctx->taa_uDepthTex, 3, GL_TEXTURE_2D, ctx->scene_depth_tex);
+    bind_texture_unit(ctx->taa_uHistDepthTex, 4, GL_TEXTURE_2D, ctx->taa_history_depth_tex);
     gl.Uniform2f(ctx->taa_uInvResolution,
                  width > 0 ? 1.0f / (float)width : 0.0f,
                  height > 0 ? 1.0f / (float)height : 0.0f);
@@ -855,6 +902,7 @@ static GLuint gl_encode_taa_pass(gl_context_t *ctx,
                  (snapshot && snapshot->taa_enabled && isfinite(snapshot->taa_blend))
                      ? snapshot->taa_blend
                      : 0.9f);
+    gl.Uniform1i(ctx->taa_uMotionSigned, ctx->scene_hdr_active ? 1 : 0);
     gl.Uniform1i(ctx->taa_uHistoryValid,
                  (ctx->taa_history_valid && ctx->scene_history_valid) ? 1 : 0);
     gl.UniformMatrix4fv(ctx->taa_uInvViewProjection, 1, GL_TRUE, ctx->scene_inv_vp);
@@ -862,6 +910,15 @@ static GLuint gl_encode_taa_pass(gl_context_t *ctx,
     gl.DrawArrays(GL_TRIANGLES, 0, 3);
 
     if (!gl_drain_errors("taa resolve")) {
+        gl_restore_framebuffer_state(&saved);
+        gl_restore_main_draw_state(ctx);
+        return 0;
+    }
+    gl.BindFramebuffer(GL_READ_FRAMEBUFFER, ctx->scene_fbo);
+    gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, ctx->taa_history_depth_fbo);
+    gl.BlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    if (!gl_drain_errors("taa depth history copy")) {
+        ctx->taa_history_valid = 0;
         gl_restore_framebuffer_state(&saved);
         gl_restore_main_draw_state(ctx);
         return 0;

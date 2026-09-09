@@ -599,6 +599,7 @@ static void gl_bind_default_sampler_uniforms(gl_context_t *ctx) {
     gl.Uniform1i(ctx->taa_uHistTex, 1);
     gl.Uniform1i(ctx->taa_uMotionTex, 2);
     gl.Uniform1i(ctx->taa_uDepthTex, 3);
+    gl.Uniform1i(ctx->taa_uHistDepthTex, 4);
 }
 
 /// @brief Bind uniform-block indices for current/previous bone palettes.

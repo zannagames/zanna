@@ -282,8 +282,9 @@ static void test_constant_buffer_struct_sizes_match_expected_layout(void) {
     EXPECT_TRUE(sizeof(vgfx3d_d3d11_per_object_t) == 752u,
                 "PerObject C struct matches the packed HLSL cbuffer size");
     /* 448 bytes through the UV transforms, plus the ADR 0312 decal block:
-     * three float4 projector rows and one float4 of params. */
-    EXPECT_TRUE(sizeof(vgfx3d_d3d11_per_material_t) == 512u,
+     * three float4 projector rows and one float4 of params, followed by
+     * ADR 0341 temporal parameters. */
+    EXPECT_TRUE(sizeof(vgfx3d_d3d11_per_material_t) == 528u,
                 "PerMaterial C struct matches the packed HLSL cbuffer size");
 }
 

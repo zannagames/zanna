@@ -153,7 +153,7 @@ static id<MTLRenderPipelineState> metal_create_pipeline_state(
     descriptor.fragmentFunction = fragment_function;
     descriptor.vertexDescriptor = vertex_descriptor;
     descriptor.colorAttachments[0].pixelFormat = color0_format;
-    descriptor.colorAttachments[1].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    descriptor.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
     descriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
     metal_configure_blend_state(descriptor.colorAttachments[0], blend_mode);
     descriptor.colorAttachments[1].writeMask =
@@ -184,7 +184,7 @@ static id<MTLRenderPipelineState> metal_create_skybox_pipeline_state(
     descriptor.fragmentFunction = fragment_function;
     descriptor.vertexDescriptor = nil;
     descriptor.colorAttachments[0].pixelFormat = color0_format;
-    descriptor.colorAttachments[1].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    descriptor.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
     descriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
     descriptor.colorAttachments[1].writeMask = MTLColorWriteMaskNone;
     return [device newRenderPipelineStateWithDescriptor:descriptor error:error];
@@ -1218,7 +1218,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                         "                       float3 color,\n"
                         "                       float3 worldPos) {\n"
                         "    float3 motionSample = sampleMotion(motionTex, s, uv);\n"
-                        "    float2 velocity = motionSample.xy * 2.0 - 1.0;\n"
+                        "    float2 velocity = motionSample.xy;\n"
                         "    if (motionSample.z < 0.5)\n"
                         "        velocity = cameraVelocity(p, uv, worldPos);\n"
                         "    velocity *= p.motionBlurIntensity;\n"
@@ -1515,53 +1515,63 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                         "    texture2d<float> histTex [[texture(1)]],\n"
                         "    texture2d<float> motionTex [[texture(2)]],\n"
                         "    depth2d<float> depthTex [[texture(3)]],\n"
+                        "    depth2d<float> histDepthTex [[texture(4)]],\n"
                         "    sampler s [[sampler(0)]],\n"
                         "    constant TAAParams &p [[buffer(0)]]) {\n"
                         "    float3 curr = currTex.sample(s, in.uv).rgb;\n"
-                        "    if (p.historyValid == 0)\n"
+                        "    if (!all(isfinite(curr))) curr = float3(0.0);\n"
+                        "    if (p.historyValid == 0) return float4(curr, 1.0);\n"
+                        "    float3 motion = motionTex.read(uint2(in.position.xy)).rgb;\n"
+                        "    float depth = depthTex.read(uint2(in.position.xy));\n"
+                        "    if (!all(isfinite(motion)) || !isfinite(depth) || depth < 0.0 || "
+                        "depth > 1.0)\n"
                         "        return float4(curr, 1.0);\n"
-                        "    float3 motionSample = motionTex.sample(s, in.uv).rgb;\n"
-                        "    float2 velocity = motionSample.xy * 2.0 - 1.0;\n"
-                        "    if (motionSample.z < 0.5) {\n"
-                        /* Static geometry: analytic camera reprojection through the
-                         * current inverse VP and the previous VP. */
-                        "        float depth = depthTex.sample(s, in.uv);\n"
-                        /* Same top-left <-> Y-up NDC flips as reconstructWorld/cameraVelocity. */
-                        "        float4 clip = float4(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, "
-                        "depth * 2.0 - 1.0, 1.0);\n"
-                        "        float4 world = p.invViewProjection * clip;\n"
-                        "        world /= max(abs(world.w), 0.0001) * (world.w < 0.0 ? -1.0 : "
-                        "1.0);\n"
-                        "        float4 prevClip = p.prevViewProjection * float4(world.xyz, "
-                        "1.0);\n"
-                        "        float prevW = (prevClip.w < 0.0 ? -1.0 : 1.0) * "
-                        "max(fabs(prevClip.w), 0.0001);\n"
-                        "        float2 prevUv = float2(prevClip.x / prevW * 0.5 + 0.5, "
-                        "0.5 - prevClip.y / prevW * 0.5);\n"
+                        "    float4 clip = float4(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0, depth "
+                        "* 2.0 - 1.0, 1.0);\n"
+                        "    float4 world = p.invViewProjection * clip;\n"
+                        "    if (!all(isfinite(world)) || abs(world.w) < 0.0001) return "
+                        "float4(curr, 1.0);\n"
+                        "    world.xyz /= world.w;\n"
+                        "    float4 prevClip = p.prevViewProjection * float4(world.xyz, 1.0);\n"
+                        "    if (!all(isfinite(prevClip)) || prevClip.w < 0.0001) return "
+                        "float4(curr, 1.0);\n"
+                        "    float expectedDepth = prevClip.z / prevClip.w * 0.5 + 0.5;\n"
+                        "    float2 velocity = motion.xy;\n"
+                        "    if (motion.z < 0.5) {\n"
+                        "        float2 prevUv = float2(prevClip.x / prevClip.w * 0.5 + 0.5, 0.5 - "
+                        "prevClip.y / prevClip.w * 0.5);\n"
                         "        velocity = in.uv - prevUv;\n"
                         "    }\n"
-                        /* Motion vectors were rendered under projection jitter; remove the
-                         * current-minus-previous jitter delta before reprojecting. */
                         "    velocity -= p.jitterDelta;\n"
                         "    float2 histUv = in.uv - velocity;\n"
-                        "    if (histUv.x < 0.0 || histUv.x > 1.0 || histUv.y < 0.0 || "
-                        "histUv.y > 1.0)\n"
+                        "    if (!all(isfinite(histUv)) || any(histUv < 0.0) || any(histUv > 1.0)) "
+                        "return float4(curr, 1.0);\n"
+                        "    uint2 extent = uint2(histDepthTex.get_width(), "
+                        "histDepthTex.get_height());\n"
+                        "    uint2 historyPixel = min(uint2(histUv * float2(extent)), extent - "
+                        "1);\n"
+                        "    float oldDepth = histDepthTex.read(historyPixel);\n"
+                        "    float tolerance = max(0.000002, 0.01 * expectedDepth);\n"
+                        "    if (!isfinite(oldDepth) || oldDepth < 0.0 || oldDepth > 1.0 ||\n"
+                        "        expectedDepth < 0.0 || expectedDepth > 1.0 || abs(oldDepth - "
+                        "expectedDepth) > tolerance)\n"
                         "        return float4(curr, 1.0);\n"
                         "    float3 hist = histTex.sample(s, histUv).rgb;\n"
+                        "    if (!all(isfinite(hist))) return float4(curr, 1.0);\n"
                         "    float3 cmin = curr;\n"
                         "    float3 cmax = curr;\n"
                         "    for (int dy = -1; dy <= 1; dy++)\n"
                         "        for (int dx = -1; dx <= 1; dx++) {\n"
-                        "            if (dx == 0 && dy == 0) continue;\n"
                         "            float3 n = currTex.sample(s, in.uv + float2(dx, dy) * "
                         "p.invResolution).rgb;\n"
-                        "            cmin = min(cmin, n);\n"
-                        "            cmax = max(cmax, n);\n"
+                        "            if (all(isfinite(n))) { cmin = min(cmin, n); cmax = max(cmax, "
+                        "n); }\n"
                         "        }\n"
                         "    hist = clamp(hist, cmin, cmax);\n"
-                        "    float w = clamp(p.blend, 0.0, 0.98);\n"
-                        "    w *= 1.0 - clamp(length(velocity) * 8.0, 0.0, 0.85);\n"
-                        "    return float4(mix(curr, hist, w), 1.0);\n"
+                        "    float materialWeight = fmod(round(motion.z * 255.0), 128.0) / 127.0;\n"
+                        "    float weight = clamp(p.blend, 0.0, 0.98) * materialWeight;\n"
+                        "    weight *= 1.0 - clamp(length(velocity) * 8.0, 0.0, 0.85);\n"
+                        "    return float4(mix(curr, hist, weight), 1.0);\n"
                         "}\n"],
                 [NSString
                     stringWithUTF8String:

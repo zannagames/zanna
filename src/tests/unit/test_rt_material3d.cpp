@@ -30,6 +30,7 @@
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_heap.h"
+#include "rt_object.h"
 #include "rt_pixels.h"
 
 #include <cmath>
@@ -398,6 +399,38 @@ static void test_clone_preserves_and_repairs_extended_state() {
                 "Material clone canonicalizes explicit alpha-mode state");
 }
 
+static void test_temporal_weight_contract() {
+    void *mat = rt_material3d_new();
+    EXPECT_TRUE(rt_material3d_get_temporal_weight(mat) == 1.0,
+                "Temporal history defaults to the existing full contribution");
+    rt_material3d_set_temporal_weight(mat, 0.25);
+    void *copy = rt_material3d_clone(mat);
+    void *instance = rt_material3d_make_instance(mat);
+    EXPECT_TRUE(rt_material3d_get_temporal_weight(copy) == 0.25,
+                "Material clone preserves temporal history weight");
+    rt_material3d_set_temporal_weight(mat, -2.0);
+    EXPECT_TRUE(rt_material3d_get_temporal_weight(instance) == 0.25,
+                "Material instances retain independent temporal overrides");
+    EXPECT_TRUE(rt_material3d_get_temporal_weight(mat) == 0.0,
+                "Negative temporal weight clamps to current-frame-only");
+    rt_material3d_set_temporal_weight(mat, 8.0);
+    EXPECT_TRUE(rt_material3d_get_temporal_weight(mat) == 1.0,
+                "Temporal history weight cannot amplify the configured blend");
+    rt_material3d_set_temporal_weight(mat, NAN);
+    EXPECT_TRUE(rt_material3d_get_temporal_weight(mat) == 1.0 &&
+                    rt_material3d_get_temporal_weight(nullptr) == 1.0,
+                "Non-finite and invalid receivers use the default history weight");
+    rt_material3d_set_temporal_weight(nullptr, 0.0);
+    ((rt_material3d *)mat)->temporal_weight = INFINITY;
+    void *repaired = rt_material3d_clone(mat);
+    EXPECT_TRUE(rt_material3d_get_temporal_weight(repaired) == 1.0,
+                "Cloning repairs corrupt temporal weight");
+    (void)rt_memory_release(copy);
+    (void)rt_memory_release(instance);
+    (void)rt_memory_release(repaired);
+    (void)rt_memory_release(mat);
+}
+
 /* ADR 0312: the projected decal layer round-trips its source, projector and opacity,
  * survives Clone/MakeInstance, and refuses degenerate projectors. */
 static void test_decal_layer_set_get_clone() {
@@ -415,13 +448,17 @@ static void test_decal_layer_set_get_clone() {
 
     /* Box centred at (0, 1, -0.1) looking along -Z: right = +X, up = +Y, 0.5 x 0.25
      * half extents, 0.2 deep. */
-    rt_material3d_set_decal_projector(mat, 0.0, 1.0, -0.1, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.25, 0.2);
-    EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 1, "decal armed once source and projector are set");
+    rt_material3d_set_decal_projector(
+        mat, 0.0, 1.0, -0.1, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.25, 0.2);
+    EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 1,
+                "decal armed once source and projector are set");
     /* Centre maps to (0.5, 0.5, 0); the +right/+up corner to (1, 0, 0); depth to 1. */
     const double *r = mat->decal_rows;
     auto s_at = [&](double x, double y, double z) { return r[0] * x + r[1] * y + r[2] * z + r[3]; };
     auto t_at = [&](double x, double y, double z) { return r[4] * x + r[5] * y + r[6] * z + r[7]; };
-    auto d_at = [&](double x, double y, double z) { return r[8] * x + r[9] * y + r[10] * z + r[11]; };
+    auto d_at = [&](double x, double y, double z) {
+        return r[8] * x + r[9] * y + r[10] * z + r[11];
+    };
     EXPECT_NEAR(s_at(0.0, 1.0, -0.1), 0.5, 1e-9, "centre maps to s=0.5");
     EXPECT_NEAR(t_at(0.0, 1.0, -0.1), 0.5, 1e-9, "centre maps to t=0.5");
     EXPECT_NEAR(d_at(0.0, 1.0, -0.1), 0.0, 1e-9, "centre maps to d=0");
@@ -440,11 +477,15 @@ static void test_decal_layer_set_get_clone() {
     EXPECT_TRUE(inst != nullptr, "MakeInstance duplicates the decal layer");
     if (inst) {
         EXPECT_TRUE(rt_material3d_get_has_decal_map(inst) == 1, "instance keeps the decal");
-        EXPECT_NEAR(inst->decal_rows[3], mat->decal_rows[3], 1e-12, "instance copies the projector");
-        EXPECT_NEAR(rt_material3d_get_decal_opacity(inst), 1.0, 1e-9, "instance copies the opacity");
+        EXPECT_NEAR(
+            inst->decal_rows[3], mat->decal_rows[3], 1e-12, "instance copies the projector");
+        EXPECT_NEAR(
+            rt_material3d_get_decal_opacity(inst), 1.0, 1e-9, "instance copies the opacity");
         rt_material3d_set_decal_map(inst, nullptr);
-        EXPECT_TRUE(rt_material3d_get_has_decal_map(inst) == 0, "clearing the instance source disarms it");
-        EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 1, "decal armed once source and projector are set");
+        EXPECT_TRUE(rt_material3d_get_has_decal_map(inst) == 0,
+                    "clearing the instance source disarms it");
+        EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 1,
+                    "decal armed once source and projector are set");
         if (rt_obj_release_check0(inst))
             rt_obj_free(inst);
     }
@@ -467,6 +508,7 @@ int main() {
     test_scalar_readback_repairs_corrupt_state();
     test_symmetric_setters_use_neutral_nonfinite_fallbacks();
     test_clone_preserves_and_repairs_extended_state();
+    test_temporal_weight_contract();
 
     if (tests_passed != tests_run) {
         std::fprintf(stderr, "test_rt_material3d: %d/%d checks passed\n", tests_passed, tests_run);

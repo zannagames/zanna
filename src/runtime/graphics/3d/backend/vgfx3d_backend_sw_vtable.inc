@@ -79,6 +79,7 @@ static void sw_destroy_ctx(void *ctx_ptr) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     sw_release_worker_pool(ctx);
     free(ctx->zbuf);
+    free(ctx->temporal_weights);
     free(ctx->opaque_zbuf);
     free(ctx->vertex_scratch);
     free(ctx->color_triangle_scratch);
@@ -241,12 +242,16 @@ static void sw_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b
 
     if (ctx->render_target) {
         vgfx3d_rendertarget_t *rt = ctx->render_target;
-        if (!vgfx3d_rendertarget_ensure_color(rt) || !vgfx3d_rendertarget_ensure_depth(rt))
+        if (!vgfx3d_rendertarget_ensure_color(rt) || !vgfx3d_rendertarget_ensure_depth(rt) ||
+            !vgfx3d_rendertarget_ensure_temporal_weights(rt))
             return;
         sw_fill_rgba_rows(rt->color_buf, rt->width, rt->height, rt->stride, cr, cg, cb);
         size_t total = 0;
-        if (sw_pixel_count_checked(rt->width, rt->height, &total))
+        if (sw_pixel_count_checked(rt->width, rt->height, &total)) {
             sw_fill_depth_buffer(rt->depth_buf, total, FLT_MAX);
+            if (rt->temporal_weights)
+                memset(rt->temporal_weights, 127, total);
+        }
         rt->hdr_color_valid = 0;
         vgfx3d_rendertarget_clear_sync(rt);
     } else {
@@ -271,8 +276,11 @@ static void sw_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b
             }
         }
         size_t total = 0;
-        if (sw_pixel_count_checked(ctx->width, ctx->height, &total))
+        if (sw_pixel_count_checked(ctx->width, ctx->height, &total)) {
             sw_fill_depth_buffer(ctx->zbuf, total, FLT_MAX);
+            if (ctx->temporal_weights)
+                memset(ctx->temporal_weights, 127, total);
+        }
     }
 }
 
@@ -354,13 +362,19 @@ static void sw_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
             vgfx3d_rendertarget_t *rt = ctx->render_target;
             if (vgfx3d_rendertarget_ensure_depth(rt)) {
                 size_t total = 0;
-                if (sw_pixel_count_checked(rt->width, rt->height, &total))
+                if (sw_pixel_count_checked(rt->width, rt->height, &total)) {
                     sw_fill_depth_buffer(rt->depth_buf, total, FLT_MAX);
+                    if (rt->temporal_weights)
+                        memset(rt->temporal_weights, 127, total);
+                }
             }
         } else {
             size_t total = 0;
-            if (sw_pixel_count_checked(ctx->width, ctx->height, &total))
+            if (sw_pixel_count_checked(ctx->width, ctx->height, &total)) {
                 sw_fill_depth_buffer(ctx->zbuf, total, FLT_MAX);
+                if (ctx->temporal_weights)
+                    memset(ctx->temporal_weights, 127, total);
+            }
         }
     }
     /* Reset shadow state — rebuilt if shadows are enabled this frame */
@@ -493,7 +507,8 @@ static int sw_resolve_output_target(sw_context_t *ctx,
                                     int32_t *out_stride) {
     if (ctx->render_target) {
         vgfx3d_rendertarget_t *rt = ctx->render_target;
-        if (!vgfx3d_rendertarget_ensure_color(rt) || !vgfx3d_rendertarget_ensure_depth(rt))
+        if (!vgfx3d_rendertarget_ensure_color(rt) || !vgfx3d_rendertarget_ensure_depth(rt) ||
+            !vgfx3d_rendertarget_ensure_temporal_weights(rt))
             return 0;
         *out_pixels = rt->color_buf;
         *out_zbuf = rt->depth_buf;
@@ -2114,7 +2129,8 @@ static void sw_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
     if (!ctx)
         return;
     if (rt) {
-        if (!vgfx3d_rendertarget_ensure_color(rt) || !vgfx3d_rendertarget_ensure_depth(rt))
+        if (!vgfx3d_rendertarget_ensure_color(rt) || !vgfx3d_rendertarget_ensure_depth(rt) ||
+            !vgfx3d_rendertarget_ensure_temporal_weights(rt))
             return;
     }
     ctx->render_target = rt;

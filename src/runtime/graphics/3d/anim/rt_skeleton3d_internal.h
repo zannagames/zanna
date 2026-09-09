@@ -49,7 +49,7 @@
 /// Maximum number of bones stored in one runtime skeleton.
 #define VGFX3D_MAX_SKELETON_BONES 1024
 /// Fixed maximum number of clips registered with one weighted blender.
-#define RT_ANIM_BLEND3D_MAX_STATES 8
+#define RT_ANIM_BLEND3D_MAX_STATES 16
 /// Maximum number of per-bone channels stored by an animation.
 #define RT_ANIMATION3D_MAX_CHANNELS VGFX3D_MAX_SKELETON_BONES
 /// Defensive maximum number of keys stored in one animation channel.
@@ -500,9 +500,8 @@ static inline void anim_player3d_repair_storage(rt_anim_player3d *player) {
     player->motion_history_initialized = player->motion_history_initialized ? 1 : 0;
     player->crossfade_from_pose = player->owned_crossfade_from_pose;
     if (player->owned_from_pose_capacity < 0 || !player->owned_crossfade_from_pose)
-        player->owned_from_pose_capacity = player->owned_crossfade_from_pose
-                                               ? player->owned_from_pose_capacity
-                                               : 0;
+        player->owned_from_pose_capacity =
+            player->owned_crossfade_from_pose ? player->owned_from_pose_capacity : 0;
     player->crossfade_from_is_pose =
         (player->crossfade_from_is_pose && player->owned_crossfade_from_pose) ? 1 : 0;
     player->transition_continuity = player->transition_continuity ? 1 : 0;

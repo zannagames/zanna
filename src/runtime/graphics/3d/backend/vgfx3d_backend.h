@@ -301,6 +301,8 @@ typedef struct vgfx3d_draw_cmd {
      * the motion target's blue channel for the SSR post pass). */
     /// Nonzero to write this material into the screen-space reflection mask.
     int8_t ssr_enabled;
+    /// ADR 0341: local multiplier on the TAA history contribution, default one.
+    float temporal_weight;
     /// Constant renderer-space depth offset.
     float depth_bias; /* constant depth offset; negative pulls coplanar draws forward */
     /// Slope-proportional renderer-space depth offset.
@@ -1143,6 +1145,8 @@ extern const vgfx3d_backend_t vgfx3d_software_backend;
 /// @param[out] out_h Optional destination for the depth-buffer height.
 /// @return Borrowed row-major depth buffer, or NULL when unavailable.
 const float *vgfx3d_sw_get_zbuf(void *ctx, int32_t *out_w, int32_t *out_h);
+/* Borrow the matching software window mask; NULL means full history weight. */
+const uint8_t *vgfx3d_sw_get_temporal_weights(void *ctx);
 
 #if RT_PLATFORM_MACOS
 /// @brief The Metal GPU backend (macOS only).

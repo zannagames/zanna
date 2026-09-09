@@ -1382,7 +1382,10 @@ static void canvas3d_fill_material_cmd(const rt_canvas3d *c,
                                        vgfx3d_draw_cmd_t *cmd) {
     rt_pixels_alpha_classification alpha_classification;
     int native_rt;
-    if (!mat || !cmd)
+    if (!cmd)
+        return;
+    cmd->temporal_weight = 1.0f;
+    if (!mat)
         return;
     native_rt = canvas3d_backend_samples_render_targets(c);
 
@@ -1529,6 +1532,7 @@ static void canvas3d_fill_material_cmd(const rt_canvas3d *c,
                                     0.0f);
     cmd->soft_particle_fade = canvas3d_clamp_material_f64(mat->soft_fade, 0.0, 1.0e6, 0.0f);
     cmd->ssr_enabled = mat->ssr_enabled ? 1 : 0;
+    cmd->temporal_weight = (float)mat->temporal_weight;
 }
 
 /// @brief Bind the canvas IBL environment to a PBR draw that has no explicit

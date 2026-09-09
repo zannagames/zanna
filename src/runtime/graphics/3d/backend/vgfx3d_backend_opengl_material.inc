@@ -472,6 +472,8 @@ static void upload_main_uniforms(gl_context_t *ctx,
                  cmd->emissive_color[2]);
     gl.Uniform4f(
         ctx->uPbrScalars0, cmd->metallic, cmd->roughness, cmd->ao, cmd->emissive_intensity);
+    gl.Uniform1f(ctx->uTemporalWeight, cmd->temporal_weight);
+    gl.Uniform1i(ctx->uMotionSigned, ctx->scene_hdr_active ? 1 : 0);
     gl.Uniform4f(ctx->uPbrScalars1,
                  cmd->normal_scale,
                  cmd->alpha_cutoff,
@@ -958,6 +960,8 @@ static void query_main_uniforms(gl_context_t *ctx) {
     U(uAlpha);
     U(uPbrScalars0);
     U(uPbrScalars1);
+    U(uTemporalWeight);
+    U(uMotionSigned);
     U(uUnlit);
     U(uShadingModel);
     U(uLightCount);
@@ -1262,6 +1266,8 @@ static void query_bloom_taa_uniforms(gl_context_t *ctx) {
     ctx->taa_uHistTex = gl.GetUniformLocation(ctx->taa_program, "uHistTex");
     ctx->taa_uMotionTex = gl.GetUniformLocation(ctx->taa_program, "uMotionTex");
     ctx->taa_uDepthTex = gl.GetUniformLocation(ctx->taa_program, "uDepthTex");
+    ctx->taa_uMotionSigned = gl.GetUniformLocation(ctx->taa_program, "uMotionSigned");
+    ctx->taa_uHistDepthTex = gl.GetUniformLocation(ctx->taa_program, "uHistDepthTex");
     ctx->taa_uInvResolution = gl.GetUniformLocation(ctx->taa_program, "uInvResolution");
     ctx->taa_uJitterDelta = gl.GetUniformLocation(ctx->taa_program, "uJitterDelta");
     ctx->taa_uBlend = gl.GetUniformLocation(ctx->taa_program, "uBlend");

@@ -754,6 +754,7 @@ typedef struct {
     double slope_scaled_depth_bias; /* additional slope-scaled depth offset for decals/overlays */
     double soft_fade;               /* soft-particle fade distance in world units (0 = off) */
     int8_t ssr_enabled;             /* screen-space reflections opt-in (Plan 10) */
+    double temporal_weight;         /* ADR 0341: local multiplier on TAA history */
     /* ADR 0312 projected decal layer: a texture composited over the albedo
      * through a MODEL-space projector (pre-skin / bind positions), never the
      * mesh UVs. Runtime-only; not persisted into VSCN. */
@@ -772,6 +773,8 @@ uint64_t rt_g3d_next_identity_serial(void);
 
 /// @brief Clear PostFX3D's weak single-canvas binding during canvas teardown.
 void postfx3d_release_canvas_binding(void *postfx, const void *canvas, uint64_t canvas_identity);
+/// @brief Invalidate CPU camera/TAA history on a cut without resetting exposure or storage.
+void postfx3d_note_camera_cut(void *postfx);
 
 /// @brief Resolve a Material3D texture slot source to the currently resident Pixels fallback.
 /// @param texture_ref Borrowed Pixels, TextureAsset3D, RenderTarget3D, or `NULL`.
@@ -1042,9 +1045,10 @@ typedef enum {
 ///   dimensions/stride/format, dirty flags, and a backend color-sync callback that
 ///   refreshes the CPU mirror from a GPU surface on readback.
 struct vgfx3d_rendertarget {
-    uint8_t *color_buf;   /* RGBA pixels (software path) */
-    float *hdr_color_buf; /* linear RGBA32F CPU mirror for HDR GPU readback */
-    float *depth_buf;     /* float depth buffer */
+    uint8_t *color_buf;        /* RGBA pixels (software path) */
+    float *hdr_color_buf;      /* linear RGBA32F CPU mirror for HDR GPU readback */
+    float *depth_buf;          /* float depth buffer */
+    uint8_t *temporal_weights; /* visible opaque history weights, 0..127 */
     int32_t width;
     int32_t height;
     int32_t stride; /* width * 4 */
@@ -1195,6 +1199,22 @@ static inline int vgfx3d_rendertarget_ensure_depth(vgfx3d_rendertarget_t *target
     if (!target->depth_buf)
         return 0;
     vgfx3d_rendertarget_fill_depth_max(target->depth_buf, pixel_count);
+    return 1;
+}
+
+/// @brief Ensure the software target's visible-surface temporal weights.
+/// @param target Target owning one byte per pixel, reserved in its allocation budget.
+/// @return One on success; zero for invalid dimensions or allocation failure.
+static inline int vgfx3d_rendertarget_ensure_temporal_weights(vgfx3d_rendertarget_t *target) {
+    size_t count;
+    if (!vgfx3d_rendertarget_valid_pixels(target, &count))
+        return 0;
+    if (!target->temporal_weights) {
+        target->temporal_weights = (uint8_t *)malloc(count);
+        if (!target->temporal_weights)
+            return 0;
+        memset(target->temporal_weights, 127, count);
+    }
     return 1;
 }
 
@@ -2100,6 +2120,19 @@ void rt_canvas3d_queue_instanced_batch(void *canvas_obj,
                                        int32_t instance_count,
                                        const float *prev_instance_matrices,
                                        int8_t has_prev_instance_matrices);
+/// @brief Internal prepared-bounds handoff (ADR 0347); all borrowed arrays are consumed before
+/// return.
+/// @details Bounds are packed minXYZ/maxXYZ in frame render coordinates and indexed like matrices.
+///   Invalid entries fall back to calculation. The caller guarantees conservative valid entries.
+void rt_canvas3d_queue_instanced_batch_prepared(void *canvas_obj,
+                                                void *mesh_obj,
+                                                void *material_obj,
+                                                const float *instance_matrices,
+                                                int32_t instance_count,
+                                                const float *prev_instance_matrices,
+                                                int8_t has_prev_instance_matrices,
+                                                const float *prepared_world_bounds,
+                                                int8_t frame_matrices);
 /// @brief Internal: queue an instanced batch whose matrices are already frame-relative.
 /// @param canvas_obj Borrowed Canvas3D handle with an active frame.
 /// @param mesh_obj Borrowed live Mesh3D used as shared geometry.

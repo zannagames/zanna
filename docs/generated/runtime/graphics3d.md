@@ -507,6 +507,7 @@ Constructor: `Zanna.Graphics3D.Material3D.New`
 | <a id="zanna-graphics3d-material3d-haslightmap"></a>`HasLightmap` | `i1` | read-only |
 | <a id="zanna-graphics3d-material3d-reflectivity"></a>`Reflectivity` | `f64` | read/write |
 | <a id="zanna-graphics3d-material3d-ssrenabled"></a>`SsrEnabled` | `i1` | read/write |
+| <a id="zanna-graphics3d-material3d-temporalweight"></a>`TemporalWeight` | `f64` | read/write |
 
 #### Methods
 
@@ -2460,6 +2461,8 @@ Constructor: `Zanna.Graphics3D.AnimBlend3D.New`
 | <a id="zanna-graphics3d-animblend3d-setweightbyname"></a>`SetWeightByName` | `void(str,f64)` | `Zanna.Graphics3D.AnimBlend3D.SetWeightByName` |
 | <a id="zanna-graphics3d-animblend3d-getweight"></a>`GetWeight` | `f64(i64)` | `Zanna.Graphics3D.AnimBlend3D.GetWeight` |
 | <a id="zanna-graphics3d-animblend3d-setspeed"></a>`SetSpeed` | `void(i64,f64)` | `Zanna.Graphics3D.AnimBlend3D.SetSpeed` |
+| <a id="zanna-graphics3d-animblend3d-setphase"></a>`SetPhase` | `void(i64,f64)` | `Zanna.Graphics3D.AnimBlend3D.SetPhase` |
+| <a id="zanna-graphics3d-animblend3d-getphase"></a>`GetPhase` | `f64(i64)` | `Zanna.Graphics3D.AnimBlend3D.GetPhase` |
 | <a id="zanna-graphics3d-animblend3d-update"></a>`Update` | `void(f64)` | `Zanna.Graphics3D.AnimBlend3D.Update` |
 | <a id="zanna-graphics3d-animblend3d-new"></a>`New` | `obj(obj)` | `Zanna.Graphics3D.AnimBlend3D.New` |
 
@@ -2480,6 +2483,8 @@ callers to construct the class directly. Its public surface exposes operations i
 | <a id="zanna-graphics3d-iksolver3d-lookat"></a>`LookAt` | `obj<Zanna.Graphics3D.IKSolver3D>(obj,i64)` | `Zanna.Graphics3D.IKSolver3D.LookAt` |
 | <a id="zanna-graphics3d-iksolver3d-fabrik"></a>`FABRIK` | `obj<Zanna.Graphics3D.IKSolver3D>(obj,obj)` | `Zanna.Graphics3D.IKSolver3D.FABRIK` |
 | <a id="zanna-graphics3d-iksolver3d-settarget"></a>`SetTarget` | `void(obj)` | `Zanna.Graphics3D.IKSolver3D.SetTarget` |
+| <a id="zanna-graphics3d-iksolver3d-setstridewarp"></a>`SetStrideWarp` | `void(obj,f64,f64)` | `Zanna.Graphics3D.IKSolver3D.SetStrideWarp` |
+| <a id="zanna-graphics3d-iksolver3d-clearstridewarp"></a>`ClearStrideWarp` | `void()` | `Zanna.Graphics3D.IKSolver3D.ClearStrideWarp` |
 | <a id="zanna-graphics3d-iksolver3d-setweight"></a>`SetWeight` | `void(f64)` | `Zanna.Graphics3D.IKSolver3D.SetWeight` |
 | <a id="zanna-graphics3d-iksolver3d-setpole"></a>`SetPole` | `void(obj)` | `Zanna.Graphics3D.IKSolver3D.SetPole` |
 | <a id="zanna-graphics3d-iksolver3d-setgroundnormal"></a>`SetGroundNormal` | `void(obj)` | `Zanna.Graphics3D.IKSolver3D.SetGroundNormal` |
@@ -2751,6 +2756,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-material3d-set-reflectivity"></a>`Zanna.Graphics3D.Material3D.set_Reflectivity` | `void(obj,f64)` | `rt_material3d_set_reflectivity` |
 | <a id="zanna-graphics3d-material3d-set-ssrenabled"></a>`Zanna.Graphics3D.Material3D.set_SsrEnabled` | `void(obj,i1)` | `rt_material3d_set_ssr_enabled` |
 | <a id="zanna-graphics3d-material3d-get-ssrenabled"></a>`Zanna.Graphics3D.Material3D.get_SsrEnabled` | `i1(obj)` | `rt_material3d_get_ssr_enabled` |
+| <a id="zanna-graphics3d-material3d-set-temporalweight"></a>`Zanna.Graphics3D.Material3D.set_TemporalWeight` | `void(obj,f64)` | `rt_material3d_set_temporal_weight` |
+| <a id="zanna-graphics3d-material3d-get-temporalweight"></a>`Zanna.Graphics3D.Material3D.get_TemporalWeight` | `f64(obj)` | `rt_material3d_get_temporal_weight` |
 | <a id="zanna-graphics3d-material3d-get-reflectivity"></a>`Zanna.Graphics3D.Material3D.get_Reflectivity` | `f64(obj)` | `rt_material3d_get_reflectivity` |
 | `Zanna.Graphics3D.RenderTarget3D.New` | `obj(i64,i64)` | `rt_rendertarget3d_new` |
 | `Zanna.Graphics3D.RenderTarget3D.NewHdr` | `obj(i64,i64)` | `rt_rendertarget3d_new_hdr` |
@@ -4083,6 +4090,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.AnimBlend3D.SetWeightByName` | `void(obj,str,f64)` | `rt_anim_blend3d_set_weight_by_name` |
 | `Zanna.Graphics3D.AnimBlend3D.GetWeight` | `f64(obj,i64)` | `rt_anim_blend3d_get_weight` |
 | `Zanna.Graphics3D.AnimBlend3D.SetSpeed` | `void(obj,i64,f64)` | `rt_anim_blend3d_set_speed` |
+| `Zanna.Graphics3D.AnimBlend3D.SetPhase` | `void(obj,i64,f64)` | `rt_anim_blend3d_set_phase` |
+| `Zanna.Graphics3D.AnimBlend3D.GetPhase` | `f64(obj,i64)` | `rt_anim_blend3d_get_phase` |
 | `Zanna.Graphics3D.AnimBlend3D.Update` | `void(obj,f64)` | `rt_anim_blend3d_update` |
 | <a id="zanna-graphics3d-animblend3d-get-statecount"></a>`Zanna.Graphics3D.AnimBlend3D.get_StateCount` | `i64(obj)` | `rt_anim_blend3d_state_count` |
 | `Zanna.Graphics3D.Canvas3D.DrawMeshBlended` | `void(obj,obj,obj,obj,obj)` | `rt_canvas3d_draw_mesh_blended` |
@@ -4099,6 +4108,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.IKSolver3D.LookAt` | `obj(obj,i64)` | `rt_ik_solver3d_look_at` |
 | `Zanna.Graphics3D.IKSolver3D.FABRIK` | `obj(obj,obj)` | `rt_ik_solver3d_fabrik` |
 | `Zanna.Graphics3D.IKSolver3D.SetTarget` | `void(obj,obj)` | `rt_ik_solver3d_set_target` |
+| `Zanna.Graphics3D.IKSolver3D.SetStrideWarp` | `void(obj,obj,f64,f64)` | `rt_ik_solver3d_set_stride_warp` |
+| `Zanna.Graphics3D.IKSolver3D.ClearStrideWarp` | `void(obj)` | `rt_ik_solver3d_clear_stride_warp` |
 | `Zanna.Graphics3D.IKSolver3D.SetWeight` | `void(obj,f64)` | `rt_ik_solver3d_set_weight` |
 | `Zanna.Graphics3D.IKSolver3D.SetPole` | `void(obj,obj)` | `rt_ik_solver3d_set_pole` |
 | `Zanna.Graphics3D.IKSolver3D.SetGroundNormal` | `void(obj,obj)` | `rt_ik_solver3d_set_ground_normal` |

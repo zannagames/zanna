@@ -1197,8 +1197,8 @@ static ID3D11ShaderResourceView *d3d11_encode_taa_pass(d3d11_context_t *ctx,
                                                        const vgfx3d_postfx_snapshot_t *snapshot,
                                                        int preserve_history) {
     d3d_taa_cb_t taa_data;
-    ID3D11ShaderResourceView *srvs[4];
-    ID3D11ShaderResourceView *null_srvs[4] = {NULL, NULL, NULL, NULL};
+    ID3D11ShaderResourceView *srvs[5];
+    ID3D11ShaderResourceView *null_srvs[5] = {NULL, NULL, NULL, NULL, NULL};
     float blend_factor[4] = {0, 0, 0, 0};
     ID3D11RenderTargetView *output_rtv;
     ID3D11ShaderResourceView *output_srv;
@@ -1249,6 +1249,7 @@ static ID3D11ShaderResourceView *d3d11_encode_taa_pass(d3d11_context_t *ctx,
     srvs[1] = ctx->taa_history_srv[read_slot];
     srvs[2] = ctx->scene_motion_srv;
     srvs[3] = ctx->scene_depth_srv;
+    srvs[4] = ctx->taa_history_depth_srv;
     ID3D11DeviceContext_IASetInputLayout(ctx->ctx, NULL);
     ID3D11DeviceContext_IASetPrimitiveTopology(ctx->ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D11DeviceContext_VSSetShader(ctx->ctx, ctx->vs_postfx, NULL, 0);
@@ -1257,17 +1258,24 @@ static ID3D11ShaderResourceView *d3d11_encode_taa_pass(d3d11_context_t *ctx,
     ID3D11DeviceContext_PSSetConstantBuffers(ctx->ctx, 0, 1, &ctx->cb_taa);
     if (ctx->linear_clamp_sampler)
         ID3D11DeviceContext_PSSetSamplers(ctx->ctx, 0, 1, &ctx->linear_clamp_sampler);
-    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 4, srvs);
+    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 5, srvs);
     ID3D11DeviceContext_RSSetState(ctx->ctx, ctx->rs_solid_no_cull);
     ID3D11DeviceContext_OMSetDepthStencilState(ctx->ctx, NULL, 0);
     ID3D11DeviceContext_OMSetBlendState(
         ctx->ctx, ctx->blend_state_opaque, blend_factor, 0xFFFFFFFF);
     ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
-    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 4, null_srvs);
+    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 5, null_srvs);
     if (FAILED(d3d11_device_status_after_void_command(ctx, "Draw(TAA resolve)")))
         return NULL;
 
     if (!preserve_history) {
+        ID3D11DeviceContext_CopyResource(ctx->ctx,
+                                         (ID3D11Resource *)ctx->taa_history_depth_tex,
+                                         (ID3D11Resource *)ctx->scene_depth_tex);
+        if (FAILED(d3d11_device_status_after_void_command(ctx, "CopyResource(TAA depth)"))) {
+            ctx->taa_history_valid = 0;
+            return NULL;
+        }
         ctx->taa_history_parity = ctx->taa_history_parity ? 0 : 1;
         ctx->taa_history_valid = 1;
     }

@@ -1549,8 +1549,13 @@ static int sw_blend_and_write(const sw_fragment_ctx *fc,
         /* Opaque: overwrite pixel; screen-space overlays skip Z writes.
          * Round to nearest (+0.5) like GPU backends so quantization does not
          * carry a consistent half-LSB darkening bias versus native output. */
-        if (!depth_disabled)
+        if (!depth_disabled) {
             zbuf[idx] = z;
+            uint8_t *weights = sw_active_temporal_weights(fc->fog_ctx);
+            if (weights)
+                weights[idx] =
+                    (uint8_t)lroundf((cmd ? clamp01f(cmd->temporal_weight) : 1.0f) * 127.0f);
+        }
         dst[0] = (uint8_t)(clamp01f(fr) * 255.0f + 0.5f);
         dst[1] = (uint8_t)(clamp01f(fg) * 255.0f + 0.5f);
         dst[2] = (uint8_t)(clamp01f(fb_c) * 255.0f + 0.5f);
@@ -2167,8 +2172,13 @@ static void raster_triangle_scissored(uint8_t *pixels,
                          * scene), skip the fragment shader and the colour write. */
                         if (!depth_disabled && cmd &&
                             cmd->alpha_mode != RT_MATERIAL3D_ALPHA_MODE_BLEND &&
-                            !cmd->additive_blend)
+                            !cmd->additive_blend) {
                             zbuf[idx] = z;
+                            uint8_t *weights = sw_active_temporal_weights(fog_ctx);
+                            if (weights)
+                                weights[idx] =
+                                    (uint8_t)lroundf(clamp01f(cmd->temporal_weight) * 127.0f);
+                        }
                         if (emit_debug)
                             depth_passes++;
                     } else {

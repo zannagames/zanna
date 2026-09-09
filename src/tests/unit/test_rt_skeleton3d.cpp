@@ -102,15 +102,13 @@ static void test_skeleton_add_bone() {
 
 static void test_skeleton_mutable_clone_preserves_imported_inverse_binds() {
     void *source = rt_skeleton3d_new();
-    rt_skeleton3d_add_bone(
-        source, rt_const_cstr("root"), -1, rt_mat4_translate(10.0, 0.0, 0.0));
+    rt_skeleton3d_add_bone(source, rt_const_cstr("root"), -1, rt_mat4_translate(10.0, 0.0, 0.0));
     rt_skeleton3d_compute_inverse_bind(source);
     auto *source_impl = static_cast<rt_skeleton3d *>(source);
     /* Model an importer-supplied inverse bind with a unit conversion that
      * cannot be reconstructed from the public local bind hierarchy. */
     source_impl->bones[0].inverse_bind[3] = -0.1f;
-    rt_skeleton3d_set_bone_alias(
-        source, rt_const_cstr("external_root"), rt_const_cstr("root"));
+    rt_skeleton3d_set_bone_alias(source, rt_const_cstr("external_root"), rt_const_cstr("root"));
     (void)rt_anim_player3d_new(source); /* freeze the imported source */
 
     void *clone = rt_skeleton3d_clone_mutable(source);
@@ -122,8 +120,8 @@ static void test_skeleton_mutable_clone_preserves_imported_inverse_binds() {
                 "CloneMutable preserves importer-supplied inverse binds exactly");
     EXPECT_TRUE(rt_skeleton3d_get_alias_count(clone) == 1,
                 "CloneMutable preserves retarget aliases");
-    int64_t child = rt_skeleton3d_add_bone(
-        clone, rt_const_cstr("finger"), 0, rt_mat4_translate(3.0, 0.0, 0.0));
+    int64_t child =
+        rt_skeleton3d_add_bone(clone, rt_const_cstr("finger"), 0, rt_mat4_translate(3.0, 0.0, 0.0));
     EXPECT_TRUE(child == 1, "CloneMutable remains structurally mutable");
     EXPECT_NEAR(clone_impl->bones[1].inverse_bind[3],
                 -3.1,
@@ -854,6 +852,48 @@ static void test_anim_blend_dt_zero_and_looping_defaults() {
     blend_impl->temp_state_local = saved_temp_state_local;
 }
 
+static void test_anim_blend_phase_control() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+    void *short_clip = rt_animation3d_new(rt_const_cstr("short"), 1.0);
+    void *long_clip = rt_animation3d_new(rt_const_cstr("long"), 2.0);
+    void *rot = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *scale = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(short_clip, 0, 0.0, rt_vec3_new(0.0, 0.0, 0.0), rot, scale);
+    rt_animation3d_add_keyframe(short_clip, 0, 1.0, rt_vec3_new(8.0, 0.0, 0.0), rot, scale);
+    rt_animation3d_set_looping(short_clip, 1);
+    void *blend = rt_anim_blend3d_new(skel);
+    auto *impl = (rt_anim_blend3d *)blend;
+    rt_anim_blend3d_add_state(blend, rt_const_cstr("short"), short_clip);
+    rt_anim_blend3d_add_state(blend, rt_const_cstr("long"), long_clip);
+    rt_anim_blend3d_set_weight(blend, 0, 1.0);
+    rt_anim_blend3d_update(blend, 0.0);
+    rt_anim_blend3d_set_phase(blend, 0, 0.25);
+    rt_anim_blend3d_set_phase(blend, 1, 0.25);
+    EXPECT_NEAR(impl->states[0].anim_time, 0.25, 1e-6, "Short clip maps normalized phase");
+    EXPECT_NEAR(impl->states[1].anim_time, 0.5, 1e-6, "Long clip maps the same phase");
+    EXPECT_NEAR(impl->bone_palette[3], 0.0, 1e-6, "Phase setter does not evaluate pose");
+    rt_anim_blend3d_update(blend, 0.0);
+    EXPECT_NEAR(impl->bone_palette[3], 2.0, 1e-5, "Existing update evaluates selected phase");
+    rt_anim_blend3d_set_phase(blend, 0, -0.25);
+    EXPECT_NEAR(rt_anim_blend3d_get_phase(blend, 0), 0.75, 1e-6, "Negative loop phase wraps");
+    rt_anim_blend3d_set_phase(blend, 0, 2.25);
+    EXPECT_NEAR(rt_anim_blend3d_get_phase(blend, 0), 0.25, 1e-6, "Positive loop phase wraps");
+    EXPECT_NEAR(
+        rt_anim_blend3d_get_phase(blend, 1), 0.25, 1e-6, "Other state phase is independent");
+    rt_anim_blend3d_set_phase(blend, 1, 2.0);
+    EXPECT_NEAR(rt_anim_blend3d_get_phase(blend, 1), 1.0, 1e-6, "One-shot endpoint clamps");
+    rt_anim_blend3d_set_phase(blend, 1, -1.0);
+    EXPECT_NEAR(rt_anim_blend3d_get_phase(blend, 1), 0.0, 1e-6, "Negative one-shot clamps");
+    rt_anim_blend3d_set_phase(blend, 0, NAN);
+    EXPECT_NEAR(rt_anim_blend3d_get_phase(blend, 0), 0.0, 1e-6, "Nonfinite phase resets safely");
+    rt_anim_blend3d_set_phase(blend, -1, 0.5);
+    rt_anim_blend3d_set_phase(nullptr, 0, 0.5);
+    EXPECT_NEAR(rt_anim_blend3d_get_phase(blend, 99), 0.0, 1e-6, "Invalid index is safe");
+    EXPECT_NEAR(rt_anim_blend3d_get_phase(nullptr, 0), 0.0, 1e-6, "Invalid receiver is safe");
+}
+
 static void test_anim_blend_long_state_names_use_canonical_lookup() {
     void *skel = rt_skeleton3d_new();
     rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -1501,12 +1541,8 @@ static void test_animation_mirror_asymmetric_bind() {
         rt_vec3_new(1.0, 10.5, 0.25),
         rt_quat_new(0.0, 0.0, sin(kPi * 55.0 / 180.0), cos(kPi * 55.0 / 180.0)),
         one);
-    rt_animation3d_add_keyframe(anim,
-                                lleg,
-                                0.0,
-                                rt_vec3_new(-1.0, -2.0, 0.0),
-                                rt_quat_new(0.0, 0.0, 0.0, 1.0),
-                                one);
+    rt_animation3d_add_keyframe(
+        anim, lleg, 0.0, rt_vec3_new(-1.0, -2.0, 0.0), rt_quat_new(0.0, 0.0, 0.0, 1.0), one);
     rt_animation3d_add_keyframe(
         anim,
         lleg,
@@ -1525,6 +1561,7 @@ static void test_animation_mirror_asymmetric_bind() {
     typedef struct {
         double m[16];
     } mat4_view;
+
     const int64_t bones[6] = {hips, spine, lleg, rleg, lfoot, rfoot};
     const int64_t partner[6] = {hips, spine, rleg, lleg, rfoot, lfoot};
 
@@ -1758,6 +1795,7 @@ int main() {
     test_crossfade_blends_target_only_channels();
     test_anim_blend_dt_zero_and_looping_defaults();
     test_anim_blend_long_state_names_use_canonical_lookup();
+    test_anim_blend_phase_control();
     test_animation_retarget_matches_bone_names();
     test_animation_retarget_compensates_rest_pose_delta();
     test_animation_retarget_composes_chain_onto_one_bone();

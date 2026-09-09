@@ -356,6 +356,53 @@ void rt_anim_blend3d_set_speed(void *obj, int64_t state, double speed) {
         b->states[state].speed = repaired;
 }
 
+/// @brief Set normalized time without evaluating or advancing the blender.
+/// @param obj Borrowed blender.
+/// @param state Zero-based state index.
+/// @param phase Normalized time; loops wrap, one-shots clamp, nonfinite becomes zero.
+void rt_anim_blend3d_set_phase(void *obj, int64_t state, double phase) {
+    rt_anim_blend3d *b = anim_blend3d_checked(obj);
+    if (!b || state < 0 || state >= animblend3d_safe_state_count(b))
+        return;
+    anim_blend_state_t *st = &b->states[state];
+    rt_animation3d *anim = animation3d_clip_slot((void **)&st->animation);
+    if (!anim)
+        return;
+    if (!isfinite(phase) || !isfinite(anim->duration) || anim->duration <= 0.0f) {
+        st->anim_time = 0.0f;
+        return;
+    }
+    if (st->looping) {
+        phase = fmod(phase, 1.0);
+        if (phase < 0.0)
+            phase += 1.0;
+    } else {
+        phase = fmin(1.0, fmax(0.0, phase));
+    }
+    st->anim_time = (float)(phase * (double)anim->duration);
+    if (st->looping && st->anim_time >= anim->duration)
+        st->anim_time = 0.0f;
+}
+
+/// @brief Read normalized clip time with the same wrapping/clamping policy.
+/// @param obj Borrowed blender.
+/// @param state Zero-based state index.
+/// @return Normalized time, or zero for invalid state/clip/time/duration.
+double rt_anim_blend3d_get_phase(void *obj, int64_t state) {
+    rt_anim_blend3d *b = anim_blend3d_checked(obj);
+    if (!b || state < 0 || state >= animblend3d_safe_state_count(b))
+        return 0.0;
+    anim_blend_state_t *st = &b->states[state];
+    rt_animation3d *anim = animation3d_clip_slot((void **)&st->animation);
+    if (!anim || !isfinite(anim->duration) || anim->duration <= 0.0f || !isfinite(st->anim_time))
+        return 0.0;
+    double phase = (double)st->anim_time / (double)anim->duration;
+    if (!st->looping)
+        return fmin(1.0, fmax(0.0, phase));
+    phase = fmod(phase, 1.0);
+    return phase < 0.0 ? phase + 1.0 : phase;
+}
+
 /// @brief Advance every contributing state by `dt` seconds and recompute the blended bone palette.
 ///
 /// For each bone, samples per-state TRS at that state's current

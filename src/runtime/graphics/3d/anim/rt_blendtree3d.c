@@ -42,6 +42,7 @@
 #include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_skeleton3d.h"
+#include "rt_skeleton3d_internal.h"
 
 #include <float.h>
 #include <math.h>
@@ -51,6 +52,8 @@
 
 /// Maximum number of sample-to-animation mappings stored inline.
 #define RT_BLENDTREE3D_MAX_SAMPLES 16
+_Static_assert(RT_ANIM_BLEND3D_MAX_STATES >= RT_BLENDTREE3D_MAX_SAMPLES,
+               "Every tree sample requires a blender state");
 /// Absolute clamp applied to public parameter coordinates.
 #define RT_BLENDTREE3D_PARAM_ABS_MAX 1000000.0
 /// Delaunay of at most 16 points has fewer than 30 final triangles; the larger

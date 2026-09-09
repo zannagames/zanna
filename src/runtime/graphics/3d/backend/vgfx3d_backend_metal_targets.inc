@@ -108,6 +108,7 @@ typedef struct {
     float decalRow1[4];
     float decalRow2[4];
     float decalParams[4];
+    float temporalParams[4];
 } mtl_per_material_t;
 
 typedef struct {
@@ -646,10 +647,9 @@ static VGFXMetalRenderTargetCacheEntry *metal_ensure_render_target_entry(
     color_desc.storageMode = MTLStorageModeShared;
     entry.colorTexture = [ctx.device newTextureWithDescriptor:color_desc];
 
-    /* Motion is encoded into normalized BGRA8 by every pipeline, independent of the
-     * user color target's LDR/HDR format. Reusing color_desc here makes HDR RTTs bind
-     * RGBA16F at attachment 1 against a BGRA8 pipeline declaration. */
-    motion_desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+    /* ADR 0342: signed UV motion uses RGBA16F independently of the user color
+     * target format. Attachment one must match every scene pipeline variant. */
+    motion_desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
                                                                      width:(NSUInteger)rt->width
                                                                     height:(NSUInteger)rt->height
                                                                  mipmapped:NO];
@@ -781,7 +781,7 @@ static MTLRenderPassDescriptor *metal_make_scene_pass_descriptor(VGFXMetalContex
     rp.colorAttachments[1].texture = motion;
     rp.colorAttachments[1].loadAction = loadExistingColor ? MTLLoadActionLoad : MTLLoadActionClear;
     rp.colorAttachments[1].storeAction = MTLStoreActionStore;
-    rp.colorAttachments[1].clearColor = MTLClearColorMake(0.5, 0.5, 0.0, 0.0);
+    rp.colorAttachments[1].clearColor = MTLClearColorMake(0.0, 0.0, 127.0 / 255.0, 0.0);
 
     rp.depthAttachment.texture = depth;
     rp.depthAttachment.loadAction = loadExistingDepth ? MTLLoadActionLoad : MTLLoadActionClear;
@@ -957,6 +957,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
     id<MTLTexture> new_postfx_resolve = nil;
     id<MTLTexture> new_taa_history_a = nil;
     id<MTLTexture> new_taa_history_b = nil;
+    id<MTLTexture> new_taa_history_depth = nil;
     NSMutableArray<id<MTLTexture>> *new_bloom_mips = nil;
 
     if (!ctx || !vgfx3d_metal_is_valid_texture2d_extent(w, h))
@@ -989,7 +990,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
             metal_new_color_texture(ctx,
                                     scene_w,
                                     scene_h,
-                                    MTLPixelFormatBGRA8Unorm,
+                                    MTLPixelFormatRGBA16Float,
                                     MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead,
                                     MTLStorageModePrivate,
                                     NO);
@@ -1091,7 +1092,9 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
                                         MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead,
                                         MTLStorageModePrivate,
                                         NO);
-            if (!new_taa_history_a || !new_taa_history_b) {
+            new_taa_history_depth =
+                metal_new_depth_texture(ctx, scene_w, scene_h, MTLTextureUsageShaderRead);
+            if (!new_taa_history_a || !new_taa_history_b || !new_taa_history_depth) {
                 return 0;
             }
         }
@@ -1099,7 +1102,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
         new_offscreen_motion = metal_new_color_texture(ctx,
                                                        w,
                                                        h,
-                                                       MTLPixelFormatBGRA8Unorm,
+                                                       MTLPixelFormatRGBA16Float,
                                                        MTLTextureUsageRenderTarget,
                                                        MTLStorageModePrivate,
                                                        NO);
@@ -1121,6 +1124,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
     ctx.bloomMipTextures = new_bloom_mips;
     ctx.taaHistoryA = new_taa_history_a;
     ctx.taaHistoryB = new_taa_history_b;
+    ctx.taaHistoryDepth = new_taa_history_depth;
     ctx.taaHistoryValid = 0;
     ctx.taaHistoryParity = 0;
     ctx.displayTexture = nil;

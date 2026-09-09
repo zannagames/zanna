@@ -2342,6 +2342,7 @@ void rt_canvas3d_note_camera_cut(void *obj) {
     if (c->backend && c->backend->note_camera_cut)
         c->backend->note_camera_cut(c->backend_ctx);
     canvas3d_clear_motion_history(c);
+    postfx3d_note_camera_cut(c->postfx);
     c->camera_cut_pending = 1;
 }
 

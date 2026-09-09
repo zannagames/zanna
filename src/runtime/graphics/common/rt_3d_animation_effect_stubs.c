@@ -114,6 +114,20 @@ void rt_anim_blend3d_set_speed(void *b, int64_t s, double sp) {
     (void)sp;
 }
 
+/// @brief Disabled-graphics phase setter; arguments are ignored.
+void rt_anim_blend3d_set_phase(void *b, int64_t state, double phase) {
+    (void)b;
+    (void)state;
+    (void)phase;
+}
+
+/// @brief Disabled-graphics phase getter; returns zero.
+double rt_anim_blend3d_get_phase(void *b, int64_t state) {
+    (void)b;
+    (void)state;
+    return 0.0;
+}
+
 /// @brief Stub for `AnimBlend3D.Update` — advance every state's playback
 ///        clock by `dt` (scaled by the state's per-state speed) and
 ///        recompute the blended pose.
@@ -251,6 +265,27 @@ void *rt_ik_solver3d_fabrik(void *skeleton, void *chain) {
 void rt_ik_solver3d_set_target(void *solver, void *target) {
     (void)solver;
     (void)target;
+}
+
+/// @brief Disabled-graphics stride configuration no-op.
+/// @param solver Ignored receiver.
+/// @param direction Ignored Vec3.
+/// @param scale Ignored multiplier.
+/// @param max_offset Ignored displacement cap.
+void rt_ik_solver3d_set_stride_warp(void *solver,
+                                    void *direction,
+                                    double scale,
+                                    double max_offset) {
+    (void)solver;
+    (void)direction;
+    (void)scale;
+    (void)max_offset;
+}
+
+/// @brief Disabled-graphics stride reset no-op.
+/// @param solver Ignored receiver.
+void rt_ik_solver3d_clear_stride_warp(void *solver) {
+    (void)solver;
 }
 
 /// @brief Ignore an IK blend-weight update.

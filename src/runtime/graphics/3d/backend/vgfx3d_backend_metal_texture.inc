@@ -275,6 +275,11 @@ static void metal_note_camera_cut(void *ctx_ptr) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
     if (!ctx)
         return;
+    ctx.taaHistoryValid = 0;
+    vgfx3d_metal_frame_history_t history = ctx.frameHistory;
+    history.scene_history_valid = 0;
+    ctx.frameHistory = history;
+    ctx->_taaFrameIndex = 0;
     if (!ctx.textureUploadCutOverride) {
         ctx.textureUploadSavedBudgetBytes = ctx.textureUploadBudgetBytes;
         ctx.textureUploadCutOverride = YES;

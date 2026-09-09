@@ -15,12 +15,13 @@
 //   - Mesh/material are retained by the batch because it stores them across frames.
 //   - The legacy float buffer layout is preserved for tests/tools that inspect
 //     batch internals; the double transform buffer is appended after those fields.
-//   - Six parallel transform buffers are kept: authoritative double transforms
-//     plus float mirrors for live, start-of-frame, and previous-frame matrices.
+//   - Four primary buffers hold live doubles/floats and current/previous double history.
+//   - Culling bounds are cached by mesh revision and prepared model matrix; views
+//     always run their own frustum test and queued draws never borrow cache entries.
 //
 // Ownership/Lifetime:
 //   - InstanceBatch3D is GC-managed; finalizer releases mesh, material,
-//     and the matrix buffers.
+//     the matrix buffers, and the retained culling-bounds cache.
 //   - Transient per-frame matrix copies are parked on the canvas's temp-buffer
 //     queue and freed at end-of-frame.
 //
@@ -32,7 +33,7 @@
 /// @brief Implements retained multi-transform InstanceBatch3D rendering.
 /// @details Batches preserve double-precision authoritative transforms, maintain
 ///   sanitized float mirrors and motion history, repair private state, perform
-///   per-instance frustum culling, and queue stable instanced submissions.
+///   per-instance frustum culling with revision-keyed bounds, and queue stable submissions.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -61,6 +62,14 @@ extern double rt_mat4_get(void *m, int64_t r, int64_t c);
 #define INST_INIT_CAP 64
 #define INSTBATCH3D_FLOAT_ABS_MAX 3.40282346638528859812e38
 #define INSTBATCH3D_WORLD_ABS_MAX 1000000000000.0
+
+typedef struct {
+    float matrix[16];
+    float world_min[3];
+    float world_max[3];
+    uint64_t epoch;
+    int8_t valid;
+} instbatch_bounds_entry;
 
 typedef struct {
     void *vptr;
@@ -96,6 +105,16 @@ typedef struct {
     double *owned_transforms64;
     double *owned_current_snapshot64;
     double *owned_prev_transforms64;
+    uint64_t bounds_refits; /* private diagnostic count of culling AABB calculations */
+    instbatch_bounds_entry *bounds_cache;
+    int32_t bounds_capacity;
+    uint64_t bounds_epoch;
+    const rt_mesh3d *bounds_mesh;
+    uint32_t bounds_mesh_revision;
+    float bounds_local_min[3];
+    float bounds_local_max[3];
+    float *submit_bounds;
+    int32_t submit_bounds_capacity;
 } rt_instbatch3d;
 
 /// @brief Compute the next geometric growth capacity for the instance buffer.
@@ -497,6 +516,81 @@ static int instbatch_repair_state(rt_instbatch3d *b) {
     return 1;
 }
 
+/// @brief Prepare retained culling bounds for a mesh revision and bounded instance capacity.
+/// @details Allocation failure leaves the uncached path available; no queued draw borrows this
+///   storage. Local bounds are part of the key to cover defensive mesh-bound repairs too.
+/// @param b Owned batch; cache allocation never exceeds geometric growth for its live count.
+/// @param mesh Borrowed validated mesh whose local bounds have been refreshed.
+static void instbatch_prepare_bounds_cache(rt_instbatch3d *b, const rt_mesh3d *mesh) {
+    if (b->bounds_epoch == 0 || b->bounds_mesh != mesh ||
+        b->bounds_mesh_revision != mesh->geometry_revision ||
+        memcmp(b->bounds_local_min, mesh->aabb_min, sizeof(b->bounds_local_min)) != 0 ||
+        memcmp(b->bounds_local_max, mesh->aabb_max, sizeof(b->bounds_local_max)) != 0) {
+        if (b->bounds_epoch == UINT64_MAX) {
+            if (b->bounds_cache && b->bounds_capacity > 0)
+                memset(b->bounds_cache, 0, (size_t)b->bounds_capacity * sizeof(*b->bounds_cache));
+            b->bounds_epoch = 1;
+        } else {
+            b->bounds_epoch++;
+        }
+        b->bounds_mesh = mesh;
+        b->bounds_mesh_revision = mesh->geometry_revision;
+        memcpy(b->bounds_local_min, mesh->aabb_min, sizeof(b->bounds_local_min));
+        memcpy(b->bounds_local_max, mesh->aabb_max, sizeof(b->bounds_local_max));
+    }
+    if (b->bounds_capacity < b->instance_count) {
+        int32_t capacity = b->bounds_capacity;
+        while (capacity < b->instance_count) {
+            if (!instbatch_next_capacity(capacity, &capacity) ||
+                (size_t)capacity > SIZE_MAX / sizeof(instbatch_bounds_entry))
+                return;
+        }
+        instbatch_bounds_entry *entries =
+            (instbatch_bounds_entry *)calloc((size_t)capacity, sizeof(*entries));
+        if (!entries)
+            return;
+        if (b->bounds_cache && b->bounds_capacity > 0)
+            memcpy(entries, b->bounds_cache, (size_t)b->bounds_capacity * sizeof(*entries));
+        free(b->bounds_cache);
+        b->bounds_cache = entries;
+        b->bounds_capacity = capacity;
+    }
+}
+
+/// @brief Reserve packed visible bounds; allocation failure keeps ordinary submission available.
+/// @param b Batch owning six floats per scratch instance.
+static int instbatch_prepare_submit_bounds(rt_instbatch3d *b) {
+    if (b->bounds_capacity < b->instance_count || !b->bounds_cache)
+        return 0;
+    if (b->submit_bounds_capacity >= b->instance_count)
+        return 1;
+    int32_t capacity = b->submit_bounds_capacity;
+    while (capacity < b->instance_count) {
+        if (!instbatch_next_capacity(capacity, &capacity) ||
+            (size_t)capacity > SIZE_MAX / (6u * sizeof(float)))
+            return 0;
+    }
+    float *bounds = (float *)realloc(b->submit_bounds, (size_t)capacity * 6u * sizeof(float));
+    if (!bounds)
+        return 0;
+    b->submit_bounds = bounds;
+    b->submit_bounds_capacity = capacity;
+    return 1;
+}
+
+/// @brief Pack an already-validated culling entry for the corresponding visible instance.
+/// @param b Batch whose culling lookup has just prepared the source entry.
+/// @param source Original instance index.
+/// @param target Compacted visible index in scratch storage.
+static int instbatch_copy_submit_bounds(rt_instbatch3d *b, int32_t source, int32_t target) {
+    const instbatch_bounds_entry *entry = &b->bounds_cache[source];
+    if (entry->epoch != b->bounds_epoch || !entry->valid)
+        return 0;
+    memcpy(b->submit_bounds + (size_t)target * 6u, entry->world_min, 3u * sizeof(float));
+    memcpy(b->submit_bounds + (size_t)target * 6u + 3u, entry->world_max, 3u * sizeof(float));
+    return 1;
+}
+
 /// @brief Per-instance frustum cull test for an instanced batch.
 /// @details Transforms the mesh's local AABB by one instance's model matrix
 ///   into world space, then runs the standard p-vertex/n-vertex frustum
@@ -505,13 +599,17 @@ static int instbatch_repair_state(rt_instbatch3d *b) {
 ///   doesn't accidentally hide every instance. The matrix is promoted to
 ///   double precision for the transform because the AABB refit can amplify
 ///   rounding at large world coordinates.
+/// @param b Borrowed batch owning optional retained culling bounds.
+/// @param index Original instance slot, independent of visibility compaction.
 /// @param frustum Borrowed camera frustum; `NULL` disables rejection.
 /// @param mesh_min Three-element local-space minimum AABB corner.
 /// @param mesh_max Three-element local-space maximum AABB corner.
 /// @param model_matrix Sixteen-element row-major instance transform.
 /// @return 1 if the instance's world AABB is on-screen or intersecting, 0 if
 ///   definitively outside the frustum.
-static int instbatch_instance_visible(const vgfx3d_frustum_t *frustum,
+static int instbatch_instance_visible(rt_instbatch3d *b,
+                                      int32_t index,
+                                      const vgfx3d_frustum_t *frustum,
                                       const float mesh_min[3],
                                       const float mesh_max[3],
                                       const float *model_matrix) {
@@ -522,11 +620,30 @@ static int instbatch_instance_visible(const vgfx3d_frustum_t *frustum,
     if (!frustum || !mesh_min || !mesh_max || !model_matrix)
         return 1;
 
+    instbatch_bounds_entry *entry = b->bounds_cache && index >= 0 && index < b->bounds_capacity
+                                        ? &b->bounds_cache[index]
+                                        : NULL;
+    if (entry && entry->epoch == b->bounds_epoch && b->bounds_epoch != 0 &&
+        memcmp(entry->matrix, model_matrix, sizeof(entry->matrix)) == 0) {
+        return !entry->valid ||
+               vgfx3d_frustum_test_aabb(frustum, entry->world_min, entry->world_max) != 0;
+    }
     for (int i = 0; i < 16; i++)
         world_matrix[i] = (double)model_matrix[i];
-    if (!vgfx3d_transform_aabb_checked(mesh_min, mesh_max, world_matrix, world_min, world_max))
-        return 1;
-    return vgfx3d_frustum_test_aabb(frustum, world_min, world_max) != 0;
+    int valid =
+        vgfx3d_transform_aabb_checked(mesh_min, mesh_max, world_matrix, world_min, world_max);
+    if (b->bounds_refits < UINT64_MAX)
+        b->bounds_refits++;
+    if (entry) {
+        memcpy(entry->matrix, model_matrix, sizeof(entry->matrix));
+        entry->epoch = b->bounds_epoch;
+        entry->valid = valid ? 1 : 0;
+        if (valid) {
+            memcpy(entry->world_min, world_min, sizeof(entry->world_min));
+            memcpy(entry->world_max, world_max, sizeof(entry->world_max));
+        }
+    }
+    return !valid || vgfx3d_frustum_test_aabb(frustum, world_min, world_max) != 0;
 }
 
 /// @brief GC finalizer — release the current-frame and motion-history buffers.
@@ -550,6 +667,14 @@ static void instbatch_finalizer(void *obj) {
     free(b->visible_prev_transforms);
     free(b->prev_submit_transforms);
     free(b->visibility_mask);
+    free(b->bounds_cache);
+    free(b->submit_bounds);
+    b->submit_bounds = NULL;
+    b->submit_bounds_capacity = 0;
+    b->bounds_cache = NULL;
+    b->bounds_capacity = 0;
+    b->bounds_epoch = 0;
+    b->bounds_mesh = NULL;
     b->transforms = NULL;
     b->transforms64 = NULL;
     b->current_snapshot = NULL;
@@ -930,6 +1055,8 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
                 mat->shadow_mode != RT_MATERIAL3D_SHADOW_MODE_NONE
             ? NULL
             : &frustum;
+    if (instance_frustum)
+        instbatch_prepare_bounds_cache(b, mesh);
     instbatch_sanitize_active_matrices(b);
     {
         int64_t frame_serial = rt_canvas3d_get_frame_serial(canvas_obj);
@@ -955,6 +1082,8 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
     if (canvas3d_uses_camera_relative_upload(c)) {
         int8_t has_prev = b->has_prev_snapshot && b->prev_count > 0 ? 1 : 0;
         int32_t visible_count = 0;
+        int prepared_bounds =
+            instance_frustum && mesh->bsphere_radius > 0.0f && instbatch_prepare_submit_bounds(b);
         if (!instbatch_ensure_matrix_scratch(
                 &b->visible_transforms, &b->visible_capacity, b->instance_count) ||
             (has_prev && !instbatch_ensure_matrix_scratch(&b->prev_submit_transforms,
@@ -971,8 +1100,10 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
                 return;
             }
             if (mesh->bsphere_radius > 0.0f &&
-                !instbatch_instance_visible(instance_frustum, mesh_min, mesh_max, current))
+                !instbatch_instance_visible(b, i, instance_frustum, mesh_min, mesh_max, current))
                 continue;
+            if (prepared_bounds && !instbatch_copy_submit_bounds(b, i, visible_count))
+                prepared_bounds = 0;
             memcpy(&b->visible_transforms[(size_t)visible_count * 16u], current, sizeof(current));
             if (has_prev) {
                 const double *previous =
@@ -988,14 +1119,15 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
         }
         if (visible_count == 0)
             return;
-        rt_canvas3d_queue_instanced_batch_frame_matrices(canvas_obj,
-                                                         mesh,
-                                                         mat,
-                                                         b->visible_transforms,
-                                                         visible_count,
-                                                         has_prev ? b->prev_submit_transforms
-                                                                  : NULL,
-                                                         has_prev);
+        rt_canvas3d_queue_instanced_batch_prepared(canvas_obj,
+                                                   mesh,
+                                                   mat,
+                                                   b->visible_transforms,
+                                                   visible_count,
+                                                   has_prev ? b->prev_submit_transforms : NULL,
+                                                   has_prev,
+                                                   prepared_bounds ? b->submit_bounds : NULL,
+                                                   1);
         return;
     }
 
@@ -1004,6 +1136,8 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
         const float *submit_prev = NULL;
         int8_t has_prev = 0;
         int32_t submit_count = b->instance_count;
+        int prepared_bounds = 0;
+        int32_t prepared_count = 0;
         if (b->has_prev_snapshot && b->prev_count > 0) {
             if (instbatch_ensure_matrix_scratch(
                     &b->prev_submit_transforms, &b->prev_submit_capacity, b->instance_count)) {
@@ -1025,12 +1159,19 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
         if (mesh->bsphere_radius > 0.0f && b->instance_count > 0 &&
             instbatch_ensure_visibility_mask(b, b->instance_count)) {
             int32_t visible_count = 0;
+            prepared_bounds = instance_frustum && instbatch_prepare_submit_bounds(b);
             for (int32_t i = 0; i < b->instance_count; i++) {
                 const float *src = &b->transforms[(size_t)i * 16u];
                 b->visibility_mask[i] =
-                    instbatch_instance_visible(instance_frustum, mesh_min, mesh_max, src) ? 1u : 0u;
+                    instbatch_instance_visible(b, i, instance_frustum, mesh_min, mesh_max, src)
+                        ? 1u
+                        : 0u;
+                if (prepared_bounds && b->visibility_mask[i] &&
+                    !instbatch_copy_submit_bounds(b, i, visible_count))
+                    prepared_bounds = 0;
                 visible_count += b->visibility_mask[i] ? 1 : 0;
             }
+            prepared_count = visible_count;
             if (visible_count == 0)
                 return;
             if (visible_count < b->instance_count &&
@@ -1060,8 +1201,19 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
                 has_prev = visible_prev ? 1 : 0;
             }
         }
-        rt_canvas3d_queue_instanced_batch(
-            canvas_obj, mesh, mat, submit_transforms, submit_count, submit_prev, has_prev);
+        // If compaction allocation failed, matrices still include hidden instances;
+        // the visible-only packed bounds must not be paired with that full array.
+        if (submit_count != prepared_count)
+            prepared_bounds = 0;
+        rt_canvas3d_queue_instanced_batch_prepared(canvas_obj,
+                                                   mesh,
+                                                   mat,
+                                                   submit_transforms,
+                                                   submit_count,
+                                                   submit_prev,
+                                                   has_prev,
+                                                   prepared_bounds ? b->submit_bounds : NULL,
+                                                   0);
     }
 }
 

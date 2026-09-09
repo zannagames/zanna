@@ -6438,7 +6438,7 @@ static void test_rendertarget_new() {
                 "RenderTarget3D.New defaults to LDR UNORM8 color storage");
     EXPECT_TRUE(rt->target->color_buf == nullptr && rt->target->depth_buf == nullptr,
                 "RenderTarget3D.New keeps CPU color/depth buffers lazy until first CPU use");
-    EXPECT_TRUE(rt->target->estimated_bytes == 256ull * 256ull * 16ull,
+    EXPECT_TRUE(rt->target->estimated_bytes == 256ull * 256ull * 25ull,
                 "RenderTarget3D.New budgets native storage and all lazy CPU mirrors");
     PASS();
 }
@@ -6452,7 +6452,7 @@ static void test_rendertarget_new_hdr() {
                 "RenderTarget3D.NewHdr stores HDR color format metadata");
     EXPECT_TRUE(rt->target->color_buf == nullptr && rt->target->depth_buf == nullptr,
                 "RenderTarget3D.NewHdr keeps CPU color/depth buffers lazy until first CPU use");
-    EXPECT_TRUE(rt->target->estimated_bytes == 256ull * 128ull * 36ull,
+    EXPECT_TRUE(rt->target->estimated_bytes == 256ull * 128ull * 45ull,
                 "RenderTarget3D.NewHdr budgets native storage and both HDR/LDR CPU mirrors");
     PASS();
 }
@@ -6583,6 +6583,7 @@ static int g_canvas_submit_draw_instanced_calls = 0;
 static int g_last_instanced_count = 0;
 static int g_last_instanced_has_prev = 0;
 static float g_last_instanced_prev_x = 0.0f;
+static float g_last_instanced_current_x = 0.0f;
 static int g_tracked_prev_model_count = 0;
 static float g_tracked_prev_model_x[16] = {0.0f};
 static vgfx3d_camera_params_t g_canvas_begin_frame_params = {};
@@ -6738,7 +6739,7 @@ static void tracked_submit_draw(void *,
 static void tracked_submit_draw_instanced(void *,
                                           vgfx_window_t,
                                           const vgfx3d_draw_cmd_t *cmd,
-                                          const float *,
+                                          const float *matrices,
                                           int32_t instance_count,
                                           const vgfx3d_light_params_t *,
                                           int32_t,
@@ -6747,6 +6748,7 @@ static void tracked_submit_draw_instanced(void *,
                                           int8_t) {
     g_canvas_submit_draw_instanced_calls++;
     g_last_instanced_count = instance_count;
+    g_last_instanced_current_x = matrices && instance_count > 0 ? matrices[3] : 0.0f;
     if (cmd) {
         g_last_instanced_has_prev = cmd->has_prev_instance_matrices;
         g_last_instanced_prev_x =
@@ -7863,6 +7865,66 @@ static void test_instanced_draw_precomputes_world_bounds_in_snapshot_pass() {
     rt_canvas3d_end(&canvas);
     EXPECT_TRUE(g_canvas_submit_draw_instanced_calls > 0 || g_canvas_submit_draw_calls > 0,
                 "instanced batch must reach the backend");
+    PASS();
+}
+
+static void test_instanced_prepared_bounds_preserve_split_mapping_and_ownership() {
+    TEST("Canvas3D prepared bounds avoid refits and preserve split mapping/ownership");
+    vgfx3d_backend_t backend = {};
+    backend.name = "opengl";
+    backend.gpu_skinning = 1;
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.submit_draw_instanced = tracked_submit_draw_instanced;
+    backend.end_frame = tracked_end_frame;
+    rt_canvas3d canvas = {};
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = canvas.height = 64;
+    rt_canvas3d_set_frustum_culling(&canvas, 1);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    rt_camera3d_look_at(
+        camera, rt_vec3_new(0.0, 0.0, 5.0), rt_vec3_new(0.0, 0.0, 0.0), rt_vec3_new(0.0, 1.0, 0.0));
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material = rt_material3d_new();
+    float matrices[64 * 16];
+    float bounds[64 * 6];
+    for (int invalid = 0; invalid < 2; ++invalid) {
+        for (int i = 0; i < 64; ++i) {
+            float x = (i % 2 ? 1000.0f : 0.0f) + (float)(i / 2) * 0.1f;
+            float *m = matrices + i * 16;
+            memset(m, 0, 16 * sizeof(float));
+            m[0] = m[5] = m[10] = m[15] = 1.0f;
+            m[3] = x;
+            m[11] = -3.0f;
+            float *b = bounds + i * 6;
+            b[0] = x - 0.5f;
+            b[1] = -0.5f;
+            b[2] = -3.5f;
+            b[3] = x + 0.5f;
+            b[4] = 0.5f;
+            b[5] = -2.5f;
+        }
+        if (invalid)
+            bounds[0] = NAN;
+        g_canvas_submit_draw_instanced_calls = 0;
+        rt_canvas3d_begin(&canvas, camera);
+        canvas.camera_relative_upload = 1;
+        canvas.camera_relative_origin[0] = 1000.0;
+        rt_canvas3d_queue_instanced_batch_prepared(
+            &canvas, mesh, material, matrices, 64, NULL, 0, bounds, 1);
+        EXPECT_EQ(canvas.camera_relative_upload, 1);
+        EXPECT_EQ(canvas.frame_aabb_transforms, invalid);
+        // Neither queued matrices nor aggregate bounds may borrow these arrays.
+        for (float &value : bounds)
+            value = 1000000.0f;
+        for (int i = 0; i < 64; ++i)
+            matrices[i * 16 + 3] = 1000000.0f;
+        rt_canvas3d_end(&canvas);
+        EXPECT_EQ(g_canvas_submit_draw_instanced_calls, 1);
+        EXPECT_EQ(g_last_instanced_count, 32);
+        EXPECT_NEAR(g_last_instanced_current_x, 0.0f, 0.000001);
+    }
     PASS();
 }
 
@@ -12743,6 +12805,72 @@ static void test_canvas_depth_only_shading() {
     PASS();
 }
 
+/* ADR 0341: history policy belongs to the visible depth-writing surface. */
+static void test_canvas_temporal_weight_software() {
+    TEST("Material temporal weights respect visibility and deferred snapshots");
+    rt_canvas3d canvas = {};
+    auto *rt = (rt_rendertarget3d *)rt_rendertarget3d_new(8, 8);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 500.0);
+    void *mesh = rt_mesh3d_new_box(2.0, 2.0, 2.0);
+    void *foreground = rt_material3d_new();
+    void *background = rt_material3d_new();
+    void *near_xf = rt_mat4_new(
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 0.0, 0.0, 0.0, 1.0);
+    void *far_xf = rt_mat4_new(
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -6.0, 0.0, 0.0, 0.0, 1.0);
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.backend_ctx = canvas.backend->create_ctx((vgfx_window_t)0, 8, 8);
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = canvas.height = 8;
+    EXPECT_TRUE(rt && rt->target && canvas.backend_ctx, "Temporal visibility fixture exists");
+    if (!rt || !rt->target || !canvas.backend_ctx)
+        return;
+    rt_canvas3d_set_render_target(&canvas, rt);
+    rt_material3d_set_unlit(foreground, 1);
+    rt_material3d_set_unlit(background, 1);
+    rt_material3d_set_temporal_weight(foreground, 0.0);
+    rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, foreground);
+    rt_material3d_set_temporal_weight(foreground, 1.0);
+    rt_canvas3d_draw_mesh(&canvas, mesh, far_xf, background);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(rt->target->temporal_weights != nullptr, "Software draw owns a weight plane");
+    EXPECT_EQ(rt->target->temporal_weights[4 * 8 + 4], 0);
+    EXPECT_EQ(rt->target->temporal_weights[0], 127);
+
+    // Clear removes old exclusions; an occluded zero-weight object cannot alter its occluder.
+    rt_material3d_set_temporal_weight(background, 0.0);
+    rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+    EXPECT_EQ(rt->target->temporal_weights[4 * 8 + 4], 127);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, foreground);
+    rt_canvas3d_draw_mesh(&canvas, mesh, far_xf, background);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(rt->target->temporal_weights[4 * 8 + 4], 127);
+
+    // Transparent and discarded masked fragments preserve the underlying surface policy.
+    for (int mode : {RT_MATERIAL3D_ALPHA_MODE_BLEND, RT_MATERIAL3D_ALPHA_MODE_MASK}) {
+        rt_material3d_set_temporal_weight(foreground, 0.0);
+        rt_material3d_set_temporal_weight(background, 1.0);
+        rt_material3d_set_alpha_mode(foreground, mode);
+        rt_material3d_set_alpha(foreground, mode == RT_MATERIAL3D_ALPHA_MODE_BLEND ? 0.5 : 0.0);
+        rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+        rt_canvas3d_begin(&canvas, camera);
+        rt_canvas3d_draw_mesh(&canvas, mesh, far_xf, background);
+        rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, foreground);
+        rt_canvas3d_end(&canvas);
+        EXPECT_EQ(rt->target->temporal_weights[4 * 8 + 4], 127);
+    }
+    rt_canvas3d_set_render_target(&canvas, nullptr);
+    canvas.backend->destroy_ctx(canvas.backend_ctx);
+    free(canvas.texture_stream_entries);
+    for (void *object : {foreground, background, mesh, camera, near_xf, far_xf, (void *)rt})
+        if (rt_obj_release_check0(object))
+            rt_obj_free(object);
+    PASS();
+}
+
 /* ADR 0312: on the software backend a projected decal paints the fragments inside its
  * model-space box and facing it, leaves the rest of the surface alone, and never paints a
  * surface whose normal points away from the projector. */
@@ -12931,6 +13059,7 @@ int main() {
     test_textureasset3d_bc3_software_decode();
     test_canvas_depth_only_shading();
     test_canvas_decal_layer_software();
+    test_canvas_temporal_weight_software();
     test_textureasset3d_bc1_bc4_bc5_software_decode();
     test_textureasset3d_bc7_software_decode();
     test_textureasset3d_etc2_astc_software_decode();
@@ -13094,6 +13223,7 @@ int main() {
     test_frame_light_flatten_cache_shares_snapshot_across_draws();
     test_shadow_distance_setter_and_effective_range();
     test_instanced_draw_precomputes_world_bounds_in_snapshot_pass();
+    test_instanced_prepared_bounds_preserve_split_mapping_and_ownership();
     test_gpu_opaque_state_sort_skips_overwritten_depth_sort();
     test_canvas_texture_upload_bytes_telemetry();
     test_canvas_frame_gpu_time_telemetry();

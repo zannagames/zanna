@@ -877,6 +877,8 @@ typedef struct {
     /* Plan 05: TAA ping-pong history (RGBA16F, persisted across frames) + jitter state. */
     GLuint taa_history_tex[2];
     GLuint taa_history_fbo[2];
+    GLuint taa_history_depth_tex;
+    GLuint taa_history_depth_fbo;
     int32_t taa_history_width;
     int32_t taa_history_height;
     int32_t taa_history_parity;
@@ -1014,6 +1016,8 @@ typedef struct {
     GLint uCameraPos, uCameraForward, uAmbientColor, uDiffuseColor, uSpecularColor, uEmissiveColor,
         uAlpha;
     GLint uPbrScalars0, uPbrScalars1;
+    GLint uTemporalWeight;
+    GLint uMotionSigned;
     GLint uUnlit, uShadingModel, uLightCount, uHasTexture, uHasNormalMap, uHasSpecularMap,
         uHasEmissiveMap;
     GLint uHasEnvMap, uReflectivity, uEnvMaxLod, uWorkflow, uAlphaMode, uHasMetallicRoughnessMap,
@@ -1078,6 +1082,8 @@ typedef struct {
     GLint bloom_down_uSrcTex, bloom_down_uSrcInvSize, bloom_down_uThreshold, bloom_down_uFirstPass;
     GLint bloom_up_uSrcTex, bloom_up_uSrcInvSize;
     GLint taa_uCurrTex, taa_uHistTex, taa_uMotionTex, taa_uDepthTex;
+    GLint taa_uHistDepthTex;
+    GLint taa_uMotionSigned;
     GLint taa_uInvResolution, taa_uJitterDelta, taa_uBlend, taa_uHistoryValid;
     GLint taa_uInvViewProjection, taa_uPrevViewProjection;
     /* Plan 10: SSR pass (program + scene-sized RGBA8 output target). */

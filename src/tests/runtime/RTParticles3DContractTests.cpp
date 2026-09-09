@@ -145,6 +145,7 @@ struct StubMaterial {
     double slope_scaled_depth_bias = 0.0;
     double soft_fade = 0.0;
     int8_t ssr_enabled = 0;
+    double temporal_weight = 1.0;
     /* ADR 0312 projected decal layer (mirrors rt_material3d). */
     void *decal_map = nullptr;
     double decal_rows[12] = {0.0};

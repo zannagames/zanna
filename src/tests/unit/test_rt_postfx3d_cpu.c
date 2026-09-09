@@ -504,6 +504,79 @@ static void test_taa_history_uses_packed_rgb_pixels(void) {
     postfx_cpu_fixture_free(&fixture);
 }
 
+static void test_taa_material_weight_is_local(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+    int ready = fixture.target && vgfx3d_rendertarget_ensure_temporal_weights(fixture.target);
+    EXPECT_TRUE(ready, "Temporal mask allocates with full default weights");
+    if (!ready) {
+        (void)rt_memory_release(fx);
+        postfx_cpu_fixture_free(&fixture);
+        return;
+    }
+    EXPECT_TRUE(fixture.target->temporal_weights[0] == 127 &&
+                    fixture.target->temporal_weights[1] == 127,
+                "Fresh scene masks preserve default history");
+    rt_postfx3d_add_taa(fx, 0.9);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    postfx_set_two_pixels(fixture.target, 255, 0, 0, 31, 0, 0, 255, 37);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    fixture.target->temporal_weights[0] = 0;
+    postfx_set_two_pixels(fixture.target, 0, 255, 0, 41, 255, 255, 0, 43);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    EXPECT_TRUE(fixture.target->color_buf[0] == 0 && fixture.target->color_buf[1] == 255,
+                "Zero-weight visible surface retains its current sample");
+    EXPECT_TRUE(fixture.target->color_buf[4] >= 20 && fixture.target->color_buf[4] <= 35,
+                "Neighboring full-weight surface still accumulates history");
+    EXPECT_TRUE(fixture.target->color_buf[3] == 41 && fixture.target->color_buf[7] == 43,
+                "Material temporal policy leaves alpha unchanged");
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
+static void test_taa_rejects_disoccluded_depth(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+    EXPECT_TRUE(fixture.target && fixture.target->depth_buf && fx,
+                "Depth-history fixture initializes");
+    if (!fixture.target || !fixture.target->depth_buf || !fx) {
+        (void)rt_memory_release(fx);
+        postfx_cpu_fixture_free(&fixture);
+        return;
+    }
+    rt_postfx3d_add_taa(fx, 0.9);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    postfx_set_two_pixels(fixture.target, 255, 0, 0, 31, 0, 0, 255, 37);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    fixture.target->depth_buf[0] = 0.5f;
+    fixture.target->depth_buf[1] = NAN;
+    postfx_set_two_pixels(fixture.target, 0, 255, 0, 41, 255, 255, 0, 43);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    EXPECT_TRUE(fixture.target->color_buf[0] == 0 && fixture.target->color_buf[1] == 255 &&
+                    fixture.target->color_buf[2] == 0,
+                "Newly revealed surface rejects the old foreground color");
+    EXPECT_TRUE(fixture.target->color_buf[4] == 255 && fixture.target->color_buf[5] == 255 &&
+                    fixture.target->color_buf[6] == 0,
+                "Invalid depth cannot borrow unrelated temporal color");
+    EXPECT_TRUE(fixture.target->color_buf[3] == 41 && fixture.target->color_buf[7] == 43,
+                "Depth-history rejection preserves current alpha");
+    fixture.target->depth_buf[1] = 0.0f;
+    postfx_set_two_pixels(fixture.target, 0, 255, 0, 47, 0, 0, 255, 53);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    EXPECT_TRUE(fixture.target->color_buf[4] == 0 && fixture.target->color_buf[5] == 0 &&
+                    fixture.target->color_buf[6] == 255,
+                "A valid current surface rejects an invalid retained depth");
+    rt_canvas3d_note_camera_cut(fixture.canvas_obj);
+    postfx_set_two_pixels(fixture.target, 255, 0, 0, 59, 0, 255, 0, 61);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    EXPECT_TRUE(fixture.target->color_buf[0] == 255 && fixture.target->color_buf[1] == 0 &&
+                    fixture.target->color_buf[4] == 0 && fixture.target->color_buf[5] == 255 &&
+                    fixture.target->color_buf[3] == 59 && fixture.target->color_buf[7] == 61,
+                "Explicit cut rejects color history even at unchanged camera/depth");
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
 static void test_scene_effects_use_row_band_worker_pool(void) {
     PostFXCPUFixture fixture = postfx_cpu_fixture_new_sized(96, 96);
     void *fx = rt_postfx3d_new();
@@ -645,6 +718,8 @@ int main(void) {
     test_auto_exposure_stratifies_bounded_samples();
     test_postfx_chain_has_exclusive_canvas_history_owner();
     test_taa_history_uses_packed_rgb_pixels();
+    test_taa_rejects_disoccluded_depth();
+    test_taa_material_weight_is_local();
     test_sharpen_steepens_soft_edges_without_halos();
     test_scene_effects_use_row_band_worker_pool();
     test_display_resolve_applies_target_subset();

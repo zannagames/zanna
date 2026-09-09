@@ -170,7 +170,7 @@ static HRESULT d3d11_clear_current_targets(d3d11_context_t *ctx,
                                            int8_t load_existing_depth) {
     float clear_color[4];
     static const float overlay_clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float motion_clear[4] = {0.5f, 0.5f, 0.0f, 0.0f}; /* alpha = SSR mask; empty = 0 */
+    float motion_clear[4] = {0.0f, 0.0f, 127.0f / 255.0f, 0.0f}; /* static/full history; no SSR */
     int issued_clear = 0;
 
     if (!ctx || !ctx->ctx)
@@ -1681,6 +1681,7 @@ static void d3d11_submit_draw(void *ctx_ptr,
                 ? vgfx3d_d3d11_clamp_float_param(cmd->soft_particle_fade, 0.0f, 1.0e6f, 0.0f)
                 : 0.0f;
         material_data.pbr_scalars1[3] = vgfx3d_draw_cmd_ssr_mask(cmd);
+        material_data.temporal_params[0] = cmd->temporal_weight;
     }
     hr = d3d11_update_constant_buffer(
         ctx, ctx->cb_per_material, &material_data, sizeof(material_data));
@@ -1908,6 +1909,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
                 ? vgfx3d_d3d11_clamp_float_param(cmd->soft_particle_fade, 0.0f, 1.0e6f, 0.0f)
                 : 0.0f;
         material_data.pbr_scalars1[3] = vgfx3d_draw_cmd_ssr_mask(cmd);
+        material_data.temporal_params[0] = cmd->temporal_weight;
     }
     hr = d3d11_update_constant_buffer(
         ctx, ctx->cb_per_material, &material_data, sizeof(material_data));

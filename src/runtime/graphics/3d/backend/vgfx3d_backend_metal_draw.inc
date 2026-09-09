@@ -269,6 +269,7 @@ static void metal_submit_draw(void *ctx_ptr,
         mat.pbrScalars1[1] = cmd->alpha_cutoff;
         mat.pbrScalars1[2] = ctx->_opaqueDepthValid ? cmd->soft_particle_fade : 0.0f;
         mat.pbrScalars1[3] = vgfx3d_draw_cmd_ssr_mask(cmd);
+        mat.temporalParams[0] = cmd->temporal_weight;
         mat.flags0[0] = vgfx3d_draw_cmd_has_base_texture(cmd) ? 1 : 0;
         mat.flags0[1] = cmd->unlit;
         mat.flags0[2] = (cmd->normal_map || cmd->normal_map_asset) ? 1 : 0;
@@ -1510,6 +1511,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         mat.pbrScalars1[1] = cmd->alpha_cutoff;
         mat.pbrScalars1[2] = ctx->_opaqueDepthValid ? cmd->soft_particle_fade : 0.0f;
         mat.pbrScalars1[3] = vgfx3d_draw_cmd_ssr_mask(cmd);
+        mat.temporalParams[0] = cmd->temporal_weight;
         mat.flags0[0] = vgfx3d_draw_cmd_has_base_texture(cmd) ? 1 : 0;
         mat.flags0[1] = cmd->unlit;
         mat.flags0[2] = (cmd->normal_map || cmd->normal_map_asset) ? 1 : 0;
@@ -2148,7 +2150,7 @@ static id<MTLTexture> metal_encode_taa_pass(VGFXMetalContext *ctx,
     mtl_taa_params_t tp;
 
     if (!ctx || !ctx.cmdBuf || !ctx.taaResolvePipeline || !source_texture || !ctx.taaHistoryA ||
-        !ctx.taaHistoryB || !ctx.offscreenMotion || !ctx.depthTexture)
+        !ctx.taaHistoryB || !ctx.taaHistoryDepth || !ctx.offscreenMotion || !ctx.depthTexture)
         return nil;
 
     history = ctx.taaHistoryParity ? ctx.taaHistoryA : ctx.taaHistoryB;
@@ -2179,12 +2181,30 @@ static id<MTLTexture> metal_encode_taa_pass(VGFXMetalContext *ctx,
     [enc setFragmentTexture:history atIndex:1];
     [enc setFragmentTexture:ctx.offscreenMotion atIndex:2];
     [enc setFragmentTexture:ctx.depthTexture atIndex:3];
+    [enc setFragmentTexture:ctx.taaHistoryDepth atIndex:4];
     [enc setFragmentSamplerState:(ctx.sharedSampler ? ctx.sharedSampler : ctx.defaultSampler)
                          atIndex:0];
     [enc setFragmentBytes:&tp length:sizeof(tp) atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
     [enc endEncoding];
 
+    /* Serialize the matching depth snapshot after the resolve has finished
+     * sampling the previous frame. Never mark color-only history valid. */
+    id<MTLBlitCommandEncoder> depthCopy = [ctx.cmdBuf blitCommandEncoder];
+    if (!depthCopy) {
+        ctx.taaHistoryValid = 0;
+        return nil;
+    }
+    [depthCopy copyFromTexture:ctx.depthTexture
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:MTLOriginMake(0, 0, 0)
+                    sourceSize:MTLSizeMake(source_texture.width, source_texture.height, 1)
+                     toTexture:ctx.taaHistoryDepth
+              destinationSlice:0
+              destinationLevel:0
+             destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [depthCopy endEncoding];
     ctx.taaHistoryParity = ctx.taaHistoryParity ? 0 : 1;
     ctx.taaHistoryValid = 1;
     return target;

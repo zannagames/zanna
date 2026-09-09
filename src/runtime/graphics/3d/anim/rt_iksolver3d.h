@@ -71,6 +71,20 @@ void *rt_ik_solver3d_fabrik(void *skeleton, void *chain);
 /// @param[in,out] solver IKSolver3D to configure.
 /// @param[in] target Borrowed Vec3 goal relative to the skeleton root.
 void rt_ik_solver3d_set_target(void *solver, void *target);
+/// @brief Derive a bounded horizontal stride target from the current animated pose (ADR 0345).
+/// @details Two-bone/FABRIK only. The normalized XZ direction projects the animated end-minus-
+///          chain-root displacement; (scale-1) times that projection offsets the endpoint.
+///          Scale clamps to [0.5,1.5], max_offset to [0,1e12] model units. Nonfinite scale
+///          becomes 1; nonfinite offset becomes 0. Degenerate direction is a pose no-op.
+///          Uses the existing weight and orientation hints. A valid SetTarget exits this mode.
+/// @param solver Solver to configure; invalid handles/look-at solvers are ignored.
+/// @param direction Borrowed model-space Vec3; non-Vec3 inputs are ignored.
+/// @param scale Requested stride multiplier.
+/// @param max_offset Maximum positional correction, in model units.
+void rt_ik_solver3d_set_stride_warp(void *solver, void *direction, double scale, double max_offset);
+/// @brief Exit stride mode and restore the saved absolute target without changing weight.
+/// @param solver Solver to configure; invalid handles are ignored.
+void rt_ik_solver3d_clear_stride_warp(void *solver);
 /// @brief Set solver weight, clamped to 0..1.
 /// @details Zero is pass-through, one applies the full constraint, and
 ///          non-finite input becomes zero.

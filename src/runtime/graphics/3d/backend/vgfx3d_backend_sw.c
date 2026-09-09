@@ -85,6 +85,8 @@ typedef struct pipe_vert pipe_vert_t;
 typedef struct {
     float *zbuf;
     size_t zbuf_capacity;
+    uint8_t *temporal_weights;
+    size_t temporal_weights_capacity;
     pipe_vert_t *vertex_scratch;
     uint32_t vertex_scratch_capacity;
     void *color_triangle_scratch;
@@ -262,6 +264,12 @@ static float sw_length3(float x, float y, float z) {
     y /= m;
     z /= m;
     return m * sqrtf(x * x + y * y + z * z);
+}
+
+/* The mask follows the active target, including worker context snapshots. */
+static uint8_t *sw_active_temporal_weights(const sw_context_t *ctx) {
+    return ctx ? (ctx->render_target ? ctx->render_target->temporal_weights : ctx->temporal_weights)
+               : NULL;
 }
 
 /// @brief Fill a software depth buffer with a constant depth value.
@@ -1242,7 +1250,7 @@ static int sw_ensure_zbuf_capacity(sw_context_t *ctx, int32_t width, int32_t hei
 
     if (!ctx || width <= 0 || height <= 0)
         return 0;
-    if (ctx->zbuf && ctx->width == width && ctx->height == height)
+    if (ctx->zbuf && ctx->temporal_weights && ctx->width == width && ctx->height == height)
         return 1;
 
     if ((size_t)width > SIZE_MAX / (size_t)height)
@@ -1259,6 +1267,14 @@ static int sw_ensure_zbuf_capacity(sw_context_t *ctx, int32_t width, int32_t hei
         ctx->zbuf = new_zbuf;
         ctx->zbuf_capacity = allocation_count;
     }
+    if (ctx->temporal_weights_capacity < pixel_count) {
+        uint8_t *weights = (uint8_t *)realloc(ctx->temporal_weights, allocation_count);
+        if (!weights)
+            return 0;
+        ctx->temporal_weights = weights;
+        ctx->temporal_weights_capacity = allocation_count;
+    }
+    memset(ctx->temporal_weights, 127, pixel_count);
     ctx->width = width;
     ctx->height = height;
     return 1;
@@ -1662,6 +1678,14 @@ const float *vgfx3d_sw_get_zbuf(void *ctx_ptr, int32_t *out_w, int32_t *out_h) {
     if (out_h)
         *out_h = ctx->height;
     return ctx->zbuf;
+}
+
+/// @brief Borrow window weights after validating the matching depth dimensions.
+/// @param ctx_ptr Borrowed software backend context.
+/// @return Window mask, or NULL before allocation / while a target is bound.
+const uint8_t *vgfx3d_sw_get_temporal_weights(void *ctx_ptr) {
+    sw_context_t *ctx = (sw_context_t *)ctx_ptr;
+    return vgfx3d_sw_get_zbuf(ctx_ptr, NULL, NULL) ? ctx->temporal_weights : NULL;
 }
 
 const vgfx3d_backend_t vgfx3d_software_backend = {

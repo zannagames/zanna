@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 
 extern "C" {
@@ -893,6 +894,97 @@ static void test_skeletal_state_registration_rejects_out_of_range_clip_bones() {
                 "BlendTree3D rejects samples whose clips cannot drive the bound skeleton");
 }
 
+static void test_pose_relative_stride_warp() {
+    void *skel = rt_skeleton3d_new();
+    int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("hip"), -1, rt_mat4_identity());
+    int64_t knee = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("knee"), root, rt_mat4_translate(0.8, -0.4, 0.0));
+    int64_t foot = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("foot"), knee, rt_mat4_translate(-0.2, -0.6, 0.5));
+    rt_skeleton3d_compute_inverse_bind(skel);
+    void *solver = rt_ik_solver3d_two_bone(skel, root, knee, foot);
+    void *direction = rt_vec3_new(4.0, 99.0, 0.0); // Y cannot change animated height.
+    rt_ik_solver3d_set_target(solver, rt_vec3_new(0.3, -1.0, 0.5));
+    float locals[48], globals[48];
+    auto evaluate = [&]() {
+        auto *skeleton = static_cast<rt_skeleton3d *>(skel);
+        for (int i = 0; i < 3; ++i)
+            memcpy(locals + i * 16, skeleton->bones[i].bind_pose_local, 16 * sizeof(float));
+        EXPECT_TRUE(rt_ik_solver3d_apply_to_pose(solver, locals, globals, 3) == 1,
+                    "stride warp applies to a fresh animated pose");
+    };
+    rt_ik_solver3d_set_stride_warp(solver, direction, 1.5, 0.1);
+    for (int frame = 0; frame < 8; ++frame) {
+        evaluate();
+        EXPECT_NEAR(globals[35], 0.7, 0.005, "stride warp caps displacement without frame drift");
+        EXPECT_NEAR(globals[39], -1.0, 0.005, "stride warp preserves endpoint height");
+        EXPECT_NEAR(globals[43], 0.5, 0.005, "stride warp preserves transverse endpoint");
+        for (int bone = 1; bone < 3; ++bone) {
+            double length2 = 0.0;
+            for (int lane : {3, 7, 11}) {
+                double d = globals[bone * 16 + lane] - globals[(bone - 1) * 16 + lane];
+                length2 += d * d;
+            }
+            EXPECT_NEAR(length2,
+                        bone == 1 ? 0.8 : 0.65,
+                        0.005,
+                        "stride warp preserves limb segment lengths");
+        }
+    }
+    // Input pose moves after configuration: the next solve must follow that
+    // pose, not a bind-pose endpoint cached by the setter.
+    evaluate();
+    auto *skeleton = static_cast<rt_skeleton3d *>(skel);
+    for (int i = 0; i < 3; ++i)
+        memcpy(locals + i * 16, skeleton->bones[i].bind_pose_local, 16 * sizeof(float));
+    locals[3] = 2.0f;
+    EXPECT_TRUE(rt_ik_solver3d_apply_to_pose(solver, locals, globals, 3) == 1,
+                "stride warp reads current root translation");
+    EXPECT_NEAR(globals[35], 2.7, 0.005, "stride warp follows current pose rather than old target");
+    rt_ik_solver3d_set_stride_warp(solver, direction, 0.5, 1.0);
+    evaluate();
+    EXPECT_NEAR(globals[35], 0.3, 0.005, "stride warp can shorten a stride");
+    for (double scale : {1.0, std::numeric_limits<double>::quiet_NaN()}) {
+        rt_ik_solver3d_set_stride_warp(solver, direction, scale, 1.0);
+        evaluate();
+        EXPECT_NEAR(globals[35], 0.6, 0.00001, "identity/nonfinite stride is a pose no-op");
+    }
+    rt_ik_solver3d_set_stride_warp(solver, direction, 1.5, std::numeric_limits<double>::infinity());
+    evaluate();
+    EXPECT_NEAR(globals[35], 0.6, 0.00001, "nonfinite offset is a pose no-op");
+    rt_ik_solver3d_set_stride_warp(solver, rt_vec3_new(0, 1, 0), 1.5, 1.0);
+    evaluate();
+    EXPECT_NEAR(globals[35], 0.6, 0.00001, "vertical-only direction is a pose no-op");
+    rt_ik_solver3d_clear_stride_warp(solver);
+    evaluate();
+    EXPECT_NEAR(globals[35], 0.3, 0.005, "clear restores the saved absolute target");
+    rt_ik_solver3d_set_stride_warp(solver, direction, 1.5, 0.1);
+    rt_ik_solver3d_set_target(solver, rt_vec3_new(0.4, -1.0, 0.5));
+    evaluate();
+    EXPECT_NEAR(globals[35], 0.4, 0.005, "SetTarget exits pose-relative mode");
+    rt_ik_solver3d_set_stride_warp(nullptr, direction, 1.2, 1.0);
+    rt_ik_solver3d_clear_stride_warp(nullptr);
+    void *chain = rt_seq_new_owned();
+    rt_seq_push(chain, rt_box_i64(root));
+    rt_seq_push(chain, rt_box_i64(knee));
+    rt_seq_push(chain, rt_box_i64(foot));
+    solver = rt_ik_solver3d_fabrik(skel, chain);
+    rt_ik_solver3d_set_stride_warp(solver, direction, 100.0, 1.0);
+    evaluate();
+    EXPECT_NEAR(globals[35], 0.9, 0.005, "FABRIK stride scale clamps to 1.5");
+    rt_ik_solver3d_set_stride_warp(solver, direction, 1.5, -1.0);
+    evaluate();
+    EXPECT_NEAR(globals[35], 0.6, 0.00001, "negative stride cap is a pose no-op");
+    rt_ik_solver3d_set_stride_warp(solver, direction, 1.5, 0.1);
+    rt_ik_solver3d_set_weight(solver, 0.0);
+    auto *bind = static_cast<rt_skeleton3d *>(skel);
+    evaluate();
+    for (int i = 0; i < 3; ++i)
+        EXPECT_TRUE(memcmp(locals + i * 16, bind->bones[i].bind_pose_local, 16 * sizeof(float)) ==
+                        0,
+                    "zero weight leaves the input pose unchanged");
+}
+
 static void test_two_bone_ik_pole_vector() {
     void *skel = rt_skeleton3d_new();
     int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -1135,6 +1227,64 @@ static void test_two_bone_ik_ground_normal_is_a_delta() {
     EXPECT_NEAR(rt_mat4_get(foot_mat, 2, 0), nz, 0.05, "slope tilts foot X axis onto normal.z");
     EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 1), -ny, 0.05, "slope tilts foot Y axis by the delta.x");
     EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 1), nx, 0.05, "slope tilts foot Y axis by the delta.y");
+}
+
+static void test_ground_hint_preserves_incoming_orientation() {
+    const double half_pi = 1.5707963267948966;
+    void *skel = rt_skeleton3d_new();
+    int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    void *knee_bind = rt_mat4_mul(rt_mat4_translate(1, 0, 0), rt_mat4_rotate_z(half_pi));
+    int64_t knee = rt_skeleton3d_add_bone(skel, rt_const_cstr("knee"), root, knee_bind);
+    int64_t foot =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("foot"), knee, rt_mat4_translate(1, 0, 0));
+    rt_skeleton3d_compute_inverse_bind(skel);
+    void *chain = rt_seq_new_owned();
+    rt_seq_push(chain, rt_box_i64(root));
+    rt_seq_push(chain, rt_box_i64(knee));
+    rt_seq_push(chain, rt_box_i64(foot));
+    for (int kind = 0; kind < 2; ++kind) {
+        void *controller = rt_anim_controller3d_new(skel);
+        void *solver = kind == 0 ? rt_ik_solver3d_two_bone(skel, root, knee, foot)
+                                 : rt_ik_solver3d_fabrik(skel, chain);
+        rt_ik_solver3d_set_target(solver, rt_vec3_new(1.3, 0.5, 0.2));
+        for (double weight : {0.0, 0.38, 1.0}) {
+            for (int slope = 0; slope < 2; ++slope) {
+                rt_ik_solver3d_set_weight(solver, weight);
+                rt_ik_solver3d_set_ground_normal(solver, rt_vec3_new(slope ? 0.5 : 0.0, 1, 0));
+                rt_anim_controller3d_set_ik_solver(controller, solver);
+                void *m = rt_anim_controller3d_get_bone_matrix(controller, foot);
+                const double angle = slope ? std::atan(0.5) * weight : 0.0;
+                EXPECT_NEAR(rt_mat4_get(m, 0, 0),
+                            std::sin(angle),
+                            0.005,
+                            "displaced foot retains authored X axis plus weighted ground tilt.x");
+                EXPECT_NEAR(rt_mat4_get(m, 1, 0),
+                            std::cos(angle),
+                            0.005,
+                            "displaced foot retains authored X axis plus weighted ground tilt.y");
+                EXPECT_NEAR(rt_mat4_get(m, 0, 1),
+                            -std::cos(angle),
+                            0.005,
+                            "displaced foot retains authored horizontal toe axis.x");
+                EXPECT_NEAR(rt_mat4_get(m, 1, 1),
+                            std::sin(angle),
+                            0.005,
+                            "displaced foot retains authored horizontal toe axis.y");
+                EXPECT_NEAR(rt_mat4_get(m, 0, 3),
+                            1.0 + 0.3 * weight,
+                            0.015,
+                            "ground hint preserves solved endpoint x");
+                EXPECT_NEAR(rt_mat4_get(m, 1, 3),
+                            1.0 - 0.5 * weight,
+                            0.015,
+                            "ground hint preserves solved endpoint y");
+                EXPECT_NEAR(rt_mat4_get(m, 2, 3),
+                            0.2 * weight,
+                            0.015,
+                            "ground hint preserves solved endpoint z");
+            }
+        }
+    }
 }
 
 static void test_two_bone_ik_target_rotation_goal() {
@@ -2168,11 +2318,13 @@ int main() {
     test_controller_blend_tree_root_motion_uses_final_pose();
     test_controller_private_skeleton_growth_stays_in_bounds();
     test_skeletal_state_registration_rejects_out_of_range_clip_bones();
+    test_pose_relative_stride_warp();
     test_two_bone_ik_pole_vector();
     test_two_bone_ik_bends_bone_rotations();
     test_controller_ik_solver_drives_end_effector();
     test_controller_ordered_ik_solver_stack();
     test_two_bone_ik_ground_normal_is_a_delta();
+    test_ground_hint_preserves_incoming_orientation();
     test_two_bone_ik_target_rotation_goal();
     test_add_ik_solver_rejects_source_skeleton_solver_on_clone();
     test_ik_solver_look_at_and_fabrik_factories();

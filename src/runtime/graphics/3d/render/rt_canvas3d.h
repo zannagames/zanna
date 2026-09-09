@@ -722,8 +722,8 @@ void rt_canvas3d_set_texture_upload_budget(void *obj, int64_t bytes);
 /// @return Pending payload bytes, or zero for invalid input.
 int64_t rt_canvas3d_get_texture_upload_pending_bytes(void *obj);
 /// @brief ADR 0338: note a hard camera cut; the next presented frame completes every texture
-///        upload it demands (the budget returns at present), drops motion-blur history and
-///        fades lens flares in from zero.
+///        upload it demands (the budget returns at present), drops motion/TAA camera history,
+///        and fades lens flares in from zero. Exposure adaptation is preserved (ADR 0340).
 /// @param obj Borrowed Canvas3D handle.
 void rt_canvas3d_note_camera_cut(void *obj);
 /// @brief Enable or disable automatic TextureAsset3D mip-residency streaming (default off).
@@ -1463,6 +1463,14 @@ void rt_material3d_set_ssr_enabled(void *obj, int8_t enabled);
 /// @param obj Borrowed Material3D handle.
 /// @return 1 when SSR is enabled; otherwise 0.
 int8_t rt_material3d_get_ssr_enabled(void *obj);
+/// @brief Set the local TAA history multiplier, clamped to [0,1]; non-finite uses 1.
+/// @param obj Borrowed Material3D handle; invalid handles are ignored.
+/// @param weight Zero rejects history, one preserves the configured contribution.
+void rt_material3d_set_temporal_weight(void *obj, double weight);
+/// @brief Read the local TAA history multiplier (ADR 0341).
+/// @param obj Borrowed Material3D handle.
+/// @return Bounded weight, or 1 for an invalid receiver.
+double rt_material3d_get_temporal_weight(void *obj);
 /// @brief True if unlit mode is enabled.
 /// @param obj Borrowed Material3D handle.
 /// @return 1 when lighting is bypassed; otherwise 0.

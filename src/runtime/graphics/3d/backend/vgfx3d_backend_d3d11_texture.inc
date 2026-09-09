@@ -840,6 +840,9 @@ static void d3d11_note_camera_cut(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!ctx)
         return;
+    ctx->taa_history_valid = 0;
+    ctx->scene_history_valid = 0;
+    ctx->taa_frame_index = 0;
     if (!ctx->texture_upload_cut_override) {
         ctx->texture_upload_saved_budget_bytes = ctx->texture_upload_budget_bytes;
         ctx->texture_upload_cut_override = 1;

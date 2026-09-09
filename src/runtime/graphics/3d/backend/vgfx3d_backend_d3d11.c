@@ -557,6 +557,8 @@ typedef struct {
     ID3D11ShaderResourceView *ssr_srv;
     int32_t ssr_width, ssr_height;
     ID3D11ShaderResourceView *taa_history_srv[2];
+    ID3D11Texture2D *taa_history_depth_tex;
+    ID3D11ShaderResourceView *taa_history_depth_srv;
     int32_t taa_history_width;
     int32_t taa_history_height;
     int32_t taa_history_parity;

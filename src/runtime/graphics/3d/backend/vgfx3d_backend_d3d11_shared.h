@@ -176,6 +176,7 @@ typedef struct {
      * and params = (forward.xyz, opacity; opacity 0 disables). */
     float decal_rows[3][4];
     float decal_params[4];
+    float temporal_params[4];
 } vgfx3d_d3d11_per_material_t;
 
 /// @brief One per-instance vertex-buffer entry for instanced draws: model, normal, and

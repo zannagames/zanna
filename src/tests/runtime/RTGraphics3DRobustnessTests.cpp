@@ -303,6 +303,7 @@ struct InstBatchView {
     double *owned_transforms64;
     double *owned_current_snapshot64;
     double *owned_prev_transforms64;
+    uint64_t bounds_refits;
 };
 
 struct TransformView {
@@ -1761,6 +1762,8 @@ static void test_instance_batch_repairs_storage_and_preserves_relative_motion_hi
     rt_canvas3d_draw_instanced(&canvas, batch);
     assert(batch->motion_frame_initialized == 1);
     assert(batch->motion_snapshot_count == 1 && batch->last_motion_frame == 0);
+    assert(batch->bounds_refits == 1);
+    assert(batch->visibility_mask[0] == 1);
 
     void *translated =
         rt_mat4_new(1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
@@ -1771,23 +1774,73 @@ static void test_instance_batch_repairs_storage_and_preserves_relative_motion_hi
     assert(batch->prev_transforms64[3] == 0.0);
     assert(batch->current_snapshot64[3] == 2.0);
 
+    // A stopped batch advances previous once, then preserves zero motion.
+    for (int frame = 2; frame < 5; ++frame) {
+        canvas.frame_serial = frame;
+        rt_canvas3d_draw_instanced(&canvas, batch);
+        assert(batch->current_snapshot64[3] == 2.0);
+        assert(batch->prev_transforms64[3] == 2.0);
+        assert(batch->bounds_refits == 2);
+        assert(batch->visibility_mask[0] == 0);
+    }
+
+    // A shared mesh revision invalidates retained culling bounds even in the same frame.
+    rt_mesh3d_transform(mesh, rt_mat4_identity());
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->bounds_refits == 3);
+
     const double origin = 999999999999.0;
     void *large_translation = rt_mat4_new(
         1.0, 0.0, 0.0, origin + 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
     rt_instbatch3d_set(batch, 0, large_translation);
     canvas.camera_relative_upload = 1;
     canvas.camera_relative_origin[0] = origin;
-    canvas.frame_serial = 2;
+    canvas.frame_serial = 5;
     rt_canvas3d_draw_instanced(&canvas, batch);
     assert(batch->visible_transforms != nullptr);
     assert(std::fabs(batch->visible_transforms[3] - 0.25f) < 1e-6f);
     assert(batch->current_snapshot64[3] == origin + 0.25);
     assert(batch->prev_transforms64[3] == 2.0);
 
+    // A second draw in the same frame must not replace the first-draw snapshot.
+    void *subframe_translation = rt_mat4_new(
+        1.0, 0.0, 0.0, origin + 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    rt_instbatch3d_set(batch, 0, subframe_translation);
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->current_snapshot64[3] == origin + 0.25);
+    assert(batch->prev_transforms64[3] == 2.0);
+    canvas.frame_serial = 6;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->current_snapshot64[3] == origin + 0.5);
+    assert(batch->prev_transforms64[3] == origin + 0.25);
+    assert(batch->bounds_refits == 5);
+
     rt_instbatch3d_clear(batch);
     assert(batch->instance_count == 0 && batch->motion_snapshot_count == 0);
     assert(batch->prev_count == 0 && batch->has_prev_snapshot == 0);
     assert(batch->motion_frame_initialized == 0);
+
+    // Grow beyond the initial cache, then swap-remove and reuse slots.
+    canvas.camera_relative_upload = 0;
+    canvas.frame_serial = 7;
+    for (int i = 0; i < 70; ++i)
+        rt_instbatch3d_add(batch, rt_mat4_identity());
+    const uint64_t before_growth = batch->bounds_refits;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->bounds_refits == before_growth + 70);
+    rt_instbatch3d_remove(batch, 0);
+    canvas.frame_serial = 8;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->bounds_refits == before_growth + 70);
+    rt_instbatch3d_set(batch, 68, translated);
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->bounds_refits == before_growth + 71);
+    assert(batch->visibility_mask[68] == 0);
+    rt_instbatch3d_clear(batch);
+    rt_instbatch3d_add(batch, rt_mat4_identity());
+    canvas.frame_serial = 9;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->visibility_mask[0] == 1);
 }
 
 static void test_physics_joints_deduplicate_and_raycast_is_true_ray() {

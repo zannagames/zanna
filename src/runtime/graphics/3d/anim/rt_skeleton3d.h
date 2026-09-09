@@ -474,6 +474,10 @@ double rt_anim_blend3d_get_weight(void *blend, int64_t state);
 /// @param[in] state Zero-based state index.
 /// @param[in] speed Signed playback multiplier.
 void rt_anim_blend3d_set_speed(void *blend, int64_t state, double speed);
+/// Set normalized state time; looping wraps, one-shot clamps. Does not evaluate.
+void rt_anim_blend3d_set_phase(void *blend, int64_t state, double phase);
+/// Read normalized state time; invalid state returns zero.
+double rt_anim_blend3d_get_phase(void *blend, int64_t state);
 /// @brief Tick the blender forward by @p dt seconds (advances all enabled states).
 /// @details All valid state timers advance, regardless of weight. Looping clips
 ///          wrap and non-looping clips clamp at both ends. The resulting pose

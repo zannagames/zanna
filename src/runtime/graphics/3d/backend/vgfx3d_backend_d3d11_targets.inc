@@ -479,7 +479,7 @@ static void d3d11_destroy_scene_targets(d3d11_context_t *ctx) {
 /// @brief Allocate scene render targets at the requested size, idempotent on size match.
 ///
 /// Builds three targets: scene color (HDR-capable), motion vectors
-/// (LDR), and depth (R32). A complete replacement is staged before the
+/// (signed RGBA16F), and depth (R32). A complete replacement is staged before the
 /// live scene/dependent targets are retired; allocation failure preserves them.
 /// @param[in,out] ctx Context that owns the scene target set.
 /// @param[in] width Required scene width.
@@ -517,7 +517,7 @@ static HRESULT d3d11_ensure_scene_targets(d3d11_context_t *ctx, int32_t width, i
     hr = d3d11_create_color_target(ctx,
                                    width,
                                    height,
-                                   vgfx3d_d3d11_choose_color_format(VGFX3D_D3D11_TARGET_SWAPCHAIN),
+                                   DXGI_FORMAT_R16G16B16A16_FLOAT,
                                    &new_motion_tex,
                                    &new_motion_rtv,
                                    &new_motion_srv);
@@ -794,6 +794,8 @@ static void d3d11_destroy_taa_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
     d3d11_unbind_postfx_resources(ctx);
+    SAFE_RELEASE(ctx->taa_history_depth_srv);
+    SAFE_RELEASE(ctx->taa_history_depth_tex);
     for (int32_t i = 0; i < 2; i++) {
         SAFE_RELEASE(ctx->taa_history_srv[i]);
         SAFE_RELEASE(ctx->taa_history_rtv[i]);
@@ -811,7 +813,8 @@ static void d3d11_destroy_taa_targets(d3d11_context_t *ctx) {
 /// @param[in] height Required history height.
 /// @return One when both target triplets exist at the requested size.
 static int d3d11_taa_targets_complete(const d3d11_context_t *ctx, int32_t width, int32_t height) {
-    if (!ctx || ctx->taa_history_width != width || ctx->taa_history_height != height)
+    if (!ctx || !ctx->taa_history_depth_tex || !ctx->taa_history_depth_srv ||
+        ctx->taa_history_width != width || ctx->taa_history_height != height)
         return 0;
     for (int32_t i = 0; i < 2; i++) {
         if (!ctx->taa_history_tex[i] || !ctx->taa_history_rtv[i] || !ctx->taa_history_srv[i])
@@ -829,6 +832,9 @@ static HRESULT d3d11_ensure_taa_targets(d3d11_context_t *ctx, int32_t width, int
     ID3D11Texture2D *new_tex[2] = {NULL, NULL};
     ID3D11RenderTargetView *new_rtv[2] = {NULL, NULL};
     ID3D11ShaderResourceView *new_srv[2] = {NULL, NULL};
+    ID3D11Texture2D *new_depth_tex = NULL;
+    ID3D11ShaderResourceView *new_depth_srv = NULL;
+    ID3D11DepthStencilView *new_depth_dsv = NULL;
     HRESULT hr;
 
     if (!ctx || !vgfx3d_d3d11_is_valid_texture2d_extent(width, height) || !ctx->ps_taa)
@@ -847,7 +853,14 @@ static HRESULT d3d11_ensure_taa_targets(d3d11_context_t *ctx, int32_t width, int
         if (FAILED(hr))
             goto fail;
     }
+    hr = d3d11_create_depth_target(
+        ctx, width, height, 1, &new_depth_tex, &new_depth_dsv, &new_depth_srv);
+    if (FAILED(hr))
+        goto fail;
+    SAFE_RELEASE(new_depth_dsv);
     d3d11_destroy_taa_targets(ctx);
+    ctx->taa_history_depth_tex = new_depth_tex;
+    ctx->taa_history_depth_srv = new_depth_srv;
     for (int32_t i = 0; i < 2; i++) {
         ctx->taa_history_tex[i] = new_tex[i];
         ctx->taa_history_rtv[i] = new_rtv[i];
@@ -860,6 +873,9 @@ static HRESULT d3d11_ensure_taa_targets(d3d11_context_t *ctx, int32_t width, int
     return S_OK;
 
 fail:
+    SAFE_RELEASE(new_depth_dsv);
+    SAFE_RELEASE(new_depth_srv);
+    SAFE_RELEASE(new_depth_tex);
     for (int32_t i = 0; i < 2; i++) {
         SAFE_RELEASE(new_srv[i]);
         SAFE_RELEASE(new_rtv[i]);

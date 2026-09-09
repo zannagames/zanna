@@ -355,3 +355,12 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 
 - [ADR 0338](0338-camera-cut-residency-hint.md) — Camera-cut residency hint: unbudgeted uploads, flare fade-in, 2048-entry texture caches
 - [ADR 0339](0339-aarch64-function-wide-register-allocation.md) — AArch64 function-wide register allocation over intervals with holes and ParallelCopy edges
+- [ADR 0340](0340-camera-cut-temporal-history-invalidation.md) — Invalidate image history on camera cuts while preserving exposure and residency policy
+- [ADR 0341](0341-material-temporal-history-weight.md) — Per-material temporal history weight with motion-validity preservation
+- [ADR 0342](0342-floating-point-motion-vectors.md) — Signed floating-point motion vectors for subpixel reprojection
+- [ADR 0343](0343-animation-blend-phase-control.md) — Normalized per-state animation phase control
+- [ADR 0344](0344-blend-tree-state-capacity.md) — Match bounded blender state capacity to all 16 tree samples
+- [ADR 0345: Pose-relative stride warp](0345-pose-relative-stride-warp.md)
+- [ADR 0346](0346-ground-hint-authored-orientation.md) — Preserve incoming shoe orientation while positional IK follows terrain
+
+- [0347: Prepared instance bounds](0347-prepared-instance-bounds.md)

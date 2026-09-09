@@ -369,7 +369,10 @@ static void gl_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
             gl.ClearColor(ctx->clearR, ctx->clearG, ctx->clearB, 1.0f);
             gl.Clear(GL_COLOR_BUFFER_BIT);
             gl.DrawBuffer(GL_COLOR_ATTACHMENT1);
-            gl.ClearColor(0.5f, 0.5f, 0.0f, 0.0f); /* alpha = SSR mask; empty = 0 */
+            gl.ClearColor(ctx->scene_hdr_active ? 0.0f : 0.5f,
+                          ctx->scene_hdr_active ? 0.0f : 0.5f,
+                          127.0f / 255.0f,
+                          0.0f); /* alpha = SSR mask; empty = 0 */
             gl.Clear(GL_COLOR_BUFFER_BIT);
         }
         if (!cam->load_existing_depth) {

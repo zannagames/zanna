@@ -452,6 +452,7 @@ void vgfx3d_sanitize_draw_command(const struct vgfx3d_draw_cmd *src, struct vgfx
     dst->has_prev_model_matrix = src->has_prev_model_matrix != 0;
     dst->has_prev_instance_matrices = src->has_prev_instance_matrices != 0;
     dst->ssr_enabled = src->ssr_enabled != 0;
+    dst->temporal_weight = vgfx3d_clamp_float_param(src->temporal_weight, 0.0f, 1.0f, 1.0f);
     dst->has_alpha_texture = src->has_alpha_texture != 0;
 }
 

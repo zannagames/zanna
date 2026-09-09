@@ -30,6 +30,13 @@ reaches the right position with an arbitrary inherited rotation. Constraints
 that need a specific end orientation (an off hand wrapping a bat) had no
 runtime surface to express it.
 
+## Follow-up
+
+[ADR 0346](0346-ground-hint-authored-orientation.md) supersedes the
+post-solve rotation basis for ground hints: positional correction now
+preserves the incoming shoe orientation and adds only weighted terrain tilt.
+Explicit rotation goals and their precedence remain as specified here.
+
 ## Decision
 
 1. Ground-normal alignment becomes a delta, not an absolute basis.

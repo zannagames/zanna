@@ -735,6 +735,9 @@ static void gl_note_camera_cut(void *ctx_ptr) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx)
         return;
+    ctx->taa_history_valid = 0;
+    ctx->scene_history_valid = 0;
+    ctx->taa_frame_index = 0;
     if (!ctx->texture_upload_cut_override) {
         ctx->texture_upload_saved_budget_bytes = ctx->texture_upload_budget_bytes;
         ctx->texture_upload_cut_override = 1;

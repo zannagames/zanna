@@ -192,7 +192,8 @@ typedef struct {
      * capability validation at Canvas3D.SetPostFX bind time so callers can
      * query why a chain was rejected instead of trapping at apply time. */
     char last_error[160];
-    /* CPU scene-effect state (software path): TAA history (packed RGB float)
+    /* CPU scene-effect state (software path): TAA history (packed RGB float
+     * followed by a matching NDC-depth plane in the same owned allocation)
      * and the previous frame's view-projection for reprojection. Owned by the
      * chain; released by the finalizer; reset on size change or NotifyCut. */
     float *taa_history;
@@ -450,6 +451,7 @@ static void postfx3d_repair_effect_storage(rt_postfx3d *fx) {
 static int32_t postfx3d_repair_state(rt_postfx3d *fx);
 static int postfx_rgb_float_layout(
     int32_t w, int32_t h, size_t *out_pixels, size_t *out_floats, size_t *out_bytes);
+static int postfx_taa_storage_layout(int32_t w, int32_t h, size_t *out_bytes);
 static void postfx3d_repair_float_storage(rt_postfx3d *fx,
                                           float **mirror,
                                           size_t *mirror_capacity,
@@ -695,8 +697,7 @@ static int32_t postfx3d_repair_state(rt_postfx3d *fx) {
     /* TAA has only one capacity field because its public mirror historically exposed dimensions,
      * not bytes. Reassert the pointer directly after validating the owner tuple above. */
     fx->taa_history = fx->owned_taa_history;
-    if (!fx->taa_history ||
-        !postfx_rgb_float_layout(fx->taa_w, fx->taa_h, NULL, NULL, &taa_bytes) ||
+    if (!fx->taa_history || !postfx_taa_storage_layout(fx->taa_w, fx->taa_h, &taa_bytes) ||
         taa_bytes > fx->taa_history_capacity_bytes) {
         fx->taa_w = 0;
         fx->taa_h = 0;
@@ -807,6 +808,20 @@ static int postfx_rgb_float_layout(
         *out_floats = floats;
     if (out_bytes)
         *out_bytes = floats * sizeof(float);
+    return 1;
+}
+
+/// @brief Bound the packed RGB history plus one matching NDC-depth plane.
+/// @param w History width in pixels.
+/// @param h History height in pixels.
+/// @param[out] out_bytes Required allocation size, only set on success.
+/// @return One when both planes fit the supported dimensions and size arithmetic.
+static int postfx_taa_storage_layout(int32_t w, int32_t h, size_t *out_bytes) {
+    size_t count;
+    if (!postfx_rgb_float_layout(w, h, &count, NULL, NULL) ||
+        count > SIZE_MAX / (4u * sizeof(float)))
+        return 0;
+    *out_bytes = count * 4u * sizeof(float);
     return 1;
 }
 
@@ -2006,7 +2021,8 @@ static float *postfx_scratch_secondary(postfx_scratch_t *scratch, size_t float_c
 /// @brief Scene inputs the depth-aware CPU effects consume. All optional: when
 ///   @ref has_depth or @ref has_inv is 0, those effects no-op for the frame.
 typedef struct {
-    const float *depth; /* NDC z in [-1,1]; FLT_MAX = empty (SW zbuf convention) */
+    const float *depth;              /* NDC z in [-1,1]; FLT_MAX = empty (SW zbuf convention) */
+    const uint8_t *temporal_weights; /* optional, same dimensions as depth */
     int32_t depth_w;
     int32_t depth_h;
     float vp[16];
@@ -3001,9 +3017,11 @@ static void apply_taa_cpu(rt_postfx3d *fx,
                           postfx_scratch_t *scratch) {
     size_t count;
     size_t history_bytes;
+    size_t storage_bytes;
     int reset_history;
     float *current_frame;
-    if (!fx || !fbuf || !postfx_rgb_float_layout(w, h, &count, NULL, &history_bytes))
+    if (!fx || !fbuf || !postfx_rgb_float_layout(w, h, &count, NULL, &history_bytes) ||
+        !postfx_taa_storage_layout(w, h, &storage_bytes))
         return;
     if (blend < 0.0f)
         blend = 0.0f;
@@ -3017,7 +3035,7 @@ static void apply_taa_cpu(rt_postfx3d *fx,
                                                      &fx->taa_history_capacity_bytes,
                                                      &fx->taa_storage_cookie,
                                                      POSTFX3D_TAA_STORAGE_COOKIE,
-                                                     history_bytes,
+                                                     storage_bytes,
                                                      0);
     if (!fx->taa_history)
         return;
@@ -3038,15 +3056,13 @@ static void apply_taa_cpu(rt_postfx3d *fx,
                 float ndc = postfx_depth_at(sc, x, y);
                 float hx = (float)x;
                 float hy = (float)y;
-                if (ndc <= 1.0f) {
-                    float world[3];
-                    float prev[3];
-                    if (postfx_world_at(sc, w, h, (float)x, (float)y, ndc, world) &&
-                        postfx_project(sc->prev_vp, world, w, h, prev)) {
-                        hx = prev[0] - 0.5f;
-                        hy = prev[1] - 0.5f;
-                    }
-                }
+                float world[3];
+                float prev[3];
+                if (ndc > 1.0f || !postfx_world_at(sc, w, h, (float)x, (float)y, ndc, world) ||
+                    !postfx_project(sc->prev_vp, world, w, h, prev))
+                    continue;
+                hx = prev[0] - 0.5f;
+                hy = prev[1] - 0.5f;
                 /* Floor-based rejection: the old truncation-toward-zero rounding accepted
                  * reprojections in (-1, 0) as column/row 0, smearing wrong history along
                  * the left/top border. */
@@ -3054,6 +3070,18 @@ static void apply_taa_cpu(rt_postfx3d *fx,
                     continue;
                 int32_t ix0 = (int32_t)floorf(hx);
                 int32_t iy0 = (int32_t)floorf(hy);
+                /* Depth belongs to the retained color, never the current depth
+                 * buffer. A revealed background must not inherit foreground RGB.
+                 * Use the nearest depth sample so interpolation cannot invent an
+                 * intermediate surface at an occlusion boundary. */
+                int32_t depth_x = (int32_t)floorf(hx + 0.5f);
+                int32_t depth_y = (int32_t)floorf(hy + 0.5f);
+                float old_depth =
+                    fx->taa_history[count * 3u + (size_t)depth_y * (size_t)w + (size_t)depth_x];
+                float tolerance = fmaxf(0.000004f, 0.01f * (1.0f - prev[2]));
+                if (!isfinite(old_depth) || old_depth < -1.0f || old_depth > 1.0f ||
+                    prev[2] < -1.0f || prev[2] > 1.0f || fabsf(old_depth - prev[2]) > tolerance)
+                    continue;
                 int32_t ix1 = ix0 + 1 < w ? ix0 + 1 : w - 1;
                 int32_t iy1 = iy0 + 1 < h ? iy0 + 1 : h - 1;
                 float tx = hx - (float)ix0;
@@ -3118,14 +3146,20 @@ static void apply_taa_cpu(rt_postfx3d *fx,
                     histb = mx[2];
                 const float *source = &current_frame[idx * 3u];
                 float *output = &fbuf[idx * 3u];
-                output[0] = source[0] * (1.0f - blend) + histr * blend;
-                output[1] = source[1] * (1.0f - blend) + histg * blend;
-                output[2] = source[2] * (1.0f - blend) + histb * blend;
+                float weight =
+                    blend * (sc->temporal_weights
+                                 ? fminf((float)sc->temporal_weights[idx], 127.0f) / 127.0f
+                                 : 1.0f);
+                output[0] = source[0] * (1.0f - weight) + histr * weight;
+                output[1] = source[1] * (1.0f - weight) + histg * weight;
+                output[2] = source[2] * (1.0f - weight) + histb * weight;
             }
         }
     }
     memcpy(fx->taa_history, fbuf, history_bytes);
-    fx->taa_valid = 1;
+    fx->taa_valid = sc && sc->has_depth && sc->depth_w == w && sc->depth_h == h;
+    if (fx->taa_valid)
+        memcpy(fx->taa_history + count * 3u, sc->depth, count * sizeof(float));
 }
 
 /// @brief Run the HDR float-buffer stage of the postfx chain in authored order.
@@ -3972,6 +4006,16 @@ void rt_canvas3d_set_post_fx(void *canvas, void *postfx) {
     }
 }
 
+/// @brief Invalidate CPU camera/TAA history while preserving exposure and owned buffers.
+/// @param postfx Borrowed chain, or NULL when the canvas has no post-FX.
+void postfx3d_note_camera_cut(void *postfx) {
+    rt_postfx3d *fx = postfx3d_checked(postfx);
+    if (!fx)
+        return;
+    fx->taa_valid = 0;
+    fx->cpu_prev_vp_valid = 0;
+}
+
 /// @brief Clear a chain's weak canvas owner before Canvas3D releases its retained reference.
 void postfx3d_release_canvas_binding(void *postfx, const void *canvas, uint64_t canvas_identity) {
     rt_postfx3d *fx = postfx3d_checked(postfx);
@@ -4182,6 +4226,7 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
      * scene inputs come from the software depth buffer (or the render target's)
      * plus the frame's cached view-projection. */
     const float *scene_depth = NULL;
+    const uint8_t *scene_weights = NULL;
     int32_t scene_dw = 0;
     int32_t scene_dh = 0;
     if (c->render_target) {
@@ -4204,6 +4249,7 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
         stride = c->render_target->stride;
         if (c->render_target->depth_buf) {
             scene_depth = c->render_target->depth_buf;
+            scene_weights = c->render_target->temporal_weights;
             scene_dw = c->render_target->width;
             scene_dh = c->render_target->height;
         }
@@ -4221,6 +4267,7 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
         height = fb.height;
         stride = fb.stride;
         scene_depth = vgfx3d_sw_get_zbuf(c->backend_ctx, &scene_dw, &scene_dh);
+        scene_weights = vgfx3d_sw_get_temporal_weights(c->backend_ctx);
     }
 
     if (!pixels || width <= 0 || height <= 0 || width > VGFX3D_RENDERTARGET_DIM_MAX ||
@@ -4231,6 +4278,7 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
         memset(&scene, 0, sizeof(scene));
         if (scene_depth && scene_dw == width && scene_dh == height) {
             scene.depth = scene_depth;
+            scene.temporal_weights = scene_weights;
             scene.depth_w = scene_dw;
             scene.depth_h = scene_dh;
             scene.has_depth = 1;

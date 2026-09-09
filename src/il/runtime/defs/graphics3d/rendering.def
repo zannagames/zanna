@@ -29,6 +29,8 @@ RT_FUNC(Material3DSetEnvMap,       rt_material3d_set_env_map,     "Zanna.Graphic
 RT_FUNC(Material3DSetReflectivity, rt_material3d_set_reflectivity,"Zanna.Graphics3D.Material3D.set_Reflectivity","void(obj,f64)")
 RT_FUNC(Material3DSetSsrEnabled, rt_material3d_set_ssr_enabled, "Zanna.Graphics3D.Material3D.set_SsrEnabled", "void(obj,i1)")
 RT_FUNC(Material3DGetSsrEnabled, rt_material3d_get_ssr_enabled, "Zanna.Graphics3D.Material3D.get_SsrEnabled", "i1(obj)")
+RT_FUNC(Material3DSetTemporalWeight, rt_material3d_set_temporal_weight, "Zanna.Graphics3D.Material3D.set_TemporalWeight", "void(obj,f64)")
+RT_FUNC(Material3DGetTemporalWeight, rt_material3d_get_temporal_weight, "Zanna.Graphics3D.Material3D.get_TemporalWeight", "f64(obj)")
 RT_FUNC(Material3DGetReflectivity, rt_material3d_get_reflectivity,"Zanna.Graphics3D.Material3D.get_Reflectivity","f64(obj)")
 
 /// @summary Provides Cube Map 3D functionality for 3D rendering and scene applications.
@@ -929,6 +931,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Material3D", Material3D, "obj", Material3DNew)
     RT_METHOD("SetDepthBias", "void(f64,f64)", Material3DSetDepthBias)
     RT_PROP("Reflectivity", "f64", Material3DGetReflectivity, Material3DSetReflectivity)
     RT_PROP("SsrEnabled", "i1", Material3DGetSsrEnabled, Material3DSetSsrEnabled)
+    RT_PROP("TemporalWeight", "f64", Material3DGetTemporalWeight, Material3DSetTemporalWeight)
 RT_CLASS_END()
 
 //=============================================================================

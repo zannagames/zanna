@@ -84,10 +84,12 @@ static int rt_checked_mul_size(size_t a, size_t b, size_t *out) {
 /// @brief Estimate the maximum owned memory of a @p w×@p h render target for the given color
 ///   format, using overflow-checked products.
 /// @details The reservation covers native color/depth storage plus every lazy CPU mirror that the
-///   target may allocate. LDR targets reserve 16 bytes/texel (GPU color/depth and CPU
-///   color/depth); HDR targets reserve 36 bytes/texel (HDR16F GPU color, GPU depth, RGBA32F HDR
-///   mirror, RGBA8 tonemapped mirror, and CPU depth). This deliberately budgets the maximum rather
-///   than only the shell's initial allocation so lazy readback cannot bypass the process ceiling.
+///   target may allocate. LDR targets reserve 25 bytes/texel (GPU color/depth and CPU
+///   color/depth); HDR targets reserve 45 bytes/texel (HDR16F GPU color, GPU depth, RGBA32F HDR
+///   mirror, RGBA8 tonemapped mirror, and CPU depth). Both include one software temporal
+///   weight byte and eight native motion bytes per texel. This deliberately budgets the maximum
+///   rather than only the shell's initial allocation so lazy readback cannot bypass the process
+///   ceiling.
 /// @param w Target width in pixels.
 /// @param h Target height in pixels.
 /// @param color_format LDR or HDR backend color format.
@@ -99,7 +101,7 @@ static int rt_rendertarget_estimate_bytes(int32_t w,
                                           size_t *out_bytes) {
     size_t pixels;
     size_t total;
-    size_t bytes_per_pixel = color_format == VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F ? 36u : 16u;
+    size_t bytes_per_pixel = color_format == VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F ? 45u : 25u;
     if (out_bytes)
         *out_bytes = 0u;
     if (!out_bytes || w <= 0 || h <= 0)
@@ -225,6 +227,7 @@ static void rt_free(vgfx3d_rendertarget_t *rt) {
     free(rt->color_buf);
     free(rt->hdr_color_buf);
     free(rt->depth_buf);
+    free(rt->temporal_weights);
     rt_rendertarget_release_budget(rt->estimated_bytes);
     free(rt);
 }

@@ -116,6 +116,11 @@ typedef struct {
     int32_t pose_bone_capacity;
     /// Construction-time number of bones in the fixed inline chain.
     int32_t chain_bone_capacity;
+    /// Pose-relative horizontal stride target configuration (ADR 0345).
+    float stride_direction[3];
+    float stride_scale;
+    float stride_max_offset;
+    int8_t stride_enabled;
 } rt_ik_solver3d;
 
 /// @brief Number of skeleton bones safe to read, or 0 when the handle is not a live Skeleton3D.
@@ -992,9 +997,49 @@ void rt_ik_solver3d_set_target(void *obj, void *target) {
     rt_ik_solver3d *solver = ik_solver3d_checked(obj);
     if (!solver || !rt_g3d_is_vec3(target))
         return;
+    solver->stride_enabled = 0;
     solver->target[0] = ik3d_finite_coord(rt_vec3_x(target), 0.0f);
     solver->target[1] = ik3d_finite_coord(rt_vec3_y(target), 0.0f);
     solver->target[2] = ik3d_finite_coord(rt_vec3_z(target), 0.0f);
+}
+
+/// @brief Configure a bounded target offset from the current animated endpoint.
+/// @param obj Chain solver; look-at and invalid receivers are ignored.
+/// @param direction Borrowed model-space Vec3; only its horizontal direction is used.
+/// @param scale Requested stride multiplier, clamped to [0.5,1.5].
+/// @param max_offset Maximum endpoint displacement in model units.
+void rt_ik_solver3d_set_stride_warp(void *obj, void *direction, double scale, double max_offset) {
+    rt_ik_solver3d *solver = ik_solver3d_checked(obj);
+    if (!solver || !rt_g3d_is_vec3(direction) || solver->kind == RT_IK_SOLVER3D_LOOK_AT)
+        return;
+    double x = rt_vec3_x(direction), z = rt_vec3_z(direction);
+    double magnitude = fmax(fabs(x), fabs(z));
+    double length = 0.0;
+    if (isfinite(x) && isfinite(z) && magnitude > 1e-12) {
+        x /= magnitude;
+        z /= magnitude;
+        length = sqrt(x * x + z * z);
+    }
+    solver->stride_enabled = 1;
+    solver->stride_direction[0] = 0.0f;
+    solver->stride_direction[1] = 0.0f;
+    solver->stride_direction[2] = 0.0f;
+    if (isfinite(length) && length > 1e-12) {
+        solver->stride_direction[0] = (float)(x / length);
+        solver->stride_direction[2] = (float)(z / length);
+    }
+    solver->stride_scale = isfinite(scale) ? (float)fmin(1.5, fmax(0.5, scale)) : 1.0f;
+    solver->stride_max_offset =
+        isfinite(max_offset) ? (float)fmin(RT_IK_SOLVER3D_COORD_ABS_MAX, fmax(0.0, max_offset))
+                             : 0.0f;
+}
+
+/// @brief Restore absolute-target mode without changing the saved target or weight.
+/// @param obj Solver to configure; invalid receivers are ignored.
+void rt_ik_solver3d_clear_stride_warp(void *obj) {
+    rt_ik_solver3d *solver = ik_solver3d_checked(obj);
+    if (solver)
+        solver->stride_enabled = 0;
 }
 
 /// @brief Set the solve blend weight, clamped to [0, 1] (0 = pass-through, 1 = full IK).
@@ -1082,11 +1127,13 @@ void rt_ik_solver3d_clear_target_rotation(void *obj) {
 /// @param[in,out] globals Writable model-space matrices rebuilt after the edit.
 /// @param[in] bone_count Number of matrices available in both arrays.
 /// @param[in] desired_global Borrowed desired model-space rotation quaternion.
+/// @param[in] blend_weight Accepted interpolation weight for this orientation pass.
 static void ik3d_slerp_end_to_global(rt_ik_solver3d *solver,
                                      float *locals,
                                      float *globals,
                                      int32_t bone_count,
-                                     const float *desired_global) {
+                                     const float *desired_global,
+                                     float blend_weight) {
     int32_t end;
     int32_t parent;
     int32_t chain_count = ik3d_safe_chain_count(solver);
@@ -1107,7 +1154,7 @@ static void ik3d_slerp_end_to_global(rt_ik_solver3d *solver,
     ik3d_quat_conjugate(parent_rot, parent_conj);
     ik3d_quat_mul(parent_conj, desired_global, local_target);
     ik3d_decompose_trs(&locals[end * 16], cur_pos, cur_rot, cur_scl);
-    ik3d_quat_slerp(cur_rot, local_target, solver->weight, blended);
+    ik3d_quat_slerp(cur_rot, local_target, blend_weight, blended);
     ik3d_build_trs(cur_pos, blended, cur_scl, &locals[end * 16]);
     ik3d_build_globals(solver->skeleton, locals, globals, bone_count);
 }
@@ -1116,24 +1163,29 @@ static void ik3d_slerp_end_to_global(rt_ik_solver3d *solver,
 ///   the shortest arc from model +Y to the supplied normal. Run after the position solve.
 /// @details ADR 0286: this is a delta, not an absolute basis. On a flat surface
 ///   (normal = model +Y) the arc is identity and the authored pose survives
-///   exactly; on a slope the animated rotation leans with the surface. The
-///   pass therefore never depends on the rig's bone-axis convention.
+///   exactly; on a slope the animated rotation leans with the surface.
+///   ADR 0346 uses the incoming (pre-position-solve) rotation so bending the
+///   shin to reach the ground cannot pitch the shoe. Weight blends the tilt,
+///   rather than retaining a fraction of the position-induced shoe rotation.
+///   The pass never depends on the rig's bone-axis convention.
 /// @param[in] solver Solver providing skeleton, chain, normal, and blend
 ///                   weight.
 /// @param[in,out] locals Writable local-pose matrices.
 /// @param[in,out] globals Writable model-space matrices rebuilt after the
 ///                        orientation edit.
 /// @param[in] bone_count Number of matrices available in both arrays.
+/// @param[in] animated_rotation Borrowed incoming end-bone model rotation.
 static void ik3d_apply_foot_orientation(rt_ik_solver3d *solver,
                                         float *locals,
                                         float *globals,
-                                        int32_t bone_count) {
+                                        int32_t bone_count,
+                                        const float *animated_rotation) {
     int32_t end;
     int32_t chain_count = ik3d_safe_chain_count(solver);
     float up[3];
     float model_up[3] = {0.0f, 1.0f, 0.0f};
-    float tilt[4], cur_global_rot[4], desired_global[4];
-    float g_pos[3], g_scl[3];
+    float tilt[4], weighted_tilt[4], desired_global[4];
+    const float identity[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     if (!solver || !locals || !globals || chain_count < 2)
         return;
     end = solver->chain[chain_count - 1];
@@ -1145,9 +1197,9 @@ static void ik3d_apply_foot_orientation(rt_ik_solver3d *solver,
     if (!ik3d_normalize3(up))
         return;
     ik3d_quat_from_to(model_up, up, tilt);
-    ik3d_decompose_trs(&globals[end * 16], g_pos, cur_global_rot, g_scl);
-    ik3d_quat_mul(tilt, cur_global_rot, desired_global);
-    ik3d_slerp_end_to_global(solver, locals, globals, bone_count, desired_global);
+    ik3d_quat_slerp(identity, tilt, solver->weight, weighted_tilt);
+    ik3d_quat_mul(weighted_tilt, animated_rotation, desired_global);
+    ik3d_slerp_end_to_global(solver, locals, globals, bone_count, desired_global, 1.0f);
 }
 
 /// @brief Slerp the chain's end bone toward the solver's model-space orientation goal.
@@ -1165,7 +1217,8 @@ static void ik3d_apply_end_target_rotation(rt_ik_solver3d *solver,
                                            int32_t bone_count) {
     if (!solver)
         return;
-    ik3d_slerp_end_to_global(solver, locals, globals, bone_count, solver->target_rotation);
+    ik3d_slerp_end_to_global(
+        solver, locals, globals, bone_count, solver->target_rotation, solver->weight);
 }
 
 /// @brief Swing-rotate @p bone in place so its child joint (currently at the
@@ -1266,6 +1319,12 @@ static int ik3d_apply_chain(rt_ik_solver3d *solver,
             return 0;
         ik3d_global_position(globals, solver->chain[i], original[i]);
         memcpy(positions[i], original[i], 3 * sizeof(float));
+    }
+    float animated_end_rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    if (solver->has_ground_normal && !solver->has_target_rotation) {
+        float position[3], scale[3];
+        ik3d_decompose_trs(
+            &globals[solver->chain[count - 1] * 16], position, animated_end_rotation, scale);
     }
     for (int32_t i = 0; i < count - 1; i++) {
         lengths[i] = ik3d_distance3(positions[i], positions[i + 1]);
@@ -1368,7 +1427,7 @@ static int ik3d_apply_chain(rt_ik_solver3d *solver,
     if (solver->has_target_rotation)
         ik3d_apply_end_target_rotation(solver, locals, globals, bone_count);
     else if (solver->has_ground_normal)
-        ik3d_apply_foot_orientation(solver, locals, globals, bone_count);
+        ik3d_apply_foot_orientation(solver, locals, globals, bone_count, animated_end_rotation);
     return 1;
 }
 
@@ -1477,8 +1536,43 @@ int8_t rt_ik_solver3d_apply_to_pose(void *obj, float *locals, float *globals, in
         case RT_IK_SOLVER3D_LOOK_AT:
             return (int8_t)ik3d_apply_look_at(solver, locals, globals, bone_count);
         case RT_IK_SOLVER3D_TWO_BONE:
-        case RT_IK_SOLVER3D_FABRIK:
-            return (int8_t)ik3d_apply_chain(solver, locals, globals, bone_count);
+        case RT_IK_SOLVER3D_FABRIK: {
+            if (!solver->stride_enabled)
+                return (int8_t)ik3d_apply_chain(solver, locals, globals, bone_count);
+            int32_t count = ik3d_safe_chain_count(solver);
+            if (count < 2)
+                return 0;
+            for (int32_t i = 0; i < count; ++i) {
+                if (solver->chain[i] < 0 || solver->chain[i] >= bone_count)
+                    return 0;
+            }
+            float dx = solver->stride_direction[0], dz = solver->stride_direction[2];
+            float length = (float)sqrt((double)dx * dx + (double)dz * dz);
+            float scale = solver->stride_scale, cap = solver->stride_max_offset;
+            if (!isfinite(length) || length < 1e-6f || !isfinite(scale) || !isfinite(cap) ||
+                cap <= 0.0f)
+                return 1;
+            dx /= length;
+            dz /= length;
+            scale = fminf(1.5f, fmaxf(0.5f, scale));
+            cap = fminf(RT_IK_SOLVER3D_COORD_ABS_MAX, cap);
+            const float *root = &globals[solver->chain[0] * 16];
+            const float *end = &globals[solver->chain[count - 1] * 16];
+            float offset = ((end[3] - root[3]) * dx + (end[11] - root[11]) * dz) * (scale - 1.0f);
+            if (!isfinite(offset))
+                return 1;
+            offset = fminf(cap, fmaxf(-cap, offset));
+            if (fabsf(offset) <= 1e-6f)
+                return 1;
+            float saved_target[3];
+            memcpy(saved_target, solver->target, sizeof(saved_target));
+            solver->target[0] = end[3] + offset * dx;
+            solver->target[1] = end[7];
+            solver->target[2] = end[11] + offset * dz;
+            int8_t result = (int8_t)ik3d_apply_chain(solver, locals, globals, bone_count);
+            memcpy(solver->target, saved_target, sizeof(saved_target));
+            return result;
+        }
         default:
             return 0;
     }

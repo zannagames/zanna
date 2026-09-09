@@ -1378,6 +1378,32 @@ static void test_blendtree_2d_weights() {
     EXPECT_TRUE(w0 > w2 && w1 > w2, "BlendTree3D 2D weights favor nearer samples");
 }
 
+static void test_blendtree_full_capacity() {
+    void *skel = make_blendtree_test_skeleton();
+    void *tree = rt_blend_tree3d_new_1d(skel);
+    for (int i = 0; i < 16; ++i)
+        EXPECT_TRUE(rt_blend_tree3d_add_sample(
+                        tree, make_blendtree_test_animation("sample"), (double)i, 0.0) == i,
+                    "All sixteen advertised tree samples are accepted");
+    void *blend = rt_blend_tree3d_get_blend(tree);
+    EXPECT_TRUE(rt_blend_tree3d_get_sample_count(tree) == 16 &&
+                    rt_anim_blend3d_state_count(blend) == 16,
+                "Tree and blender agree on full capacity");
+    EXPECT_TRUE(rt_blend_tree3d_add_sample(
+                    tree, make_blendtree_test_animation("overflow"), 16.0, 0.0) == -1,
+                "Seventeenth sample is rejected without overrunning inline storage");
+    for (int i = 0; i < 16; ++i) {
+        rt_blend_tree3d_set_param(tree, (double)i, 0.0);
+        rt_blend_tree3d_update(tree, 0.0);
+        EXPECT_NEAR(rt_anim_blend3d_get_weight(blend, i),
+                    1.0,
+                    1e-6,
+                    "Every registered sample remains selectable");
+    }
+    EXPECT_TRUE(rt_anim_blend3d_state_count(blend) == 16,
+                "Rejected sample leaves state count intact");
+}
+
 static void test_blendtree_rejects_bad_handles() {
     void *skel = make_blendtree_test_skeleton();
     void *tree = rt_blend_tree3d_new_1d(skel);
@@ -1628,6 +1654,7 @@ int main() {
     test_blendtree_1d_weights();
     test_blendtree_2d_weights();
     test_blendtree_rejects_bad_handles();
+    test_blendtree_full_capacity();
 
     printf("NavMesh3D+AnimBlend3D+BlendTree3D tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

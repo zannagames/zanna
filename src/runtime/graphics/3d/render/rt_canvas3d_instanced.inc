@@ -39,6 +39,7 @@ typedef struct {
     void *material_obj;
     void *new_refs[CANVAS3D_DRAW_RESOURCE_ROLLBACK_CAP];
     int32_t new_ref_count;
+    const float *prepared_world_bounds; /* borrowed packed min/max; consumed before return */
 } canvas3d_instanced_batch_t;
 
 /// @brief Release the batch's tracked mesh/material temp-object references (material then mesh).
@@ -321,7 +322,8 @@ static float *canvas3d_alloc_instance_matrix_snapshot(rt_canvas3d *c,
                                                       const float *union_local_max,
                                                       float out_world_min[3],
                                                       float out_world_max[3],
-                                                      int8_t *out_has_world_bounds) {
+                                                      int8_t *out_has_world_bounds,
+                                                      const float *prepared_world_bounds) {
     size_t matrix_float_count;
     float *snapshot;
     int accumulate_bounds = union_local_min && union_local_max && out_world_min && out_world_max &&
@@ -362,13 +364,20 @@ static float *canvas3d_alloc_instance_matrix_snapshot(rt_canvas3d *c,
             double world_matrix[16];
             float instance_min[3];
             float instance_max[3];
-            for (int j = 0; j < 16; j++)
-                world_matrix[j] = (double)snapshot[(size_t)i * 16u + (size_t)j];
-            if (c)
-                c->frame_aabb_transforms++;
-            if (!vgfx3d_transform_aabb_checked(
-                    union_local_min, union_local_max, world_matrix, instance_min, instance_max))
-                continue;
+            const float *prepared =
+                prepared_world_bounds ? &prepared_world_bounds[(size_t)source_index * 6u] : NULL;
+            if (prepared && canvas3d_bounds_are_valid(prepared, prepared + 3)) {
+                memcpy(instance_min, prepared, sizeof(instance_min));
+                memcpy(instance_max, prepared + 3, sizeof(instance_max));
+            } else {
+                for (int j = 0; j < 16; j++)
+                    world_matrix[j] = (double)snapshot[(size_t)i * 16u + (size_t)j];
+                if (c)
+                    c->frame_aabb_transforms++;
+                if (!vgfx3d_transform_aabb_checked(
+                        union_local_min, union_local_max, world_matrix, instance_min, instance_max))
+                    continue;
+            }
             if (!*out_has_world_bounds) {
                 memcpy(out_world_min, instance_min, sizeof(float) * 3);
                 memcpy(out_world_max, instance_max, sizeof(float) * 3);
@@ -449,7 +458,8 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
         local_bounds_max,
         world_bounds_min,
         world_bounds_max,
-        &has_world_bounds);
+        &has_world_bounds,
+        b->prepared_world_bounds);
     if (!queued_instance_matrices) {
         canvas3d_instanced_release_refs(b);
         return;
@@ -464,6 +474,7 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
                 motion_indices,
                 instance_count,
                 "Canvas3D.DrawMeshInstanced: previous instance matrix allocation failed",
+                NULL,
                 NULL,
                 NULL,
                 NULL,
@@ -713,7 +724,8 @@ static int canvas3d_queue_instanced_batch_common(void *canvas_obj,
                                                  const float *override_palette,
                                                  const float *override_prev_palette,
                                                  int32_t override_bone_count,
-                                                 int32_t instance_bone_stride) {
+                                                 int32_t instance_bone_stride,
+                                                 const float *prepared_world_bounds) {
     canvas3d_instanced_batch_t batch = {0};
     rt_canvas3d *c;
     rt_mesh3d *mesh;
@@ -780,6 +792,7 @@ static int canvas3d_queue_instanced_batch_common(void *canvas_obj,
         return 0; /* per-instance palettes require the hardware-instanced path */
 
     batch.c = c;
+    batch.prepared_world_bounds = prepared_world_bounds;
     batch.mesh = mesh;
     batch.mat = mat;
     batch.mesh_obj = mesh_obj;
@@ -927,7 +940,54 @@ void rt_canvas3d_queue_instanced_batch_bounds(void *canvas_obj,
                                                 NULL,
                                                 NULL,
                                                 0,
-                                                0);
+                                                0,
+                                                NULL);
+}
+
+/// @brief Internal prepared-bounds handoff; borrowed bounds are consumed synchronously (ADR 0347).
+/// @details Matrices remain frame-owned snapshots. Bounds use the same original-index mapping
+///   as matrices through spatial splitting; missing/invalid bounds use the ordinary calculation.
+/// @param canvas_obj Borrowed active canvas.
+/// @param mesh_obj Borrowed mesh whose exact/conservative bounds the caller prepared.
+/// @param material_obj Borrowed material.
+/// @param instance_matrices Current matrix array.
+/// @param instance_count Number of matrices and packed six-float bounds entries.
+/// @param prev_instance_matrices Optional previous matrix array.
+/// @param has_prev_instance_matrices Whether previous matrices are present.
+/// @param prepared_world_bounds Optional minXYZ/maxXYZ array already in frame render space.
+/// @param frame_matrices Nonzero if matrix translations have already been rebased.
+void rt_canvas3d_queue_instanced_batch_prepared(void *canvas_obj,
+                                                void *mesh_obj,
+                                                void *material_obj,
+                                                const float *instance_matrices,
+                                                int32_t instance_count,
+                                                const float *prev_instance_matrices,
+                                                int8_t has_prev_instance_matrices,
+                                                const float *prepared_world_bounds,
+                                                int8_t frame_matrices) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas_obj);
+    if (!c)
+        return;
+    int8_t saved_camera_relative = c->camera_relative_upload;
+    if (frame_matrices)
+        c->camera_relative_upload = 0;
+    (void)canvas3d_queue_instanced_batch_common(canvas_obj,
+                                                mesh_obj,
+                                                material_obj,
+                                                instance_matrices,
+                                                instance_count,
+                                                prev_instance_matrices,
+                                                has_prev_instance_matrices,
+                                                NULL,
+                                                NULL,
+                                                0,
+                                                0,
+                                                NULL,
+                                                NULL,
+                                                0,
+                                                0,
+                                                prepared_world_bounds);
+    c->camera_relative_upload = saved_camera_relative;
 }
 
 /// @brief Queue one per-instance-skinned hardware chunk (R18).
@@ -969,7 +1029,8 @@ int rt_canvas3d_queue_instanced_batch_skinned(void *canvas_obj,
                                                  bone_palettes,
                                                  prev_bone_palettes,
                                                  total_bone_count,
-                                                 instance_bone_stride);
+                                                 instance_bone_stride,
+                                                 NULL);
 }
 
 /// @brief Queue an instanced-mesh draw using the mesh's authored local bounds.

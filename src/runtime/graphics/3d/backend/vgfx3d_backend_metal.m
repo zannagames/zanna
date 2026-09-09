@@ -315,6 +315,7 @@ extern void rt_obj_free(void *obj);
 @property(nonatomic, strong) id<MTLRenderPipelineState> ssrPipeline;
 @property(nonatomic, strong) id<MTLTexture> taaHistoryA;
 @property(nonatomic, strong) id<MTLTexture> taaHistoryB;
+@property(nonatomic, strong) id<MTLTexture> taaHistoryDepth;
 @property(nonatomic) int32_t taaHistoryParity;
 @property(nonatomic) int8_t taaHistoryValid;
 @property(nonatomic, strong) id<MTLTexture> overlayColorTexture;

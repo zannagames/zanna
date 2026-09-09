@@ -616,6 +616,7 @@ static void material_init_defaults(rt_material3d *mat) {
     mat->slope_scaled_depth_bias = 0.0;
     mat->soft_fade = 0.0;
     mat->ssr_enabled = 0;
+    mat->temporal_weight = 1.0;
 }
 
 /// @brief Re-sanitize copied material state that may have been imported through legacy direct
@@ -661,6 +662,7 @@ static void material_sanitize_state(rt_material3d *mat) {
         mat->slope_scaled_depth_bias, MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX);
     mat->soft_fade = clamp_range(mat->soft_fade, 0.0, MATERIAL3D_EMISSIVE_INTENSITY_MAX);
     mat->ssr_enabled = mat->ssr_enabled ? 1 : 0;
+    mat->temporal_weight = isfinite(mat->temporal_weight) ? clamp01(mat->temporal_weight) : 1.0;
     for (int slot = 0; slot < RT_MATERIAL3D_TEXTURE_SLOT_COUNT; slot++) {
         int32_t wrap_s = mat->texture_slot_wrap_s[slot];
         int32_t wrap_t = mat->texture_slot_wrap_t[slot];
@@ -804,6 +806,7 @@ static void *material_clone_like(void *obj) {
     dst->slope_scaled_depth_bias = src->slope_scaled_depth_bias;
     dst->soft_fade = src->soft_fade;
     dst->ssr_enabled = src->ssr_enabled;
+    dst->temporal_weight = src->temporal_weight;
     material_sanitize_state(dst);
 
     material_assign_ref(&dst->texture, src->texture);
@@ -1247,6 +1250,23 @@ int8_t rt_material3d_get_ssr_enabled(void *obj) {
     return mat->ssr_enabled ? 1 : 0;
 }
 
+/// @brief Set the local TAA history multiplier without changing material shading.
+/// @param obj Borrowed material; invalid handles are ignored.
+/// @param weight Requested multiplier, bounded to [0,1] with non-finite fallback 1.
+void rt_material3d_set_temporal_weight(void *obj, double weight) {
+    rt_material3d *mat = material_checked(obj);
+    if (mat)
+        mat->temporal_weight = isfinite(weight) ? clamp01(weight) : 1.0;
+}
+
+/// @brief Read the sanitized local TAA history multiplier.
+/// @param obj Borrowed material.
+/// @return The weight, or the neutral default 1 for an invalid material.
+double rt_material3d_get_temporal_weight(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->temporal_weight : 1.0;
+}
+
 /// @brief Return whether unlit mode is enabled.
 /// @param obj Material3D receiver.
 /// @return One when unlit rendering is enabled, or zero for disabled and invalid materials.
@@ -1599,18 +1619,33 @@ static double material_decal_finite(double v) {
 ///   does (ADR 0316: the gate is feathered — full below facing 0.25, gone above 0.5 —
 ///   so a lumbar curling past perpendicular keeps its digits).
 ///   Non-finite or non-positive extents trap and leave the material unchanged.
-void rt_material3d_set_decal_projector(void *obj, double ox, double oy, double oz,
-                                       double ux, double uy, double uz,
-                                       double vx, double vy, double vz,
-                                       double half_w, double half_h, double depth) {
+void rt_material3d_set_decal_projector(void *obj,
+                                       double ox,
+                                       double oy,
+                                       double oz,
+                                       double ux,
+                                       double uy,
+                                       double uz,
+                                       double vx,
+                                       double vy,
+                                       double vz,
+                                       double half_w,
+                                       double half_h,
+                                       double depth) {
     rt_material3d *mat = material_checked(obj);
     double u[3], v[3], n[3], o[3];
     double ul, vl, nl, dotuv;
     if (!mat)
         return;
-    u[0] = material_decal_finite(ux); u[1] = material_decal_finite(uy); u[2] = material_decal_finite(uz);
-    v[0] = material_decal_finite(vx); v[1] = material_decal_finite(vy); v[2] = material_decal_finite(vz);
-    o[0] = material_decal_finite(ox); o[1] = material_decal_finite(oy); o[2] = material_decal_finite(oz);
+    u[0] = material_decal_finite(ux);
+    u[1] = material_decal_finite(uy);
+    u[2] = material_decal_finite(uz);
+    v[0] = material_decal_finite(vx);
+    v[1] = material_decal_finite(vy);
+    v[2] = material_decal_finite(vz);
+    o[0] = material_decal_finite(ox);
+    o[1] = material_decal_finite(oy);
+    o[2] = material_decal_finite(oz);
     if (!isfinite(half_w) || !isfinite(half_h) || !isfinite(depth) || half_w <= 0.0 ||
         half_h <= 0.0 || depth <= 0.0) {
         rt_trap("Material3D.SetDecalProjector: half extents and depth must be positive");
