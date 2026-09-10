@@ -5,14 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements a conservative induction variable simplification and loop strength
-// reduction pass. The pass recognizes simple counted loops with a single latch
-// updating an integer induction variable by a small constant and rewrites
-// repeated linear expressions of the form `base + i * stride` into incremental
-// updates of a loop-carried temporary.
-//
-// The transformation relies on LoopSimplify providing a preheader and uses
-// LoopInfo + Dominators to limit changes to well-structured loops.
+// File: il/transform/IndVarSimplify.cpp
+// Purpose: Conservative induction variable simplification and loop strength
+//          reduction. Recognizes simple counted loops with a single latch that
+//          update an integer induction variable by a constant, and rewrites
+//          repeated linear expressions of the form `base + i * stride` into
+//          incremental updates of a loop-carried temporary.
+// Key invariants:
+//   - Only well-structured loops are touched: LoopSimplify must have supplied a
+//     preheader, and LoopInfo + Dominators bound the rewrite.
+//   - Every value the rewrite computes is proven free of i64 overflow before any
+//     mutation, and the new arithmetic is emitted in checked (.ovf) form.
+//   - The rewrite never strands unverifiable arithmetic: a loop is skipped when
+//     the strength-reduced value reaches plain integer arithmetic whose verifier
+//     acceptance rests on that value's provable range.
+// Ownership/Lifetime:
+//   - Mutates the caller's Function in place; owns no state between loops.
+// Links: il/transform/CheckOpt.cpp, il/analysis/IntRangeAnalysis.cpp,
+//        il/verify/InstructionChecker.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -52,6 +62,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -474,6 +485,82 @@ void setValueName(Function &function, unsigned id, const std::string &name) {
     function.valueNames[id] = name;
 }
 
+/// @brief Report whether an opcode's verifier acceptance rests on an operand's range.
+/// @details Plain signed add, subtract, and multiply are rejected outright unless
+///          the verifier can re-derive the no-overflow interval CheckOpt used when
+///          it demoted the checked form, and plain div/rem need the divisor's range
+///          to exclude the trapping values. Losing an operand's interval therefore
+///          makes such an instruction unverifiable.
+/// @param op Opcode of the consuming instruction.
+/// @param operandIndex Position occupied by the value whose range is at stake.
+/// @return `true` when the instruction cannot verify without that operand's range.
+bool rangeProofDependsOnOperand(Opcode op, size_t operandIndex) {
+    switch (op) {
+        case Opcode::Add:
+        case Opcode::Sub:
+        case Opcode::Mul:
+            return true;
+        case Opcode::SDiv:
+        case Opcode::UDiv:
+        case Opcode::SRem:
+        case Opcode::URem:
+            return operandIndex == 1;
+        default:
+            return false;
+    }
+}
+
+/// @brief Test whether strength reduction would strand unverifiable arithmetic.
+/// @details The rewrite replaces @p rootId with a loop-carried block parameter that
+///          accumulates across the back edge while the exit guard tests the counter,
+///          so the shared interval prover cannot bound it. Plain arithmetic CheckOpt
+///          demoted against @p rootId's old interval would then fail verification,
+///          and the loss spreads: every value derived from @p rootId is unbounded
+///          too, including where branch arguments carry it into a successor's block
+///          parameters. The walk is a fixpoint over the whole function because
+///          UseDefInfo::replaceAllUses rewrites the address everywhere it escapes.
+/// @param function Function containing the candidate loop.
+/// @param rootId Temporary the rewrite is about to replace.
+/// @return `true` when a derived value feeds arithmetic that needs its range.
+bool rewriteWouldStrandRangeProof(Function &function, unsigned rootId) {
+    std::unordered_set<unsigned> unbounded{rootId};
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (const auto &block : function.blocks) {
+            for (const auto &instr : block.instructions) {
+                bool usesUnbounded = false;
+                for (size_t i = 0; i < instr.operands.size(); ++i) {
+                    const Value &operand = instr.operands[i];
+                    if (operand.kind != Value::Kind::Temp || unbounded.count(operand.id) == 0)
+                        continue;
+                    if (rangeProofDependsOnOperand(instr.op, i))
+                        return true;
+                    usesUnbounded = true;
+                }
+                if (usesUnbounded && instr.result && unbounded.insert(*instr.result).second)
+                    grew = true;
+
+                for (size_t target = 0; target < instr.brArgs.size(); ++target) {
+                    if (target >= instr.labels.size())
+                        break;
+                    BasicBlock *successor = findBlock(function, instr.labels[target]);
+                    if (!successor)
+                        continue;
+                    const std::vector<Value> &args = instr.brArgs[target];
+                    for (size_t i = 0; i < args.size() && i < successor->params.size(); ++i) {
+                        if (args[i].kind != Value::Kind::Temp || unbounded.count(args[i].id) == 0)
+                            continue;
+                        if (unbounded.insert(successor->params[i].id).second)
+                            grew = true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 /// @brief Return the unique identifier for the IndVarSimplify pass.
@@ -499,7 +586,10 @@ std::string_view IndVarSimplify::id() const {
 ///          prover can bound at the latch, and overflow-freedom of every
 ///          address value the rewrite computes; the new arithmetic is emitted
 ///          in checked form so the strict verifier accepts it while the
-///          overflow proof guarantees the checks never fire.
+///          overflow proof guarantees the checks never fire. A loop is also
+///          skipped when the address reaches plain integer arithmetic that the
+///          verifier accepts only on a range proof, because the loop-carried
+///          parameter that replaces the address cannot be bounded.
 /// @param function Function to optimize in place.
 /// @param analysis Analysis manager supplying loop and dominance info.
 /// @return Preserved analysis set; conservative invalidation on change.
@@ -691,6 +781,15 @@ PreservedAnalyses IndVarSimplify::run(Function &function, AnalysisManager &analy
                 break;
         }
         if (!addrProvablySafe)
+            continue;
+
+        // Erasing the multiply and add strips the address of the interval the
+        // shared range prover derived from the counter, and the loop-carried
+        // parameter that replaces it cannot be bounded in their place. Plain
+        // arithmetic that CheckOpt demoted against the old interval would fail
+        // verification, so a loop whose address reaches such an instruction --
+        // directly or through a branch argument -- is left alone.
+        if (rewriteWouldStrandRangeProof(function, addrExpr->addrId))
             continue;
 
         unsigned nextId = zanna::il::nextTempId(function);

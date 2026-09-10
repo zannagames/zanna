@@ -385,6 +385,24 @@ function(_golden_il_opt name il_in_file golden_file)
             -P ${_ZANNA_GOLDEN_DIR}/il_opt/check_opt.cmake)
 endfunction()
 
+# _il_opt_pipeline_verifies: run a whole IL optimizer pipeline over a fixture and
+# require the optimized module to verify (check_pipeline_verifies.cmake). Guards
+# against a pass that leaves IL the verifier rejects; there is no golden text.
+function(_il_opt_pipeline_verifies name il_in_file)
+    set(oneValueArgs PIPELINE)
+    cmake_parse_arguments(PV "" "${oneValueArgs}" "" ${ARGN})
+    set(_extra_args "")
+    if (PV_PIPELINE)
+        set(_extra_args -DPIPELINE=${PV_PIPELINE})
+    endif ()
+    zanna_add_ctest(${name}
+            ${CMAKE_COMMAND}
+            -DILC=${BASIC_ILC}
+            -DIL_FILE=${il_in_file}
+            ${_extra_args}
+            -P ${_ZANNA_GOLDEN_DIR}/il_opt/check_pipeline_verifies.cmake)
+endfunction()
+
 # _golden_constfold: IL constant folding golden test (check_constfold.cmake)
 function(_golden_constfold name il_file golden_file)
     zanna_add_ctest(${name}

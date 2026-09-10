@@ -505,6 +505,8 @@ static void vaud_event_wait(vaud_event_t *event) {
 // Background Music Streamer Thread
 //===----------------------------------------------------------------------===//
 
+#if VAUD_STREAM_THREAD_ENABLE
+
 static void vaud_update_service_refills(vaud_context_t ctx);
 
 /// @brief Body of the per-context background music streaming thread.
@@ -588,6 +590,8 @@ static void vaud_streamer_thread_join(vaud_context_t ctx) {
 }
 
 #endif
+
+#endif /* VAUD_STREAM_THREAD_ENABLE */
 
 //===----------------------------------------------------------------------===//
 // Version Functions
@@ -690,10 +694,12 @@ void vaud_destroy(vaud_context_t ctx) {
      * alive without its streamer; app-thread vaud_update() remains a fully
      * functional refill pump. */
     vaud_atomic_store_i32(&ctx->streamer_running, 0);
+#if VAUD_STREAM_THREAD_ENABLE
     if (ctx->streamer_thread_started) {
         vaud_streamer_thread_join(ctx);
         ctx->streamer_thread_started = 0;
     }
+#endif
 
     /* Shutdown platform (stops audio thread) */
     if (!vaud_platform_shutdown(ctx)) {

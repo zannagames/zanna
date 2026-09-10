@@ -12,7 +12,7 @@ x86_placeholder_il_adapters 3
 codegen_unsupported_markers 122
 aarch64_backend_test_targets 203
 runtime_import_audit_tests 2
-graphics_stub_functions 1219
+graphics_stub_functions 1224
 graphics_stub_unclassified_functions 316
 graphics_disabled_test_markers 141
 fuzz_targets_missing_corpus 0

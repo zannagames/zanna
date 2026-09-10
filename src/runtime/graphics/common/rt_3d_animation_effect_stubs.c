@@ -114,14 +114,30 @@ void rt_anim_blend3d_set_speed(void *b, int64_t s, double sp) {
     (void)sp;
 }
 
-/// @brief Disabled-graphics phase setter; arguments are ignored.
+/// @brief Stub for `AnimBlend3D.SetPhase` — place a state's playback clock at
+///        an explicit point in its cycle, so two states can be driven in or out
+///        of step without waiting for their periods to align.
+///
+/// Silent no-op stub.
+///
+/// @param b     AnimBlend3D handle (ignored).
+/// @param state State index (ignored).
+/// @param phase Normalized cycle position (ignored).
 void rt_anim_blend3d_set_phase(void *b, int64_t state, double phase) {
     (void)b;
     (void)state;
     (void)phase;
 }
 
-/// @brief Disabled-graphics phase getter; returns zero.
+/// @brief Stub for `AnimBlend3D.Phase` — read a state's normalized position in
+///        its playback cycle.
+///
+/// Silent stub returning `0.0`.
+///
+/// @param b     AnimBlend3D handle (ignored).
+/// @param state State index (ignored).
+///
+/// @return `0.0`.
 double rt_anim_blend3d_get_phase(void *b, int64_t state) {
     (void)b;
     (void)state;

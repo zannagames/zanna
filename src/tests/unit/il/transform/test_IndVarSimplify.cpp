@@ -9,7 +9,11 @@
 // and rewrite. A symbolic base must be skipped (its overflow behaviour cannot
 // be proven), a loop-local base must be skipped, and a provably bounded loop
 // whose latch has two predecessors must have the carried address argument
-// appended on every edge into the latch while staying verifier-clean.
+// appended on every edge into the latch while staying verifier-clean. A loop
+// whose address feeds plain integer arithmetic must also be skipped, because the
+// loop-carried parameter that would replace the address cannot be bounded and
+// the arithmetic verifies only on that range -- whether the consumer reads the
+// address directly or receives it through a block parameter.
 //
 //===----------------------------------------------------------------------===//
 
@@ -474,6 +478,332 @@ int main() {
     // The rewritten module must satisfy the strict verifier.
     auto verified3 = il::verify::Verifier::verify(M3);
     assert(static_cast<bool>(verified3) && "transformed module must verify");
+
+    // Regression: the same bounded loop, but the address feeds a plain subtract
+    // that the verifier accepts only because the address has a provable range.
+    // Strength-reducing the address into a loop-carried parameter destroys that
+    // range, so the loop must be left alone rather than stranding an
+    // unverifiable `sub` (the xenoscape parallax shape).
+    Module M4;
+    Function F4;
+    F4.name = "indvars_addr_feeds_plain_sub";
+    F4.retType = Type(Type::Kind::I64);
+    id = 0;
+
+    BasicBlock entry4;
+    entry4.label = "entry";
+    {
+        Instr br;
+        br.op = Opcode::Br;
+        br.type = Type(Type::Kind::Void);
+        br.labels.push_back("loop.preheader");
+        br.brArgs.emplace_back(std::vector<Value>{});
+        entry4.instructions.push_back(std::move(br));
+        entry4.terminated = true;
+    }
+
+    BasicBlock preheader4;
+    preheader4.label = "loop.preheader";
+    {
+        Instr br;
+        br.op = Opcode::Br;
+        br.type = Type(Type::Kind::Void);
+        br.labels.push_back("loop");
+        br.brArgs.emplace_back(std::vector<Value>{Value::constInt(0)});
+        preheader4.instructions.push_back(std::move(br));
+        preheader4.terminated = true;
+    }
+
+    BasicBlock loop4;
+    loop4.label = "loop";
+    Param i4{"i", Type(Type::Kind::I64), id++};
+    loop4.params.push_back(i4);
+
+    Instr mul4;
+    mul4.result = id++;
+    mul4.op = Opcode::Mul;
+    mul4.type = Type(Type::Kind::I64);
+    mul4.operands = {Value::temp(i4.id), Value::constInt(251)};
+
+    Instr addr4;
+    addr4.result = id++;
+    addr4.op = Opcode::Add;
+    addr4.type = Type(Type::Kind::I64);
+    addr4.operands = {Value::constInt(83), Value::temp(*mul4.result)};
+    const unsigned addr4Id = *addr4.result;
+
+    Instr delta4;
+    delta4.result = id++;
+    delta4.op = Opcode::Sub;
+    delta4.type = Type(Type::Kind::I64);
+    delta4.operands = {Value::temp(addr4Id), Value::constInt(4)};
+
+    Instr cmp4;
+    cmp4.result = id++;
+    cmp4.op = Opcode::SCmpLT;
+    cmp4.type = Type(Type::Kind::I1);
+    cmp4.operands = {Value::temp(*delta4.result), Value::constInt(200)};
+
+    Instr headerCbr4;
+    headerCbr4.op = Opcode::CBr;
+    headerCbr4.type = Type(Type::Kind::Void);
+    headerCbr4.operands.push_back(Value::temp(*cmp4.result));
+    headerCbr4.labels = {"wrap", "latch"};
+    headerCbr4.brArgs = {{}, {Value::temp(i4.id)}};
+
+    loop4.instructions.push_back(std::move(mul4));
+    loop4.instructions.push_back(std::move(addr4));
+    loop4.instructions.push_back(std::move(delta4));
+    loop4.instructions.push_back(std::move(cmp4));
+    loop4.instructions.push_back(std::move(headerCbr4));
+    loop4.terminated = true;
+
+    BasicBlock wrap4;
+    wrap4.label = "wrap";
+    {
+        Instr br;
+        br.op = Opcode::Br;
+        br.type = Type(Type::Kind::Void);
+        br.labels.push_back("latch");
+        br.brArgs.emplace_back(std::vector<Value>{Value::temp(i4.id)});
+        wrap4.instructions.push_back(std::move(br));
+        wrap4.terminated = true;
+    }
+
+    BasicBlock latch4;
+    latch4.label = "latch";
+    Param il4{"i.l", Type(Type::Kind::I64), id++};
+    latch4.params.push_back(il4);
+
+    Instr inc4;
+    inc4.result = id++;
+    inc4.op = Opcode::Add;
+    inc4.type = Type(Type::Kind::I64);
+    inc4.operands = {Value::temp(il4.id), Value::constInt(1)};
+    const unsigned inc4Id = *inc4.result;
+
+    Instr guard4;
+    guard4.result = id++;
+    guard4.op = Opcode::SCmpLT;
+    guard4.type = Type(Type::Kind::I1);
+    guard4.operands = {Value::temp(inc4Id), Value::constInt(3)};
+
+    Instr latchCbr4;
+    latchCbr4.op = Opcode::CBr;
+    latchCbr4.type = Type(Type::Kind::Void);
+    latchCbr4.operands.push_back(Value::temp(*guard4.result));
+    latchCbr4.labels = {"loop", "exit"};
+    latchCbr4.brArgs = {{Value::temp(inc4Id)}, {}};
+
+    latch4.instructions.push_back(std::move(inc4));
+    latch4.instructions.push_back(std::move(guard4));
+    latch4.instructions.push_back(std::move(latchCbr4));
+    latch4.terminated = true;
+
+    BasicBlock exit4;
+    exit4.label = "exit";
+    {
+        Instr ret4;
+        ret4.op = Opcode::Ret;
+        ret4.type = Type(Type::Kind::Void);
+        ret4.operands.push_back(Value::constInt(0));
+        exit4.instructions.push_back(std::move(ret4));
+        exit4.terminated = true;
+    }
+
+    F4.blocks.push_back(std::move(entry4));
+    F4.blocks.push_back(std::move(preheader4));
+    F4.blocks.push_back(std::move(loop4));
+    F4.blocks.push_back(std::move(wrap4));
+    F4.blocks.push_back(std::move(latch4));
+    F4.blocks.push_back(std::move(exit4));
+    F4.valueNames.resize(id);
+    M4.functions.push_back(std::move(F4));
+
+    // The demoted input is already verifier-clean: the counter's range bounds
+    // the address, which in turn bounds the subtract.
+    auto verified4Before = il::verify::Verifier::verify(M4);
+    assert(static_cast<bool>(verified4Before) && "demoted input must verify");
+
+    Function &Fn4 = M4.functions.back();
+    il::transform::AnalysisRegistry registry4 = makeRegistry();
+    il::transform::AnalysisManager AM4(M4, registry4);
+    (void)AM4.getFunctionResult<il::transform::LoopInfo>("loop-info", Fn4);
+    auto preserved4 = pass.run(Fn4, AM4);
+    (void)preserved4;
+
+    BasicBlock *H4 = nullptr;
+    for (auto &B : Fn4.blocks)
+        if (B.label == "loop")
+            H4 = &B;
+    assert(H4);
+    assert(H4->params.size() == 1 &&
+           "an address consumed by plain arithmetic must not be strength-reduced");
+    auto verified4 = il::verify::Verifier::verify(M4);
+    assert(static_cast<bool>(verified4) && "module must still verify after the pass");
+
+    // Regression: the consuming plain add is not a direct user of the address.
+    // The address crosses a branch argument into a join block, so the range loss
+    // reaches the add through a block parameter; a direct-users-only guard would
+    // let this loop through and strand the add.
+    Module M5;
+    Function F5;
+    F5.name = "indvars_addr_escapes_to_join";
+    F5.retType = Type(Type::Kind::I64);
+    id = 0;
+
+    BasicBlock entry5;
+    entry5.label = "entry";
+    {
+        Instr br;
+        br.op = Opcode::Br;
+        br.type = Type(Type::Kind::Void);
+        br.labels.push_back("loop.preheader");
+        br.brArgs.emplace_back(std::vector<Value>{});
+        entry5.instructions.push_back(std::move(br));
+        entry5.terminated = true;
+    }
+
+    BasicBlock preheader5;
+    preheader5.label = "loop.preheader";
+    {
+        Instr br;
+        br.op = Opcode::Br;
+        br.type = Type(Type::Kind::Void);
+        br.labels.push_back("loop");
+        br.brArgs.emplace_back(std::vector<Value>{Value::constInt(0)});
+        preheader5.instructions.push_back(std::move(br));
+        preheader5.terminated = true;
+    }
+
+    BasicBlock loop5;
+    loop5.label = "loop";
+    Param i5{"i", Type(Type::Kind::I64), id++};
+    loop5.params.push_back(i5);
+
+    Instr mul5;
+    mul5.result = id++;
+    mul5.op = Opcode::Mul;
+    mul5.type = Type(Type::Kind::I64);
+    mul5.operands = {Value::temp(i5.id), Value::constInt(251)};
+
+    Instr addr5;
+    addr5.result = id++;
+    addr5.op = Opcode::Add;
+    addr5.type = Type(Type::Kind::I64);
+    addr5.operands = {Value::constInt(83), Value::temp(*mul5.result)};
+    const unsigned addr5Id = *addr5.result;
+
+    Instr cmp5;
+    cmp5.result = id++;
+    cmp5.op = Opcode::SCmpLT;
+    cmp5.type = Type(Type::Kind::I1);
+    cmp5.operands = {Value::temp(addr5Id), Value::constInt(200)};
+
+    Instr headerCbr5;
+    headerCbr5.op = Opcode::CBr;
+    headerCbr5.type = Type(Type::Kind::Void);
+    headerCbr5.operands.push_back(Value::temp(*cmp5.result));
+    headerCbr5.labels = {"wrap", "latch"};
+    headerCbr5.brArgs = {{Value::temp(addr5Id)}, {Value::temp(i5.id)}};
+
+    loop5.instructions.push_back(std::move(mul5));
+    loop5.instructions.push_back(std::move(addr5));
+    loop5.instructions.push_back(std::move(cmp5));
+    loop5.instructions.push_back(std::move(headerCbr5));
+    loop5.terminated = true;
+
+    BasicBlock wrap5;
+    wrap5.label = "wrap";
+    Param carried5{"carried", Type(Type::Kind::I64), id++};
+    wrap5.params.push_back(carried5);
+    {
+        Instr bump;
+        bump.result = id++;
+        bump.op = Opcode::Add;
+        bump.type = Type(Type::Kind::I64);
+        bump.operands = {Value::temp(carried5.id), Value::constInt(6)};
+
+        Instr sink;
+        sink.op = Opcode::Br;
+        sink.type = Type(Type::Kind::Void);
+        sink.labels.push_back("latch");
+        sink.brArgs.emplace_back(std::vector<Value>{Value::temp(i5.id)});
+
+        wrap5.instructions.push_back(std::move(bump));
+        wrap5.instructions.push_back(std::move(sink));
+        wrap5.terminated = true;
+    }
+
+    BasicBlock latch5;
+    latch5.label = "latch";
+    Param il5{"i.l", Type(Type::Kind::I64), id++};
+    latch5.params.push_back(il5);
+
+    Instr inc5;
+    inc5.result = id++;
+    inc5.op = Opcode::Add;
+    inc5.type = Type(Type::Kind::I64);
+    inc5.operands = {Value::temp(il5.id), Value::constInt(1)};
+    const unsigned inc5Id = *inc5.result;
+
+    Instr guard5;
+    guard5.result = id++;
+    guard5.op = Opcode::SCmpLT;
+    guard5.type = Type(Type::Kind::I1);
+    guard5.operands = {Value::temp(inc5Id), Value::constInt(3)};
+
+    Instr latchCbr5;
+    latchCbr5.op = Opcode::CBr;
+    latchCbr5.type = Type(Type::Kind::Void);
+    latchCbr5.operands.push_back(Value::temp(*guard5.result));
+    latchCbr5.labels = {"loop", "exit"};
+    latchCbr5.brArgs = {{Value::temp(inc5Id)}, {}};
+
+    latch5.instructions.push_back(std::move(inc5));
+    latch5.instructions.push_back(std::move(guard5));
+    latch5.instructions.push_back(std::move(latchCbr5));
+    latch5.terminated = true;
+
+    BasicBlock exit5;
+    exit5.label = "exit";
+    {
+        Instr ret5;
+        ret5.op = Opcode::Ret;
+        ret5.type = Type(Type::Kind::Void);
+        ret5.operands.push_back(Value::constInt(0));
+        exit5.instructions.push_back(std::move(ret5));
+        exit5.terminated = true;
+    }
+
+    F5.blocks.push_back(std::move(entry5));
+    F5.blocks.push_back(std::move(preheader5));
+    F5.blocks.push_back(std::move(loop5));
+    F5.blocks.push_back(std::move(wrap5));
+    F5.blocks.push_back(std::move(latch5));
+    F5.blocks.push_back(std::move(exit5));
+    F5.valueNames.resize(id);
+    M5.functions.push_back(std::move(F5));
+
+    auto verified5Before = il::verify::Verifier::verify(M5);
+    assert(static_cast<bool>(verified5Before) && "demoted input must verify");
+
+    Function &Fn5 = M5.functions.back();
+    il::transform::AnalysisRegistry registry5 = makeRegistry();
+    il::transform::AnalysisManager AM5(M5, registry5);
+    (void)AM5.getFunctionResult<il::transform::LoopInfo>("loop-info", Fn5);
+    auto preserved5 = pass.run(Fn5, AM5);
+    (void)preserved5;
+
+    BasicBlock *H5 = nullptr;
+    for (auto &B : Fn5.blocks)
+        if (B.label == "loop")
+            H5 = &B;
+    assert(H5);
+    assert(H5->params.size() == 1 &&
+           "range loss through a block parameter must also block the rewrite");
+    auto verified5 = il::verify::Verifier::verify(M5);
+    assert(static_cast<bool>(verified5) && "module must still verify after the pass");
 
     return 0;
 }

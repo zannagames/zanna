@@ -126,6 +126,9 @@ extern "C" {
 ///          when the app thread stalls between vaud_update() calls (asset
 ///          loads, long frames). Thread-creation failure is non-fatal: the
 ///          context still works with vaud_update() as the only refill pump.
+///          Defining it to 0 compiles the streamer out entirely, which single-
+///          threaded unit tests use so nothing takes the context mutex behind
+///          them; vaud_update() remains the refill pump in that build.
 #ifndef VAUD_STREAM_THREAD_ENABLE
 #define VAUD_STREAM_THREAD_ENABLE 1
 #endif

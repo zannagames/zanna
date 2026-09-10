@@ -280,6 +280,9 @@ function(zanna_add_golden_suite_tests)
     _golden_il_opt(il_opt_mem2reg_nested ${_OPT}/mem2reg_nested.in.il ${_OPT}/mem2reg_nested.opt.il PASSES mem2reg)
     _golden_il_opt(il_opt_mem2reg_loop ${_OPT}/mem2reg_loop.in.il ${_OPT}/mem2reg_loop.opt.il PASSES mem2reg)
     _golden_il_opt(il_opt_mem2reg_multi ${_OPT}/mem2reg_multi.in.il ${_OPT}/mem2reg_multi.opt.il PASSES mem2reg)
+    # Regression gate: no pass may leave the O2 pipeline's output unverifiable.
+    _il_opt_pipeline_verifies(il_opt_indvars_range_proof ${_OPT}/indvars_range_proof.in.il PIPELINE O2)
+    zanna_add_test_labels(il_opt_indvars_range_proof ilopt)
 
     # ==================================================================
     # Constant folding golden tests (check_constfold.cmake)
