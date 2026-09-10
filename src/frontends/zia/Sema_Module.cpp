@@ -289,6 +289,16 @@ void Sema::registerFinalConstantTypes(std::vector<DeclPtr> &declarations) {
                     else if (dynamic_cast<NumberLiteralExpr *>(unary->operand.get()))
                         inferredType = types::number();
                 }
+            } else if (auto *as = dynamic_cast<AsExpr *>(init)) {
+                // A cast names its own type: final X = (expr) as Integer. Without
+                // this the symbol stayed unknown until the body pass, and an
+                // IMPORTING module that read the exposed final before then saw
+                // an object-typed value (verifier: "expects ptr but got i64").
+                if (as->type) {
+                    TypeRef target = resolveTypeNode(as->type.get());
+                    if (target && !target->isUnknown())
+                        inferredType = target;
+                }
             }
 
             if (inferredType)
@@ -305,6 +315,74 @@ void Sema::registerFinalConstantTypes(std::vector<DeclPtr> &declarations) {
             registerFinalConstantTypes(ns->declarations);
 
             namespacePrefix_ = savedPrefix;
+        }
+    }
+}
+
+/// @brief Pre-pass (after registerFinalConstantTypes): type finals that MIRROR
+///        another final — `final B = A;` in the same file, or
+///        `final B = mod.A;` through a file bind — from the source symbol.
+/// @details The export maps are snapshotted right after the literal pre-pass,
+///          so a mirrored final that stayed unknown until the body pass was
+///          exported as unknown and an importing module read an object-typed
+///          value (verifier: "expects ptr but got i64" / "must be f64"). Bound
+///          declarations are flattened into one list in no guaranteed order,
+///          so this iterates to a fixpoint (a chain of mirrors resolves one
+///          link per round).
+/// @param binds The compilation unit's bind declarations (file binds only).
+/// @param declarations The flattened top-level declarations.
+void Sema::registerMirroredFinalTypes(const std::vector<BindDecl> &binds,
+                                      std::vector<DeclPtr> &declarations) {
+    std::unordered_map<uint32_t, std::unordered_map<std::string, uint32_t>> byImporter;
+    for (const auto &bind : binds) {
+        if (bind.isNamespaceBind || bind.resolvedFileId == 0)
+            continue;
+        for (const auto &name : fileBindVisibleModuleNames(bind))
+            byImporter[bind.loc.file_id].emplace(name, bind.resolvedFileId);
+    }
+    auto findGlobal = [&](uint32_t fileId, const std::string &name) -> GlobalVarDecl * {
+        for (auto &d : declarations) {
+            if (d->kind != DeclKind::GlobalVar)
+                continue;
+            auto *g = static_cast<GlobalVarDecl *>(d.get());
+            if (g->loc.file_id == fileId && g->name == name)
+                return g;
+        }
+        return nullptr;
+    };
+    bool changed = true;
+    for (int round = 0; changed && round < 16; ++round) {
+        changed = false;
+        for (auto &decl : declarations) {
+            if (decl->kind != DeclKind::GlobalVar)
+                continue;
+            auto *gvar = static_cast<GlobalVarDecl *>(decl.get());
+            if (!gvar->isFinal || !gvar->initializer || gvar->type)
+                continue;
+            Symbol *sym = lookupSymbol(semanticNameForDecl(*gvar, gvar->name));
+            if (!sym || !sym->type || !sym->type->isUnknown())
+                continue;
+            GlobalVarDecl *src = nullptr;
+            Expr *init = gvar->initializer.get();
+            if (auto *field = dynamic_cast<FieldExpr *>(init)) {
+                if (auto *base = dynamic_cast<IdentExpr *>(field->base.get())) {
+                    auto fileIt = byImporter.find(gvar->loc.file_id);
+                    if (fileIt != byImporter.end()) {
+                        auto modIt = fileIt->second.find(base->name);
+                        if (modIt != fileIt->second.end())
+                            src = findGlobal(modIt->second, field->field);
+                    }
+                }
+            } else if (auto *ident = dynamic_cast<IdentExpr *>(init)) {
+                src = findGlobal(gvar->loc.file_id, ident->name);
+            }
+            if (!src || !src->isFinal || src == gvar)
+                continue;
+            Symbol *srcSym = lookupSymbol(semanticNameForDecl(*src, src->name));
+            if (srcSym && srcSym->type && !srcSym->type->isUnknown()) {
+                sym->type = srcSym->type;
+                changed = true;
+            }
         }
     }
 }

@@ -1904,6 +1904,65 @@ func start() {    var x: Integer = SENTINEL;
     }
 }
 
+/// @brief An exposed final whose initializer is a cast (`expr as Integer`) must
+/// carry the cast's type when an importing module reads it. The final-constant
+/// pre-pass only knew literals, so the symbol stayed unknown until the body pass
+/// and the importer's own `final B = consts.A` was typed as an object — the IL
+/// verifier then rejected `0 - B` ("expects ptr but got i64").
+TEST(ZiaBugFixes, CrossModuleCastFinalConstantKeepsCastType) {
+    const fs::path tempRoot = fs::temp_directory_path() / "zia_fe011_tests" /
+                              std::to_string(static_cast<unsigned long long>(::getpid()));
+    const fs::path dir = tempRoot / "cross_module_cast_final";
+
+    (void)writeFileFE011(dir,
+                         "castconsts.zia",
+                         R"(
+module CastConsts;
+
+final SCALE_FT = 64.0;
+expose final SCALE_T = (0.7071 * SCALE_FT * 10.0 + 0.5) as Integer;
+)");
+
+    // A middle module mirrors the cast final; the importer reads the mirror.
+    (void)writeFileFE011(dir,
+                         "mirror.zia",
+                         R"(
+module Mirror;
+bind "castconsts.zia";
+
+expose final MIRROR_T = CastConsts.SCALE_T;
+expose final MIRROR_AGAIN_T = MIRROR_T;
+)");
+
+    const std::string mainSource = R"(
+module Main;
+bind "castconsts.zia";
+bind "mirror.zia";
+
+final MIRRORED_T = CastConsts.SCALE_T;
+
+func negate(v: Integer) -> Integer { return 0 - v; }
+
+func start() {
+    var a: Integer = negate(MIRRORED_T);
+    var b: Integer = 0 - CastConsts.SCALE_T;
+    var c: Integer = 0 - Mirror.MIRROR_T;
+    var d: Float = Mirror.MIRROR_AGAIN_T + 0.0;
+    Zanna.Terminal.SayInt(a + b + c);
+    Zanna.Terminal.SayNum(d);
+}
+)";
+
+    const fs::path mainPath = writeFileFE011(dir, "main.zia", mainSource);
+    const std::string mainPathStr = mainPath.string();
+    SourceManager sm;
+    CompilerInput input{.source = mainSource, .path = mainPathStr};
+    CompilerOptions opts{};
+
+    auto result = compile(input, opts, sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
 TEST(ZiaBugFixes, RuntimeTerminalTextCallsAcceptPrimitivesAndObjects) {
     SourceManager sm;
     const std::string source = R"(

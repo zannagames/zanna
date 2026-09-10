@@ -2002,6 +2002,7 @@ bool Sema::analyze(ModuleDecl &module) {
     // Pre-pass: eagerly resolve types of final constants from literal initializers
     // This allows forward references to final constants in class/function bodies
     registerFinalConstantTypes(module.declarations);
+    registerMirroredFinalTypes(module.binds, module.declarations);
 
     // File-module export maps snapshot top-level symbol types. Build them only
     // after final constants have had their literal types registered.

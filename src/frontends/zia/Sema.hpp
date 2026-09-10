@@ -899,6 +899,8 @@ class Sema {
     ///          the symbol's type from unknown() to the concrete type. This allows
     ///          forward references to final constants in class/function bodies.
     void registerFinalConstantTypes(std::vector<DeclPtr> &declarations);
+    void registerMirroredFinalTypes(const std::vector<BindDecl> &binds,
+                                    std::vector<DeclPtr> &declarations);
 
     /// @brief Pass 2: Register member signatures (fields, methods) for type declarations.
     /// @param declarations The declaration list to process.
