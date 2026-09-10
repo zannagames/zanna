@@ -1774,6 +1774,11 @@ static void rt_canvas3d_finalize(void *obj) {
     free(c->sort_cmds);
     c->sort_cmds = NULL;
     c->sort_capacity = 0;
+    free(c->sort_order);
+    free(c->sort_order_scratch);
+    c->sort_order = NULL;
+    c->sort_order_scratch = NULL;
+    c->sort_order_capacity = 0;
     free(c->sort_keys);
     c->sort_keys = NULL;
     free(c->sort_keys_scratch);
@@ -2445,6 +2450,7 @@ static void canvas3d_replay_final_overlay(rt_canvas3d *c) {
     c->pass_cpu_ms[RT_CANVAS3D_PASS_BACKEND_END] +=
         (double)(rt_clock_ticks_us() - pass_t0) / 1000.0;
     c->in_frame = 0;
+    c->frame_light_limit = 0;
     c->frame_is_2d = 0;
 }
 

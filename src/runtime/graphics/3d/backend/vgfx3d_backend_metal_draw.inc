@@ -1304,36 +1304,43 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
             return;
         }
 
+        /* Each instanced batch gets its own slice of the transient ring. Binding one shared
+         * buffer at offset 0 and memcpy-ing over it per draw corrupted every batch except the
+         * last: the encoder records a reference, so the GPU read whatever the final memcpy
+         * left behind — all batches rendered with the last batch's transforms. Plan 109:
+         * non-particle instances are packed straight into the reserved slice. */
+        NSUInteger instance_offset = 0;
+        id<MTLBuffer> instance_buffer = nil;
         if (particle_mode) {
             if ((size_t)instance_count > SIZE_MAX / sizeof(vgfx3d_particle_instance_t))
                 return;
             instance_upload_data = cmd->particle_instances;
             instance_upload_bytes = (size_t)instance_count * sizeof(vgfx3d_particle_instance_t);
+            instance_buffer = metal_upload_transient_buffer(ctx,
+                                                            VGFX3D_METAL_TRANSIENT_INSTANCE,
+                                                            instance_upload_data,
+                                                            instance_upload_bytes,
+                                                            &instance_offset);
         } else {
-            if (!metal_ensure_instance_storage(ctx, instance_count))
+            void *slice = NULL;
+            if ((size_t)instance_count > SIZE_MAX / sizeof(vgfx3d_metal_instance_data_t))
                 return;
-            instance_data = (vgfx3d_metal_instance_data_t *)ctx.instanceScratch.mutableBytes;
-            if (!instance_data)
+            instance_upload_bytes = (size_t)instance_count * sizeof(vgfx3d_metal_instance_data_t);
+            instance_buffer = metal_reserve_transient_slice(ctx,
+                                                            VGFX3D_METAL_TRANSIENT_INSTANCE,
+                                                            instance_upload_bytes,
+                                                            &instance_offset,
+                                                            &slice);
+            if (!instance_buffer || !slice)
                 return;
+            instance_data = (vgfx3d_metal_instance_data_t *)slice;
             vgfx3d_metal_fill_instance_data(instance_data,
                                             instance_count,
                                             instance_matrices,
                                             cmd->prev_instance_matrices,
                                             cmd->has_prev_instance_matrices ? 1 : 0);
             instance_upload_data = instance_data;
-            instance_upload_bytes = (size_t)instance_count * sizeof(vgfx3d_metal_instance_data_t);
         }
-        /* Each instanced batch gets its own slice of the transient ring. Binding one shared
-         * buffer at offset 0 and memcpy-ing over it per draw corrupted every batch except the
-         * last: the encoder records a reference, so the GPU read whatever the final memcpy
-         * left behind — all batches rendered with the last batch's transforms. */
-        NSUInteger instance_offset = 0;
-        id<MTLBuffer> instance_buffer =
-            metal_upload_transient_buffer(ctx,
-                                          VGFX3D_METAL_TRANSIENT_INSTANCE,
-                                          instance_upload_data,
-                                          instance_upload_bytes,
-                                          &instance_offset);
         if (!instance_buffer)
             return;
 

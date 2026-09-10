@@ -97,6 +97,43 @@ void vgfx3d_metal_pack_bone_palette(float *dst, const float *src, int32_t bone_c
         vgfx3d_metal_store_identity4x4(&dst[(size_t)i * 16u]);
 }
 
+/// @brief Normal matrix for a rotation + uniform-scale model without the general inverse.
+/// @details For M3 = s·R (R orthonormal) the inverse-transpose is R/s = M3/s², which is
+///   what the general cofactor path returns for such matrices, at a fraction of the cost.
+///   Plan 109 measured this per instance per draw on Legacy Baseball's 9,000-figure crowd.
+/// @return 1 and a filled row-major 4×4 when the upper 3×3 is uniform-scale orthogonal
+///   (columns equal length within 1e-4 relative and mutually orthogonal), else 0.
+static int vgfx3d_metal_uniform_scale_normal_matrix4(const float *m, float *out) {
+    const float c0[3] = {m[0], m[4], m[8]};
+    const float c1[3] = {m[1], m[5], m[9]};
+    const float c2[3] = {m[2], m[6], m[10]};
+    const float l0 = c0[0] * c0[0] + c0[1] * c0[1] + c0[2] * c0[2];
+    const float l1 = c1[0] * c1[0] + c1[1] * c1[1] + c1[2] * c1[2];
+    const float l2 = c2[0] * c2[0] + c2[1] * c2[1] + c2[2] * c2[2];
+    const float d01 = c0[0] * c1[0] + c0[1] * c1[1] + c0[2] * c1[2];
+    const float d02 = c0[0] * c2[0] + c0[1] * c2[1] + c0[2] * c2[2];
+    const float d12 = c1[0] * c2[0] + c1[1] * c2[1] + c1[2] * c2[2];
+    const float tol = 1e-4f * l0;
+    float inv;
+    if (!(l0 > 1e-12f) || !isfinite(l0) || !isfinite(l1) || !isfinite(l2) ||
+        fabsf(l1 - l0) > tol || fabsf(l2 - l0) > tol || fabsf(d01) > tol || fabsf(d02) > tol ||
+        fabsf(d12) > tol)
+        return 0;
+    inv = 1.0f / l0;
+    memset(out, 0, sizeof(float) * 16);
+    out[0] = m[0] * inv;
+    out[1] = m[1] * inv;
+    out[2] = m[2] * inv;
+    out[4] = m[4] * inv;
+    out[5] = m[5] * inv;
+    out[6] = m[6] * inv;
+    out[8] = m[8] * inv;
+    out[9] = m[9] * inv;
+    out[10] = m[10] * inv;
+    out[15] = 1.0f;
+    return 1;
+}
+
 /// @brief Build per-instance Metal buffer entries with column-major transpose for MSL.
 /// Computes the normal matrix from each model matrix; absent prev-frame data falls back
 /// to the current model so motion-vector shaders see zero displacement.
@@ -121,7 +158,8 @@ void vgfx3d_metal_fill_instance_data(vgfx3d_metal_instance_data_t *dst,
 
         vgfx3d_copy_mat4_finite_or_identity(safe_model, model);
         transpose4x4_local(safe_model, dst[i].model);
-        vgfx3d_compute_normal_matrix4(safe_model, normal);
+        if (!vgfx3d_metal_uniform_scale_normal_matrix4(safe_model, normal))
+            vgfx3d_compute_normal_matrix4(safe_model, normal);
         transpose4x4_local(normal, dst[i].normal);
         if (has_prev_instance_matrices && prev_instance_matrices) {
             vgfx3d_copy_mat4_finite_or(

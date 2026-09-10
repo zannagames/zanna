@@ -774,25 +774,72 @@ static int canvas3d_ensure_sort_key_capacity(rt_canvas3d *c, int32_t needed) {
 /// @param key_fn Non-NULL key extractor.
 /// @param ctx Opaque context forwarded to @p key_fn.
 /// @return Non-zero on success or trivial input; zero only when scratch growth fails.
+static int canvas3d_ensure_sort_order_capacity(rt_canvas3d *c, int32_t count) {
+    int32_t capacity;
+    int32_t *order;
+    int32_t *scratch;
+    if (!c || count <= 0)
+        return 0;
+    if (c->sort_order && c->sort_order_scratch && c->sort_order_capacity >= count)
+        return 1;
+    capacity = c->sort_order_capacity > 0 ? c->sort_order_capacity : 32;
+    while (capacity < count) {
+        if (capacity > INT32_MAX / 2) {
+            capacity = count;
+            break;
+        }
+        capacity *= 2;
+    }
+    if ((size_t)capacity > SIZE_MAX / sizeof(int32_t))
+        return 0;
+    order = (int32_t *)malloc((size_t)capacity * sizeof(int32_t));
+    scratch = (int32_t *)malloc((size_t)capacity * sizeof(int32_t));
+    if (!order || !scratch) {
+        free(order);
+        free(scratch);
+        return 0;
+    }
+    free(c->sort_order);
+    free(c->sort_order_scratch);
+    c->sort_order = order;
+    c->sort_order_scratch = scratch;
+    c->sort_order_capacity = capacity;
+    return 1;
+}
+
+/// @brief Apply a permutation of draw records through the canvas scratch buffer (one copy each).
+static void canvas3d_apply_sort_order(rt_canvas3d *c, deferred_draw_t *items, int32_t count) {
+    deferred_draw_t *scratch = (deferred_draw_t *)c->sort_cmds;
+    for (int32_t i = 0; i < count; i++)
+        scratch[i] = items[c->sort_order[i]];
+    memcpy(items, scratch, (size_t)count * sizeof(*items));
+}
+
 static int canvas3d_stable_radix_sort_u64(
     rt_canvas3d *c, deferred_draw_t *items, int32_t count, canvas3d_sort_key_fn key_fn, void *ctx) {
-    deferred_draw_t *scratch;
     uint64_t *keys;
     uint64_t *keys_scratch;
+    int32_t *order;
+    int32_t *order_scratch;
+    int moved = 0;
 
     if (!c || !items || count <= 1 || !key_fn)
         return 1;
     if (!ensure_deferred_capacity(&c->sort_cmds, &c->sort_capacity, count))
         return 0;
-    if (!canvas3d_ensure_sort_key_capacity(c, count))
+    if (!canvas3d_ensure_sort_key_capacity(c, count) || !canvas3d_ensure_sort_order_capacity(c, count))
         return 0;
-    scratch = (deferred_draw_t *)c->sort_cmds;
     keys = c->sort_keys;
     keys_scratch = c->sort_keys_scratch;
+    order = c->sort_order;
+    order_scratch = c->sort_order_scratch;
     /* The key function can be arbitrarily expensive (the backend-state key hashes ~40 material
-     * fields), so evaluate it exactly once per draw and radix over the cached values. */
-    for (int32_t i = 0; i < count; i++)
+     * fields), so evaluate it exactly once per draw and radix over the cached values. Plan 109:
+     * the passes scatter 4-byte indices and 8-byte keys; the records move once at the end. */
+    for (int32_t i = 0; i < count; i++) {
         keys[i] = key_fn(&items[i], ctx);
+        order[i] = i;
+    }
     for (int shift = 0; shift < 64; shift += 8) {
         int32_t counts[256] = {0};
         int32_t offsets[256];
@@ -808,12 +855,15 @@ static int canvas3d_stable_radix_sort_u64(
         for (int32_t i = 0; i < count; i++) {
             uint32_t bucket = (uint32_t)((keys[i] >> shift) & 0xFFu);
             int32_t dst = offsets[bucket]++;
-            scratch[dst] = items[i];
+            order_scratch[dst] = order[i];
             keys_scratch[dst] = keys[i];
         }
-        memcpy(items, scratch, (size_t)count * sizeof(*items));
+        memcpy(order, order_scratch, (size_t)count * sizeof(*order));
         memcpy(keys, keys_scratch, (size_t)count * sizeof(*keys));
+        moved = 1;
     }
+    if (moved)
+        canvas3d_apply_sort_order(c, items, count);
     c->frame_sort_passes++;
     return 1;
 }
@@ -912,7 +962,6 @@ static void canvas3d_insertion_sort_depth_exact(deferred_draw_t *items,
 /// @return Non-zero on success or trivial/equal-key input; zero when scratch allocation fails.
 static int canvas3d_stable_bucket_sort_depth(
     rt_canvas3d *c, deferred_draw_t *items, int32_t count, int descending, int requires_blend) {
-    deferred_draw_t *scratch;
     int32_t counts[CANVAS3D_SORT_DEPTH_BUCKETS] = {0};
     int32_t starts[CANVAS3D_SORT_DEPTH_BUCKETS];
     int32_t offsets[CANVAS3D_SORT_DEPTH_BUCKETS];
@@ -932,9 +981,9 @@ static int canvas3d_stable_bucket_sort_depth(
         return 1; /* CONTRACT: equal-key input is returned untouched, so callers MUST run a
                    * stable identity pass (radix by stable_sort_id) first — otherwise output
                    * order for equal depths would depend on caller submission order. */
-    if (!ensure_deferred_capacity(&c->sort_cmds, &c->sort_capacity, count))
+    if (!ensure_deferred_capacity(&c->sort_cmds, &c->sort_capacity, count) ||
+        !canvas3d_ensure_sort_order_capacity(c, count))
         return 0;
-    scratch = (deferred_draw_t *)c->sort_cmds;
     for (int32_t i = 0; i < count; i++) {
         int bucket = canvas3d_depth_bucket_for_key(
             canvas3d_sanitize_sort_key(items[i].sort_key, requires_blend), min_key, max_key);
@@ -953,9 +1002,9 @@ static int canvas3d_stable_bucket_sort_depth(
     for (int32_t i = 0; i < count; i++) {
         int bucket = canvas3d_depth_bucket_for_key(
             canvas3d_sanitize_sort_key(items[i].sort_key, requires_blend), min_key, max_key);
-        scratch[offsets[bucket]++] = items[i];
+        c->sort_order[offsets[bucket]++] = i;
     }
-    memcpy(items, scratch, (size_t)count * sizeof(*items));
+    canvas3d_apply_sort_order(c, items, count);
     for (int bucket = 0; bucket < CANVAS3D_SORT_DEPTH_BUCKETS; bucket++) {
         if (counts[bucket] > 1)
             canvas3d_insertion_sort_depth_exact(

@@ -2379,6 +2379,14 @@ int64_t rt_instbatch3d_count(void *b) {
     return 0;
 }
 
+/// @brief Stub for `InstanceBatch3D.RetainedBytes` (ADR 0349): silent stub returning `0`.
+/// @param b InstanceBatch3D handle (ignored).
+/// @return `0`.
+int64_t rt_instbatch3d_retained_bytes(void *b) {
+    (void)b;
+    return 0;
+}
+
 /// @brief Stub for `Canvas3D.DrawInstanced` — render every instance in
 ///        the batch in a single GPU draw call (when GPU instancing is
 ///        available) or as N individual draws (software fallback).

@@ -364,3 +364,5 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0346](0346-ground-hint-authored-orientation.md) — Preserve incoming shoe orientation while positional IK follows terrain
 
 - [0347: Prepared instance bounds](0347-prepared-instance-bounds.md)
+- [ADR 0348](0348-perspective-shadow-receiver-bias.md) — Perspective shadow receivers get slope-scaled and normal-offset bias
+- [ADR 0349](0349-retained-instance-revisions.md) — Retained instance batches track what changed

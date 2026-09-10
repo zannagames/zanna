@@ -366,16 +366,34 @@ static id<MTLSamplerState> metal_get_material_sampler(VGFXMetalContext *ctx,
                   mag_filter == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST)
                      ? 1
                      : vgfx3d_metal_sanitize_anisotropy(anisotropy);
-    NSString *key = [NSString stringWithFormat:@"%d:%d:%d:%d:%d:%d",
-                                               wrap_s,
-                                               wrap_t,
-                                               min_filter,
-                                               mag_filter,
-                                               mip_filter,
-                                               anisotropy];
-    id<MTLSamplerState> sampler = ctx.samplerCache[key];
-    if (sampler)
-        return sampler;
+    /* Plan 109: a packed integer key over a small table avoids formatting an NSString for
+     * every texture slot of every draw; the dictionary keeps any overflow. */
+    uint64_t packed = ((uint64_t)(wrap_s & 0xff)) | ((uint64_t)(wrap_t & 0xff) << 8) |
+                      ((uint64_t)(min_filter & 0xff) << 16) |
+                      ((uint64_t)(mag_filter & 0xff) << 24) |
+                      ((uint64_t)(mip_filter & 0xff) << 32) |
+                      ((uint64_t)(anisotropy & 0xffff) << 40);
+    NSUInteger slot_count = ctx.samplerStates ? ctx.samplerStates.count : 0;
+    NSString *key = nil;
+    id<MTLSamplerState> sampler = nil;
+    if (ctx.samplerKeys) {
+        for (NSUInteger i = 0; i < slot_count; i++) {
+            if (ctx.samplerKeys[i] == packed)
+                return ctx.samplerStates[i];
+        }
+    }
+    if (slot_count >= VGFX3D_METAL_SAMPLER_TABLE_CAPACITY || !ctx.samplerKeys) {
+        key = [NSString stringWithFormat:@"%d:%d:%d:%d:%d:%d",
+                                         wrap_s,
+                                         wrap_t,
+                                         min_filter,
+                                         mag_filter,
+                                         mip_filter,
+                                         anisotropy];
+        sampler = ctx.samplerCache[key];
+        if (sampler)
+            return sampler;
+    }
 
     MTLSamplerDescriptor *sd = [[MTLSamplerDescriptor alloc] init];
     sd.minFilter = min_filter == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST
@@ -389,8 +407,14 @@ static id<MTLSamplerState> metal_get_material_sampler(VGFXMetalContext *ctx,
     sd.sAddressMode = metal_material_address_mode(wrap_s);
     sd.tAddressMode = metal_material_address_mode(wrap_t);
     sampler = [ctx.device newSamplerStateWithDescriptor:sd];
-    if (sampler)
-        ctx.samplerCache[key] = sampler;
+    if (sampler) {
+        if (key)
+            ctx.samplerCache[key] = sampler;
+        else {
+            ctx.samplerKeys[slot_count] = packed;
+            [ctx.samplerStates addObject:sampler];
+        }
+    }
     return sampler ? sampler : (ctx.sharedSampler ? ctx.sharedSampler : ctx.defaultSampler);
 }
 
@@ -432,8 +456,13 @@ static VGFXMetalContext *metal_create_context_base(id<MTLDevice> device,
     ctx.extraInfluenceCache = [NSMutableDictionary dictionaryWithCapacity:8];
     ctx.renderTargetCache = [NSMutableDictionary dictionaryWithCapacity:8];
     ctx.samplerCache = [NSMutableDictionary dictionaryWithCapacity:8];
+    ctx.samplerKeys = (uint64_t *)calloc(VGFX3D_METAL_SAMPLER_TABLE_CAPACITY, sizeof(uint64_t));
+    ctx.samplerStates = [NSMutableArray arrayWithCapacity:VGFX3D_METAL_SAMPLER_TABLE_CAPACITY];
     if (!ctx.textureCache || !ctx.cubemapCache || !ctx.geometryCache || !ctx.morphCache ||
-        !ctx.extraInfluenceCache || !ctx.renderTargetCache || !ctx.samplerCache) {
+        !ctx.extraInfluenceCache || !ctx.renderTargetCache || !ctx.samplerCache ||
+        !ctx.samplerKeys || !ctx.samplerStates) {
+        free(ctx.samplerKeys);
+        ctx.samplerKeys = NULL;
         return nil;
     }
     ctx.currentTargetKind = VGFX3D_METAL_TARGET_SWAPCHAIN;
@@ -1840,6 +1869,11 @@ static void metal_destroy_ctx(void *ctx_ptr) {
         return;
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge_transfer VGFXMetalContext *)ctx_ptr;
+        if (ctx) {
+            free(ctx.samplerKeys);
+            ctx.samplerKeys = NULL;
+            ctx.samplerStates = nil;
+        }
         metal_detach_render_target(ctx, YES);
         metal_clear_render_target_sync_callbacks(ctx);
         metal_free_gpu_postfx_chain(ctx);

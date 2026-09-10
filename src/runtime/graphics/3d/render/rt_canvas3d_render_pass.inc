@@ -1363,6 +1363,7 @@ void rt_canvas3d_end(void *obj) {
         return;
     if (!c->backend) {
         c->in_frame = 0;
+        c->frame_light_limit = 0;
         c->frame_is_2d = 0;
         c->frame_is_view_model = 0;
         c->last_draw_count = 0;
@@ -1466,6 +1467,7 @@ void rt_canvas3d_end(void *obj) {
         canvas3d_refresh_texture_upload_bytes(c);
         canvas3d_refresh_frame_gpu_time(c);
         c->in_frame = 0;
+        c->frame_light_limit = 0;
         c->frame_is_2d = 0;
         c->frame_is_view_model = 0;
         c->draw_count = 0;
@@ -1506,6 +1508,7 @@ void rt_canvas3d_end(void *obj) {
     canvas3d_refresh_texture_upload_bytes(c);
     canvas3d_refresh_frame_gpu_time(c);
     c->in_frame = 0;
+    c->frame_light_limit = 0;
 
     if (!c->frame_is_2d && overlay_count > 0) {
         int64_t pass_t0 = rt_clock_ticks_us();
@@ -1527,6 +1530,7 @@ void rt_canvas3d_end(void *obj) {
     }
 
     c->in_frame = 0;
+    c->frame_light_limit = 0;
     c->frame_is_2d = 0;
     c->frame_is_view_model = 0;
     c->draw_count = 0;

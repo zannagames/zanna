@@ -1367,6 +1367,9 @@ typedef struct {
 
     /* Frame state */
     int8_t in_frame;                       /* 1 = between Begin/End */
+    /* Plan 109: the active light limit for the frame in progress (0 = not yet computed);
+     * the capability query behind it built a string per draw. */
+    int32_t frame_light_limit;
     int8_t frame_is_2d;                    /* 1 = active frame uses orthographic 2D projection */
     int8_t frame_is_view_model;            /* 1 = secondary camera-space pass over a fresh depth
                                               buffer (weapon view models); skips skybox + shadows */
@@ -1396,6 +1399,9 @@ typedef struct {
     float cached_cam_far;  /* active camera far clip distance, for stable cascade splits */
     int8_t cached_cam_is_ortho;
     int8_t camera_relative_upload;
+    /* ADR 0349: latched by the prepared instanced bridge for the duration of one queue call
+     * when the batch supplies its own previous matrices (the motion map is then skipped). */
+    int8_t instanced_owns_motion_history;
     double camera_relative_origin[3];
     float last_scene_vp[16]; /* most recent 3D VP matrix (preserved across 2D passes) */
     float last_scene_cam_pos[3];
@@ -1412,6 +1418,11 @@ typedef struct {
     uint64_t *sort_keys;         /* cached radix keys, evaluated once per draw per sort */
     uint64_t *sort_keys_scratch; /* scatter companion for sort_keys */
     int32_t sort_key_capacity;
+    /* Plan 109: the sorts permute these indices and copy each draw record once, instead of
+     * scattering the multi-kilobyte records on every radix pass. */
+    int32_t *sort_order;
+    int32_t *sort_order_scratch;
+    int32_t sort_order_capacity;
     void *final_overlay_cmds; /* dynamic array of deferred_draw_t, replayed after post-FX */
     int32_t final_overlay_count;
     int32_t final_overlay_capacity;

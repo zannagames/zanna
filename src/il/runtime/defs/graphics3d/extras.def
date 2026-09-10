@@ -95,6 +95,8 @@ RT_FUNC(InstBatch3DRemove,       rt_instbatch3d_remove,       "Zanna.Graphics3D.
 RT_FUNC(InstBatch3DSet,          rt_instbatch3d_set,          "Zanna.Graphics3D.InstanceBatch3D.Set",          "void(obj,i64,obj)")
 RT_FUNC(InstBatch3DClear,        rt_instbatch3d_clear,        "Zanna.Graphics3D.InstanceBatch3D.Clear",        "void(obj)")
 RT_FUNC(InstBatch3DCount,        rt_instbatch3d_count,        "Zanna.Graphics3D.InstanceBatch3D.get_Count",    "i64(obj)")
+// ADR 0349: retained CPU storage for resource accounting.
+RT_FUNC(InstBatch3DRetainedBytes, rt_instbatch3d_retained_bytes, "Zanna.Graphics3D.InstanceBatch3D.get_RetainedBytes", "i64(obj)")
 RT_FUNC(InstBatch3DGetTransform, rt_instbatch3d_get, "Zanna.Graphics3D.InstanceBatch3D.GetTransform", "obj<Zanna.Math.Mat4>(obj,i64)", owned)
 RT_FUNC(InstBatch3DGetMesh, rt_instbatch3d_borrow_mesh, "Zanna.Graphics3D.InstanceBatch3D.get_Mesh", "obj<Zanna.Graphics3D.Mesh3D>(obj)", borrowed)
 RT_FUNC(InstBatch3DGetMaterial, rt_instbatch3d_borrow_material, "Zanna.Graphics3D.InstanceBatch3D.get_Material", "obj<Zanna.Graphics3D.Material3D>(obj)", borrowed)
@@ -108,6 +110,7 @@ RT_FUNC(Canvas3DDrawInstancedSkinned, rt_canvas3d_draw_instanced_skinned, "Zanna
 /// `Count` and operations including `Add`, `Remove`, `Set`, `Clear`.
 RT_CLASS_BEGIN("Zanna.Graphics3D.InstanceBatch3D", InstanceBatch3D, "obj", InstBatch3DNew)
     RT_PROP("Count", "i64", InstBatch3DCount, none)
+    RT_PROP("RetainedBytes", "i64", InstBatch3DRetainedBytes, none)
     // ADR 0227: readback symmetry — a batch is no longer write-only.
     RT_PROP("Mesh", "obj<Zanna.Graphics3D.Mesh3D>", InstBatch3DGetMesh, none)
     RT_PROP("Material", "obj<Zanna.Graphics3D.Material3D>", InstBatch3DGetMaterial, none)

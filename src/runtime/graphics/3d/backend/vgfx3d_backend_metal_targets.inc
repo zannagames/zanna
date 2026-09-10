@@ -379,23 +379,27 @@ static id<MTLTexture> metal_new_depth_texture(VGFXMetalContext *ctx,
 /// @param texture Borrowed mipmapped texture whose lower levels are generated.
 /// @return YES when no generation is needed or the blit was committed, otherwise NO.
 static BOOL metal_generate_mipmaps(VGFXMetalContext *ctx, id<MTLTexture> texture) {
-    id<MTLCommandBuffer> cmd_buf;
-    id<MTLBlitCommandEncoder> blit;
+    /* Same pooling rule as the readback: upload paths run outside a frame pool and
+     * the autoreleased command buffer/encoder would otherwise outlive the call. */
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmd_buf;
+        id<MTLBlitCommandEncoder> blit;
 
-    if (!ctx || !texture)
-        return NO;
-    if (texture.mipmapLevelCount <= 1)
+        if (!ctx || !texture)
+            return NO;
+        if (texture.mipmapLevelCount <= 1)
+            return YES;
+        cmd_buf = [ctx.commandQueue commandBuffer];
+        if (!cmd_buf)
+            return NO;
+        blit = [cmd_buf blitCommandEncoder];
+        if (!blit)
+            return NO;
+        [blit generateMipmapsForTexture:texture];
+        [blit endEncoding];
+        [cmd_buf commit];
         return YES;
-    cmd_buf = [ctx.commandQueue commandBuffer];
-    if (!cmd_buf)
-        return NO;
-    blit = [cmd_buf blitCommandEncoder];
-    if (!blit)
-        return NO;
-    [blit generateMipmapsForTexture:texture];
-    [blit endEncoding];
-    [cmd_buf commit];
-    return YES;
+    }
 }
 
 /// @brief Evict texture-cache entries that are empty or older than the max-age threshold.
@@ -1251,6 +1255,21 @@ static size_t metal_align_up_size(size_t value, size_t alignment) {
 /// @param stride Destination RGBA8 row pitch in bytes.
 /// @param[out] dst_hdr_rgba Optional tightly packed RGBA32F destination for HDR source data.
 /// @return 1 after successful GPU copy and format conversion, otherwise 0.
+static int metal_copy_texture_to_rgba_impl(VGFXMetalContext *ctx,
+                                           id<MTLTexture> tex,
+                                           uint8_t *dst_rgba,
+                                           int32_t w,
+                                           int32_t h,
+                                           int32_t stride,
+                                           float *dst_hdr_rgba);
+
+/// @brief Pooled entry for the synchronous texture readback.
+/// @details The readback runs from CPU-side callers (render-target mirrors, inset
+///   composites, probes) outside any frame's autorelease pool. Its command buffer and
+///   blit encoder are autoreleased objects that retain the shared readback buffer;
+///   without a pool of their own every call leaked one readback-sized GPU
+///   allocation for the life of the thread (plan 109 L5: +35 MB/s with the runner
+///   insets live). The pool drains them as the copy returns.
 static int metal_copy_texture_to_rgba(VGFXMetalContext *ctx,
                                       id<MTLTexture> tex,
                                       uint8_t *dst_rgba,
@@ -1258,6 +1277,18 @@ static int metal_copy_texture_to_rgba(VGFXMetalContext *ctx,
                                       int32_t h,
                                       int32_t stride,
                                       float *dst_hdr_rgba) {
+    @autoreleasepool {
+        return metal_copy_texture_to_rgba_impl(ctx, tex, dst_rgba, w, h, stride, dst_hdr_rgba);
+    }
+}
+
+static int metal_copy_texture_to_rgba_impl(VGFXMetalContext *ctx,
+                                           id<MTLTexture> tex,
+                                           uint8_t *dst_rgba,
+                                           int32_t w,
+                                           int32_t h,
+                                           int32_t stride,
+                                           float *dst_hdr_rgba) {
     int32_t copy_w;
     int32_t copy_h;
     MTLPixelFormat pixel_format;

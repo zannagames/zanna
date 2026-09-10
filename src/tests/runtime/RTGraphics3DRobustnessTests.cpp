@@ -1843,6 +1843,112 @@ static void test_instance_batch_repairs_storage_and_preserves_relative_motion_hi
     assert(batch->visibility_mask[0] == 1);
 }
 
+/// ADR 0349: a batch snapshots only the union of the last two frames' dirty ranges and
+/// keeps its previous-frame float mirror patched over the previous frame's range, so
+/// motion history stays exact while stationary slots cost nothing per frame.
+static void test_instance_batch_dirty_ranges_keep_motion_history_exact() {
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material = rt_material3d_new();
+    auto *batch = static_cast<InstBatchView *>(rt_instbatch3d_new(mesh, material));
+    assert(batch != nullptr);
+    const int count = 70;
+    for (int i = 0; i < count; ++i) {
+        void *m = rt_mat4_new(1.0, 0.0, 0.0, (double)i, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                              0.0, 0.0, 0.0, 1.0);
+        rt_instbatch3d_add(batch, m);
+    }
+    rt_canvas3d canvas = {};
+    canvas.width = 100;
+    canvas.height = 100;
+    canvas.in_frame = 1;
+    canvas.frame_is_2d = 0;
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.cached_vp[0] = canvas.cached_vp[5] = canvas.cached_vp[10] = canvas.cached_vp[15] = 1.0f;
+    auto set_x = [&](int index, double x) {
+        void *m = rt_mat4_new(1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                              0.0, 1.0);
+        rt_instbatch3d_set(batch, index, m);
+    };
+    auto snapshot_matches_live = [&]() {
+        for (int i = 0; i < batch->instance_count; ++i)
+            for (int k = 0; k < 16; ++k)
+                if (batch->current_snapshot64[i * 16 + k] != batch->transforms64[i * 16 + k])
+                    return false;
+        return true;
+    };
+    auto prev_mirror_matches = [&]() {
+        if (!batch->prev_submit_transforms)
+            return false;
+        for (int i = 0; i < batch->prev_count; ++i)
+            for (int k = 0; k < 16; ++k)
+                if (batch->prev_submit_transforms[i * 16 + k] !=
+                    (float)batch->prev_transforms64[i * 16 + k])
+                    return false;
+        return true;
+    };
+
+    canvas.frame_serial = 0;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live());
+    // Frame 1: two distant slots move; the snapshot follows them and nothing else changes.
+    set_x(10, 100.0);
+    set_x(60, 200.0);
+    canvas.frame_serial = 1;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live());
+    assert(batch->prev_transforms64[10 * 16 + 3] == 10.0 && batch->prev_transforms64[60 * 16 + 3] == 60.0);
+    assert(prev_mirror_matches());
+    // Frame 2: stationary; previous advances once, the snapshot is untouched.
+    canvas.frame_serial = 2;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live());
+    assert(batch->prev_transforms64[10 * 16 + 3] == 100.0 && batch->prev_transforms64[60 * 16 + 3] == 200.0);
+    assert(prev_mirror_matches());
+    // Frame 3: the buffer being reused is two frames old (it predates frame 1's moves); the
+    // union of the last two dirty ranges must still carry slots 10 and 60 forward.
+    set_x(5, 500.0);
+    canvas.frame_serial = 3;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live());
+    assert(batch->current_snapshot64[10 * 16 + 3] == 100.0 && batch->current_snapshot64[60 * 16 + 3] == 200.0);
+    assert(batch->prev_transforms64[5 * 16 + 3] == 5.0 && batch->prev_transforms64[10 * 16 + 3] == 100.0);
+    assert(prev_mirror_matches());
+    // Frame 4: stationary again; frame 5: a second draw in the same frame after a move keeps
+    // the first draw's snapshot, and the next frame picks the move up.
+    canvas.frame_serial = 4;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live() && prev_mirror_matches());
+    canvas.frame_serial = 5;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    set_x(20, 2000.0);
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->current_snapshot64[20 * 16 + 3] == 20.0);
+    canvas.frame_serial = 6;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live() && batch->prev_transforms64[20 * 16 + 3] == 20.0);
+    assert(prev_mirror_matches());
+    // A swap-remove is structural: the whole snapshot and mirror are rebuilt, twice.
+    rt_instbatch3d_remove(batch, 3);
+    canvas.frame_serial = 7;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->instance_count == count - 1 && snapshot_matches_live() && prev_mirror_matches());
+    set_x(3, 300.0);
+    canvas.frame_serial = 8;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live() && prev_mirror_matches());
+    canvas.frame_serial = 9;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(snapshot_matches_live() && prev_mirror_matches());
+    assert(batch->prev_transforms64[3 * 16 + 3] == 300.0);
+    // Clear and refill: nothing stale survives.
+    rt_instbatch3d_clear(batch);
+    for (int i = 0; i < 3; ++i)
+        set_x(i, 0.0), rt_instbatch3d_add(batch, rt_mat4_identity());
+    canvas.frame_serial = 10;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->instance_count == 3 && snapshot_matches_live());
+}
+
 static void test_physics_joints_deduplicate_and_raycast_is_true_ray() {
     void *world = rt_world3d_new(0.0, 0.0, 0.0);
     void *a = rt_body3d_new_sphere(0.5, 1.0);
@@ -2706,6 +2812,7 @@ int main() {
     test_light_and_material_boolean_state_is_initialized();
     test_light_noop_mutations_and_getters_repair_renderer_state();
     test_instance_batch_repairs_storage_and_preserves_relative_motion_history();
+    test_instance_batch_dirty_ranges_keep_motion_history_exact();
     test_physics_joints_deduplicate_and_raycast_is_true_ray();
     test_raycast_math_and_backend_guards_are_strict();
     test_physics_oriented_boxes_do_not_collide_as_aabbs();

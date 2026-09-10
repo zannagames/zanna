@@ -1739,6 +1739,93 @@ static void test_camera_parameter_sanitizer(void) {
 }
 
 /// @brief Verify light arrays cannot upload invalid types, NaNs, or malformed shadow metadata.
+/// @brief ADR 0348: the receiver-space shadow scale matches the analytic projection.
+static void test_shadow_receiver_scale_contract(void) {
+    float m[16];
+    float p[3] = {0.3f, -0.2f, -12.0f};
+    float q[3] = {0.3f, -0.2f, -12.001f};
+    const float near_z = 0.5f;
+    const float far_z = 40.0f;
+    const float half_tan = tanf(34.0f * 3.14159265f / 180.0f);
+    const float texel_ndc = 1.0f / 1024.0f;
+    float texel_world = -1.0f;
+    float depth_scale = -1.0f;
+    float texel_cube = -1.0f;
+    float depth_cube = -1.0f;
+    float stored_p;
+    float stored_q;
+    float w_p;
+    float w_q;
+
+    /* GL-style perspective, eye at the origin looking down -Z (row-major). */
+    memset(m, 0, sizeof(m));
+    m[0] = 1.0f / half_tan;
+    m[5] = 1.0f / half_tan;
+    m[10] = (far_z + near_z) / (near_z - far_z);
+    m[11] = 2.0f * far_z * near_z / (near_z - far_z);
+    m[14] = -1.0f;
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_PERSPECTIVE, p, texel_ndc,
+                                             &texel_world, &depth_scale) == 1,
+                "Perspective receiver scale accepts a receiver in front of the light");
+    EXPECT_NEAR(texel_world, 2.0f * texel_ndc * 12.0f * half_tan, 1e-5f,
+                "Perspective texel size grows with the receiver's distance along the light axis");
+    EXPECT_NEAR(depth_scale, far_z * near_z / ((far_z - near_z) * 144.0f), 1e-6f,
+                "Perspective depth scale is the hyperbolic stored-depth derivative");
+    /* Finite difference of the stored depth along the axis agrees with the derivative. */
+    w_p = -p[2];
+    w_q = -q[2];
+    stored_p = 0.5f * ((m[10] * p[2] + m[11]) / w_p) + 0.5f;
+    stored_q = 0.5f * ((m[10] * q[2] + m[11]) / w_q) + 0.5f;
+    EXPECT_NEAR(fabsf(stored_q - stored_p) / 0.001f, depth_scale, depth_scale * 0.02f,
+                "Perspective depth scale matches a finite difference of the projected depth");
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_CUBE, p, texel_ndc,
+                                             &texel_cube, &depth_cube) == 1 &&
+                    texel_cube == texel_world && depth_cube == depth_scale,
+                "Cube faces use the perspective formulas");
+
+    /* Orthographic: constants of the VP, independent of the receiver. */
+    memset(m, 0, sizeof(m));
+    m[0] = 0.25f;
+    m[5] = 0.25f;
+    m[10] = 0.1f;
+    m[15] = 1.0f;
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_ORTHOGRAPHIC, p, texel_ndc,
+                                             &texel_world, &depth_scale) == 1,
+                "Orthographic receiver scale accepts a finite receiver");
+    EXPECT_NEAR(texel_world, 2.0f * texel_ndc / 0.25f, 1e-7f,
+                "Orthographic texel size is 2 * texel / |row0|");
+    EXPECT_NEAR(depth_scale, 0.05f, 1e-7f, "Orthographic depth scale is 0.5 * |row2|");
+
+    /* Rejections zero both outputs. */
+    memset(m, 0, sizeof(m));
+    m[0] = 1.0f;
+    m[5] = 1.0f;
+    m[10] = 0.5f;
+    m[14] = -1.0f;
+    p[2] = 1.0f; /* behind the light: w = -1 */
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_PERSPECTIVE, p, texel_ndc,
+                                             &texel_world, &depth_scale) == 0 &&
+                    texel_world == 0.0f && depth_scale == 0.0f,
+                "A perspective receiver behind the light is rejected with zeroed outputs");
+    p[2] = -4.0f;
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(m, 7, p, texel_ndc, &texel_world, &depth_scale) == 0,
+                "Unknown projection types are rejected");
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_PERSPECTIVE, p, 0.0f,
+                                             &texel_world, &depth_scale) == 0,
+                "A non-positive texel size is rejected");
+    p[0] = NAN;
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_PERSPECTIVE, p, texel_ndc,
+                                             &texel_world, &depth_scale) == 0,
+                "A non-finite receiver is rejected");
+    EXPECT_TRUE(vgfx3d_shadow_receiver_scale(NULL, VGFX3D_SHADOW_PROJECTION_PERSPECTIVE, p,
+                                             texel_ndc, &texel_world, &depth_scale) == 0 &&
+                    vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_PERSPECTIVE, NULL,
+                                                 texel_ndc, &texel_world, &depth_scale) == 0 &&
+                    vgfx3d_shadow_receiver_scale(m, VGFX3D_SHADOW_PROJECTION_PERSPECTIVE, p,
+                                                 texel_ndc, NULL, &depth_scale) == 0,
+                "Null inputs are rejected");
+}
+
 static void test_light_parameter_sanitizers(void) {
     vgfx3d_light_params_t src[2];
     vgfx3d_light_params_t dst[2];
@@ -2031,6 +2118,7 @@ int main(void) {
     test_generation_safe_cache_identity();
     test_draw_command_sanitizer();
     test_camera_parameter_sanitizer();
+    test_shadow_receiver_scale_contract();
     test_light_parameter_sanitizers();
     test_cluster_table_validator();
     test_postfx_sanitizers();

@@ -249,7 +249,11 @@ static int scene3d_spatial_entry_valid(const rt_scene3d_spatial_index *index, in
     if (!index || !index->entries || entry_index < 0 || entry_index >= index->count)
         return 0;
     entry = &index->entries[entry_index];
-    return rt_g3d_has_class(entry->node, RT_G3D_SCENENODE3D_CLASS_ID) &&
+    /* Plan 109 (ADR 0349 companion): the node keeps a back-reference to its entry, which
+     * rejects a stale or mismatched entry without a heap-registry lookup per node per
+     * query — that lookup ran for every one of Legacy Baseball's ~23k venue nodes on every
+     * camera pass. Insert and refit still validate the node's class when they write it. */
+    return entry->node && entry->node->spatial_entry_index == entry_index &&
            scene3d_spatial_bounds_valid(entry->world_min, entry->world_max) &&
            (entry->cullable == 0 || entry->cullable == 1) &&
            (entry->visible == 0 || entry->visible == 1);
@@ -1291,16 +1295,19 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
         return scene3d_spatial_rebuild(scene);
     if (!index->valid || index->topology_dirty)
         return scene3d_spatial_rebuild(scene);
-    if (index->dirty_all || index->dirty_node_count <= 0 ||
-        index->mesh_geometry_epoch != rt_mesh3d_global_geometry_epoch()) {
-        /* Shared mesh mutations cannot identify their consuming scene nodes cheaply, and dirty
-         * queue allocation failure deliberately lands here. Preserve the complete safe scan. */
+    if (index->dirty_all || index->dirty_node_count <= 0) {
+        /* Dirty queue allocation failure and a dirty index with nothing queued (a caller
+         * asking for complete re-validation) deliberately land here. Preserve the complete
+         * safe scan; the node's back-reference to its entry replaces the per-node registry
+         * lookup (plan 109: that lookup ran for every venue node every frame). A live scene
+         * with moving nodes always has a queue and takes the branches below instead. */
         index->last_full_geometry_scan_count = index->count;
         for (int32_t i = 0; i < index->count; ++i) {
             rt_scene3d_spatial_entry *entry = &index->entries[i];
             uint32_t geometry_now;
             int8_t visible_now;
-            if (!rt_g3d_has_class(entry->node, RT_G3D_SCENENODE3D_CLASS_ID))
+            if (!entry->node || entry->node->spatial_entry_index != i ||
+                entry->node->owner_scene != scene)
                 return scene3d_spatial_rebuild(scene);
             geometry_now = scene_node_geometry_revision_signature(entry->node);
             visible_now = scene3d_node_effective_visible(entry->node) ? 1 : 0;
@@ -1313,7 +1320,27 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
                 return scene3d_spatial_rebuild(scene);
         }
     } else {
-        index->last_full_geometry_scan_count = 0;
+        if (index->mesh_geometry_epoch != rt_mesh3d_global_geometry_epoch()) {
+            /* Shared mesh mutations cannot identify their consuming scene nodes cheaply, so a
+             * mesh change anywhere in the process compares every entry's geometry signature.
+             * Transforms and visibility arrive through the dirty queue below, so this pass
+             * does not walk parent chains (plan 109: a per-frame dynamic mesh made the old
+             * full scan the frame's largest CPU cost). */
+            index->last_full_geometry_scan_count = index->count;
+            for (int32_t i = 0; i < index->count; ++i) {
+                rt_scene3d_spatial_entry *entry = &index->entries[i];
+                if (!entry->node || entry->node->spatial_entry_index != i ||
+                    entry->node->owner_scene != scene)
+                    return scene3d_spatial_rebuild(scene);
+                if (entry->geometry_revision == scene_node_geometry_revision_signature(entry->node))
+                    continue;
+                if (!scene3d_spatial_refresh_mapped_entry(
+                        index, entry->node, &refresh_attempts, &path_refit_ok))
+                    return scene3d_spatial_rebuild(scene);
+            }
+        } else {
+            index->last_full_geometry_scan_count = 0;
+        }
         int32_t traversal_budget = SCENE3D_SPATIAL_ANCESTOR_MAX;
         for (int32_t root_index = 0; root_index < index->dirty_node_count; root_index++) {
             int32_t walk_count = 0;

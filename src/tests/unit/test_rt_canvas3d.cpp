@@ -33,6 +33,7 @@
 #include "rt_canvas3d.h"
 #include "rt_graphics.h"
 #include "rt_graphics_internal.h"
+#include "rt_instbatch3d.h"
 #include "rt_internal.h"
 #include "rt_morphtarget3d.h"
 #include "rt_particles3d.h"
@@ -7928,6 +7929,126 @@ static void test_instanced_prepared_bounds_preserve_split_mapping_and_ownership(
     PASS();
 }
 
+/// ADR 0349: a batch that supplies its own previous matrices neither reads nor grows the
+/// canvas motion-history map; a draw without history still registers there.
+static void test_instanced_history_owning_batch_skips_motion_map() {
+    TEST("Canvas3D history-owning instanced batches bypass the motion map");
+    vgfx3d_backend_t backend = {};
+    backend.name = "opengl";
+    backend.gpu_skinning = 1;
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.submit_draw_instanced = tracked_submit_draw_instanced;
+    backend.end_frame = tracked_end_frame;
+    rt_canvas3d canvas = {};
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = canvas.height = 64;
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    rt_camera3d_look_at(
+        camera, rt_vec3_new(0.0, 0.0, 5.0), rt_vec3_new(0.0, 0.0, 0.0), rt_vec3_new(0.0, 1.0, 0.0));
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material = rt_material3d_new();
+    float matrices[8 * 16];
+    float previous[8 * 16];
+    for (int i = 0; i < 8; ++i) {
+        float *m = matrices + i * 16;
+        float *p = previous + i * 16;
+        memset(m, 0, 16 * sizeof(float));
+        m[0] = m[5] = m[10] = m[15] = 1.0f;
+        m[3] = (float)i * 0.2f;
+        m[11] = -3.0f;
+        memcpy(p, m, 16 * sizeof(float));
+        p[3] -= 0.1f;
+    }
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_queue_instanced_batch_prepared(
+        &canvas, mesh, material, matrices, 8, previous, 1, NULL, 0);
+    EXPECT_EQ(canvas.motion_history_count, 0);
+    EXPECT_EQ(canvas.instanced_owns_motion_history, 0);
+    rt_canvas3d_queue_instanced_batch_prepared(&canvas, mesh, material, matrices, 8, NULL, 0, NULL, 0);
+    EXPECT_TRUE(canvas.motion_history_count == 8, "a draw without history registers its instances");
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_instanced_calls >= 2, 1);
+    PASS();
+}
+
+/// ADR 0349: retained cells cull whole clusters (a far cluster, a parked layer far below)
+/// without touching their members, submit each visible cell as its own segment, and follow
+/// instances that move between cells or merely rotate in place.
+static void test_instanced_retained_cells_cull_clusters_and_track_moves() {
+    TEST("InstanceBatch3D retained cells cull clusters and track moves");
+    vgfx3d_backend_t backend = {};
+    backend.name = "opengl";
+    backend.gpu_skinning = 1;
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.submit_draw_instanced = tracked_submit_draw_instanced;
+    backend.end_frame = tracked_end_frame;
+    rt_canvas3d canvas = {};
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = canvas.height = 64;
+    rt_canvas3d_set_frustum_culling(&canvas, 1);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    rt_camera3d_look_at(
+        camera, rt_vec3_new(0.0, 0.0, 5.0), rt_vec3_new(0.0, 0.0, 0.0), rt_vec3_new(0.0, 1.0, 0.0));
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material = rt_material3d_new();
+    void *batch = rt_instbatch3d_new(mesh, material);
+    auto place = [&](double x, double y, double z) {
+        return rt_mat4_new(1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0);
+    };
+    // 100 near (visible), 100 far along +X (outside), 100 parked 1000 below (outside).
+    for (int i = 0; i < 100; ++i)
+        rt_instbatch3d_add(batch, place((i % 10) * 0.2 - 1.0, (i / 10) * 0.2 - 1.0, -3.0));
+    for (int i = 0; i < 100; ++i)
+        rt_instbatch3d_add(batch, place(1000.0 + (i % 10) * 0.2, (i / 10) * 0.2, -3.0));
+    for (int i = 0; i < 100; ++i)
+        rt_instbatch3d_add(batch, place((i % 10) * 0.2 - 1.0, -1000.0, -3.0));
+    const int64_t retained = rt_instbatch3d_retained_bytes(batch);
+    EXPECT_TRUE(retained > 300 * 16 * (4 + 24), "retained bytes cover the matrices and snapshots");
+
+    auto draw = [&](int32_t &calls, int32_t &instances) {
+        g_canvas_submit_draw_instanced_calls = 0;
+        g_last_instanced_count = 0;
+        rt_canvas3d_begin(&canvas, camera);
+        rt_canvas3d_draw_instanced(&canvas, batch);
+        rt_canvas3d_end(&canvas);
+        calls = g_canvas_submit_draw_instanced_calls;
+        instances = g_last_instanced_count;
+    };
+    int32_t calls = 0;
+    int32_t instances = 0;
+    draw(calls, instances);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(instances, 100);
+    // A far instance walks into view: its cell changes, the grid follows.
+    rt_instbatch3d_set(batch, 150, place(0.5, 0.5, -3.0));
+    draw(calls, instances);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(instances, 101);
+    // It walks back out, and a near instance only rotates in place (same sphere, same cell).
+    rt_instbatch3d_set(batch, 150, place(1000.0, 0.0, -3.0));
+    rt_instbatch3d_set(batch, 7, rt_mat4_new(0.0, 0.0, 1.0, -0.4, 0.0, 1.0, 0.0, -1.0, -1.0, 0.0, 0.0, -3.0, 0.0, 0.0, 0.0, 1.0));
+    draw(calls, instances);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(instances, 100);
+    // A parked instance un-parks into view.
+    rt_instbatch3d_set(batch, 250, place(0.0, 0.0, -3.0));
+    draw(calls, instances);
+    EXPECT_EQ(instances, 101);
+    // Below the cell threshold the per-instance path still culls identically.
+    rt_instbatch3d_clear(batch);
+    for (int i = 0; i < 20; ++i)
+        rt_instbatch3d_add(batch, place(i < 10 ? 0.0 : 1000.0, 0.0, -3.0));
+    draw(calls, instances);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(instances, 10);
+    EXPECT_TRUE(rt_instbatch3d_retained_bytes(batch) >= retained, "retained storage is kept for reuse");
+    PASS();
+}
+
 static void test_gpu_opaque_state_sort_skips_overwritten_depth_sort() {
     TEST("Canvas3D GPU opaque submission avoids an overwritten depth sort");
     vgfx3d_backend_t backend = {};
@@ -13224,6 +13345,8 @@ int main() {
     test_shadow_distance_setter_and_effective_range();
     test_instanced_draw_precomputes_world_bounds_in_snapshot_pass();
     test_instanced_prepared_bounds_preserve_split_mapping_and_ownership();
+    test_instanced_history_owning_batch_skips_motion_map();
+    test_instanced_retained_cells_cull_clusters_and_track_moves();
     test_gpu_opaque_state_sort_skips_overwritten_depth_sort();
     test_canvas_texture_upload_bytes_telemetry();
     test_canvas_frame_gpu_time_telemetry();

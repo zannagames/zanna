@@ -2099,6 +2099,7 @@ Constructor: `Zanna.Graphics3D.InstanceBatch3D.New`
 | Property | Type | Access |
 |---|---|---|
 | <a id="zanna-graphics3d-instancebatch3d-count"></a>`Count` | `i64` | read-only |
+| <a id="zanna-graphics3d-instancebatch3d-retainedbytes"></a>`RetainedBytes` | `i64` | read-only |
 | <a id="zanna-graphics3d-instancebatch3d-mesh"></a>`Mesh` | `obj<Zanna.Graphics3D.Mesh3D>` | read-only |
 | <a id="zanna-graphics3d-instancebatch3d-material"></a>`Material` | `obj<Zanna.Graphics3D.Material3D>` | read-only |
 
@@ -3909,6 +3910,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.InstanceBatch3D.Set` | `void(obj,i64,obj)` | `rt_instbatch3d_set` |
 | `Zanna.Graphics3D.InstanceBatch3D.Clear` | `void(obj)` | `rt_instbatch3d_clear` |
 | <a id="zanna-graphics3d-instancebatch3d-get-count"></a>`Zanna.Graphics3D.InstanceBatch3D.get_Count` | `i64(obj)` | `rt_instbatch3d_count` |
+| <a id="zanna-graphics3d-instancebatch3d-get-retainedbytes"></a>`Zanna.Graphics3D.InstanceBatch3D.get_RetainedBytes` | `i64(obj)` | `rt_instbatch3d_retained_bytes` |
 | `Zanna.Graphics3D.InstanceBatch3D.GetTransform` | `obj<Zanna.Math.Mat4>(obj,i64)` | `rt_instbatch3d_get` |
 | <a id="zanna-graphics3d-instancebatch3d-get-mesh"></a>`Zanna.Graphics3D.InstanceBatch3D.get_Mesh` | `obj<Zanna.Graphics3D.Mesh3D>(obj)` | `rt_instbatch3d_borrow_mesh` |
 | <a id="zanna-graphics3d-instancebatch3d-get-material"></a>`Zanna.Graphics3D.InstanceBatch3D.get_Material` | `obj<Zanna.Graphics3D.Material3D>(obj)` | `rt_instbatch3d_borrow_material` |

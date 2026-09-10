@@ -104,6 +104,26 @@ void vgfx3d_copy_mat4_finite_or_identity(float *dst, const float *src);
 /// @param src Preferred optional borrowed matrix.
 /// @param fallback Secondary optional borrowed matrix used when @p src is unusable.
 void vgfx3d_copy_mat4_finite_or(float *dst, const float *src, const float *fallback);
+/// @brief Derive the receiver-space shadow scale a sampler needs for its bias terms.
+/// @details ADR 0348. For an orthographic map the world size of one shadow texel and the
+///   stored-depth change per world unit along the light axis are constants of the VP; for a
+///   perspective map (spot light, cube face) the texel grows with the receiver's distance along
+///   the light axis and stored depth is hyperbolic. Both are read off the VP rows so every
+///   backend (and its host twin) computes the same numbers without extra uniforms.
+/// @param shadow_vp Borrowed 16-float row-major shadow view-projection matrix.
+/// @param projection_type VGFX3D_SHADOW_PROJECTION_* identifier.
+/// @param world_pos Borrowed three-component receiver position (before any normal offset).
+/// @param texel_ndc One shadow texel in NDC units along X (1 / map width).
+/// @param[out] out_texel_world World size of one shadow texel at the receiver.
+/// @param[out] out_depth_scale Stored [0,1] depth change per world unit along the light axis.
+/// @return 1 on success; 0 for unusable input or a perspective receiver behind the light,
+///   in which case both outputs are zero.
+int vgfx3d_shadow_receiver_scale(const float *shadow_vp,
+                                 int32_t projection_type,
+                                 const float world_pos[3],
+                                 float texel_ndc,
+                                 float *out_texel_world,
+                                 float *out_depth_scale);
 /// @brief Validate a bounded shadow matrix with at least one useful component.
 /// @param matrix Borrowed 16-element row-major matrix.
 /// @return Non-zero when every component is bounded and at least one has meaningful magnitude.

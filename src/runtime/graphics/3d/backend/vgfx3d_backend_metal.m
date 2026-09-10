@@ -253,6 +253,10 @@ extern void rt_obj_free(void *obj);
 @property(nonatomic, strong) NSMutableDictionary *extraInfluenceCache;
 @property(nonatomic, strong) NSMutableDictionary *renderTargetCache;
 @property(nonatomic, strong) NSMutableDictionary *samplerCache;
+/* Plan 109: the hot sampler lookup keys a small C table by a packed integer; the
+ * dictionary above only holds overflow beyond the table. */
+@property(nonatomic) uint64_t *samplerKeys;
+@property(nonatomic, strong) NSMutableArray *samplerStates;
 @property(nonatomic) uint64_t frameSerial;
 @property(nonatomic) uint64_t textureUploadBytes;
 @property(nonatomic) uint64_t textureUploadBudgetBytes;

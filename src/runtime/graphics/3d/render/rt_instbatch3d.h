@@ -73,6 +73,11 @@ void *rt_instbatch3d_get(void *batch, int64_t index);
 /// @return Repaired nonnegative instance count, or zero for invalid/unrecoverable state.
 int64_t rt_instbatch3d_count(void *batch);
 
+/// @brief Retained CPU bytes owned by the batch (ADR 0349); zero for invalid handles.
+/// @param batch InstanceBatch3D receiver.
+/// @return Bytes of matrices, snapshots, mirrors, scratch and culling storage.
+int64_t rt_instbatch3d_retained_bytes(void *batch);
+
 /// @brief Queue the batch through the canvas instanced-rendering path.
 /// @details Performs camera-relative conversion or per-instance culling and
 ///   once-per-frame double-precision motion-history capture before downstream

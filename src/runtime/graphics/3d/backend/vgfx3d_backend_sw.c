@@ -783,8 +783,9 @@ static const float sw_shadow_poisson[16][2] = {
 /// @brief Sample the shadow map for @p slot at a world-space position and return a visibility
 /// factor.
 /// @details Plan 06 sampling model: the receiver is normal-offset ~1.5 shadow texels (world
-///          units, derived from the shadow VP row lengths), the compare bias adds the map-gradient
-///          slope term scaled by the canvas slope-bias knob, and filtering uses a rotated-Poisson
+///          units, derived from the shadow VP rows — perspective-aware since ADR 0348), the
+///          compare bias adds the map-gradient slope term scaled by the canvas slope-bias knob
+///          (additive and capped like the GPU samplers), and filtering uses a rotated-Poisson
 ///          PCF (4 taps at PERFORMANCE, 8 at BALANCED/CINEMATIC — CPU-cost bounded) rotated by
 ///          interleaved-gradient noise over the shadow-map texel coordinate. Fully-occluded taps
 ///          contribute `1 - shadow_strength` so `ShadowStrength = 1` yields black shadows.
@@ -825,7 +826,8 @@ static float sw_sample_shadow_visibility(const sw_context_t *ctx,
     float slope;
     float occluded_vis;
     float texel_world = 0.0f;
-    float row0_len;
+    float depth_scale = 0.0f;
+    float slope_cap;
     float visibility_sum = 0.0f;
     int sample_count = 0;
     int taps;
@@ -842,11 +844,23 @@ static float sw_sample_shadow_visibility(const sw_context_t *ctx,
     shadow_h = ctx->shadow_h[slot];
     svp = ctx->shadow_vp[slot];
 
-    /* Normal-offset the receiver by ~1.5 shadow texels in world units (row 0 of the
-     * row-major VP maps world X-extent onto clip x in [-1, 1]). */
-    row0_len = sw_length3(svp[0], svp[1], svp[2]);
-    if (isfinite(row0_len) && row0_len > 1e-9f)
-        texel_world = 2.0f / (row0_len * (float)shadow_w);
+    /* Normal-offset the receiver by ~1.5 shadow texels in world units. ADR 0348: the
+     * texel size and the stored-depth slope come from the shared receiver-scale helper,
+     * so a perspective (spot / cube-face) map, recognised by its non-zero W row, offsets
+     * and biases by its distance along the light axis exactly like the GPU samplers. */
+    {
+        const float receiver[3] = {wx, wy, wz};
+        const int perspective =
+            svp[12] * svp[12] + svp[13] * svp[13] + svp[14] * svp[14] > 1e-12f;
+        if (!vgfx3d_shadow_receiver_scale(svp,
+                                          perspective ? VGFX3D_SHADOW_PROJECTION_PERSPECTIVE
+                                                      : VGFX3D_SHADOW_PROJECTION_ORTHOGRAPHIC,
+                                          receiver,
+                                          1.0f / (float)shadow_w,
+                                          &texel_world,
+                                          &depth_scale))
+            return 1.0f;
+    }
     wx += nx * texel_world * 1.5f;
     wy += ny * texel_world * 1.5f;
     wz += nz * texel_world * 1.5f;
@@ -885,11 +899,18 @@ static float sw_sample_shadow_visibility(const sw_context_t *ctx,
         if (isfinite(neighbor) && neighbor < FLT_MAX * 0.5f)
             dz_dv = neighbor - sz_map;
     }
+    /* ADR 0348: the map gradient is the receiver's stored-depth change per texel, the
+     * same quantity the GPU samplers form as tan(angle) * texelWorld * depthScale, so the
+     * slope term is ADDED (scaled by the canvas knob) rather than multiplied into the base
+     * bias, and it is capped at the GPU's slope-8 equivalent. A base bias of a few 1e-6
+     * therefore no longer disables slope handling. */
     slope = sw_length3(dz_du, dz_dv, 0.0f);
     if (!isfinite(slope))
         slope = 0.0f;
-    slope_bias += slope_bias * slope * 4.0f *
-                  vgfx3d_clamp_float_param(ctx->shadow_slope_bias, 0.0f, 1000.0f, 1.0f);
+    slope_cap = 8.0f * texel_world * depth_scale;
+    if (isfinite(slope_cap) && slope > slope_cap)
+        slope = slope_cap;
+    slope_bias += slope * vgfx3d_clamp_float_param(ctx->shadow_slope_bias, 0.0f, 1000.0f, 1.0f);
     slope_bias = vgfx3d_clamp_float_param(slope_bias, -0.05f, 0.05f, 0.0f);
 
     occluded_vis = 1.0f - (isfinite(ctx->shadow_strength)
@@ -1348,6 +1369,14 @@ static void sw_release_worker_pool(sw_context_t *ctx) {
 int64_t vgfx3d_software_backend_thread_count_for_test(const void *ctx_ptr) {
     const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
     return ctx ? sw_clamp_worker_count(ctx->worker_count) : 1;
+}
+
+/// @brief Test-only probe: the slope-scaled shadow bias knob the sampler will use (ADR 0348).
+/// @param ctx_ptr Opaque borrowed pointer to a software context.
+/// @return The context's retained knob, or -1 for a null context.
+float vgfx3d_software_backend_shadow_slope_bias_for_test(const void *ctx_ptr) {
+    const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
+    return ctx ? ctx->shadow_slope_bias : -1.0f;
 }
 
 /// @brief Return the adaptive index threshold required to amortize parallel draw barriers.

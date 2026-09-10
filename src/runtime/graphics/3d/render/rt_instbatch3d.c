@@ -60,6 +60,12 @@ extern void rt_obj_free(void *obj);
 extern double rt_mat4_get(void *m, int64_t r, int64_t c);
 
 #define INST_INIT_CAP 64
+/* ADR 0349 retained cells: the canvas split's spacing and per-axis cap, applied in 3D so a
+ * parked layer far below a scene falls into its own cells. */
+#define INSTBATCH_CELL_EXTENT 256.0f
+#define INSTBATCH_CELL_AXIS_MAX 4
+#define INSTBATCH_CELL_MAX (INSTBATCH_CELL_AXIS_MAX * INSTBATCH_CELL_AXIS_MAX * INSTBATCH_CELL_AXIS_MAX)
+#define INSTBATCH_CELL_MIN_INSTANCES 64
 #define INSTBATCH3D_FLOAT_ABS_MAX 3.40282346638528859812e38
 #define INSTBATCH3D_WORLD_ABS_MAX 1000000000000.0
 
@@ -115,7 +121,81 @@ typedef struct {
     float bounds_local_max[3];
     float *submit_bounds;
     int32_t submit_bounds_capacity;
+    /* ADR 0349: mutation tracking. `dirty_lo..dirty_hi` (inclusive; lo > hi is empty) is the
+     * slot range Set touched since the last frame snapshot; `last_dirty_*` is the range the
+     * previous frame's snapshot consumed. Structural changes (add/remove/clear/realloc/repair)
+     * mark every slot. A stationary batch therefore sanitizes and snapshots nothing. */
+    uint64_t revision;
+    int32_t dirty_lo;
+    int32_t dirty_hi;
+    int8_t dirty_all;
+    int32_t last_dirty_lo;
+    int32_t last_dirty_hi;
+    int8_t last_dirty_all;
+    /* prev_submit_transforms mirrors prev_transforms64 (non-relative path) when set. */
+    int8_t prev_submit_valid;
+    /* ADR 0349 retained cells: bucket-contiguous member lists over a 3D grid, a
+     * rotation-invariant bounding sphere per instance (centre = translation, radius =
+     * (|local centre| + mesh radius) * max scale) and per-cell world AABBs. */
+    int8_t cells_valid;
+    int32_t cell_dims[3];
+    float cell_origin[3];
+    float cell_inv[3];
+    int32_t cell_count;
+    int32_t cell_start[INSTBATCH_CELL_MAX + 1];
+    float cell_min[INSTBATCH_CELL_MAX][3];
+    float cell_max[INSTBATCH_CELL_MAX][3];
+    int8_t cell_bounded[INSTBATCH_CELL_MAX];
+    int8_t cell_stale[INSTBATCH_CELL_MAX];
+    int32_t *cell_members;
+    int8_t *cell_of;
+    float *cell_sphere;
+    int32_t cell_capacity;
+    const rt_mesh3d *cell_mesh;
+    uint32_t cell_mesh_revision;
+    float cell_local_radius;
 } rt_instbatch3d;
+
+/// @brief Mark every slot dirty after a structural change (ADR 0349).
+static void instbatch_mark_dirty_all(rt_instbatch3d *b) {
+    if (!b)
+        return;
+    b->dirty_all = 1;
+    b->dirty_lo = 0;
+    b->dirty_hi = -1;
+    b->prev_submit_valid = 0;
+    b->revision++;
+}
+
+/// @brief Widen the dirty slot range with one mutated slot (ADR 0349).
+static void instbatch_mark_dirty(rt_instbatch3d *b, int32_t index) {
+    if (!b || index < 0)
+        return;
+    if (b->dirty_lo > b->dirty_hi) {
+        b->dirty_lo = index;
+        b->dirty_hi = index;
+    } else {
+        if (index < b->dirty_lo)
+            b->dirty_lo = index;
+        if (index > b->dirty_hi)
+            b->dirty_hi = index;
+    }
+    b->revision++;
+}
+
+/// @brief Clamp a dirty range to the live slots; returns 0 for an empty range.
+static int instbatch_dirty_span(int32_t lo, int32_t hi, int32_t count, int32_t *out_lo,
+                                int32_t *out_hi) {
+    if (lo < 0)
+        lo = 0;
+    if (hi > count - 1)
+        hi = count - 1;
+    if (lo > hi)
+        return 0;
+    *out_lo = lo;
+    *out_hi = hi;
+    return 1;
+}
 
 /// @brief Compute the next geometric growth capacity for the instance buffer.
 /// @details Starting capacity is INST_INIT_CAP; subsequent doublings are guarded
@@ -252,18 +332,28 @@ static void instbatch_sanitize_matrix_slot64(double *slot) {
 ///   sanitizes the double-precision current/previous motion snapshots in place.
 /// @param b Batch whose active matrix ranges are repaired; `NULL` is ignored.
 static void instbatch_sanitize_active_matrices(rt_instbatch3d *b) {
+    int32_t lo;
+    int32_t hi;
     if (!b)
         return;
-    for (int32_t i = 0; i < b->instance_count; i++) {
+    /* ADR 0349: slots outside the dirty range were sanitized when they were last written
+     * and have not changed since; a stationary batch does no work here. */
+    if (b->dirty_all) {
+        lo = 0;
+        hi = b->instance_count - 1;
+    } else if (!instbatch_dirty_span(b->dirty_lo, b->dirty_hi, b->instance_count, &lo, &hi)) {
+        return;
+    }
+    for (int32_t i = lo; i <= hi; i++) {
         if (b->transforms64)
             instbatch_copy_matrix64_to_float(&b->transforms[(size_t)i * 16u],
                                              &b->transforms64[(size_t)i * 16u]);
         else
             instbatch_sanitize_matrix_slot(&b->transforms[(size_t)i * 16u]);
     }
-    for (int32_t i = 0; i < b->motion_snapshot_count; i++)
+    for (int32_t i = lo; i <= hi && i < b->motion_snapshot_count; i++)
         instbatch_sanitize_matrix_slot64(&b->current_snapshot64[(size_t)i * 16u]);
-    for (int32_t i = 0; i < b->prev_count; i++)
+    for (int32_t i = lo; i <= hi && i < b->prev_count; i++)
         instbatch_sanitize_matrix_slot64(&b->prev_transforms64[(size_t)i * 16u]);
 }
 
@@ -482,6 +572,7 @@ static int instbatch_repair_state(rt_instbatch3d *b) {
         b->motion_frame_initialized = 0;
         b->instance_capacity = INST_INIT_CAP;
         b->allocation_capacity = INST_INIT_CAP;
+        instbatch_mark_dirty_all(b);
         return 1;
     }
     b->transforms = b->owned_transforms;
@@ -646,6 +737,225 @@ static int instbatch_instance_visible(rt_instbatch3d *b,
     return !valid || vgfx3d_frustum_test_aabb(frustum, world_min, world_max) != 0;
 }
 
+/// @brief Grow the retained cell storage to hold @p needed instances (ADR 0349).
+static int instbatch_cells_reserve(rt_instbatch3d *b, int32_t needed) {
+    int32_t capacity;
+    int32_t *members;
+    int8_t *cell_of;
+    float *spheres;
+    if (!b || needed <= 0)
+        return 0;
+    if (b->cell_members && b->cell_of && b->cell_sphere && b->cell_capacity >= needed)
+        return 1;
+    capacity = b->cell_capacity > 0 ? b->cell_capacity : INST_INIT_CAP;
+    while (capacity < needed) {
+        if (!instbatch_next_capacity(capacity, &capacity))
+            return 0;
+    }
+    if ((size_t)capacity > SIZE_MAX / (4u * sizeof(float)))
+        return 0;
+    members = (int32_t *)realloc(b->cell_members, (size_t)capacity * sizeof(int32_t));
+    if (!members)
+        return 0;
+    b->cell_members = members;
+    cell_of = (int8_t *)realloc(b->cell_of, (size_t)capacity);
+    if (!cell_of)
+        return 0;
+    b->cell_of = cell_of;
+    spheres = (float *)realloc(b->cell_sphere, (size_t)capacity * 4u * sizeof(float));
+    if (!spheres)
+        return 0;
+    b->cell_sphere = spheres;
+    b->cell_capacity = capacity;
+    return 1;
+}
+
+/// @brief Rotation-invariant bounding sphere of one instance from its float matrix.
+/// @details Centre is the translation; radius scales the local radius by the largest column
+///   length, so a yaw-only change leaves the sphere untouched. Non-finite input gives a
+///   negative radius, which keeps its cell conservatively unbounded.
+static void instbatch_instance_sphere(const float *m, float local_radius, float out[4]) {
+    float sx = sqrtf(m[0] * m[0] + m[4] * m[4] + m[8] * m[8]);
+    float sy = sqrtf(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
+    float sz = sqrtf(m[2] * m[2] + m[6] * m[6] + m[10] * m[10]);
+    float scale = sx > sy ? sx : sy;
+    if (sz > scale)
+        scale = sz;
+    out[0] = m[3];
+    out[1] = m[7];
+    out[2] = m[11];
+    out[3] = local_radius * scale;
+    if (!isfinite(out[0]) || !isfinite(out[1]) || !isfinite(out[2]) || !isfinite(out[3]) ||
+        out[3] < 0.0f)
+        out[3] = -1.0f;
+}
+
+/// @brief Grid cell of a sphere centre, clamped to the retained grid.
+static int32_t instbatch_cell_index_for(const rt_instbatch3d *b, const float *sphere) {
+    int32_t idx[3];
+    for (int axis = 0; axis < 3; axis++) {
+        float v = (sphere[axis] - b->cell_origin[axis]) * b->cell_inv[axis];
+        int32_t c = isfinite(v) ? (int32_t)v : 0;
+        if (c < 0)
+            c = 0;
+        if (c >= b->cell_dims[axis])
+            c = b->cell_dims[axis] - 1;
+        idx[axis] = c;
+    }
+    return (idx[2] * b->cell_dims[1] + idx[1]) * b->cell_dims[0] + idx[0];
+}
+
+/// @brief Recompute one cell's world AABB from its members' spheres.
+static void instbatch_cell_refit(rt_instbatch3d *b, int32_t cell) {
+    int bounded = 0;
+    int32_t begin = b->cell_start[cell];
+    int32_t end = b->cell_start[cell + 1];
+    b->cell_bounded[cell] = 0;
+    for (int32_t k = begin; k < end; k++) {
+        const float *sp = &b->cell_sphere[(size_t)b->cell_members[k] * 4u];
+        if (sp[3] < 0.0f) {
+            b->cell_bounded[cell] = 0;
+            b->cell_stale[cell] = 0;
+            return; /* an invalid member keeps the cell conservatively unbounded */
+        }
+        for (int axis = 0; axis < 3; axis++) {
+            float lo = sp[axis] - sp[3];
+            float hi = sp[axis] + sp[3];
+            if (!bounded || lo < b->cell_min[cell][axis])
+                b->cell_min[cell][axis] = lo;
+            if (!bounded || hi > b->cell_max[cell][axis])
+                b->cell_max[cell][axis] = hi;
+        }
+        bounded = 1;
+    }
+    b->cell_bounded[cell] = (int8_t)bounded;
+    b->cell_stale[cell] = 0;
+}
+
+/// @brief Rebuild the grid, membership lists and cell bounds from every instance.
+static int instbatch_cells_rebuild(rt_instbatch3d *b) {
+    float lo[3] = {0.0f, 0.0f, 0.0f};
+    float hi[3] = {0.0f, 0.0f, 0.0f};
+    int have = 0;
+    int32_t cursor[INSTBATCH_CELL_MAX];
+    for (int32_t i = 0; i < b->instance_count; i++) {
+        float *sp = &b->cell_sphere[(size_t)i * 4u];
+        instbatch_instance_sphere(&b->transforms[(size_t)i * 16u], b->cell_local_radius, sp);
+        if (sp[3] < 0.0f)
+            continue;
+        for (int axis = 0; axis < 3; axis++) {
+            if (!have || sp[axis] < lo[axis])
+                lo[axis] = sp[axis];
+            if (!have || sp[axis] > hi[axis])
+                hi[axis] = sp[axis];
+        }
+        have = 1;
+    }
+    b->cell_count = 1;
+    for (int axis = 0; axis < 3; axis++) {
+        float extent = have ? hi[axis] - lo[axis] : 0.0f;
+        int32_t dims = 1;
+        if (isfinite(extent) && extent > INSTBATCH_CELL_EXTENT) {
+            dims = (int32_t)(extent / INSTBATCH_CELL_EXTENT) + 1;
+            if (dims > INSTBATCH_CELL_AXIS_MAX)
+                dims = INSTBATCH_CELL_AXIS_MAX;
+        }
+        b->cell_dims[axis] = dims;
+        b->cell_origin[axis] = lo[axis];
+        b->cell_inv[axis] =
+            dims > 1 && extent > 1e-6f ? (float)dims / (extent * 1.0001f) : 0.0f;
+        b->cell_count *= dims;
+    }
+    memset(b->cell_start, 0, sizeof(b->cell_start));
+    for (int32_t i = 0; i < b->instance_count; i++) {
+        int32_t cell = instbatch_cell_index_for(b, &b->cell_sphere[(size_t)i * 4u]);
+        b->cell_of[i] = (int8_t)cell;
+        b->cell_start[cell + 1]++;
+    }
+    for (int32_t cell = 0; cell < b->cell_count; cell++)
+        b->cell_start[cell + 1] += b->cell_start[cell];
+    memcpy(cursor, b->cell_start, sizeof(int32_t) * (size_t)b->cell_count);
+    for (int32_t i = 0; i < b->instance_count; i++)
+        b->cell_members[cursor[b->cell_of[i]]++] = i;
+    for (int32_t cell = 0; cell < b->cell_count; cell++)
+        instbatch_cell_refit(b, cell);
+    b->cells_valid = 1;
+    return 1;
+}
+
+/// @brief Bring the retained cells up to date with the batch's dirty range (ADR 0349).
+/// @return 1 when the cells may drive culling and submission this draw, 0 for the
+///   per-instance path (small batch, allocation failure, or a stale grid).
+static int instbatch_cells_refresh(rt_instbatch3d *b, const rt_mesh3d *mesh) {
+    float centre[3];
+    float local_radius;
+    int32_t lo;
+    int32_t hi;
+    if (!b || !mesh || b->instance_count < INSTBATCH_CELL_MIN_INSTANCES) {
+        if (b)
+            b->cells_valid = 0;
+        return 0;
+    }
+    if (!instbatch_cells_reserve(b, b->instance_count)) {
+        b->cells_valid = 0;
+        return 0;
+    }
+    for (int axis = 0; axis < 3; axis++)
+        centre[axis] = 0.5f * (mesh->aabb_min[axis] + mesh->aabb_max[axis]);
+    local_radius = sqrtf(centre[0] * centre[0] + centre[1] * centre[1] + centre[2] * centre[2]) +
+                   mesh->bsphere_radius;
+    if (!isfinite(local_radius) || local_radius < 0.0f)
+        local_radius = 0.0f;
+    if (!b->cells_valid || b->dirty_all || b->cell_mesh != mesh ||
+        b->cell_mesh_revision != mesh->geometry_revision ||
+        b->cell_local_radius != local_radius) {
+        b->cell_mesh = mesh;
+        b->cell_mesh_revision = mesh->geometry_revision;
+        b->cell_local_radius = local_radius;
+        return instbatch_cells_rebuild(b);
+    }
+    if (instbatch_dirty_span(b->dirty_lo, b->dirty_hi, b->instance_count, &lo, &hi)) {
+        for (int32_t i = lo; i <= hi; i++) {
+            float sphere[4];
+            float *stored = &b->cell_sphere[(size_t)i * 4u];
+            instbatch_instance_sphere(&b->transforms[(size_t)i * 16u], local_radius, sphere);
+            if (memcmp(sphere, stored, sizeof(sphere)) == 0)
+                continue; /* a rotation-only change: same sphere, same cell */
+            if (instbatch_cell_index_for(b, sphere) != b->cell_of[i])
+                return instbatch_cells_rebuild(b);
+            memcpy(stored, sphere, sizeof(sphere));
+            b->cell_stale[b->cell_of[i]] = 1;
+        }
+        for (int32_t cell = 0; cell < b->cell_count; cell++) {
+            if (b->cell_stale[cell])
+                instbatch_cell_refit(b, cell);
+        }
+    }
+    return 1;
+}
+
+/// @brief Classify a cell AABB against the frustum: 0 outside, 1 partial, 2 inside.
+static int instbatch_cell_classify(const vgfx3d_frustum_t *f, const float mn[3], const float mx[3]) {
+    int inside = 1;
+    if (!f || !f->planes_valid)
+        return 1;
+    for (int p = 0; p < 6; p++) {
+        const float *pl = f->planes[p];
+        float pv = 0.0f;
+        float nv = 0.0f;
+        for (int axis = 0; axis < 3; axis++) {
+            float a = pl[axis];
+            pv += a * (a >= 0.0f ? mx[axis] : mn[axis]);
+            nv += a * (a >= 0.0f ? mn[axis] : mx[axis]);
+        }
+        if (pv + pl[3] < 0.0f)
+            return 0;
+        if (nv + pl[3] < 0.0f)
+            inside = 0;
+    }
+    return inside ? 2 : 1;
+}
+
 /// @brief GC finalizer — release the current-frame and motion-history buffers.
 /// @details Instance batches keep three authoritative double-matrix arrays for live,
 ///   start-of-frame, and previous-frame state, plus one float submit mirror for live state.
@@ -657,6 +967,14 @@ static void instbatch_finalizer(void *obj) {
     rt_instbatch3d *b = (rt_instbatch3d *)obj;
     if (!b)
         return;
+    free(b->cell_members);
+    free(b->cell_of);
+    free(b->cell_sphere);
+    b->cell_members = NULL;
+    b->cell_of = NULL;
+    b->cell_sphere = NULL;
+    b->cell_capacity = 0;
+    b->cells_valid = 0;
     free(b->owned_transforms);
     free(b->owned_transforms64);
     free(b->owned_current_snapshot);
@@ -751,6 +1069,14 @@ void *rt_instbatch3d_new(void *mesh, void *material) {
     b->last_motion_frame = 0;
     b->has_prev_snapshot = 0;
     b->motion_frame_initialized = 0;
+    b->revision = 0;
+    b->dirty_lo = 0;
+    b->dirty_hi = -1;
+    b->dirty_all = 1;
+    b->last_dirty_lo = 0;
+    b->last_dirty_hi = -1;
+    b->last_dirty_all = 1;
+    b->prev_submit_valid = 0;
     if (!b->owned_transforms64 || !b->owned_transforms || !b->owned_current_snapshot64 ||
         !b->owned_prev_transforms64) {
         instbatch_finalizer(b);
@@ -836,6 +1162,7 @@ void rt_instbatch3d_add(void *obj, void *transform) {
     instbatch_copy_matrix64_to_float(dst, dst64);
 
     b->instance_count++;
+    instbatch_mark_dirty_all(b);
 }
 
 /// @brief Remove an instance by index (swap-removes with last for O(1) time).
@@ -884,6 +1211,7 @@ void rt_instbatch3d_remove(void *obj, int64_t index) {
         b->motion_snapshot_count = b->instance_count;
     if (b->prev_count > b->instance_count)
         b->prev_count = b->instance_count;
+    instbatch_mark_dirty_all(b);
 }
 
 /// @brief Update the transform of an existing instance at the given index.
@@ -904,6 +1232,7 @@ void rt_instbatch3d_set(void *obj, int64_t index, void *transform) {
     float *dst = &b->transforms[(size_t)index * 16u];
     instbatch_copy_mat4_sanitized64(dst64, transform);
     instbatch_copy_matrix64_to_float(dst, dst64);
+    instbatch_mark_dirty(b, (int32_t)index);
 }
 
 /// @brief Remove all instances from the batch, resetting count to zero.
@@ -921,6 +1250,34 @@ void rt_instbatch3d_clear(void *obj) {
     b->prev_count = 0;
     b->has_prev_snapshot = 0;
     b->motion_frame_initialized = 0;
+    instbatch_mark_dirty_all(b);
+}
+
+/// @brief Retained CPU storage owned by the batch (ADR 0349): matrices, snapshots, mirrors,
+///   scratch, culling bounds and the object itself. Not GPU memory.
+/// @param obj InstanceBatch3D receiver; invalid handles report zero.
+/// @return Bytes currently allocated for the batch.
+int64_t rt_instbatch3d_retained_bytes(void *obj) {
+    rt_instbatch3d *b =
+        (rt_instbatch3d *)rt_g3d_checked_or_null(obj, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
+    uint64_t bytes;
+    if (!b || !instbatch_repair_state(b))
+        return 0;
+    bytes = sizeof(*b);
+    bytes += (uint64_t)b->allocation_capacity * 16u * (sizeof(float) + 3u * sizeof(double));
+    bytes += (uint64_t)(b->visible_capacity > 0 ? b->visible_capacity : 0) * 16u * sizeof(float);
+    bytes += (uint64_t)(b->visible_prev_capacity > 0 ? b->visible_prev_capacity : 0) * 16u *
+             sizeof(float);
+    bytes += (uint64_t)(b->prev_submit_capacity > 0 ? b->prev_submit_capacity : 0) * 16u *
+             sizeof(float);
+    bytes += (uint64_t)(b->visibility_mask_capacity > 0 ? b->visibility_mask_capacity : 0);
+    bytes += (uint64_t)(b->bounds_capacity > 0 ? b->bounds_capacity : 0) *
+             sizeof(instbatch_bounds_entry);
+    bytes += (uint64_t)(b->submit_bounds_capacity > 0 ? b->submit_bounds_capacity : 0) * 6u *
+             sizeof(float);
+    bytes += (uint64_t)(b->cell_capacity > 0 ? b->cell_capacity : 0) *
+             (sizeof(int32_t) + sizeof(int8_t) + 4u * sizeof(float));
+    return bytes > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)bytes;
 }
 
 /// @brief Get the current number of instances in the batch.
@@ -1017,6 +1374,96 @@ const float *rt_instbatch3d_borrow_transforms(void *batch, int32_t *out_count) {
 ///   Backend-native versus software fallback submission is selected downstream.
 /// @param canvas_obj Canvas3D receiver or supported stack-wrapper handle with an active frame.
 /// @param batch_obj InstanceBatch3D receiver borrowed for queue construction.
+/// @brief Cull, compact and queue one segment of instances (a retained cell, or the whole
+///   batch when cells are off), in world or camera-relative frame space (ADR 0349).
+/// @param members Original indices in submission order, or `NULL` for 0..count-1.
+/// @param test_each Non-zero to frustum-test members individually (a partial cell); an
+///   inside cell still refreshes each member's cached bounds so prepared bounds stay exact.
+static void instbatch_queue_segment(void *canvas_obj,
+                                    rt_canvas3d *c,
+                                    rt_instbatch3d *b,
+                                    rt_mesh3d *mesh,
+                                    rt_material3d *mat,
+                                    const int32_t *members,
+                                    int32_t count,
+                                    const vgfx3d_frustum_t *frustum,
+                                    const float mesh_min[3],
+                                    const float mesh_max[3],
+                                    int8_t has_prev,
+                                    const float *prev_floats,
+                                    int camera_relative,
+                                    int test_each) {
+    int32_t visible = 0;
+    int prepared = frustum != NULL && mesh->bsphere_radius > 0.0f && instbatch_prepare_submit_bounds(b);
+    for (int32_t k = 0; k < count; k++) {
+        int32_t i = members ? members[k] : k;
+        int vis;
+        if (i < 0 || i >= b->instance_count)
+            continue;
+        if (camera_relative) {
+            const double *model = &b->transforms64[(size_t)i * 16u];
+            float current[16];
+            if (!instbatch_matrix64_to_canvas_frame(c, model, current)) {
+                rt_trap("InstanceBatch3D.Draw: camera-relative matrix is out of float range");
+                return;
+            }
+            /* Inside cells refresh the cache with a null frustum (always visible). */
+            vis = mesh->bsphere_radius > 0.0f
+                      ? instbatch_instance_visible(b, i, frustum, mesh_min, mesh_max, current)
+                      : 1;
+            if (!test_each && frustum && mesh->bsphere_radius > 0.0f)
+                vis = 1;
+            if (b->visibility_mask && i < b->visibility_mask_capacity)
+                b->visibility_mask[i] = vis ? 1u : 0u;
+            if (!vis)
+                continue;
+            if (prepared && !instbatch_copy_submit_bounds(b, i, visible))
+                prepared = 0;
+            memcpy(&b->visible_transforms[(size_t)visible * 16u], current, sizeof(current));
+            if (has_prev) {
+                const double *previous =
+                    i < b->prev_count ? &b->prev_transforms64[(size_t)i * 16u] : model;
+                if (!instbatch_matrix64_to_canvas_frame(
+                        c, previous, &b->prev_submit_transforms[(size_t)visible * 16u])) {
+                    rt_trap("InstanceBatch3D.Draw: previous camera-relative matrix is out of float "
+                            "range");
+                    return;
+                }
+            }
+        } else {
+            const float *src = &b->transforms[(size_t)i * 16u];
+            vis = mesh->bsphere_radius > 0.0f
+                      ? instbatch_instance_visible(b, i, frustum, mesh_min, mesh_max, src)
+                      : 1;
+            if (!test_each && frustum && mesh->bsphere_radius > 0.0f)
+                vis = 1;
+            b->visibility_mask[i] = vis ? 1u : 0u;
+            if (!vis)
+                continue;
+            if (prepared && !instbatch_copy_submit_bounds(b, i, visible))
+                prepared = 0;
+            memcpy(&b->visible_transforms[(size_t)visible * 16u], src, 16u * sizeof(float));
+            if (has_prev)
+                memcpy(&b->visible_prev_transforms[(size_t)visible * 16u],
+                       &prev_floats[(size_t)i * 16u],
+                       16u * sizeof(float));
+        }
+        visible++;
+    }
+    if (visible == 0)
+        return;
+    rt_canvas3d_queue_instanced_batch_prepared(
+        canvas_obj,
+        mesh,
+        mat,
+        b->visible_transforms,
+        visible,
+        has_prev ? (camera_relative ? b->prev_submit_transforms : b->visible_prev_transforms) : NULL,
+        has_prev,
+        prepared ? b->submit_bounds : NULL,
+        camera_relative ? 1 : 0);
+}
+
 void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas_obj);
     rt_instbatch3d *b =
@@ -1058,9 +1505,21 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
     if (instance_frustum)
         instbatch_prepare_bounds_cache(b, mesh);
     instbatch_sanitize_active_matrices(b);
+    /* ADR 0349: the cells consume the dirty range before the snapshot below clears it. */
+    int use_cells = instance_frustum != NULL && mesh->bsphere_radius > 0.0f &&
+                    instbatch_cells_refresh(b, mesh);
     {
         int64_t frame_serial = rt_canvas3d_get_frame_serial(canvas_obj);
         if (!b->motion_frame_initialized || b->last_motion_frame != frame_serial) {
+            /* ADR 0349: after the swap the current buffer holds the snapshot from two frames
+             * ago, so it differs from the live matrices only in the union of the last two
+             * frames' dirty ranges. Anything structural or uninitialized copies everything. */
+            int partial = b->motion_frame_initialized && b->has_prev_snapshot &&
+                          b->motion_snapshot_count == b->instance_count &&
+                          b->prev_count == b->instance_count && !b->dirty_all &&
+                          !b->last_dirty_all;
+            int32_t lo = 0;
+            int32_t hi = -1;
             if (b->motion_snapshot_count > 0) {
                 double *double_swap = b->owned_prev_transforms64;
                 b->owned_prev_transforms64 = b->owned_current_snapshot64;
@@ -1070,150 +1529,153 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
                 b->prev_count = b->motion_snapshot_count;
                 b->has_prev_snapshot = 1;
             }
-            memcpy(b->current_snapshot64,
-                   b->transforms64,
-                   (size_t)b->instance_count * 16u * sizeof(double));
+            if (partial) {
+                int32_t a_lo;
+                int32_t a_hi;
+                int32_t b_lo;
+                int32_t b_hi;
+                int have_a = instbatch_dirty_span(
+                    b->dirty_lo, b->dirty_hi, b->instance_count, &a_lo, &a_hi);
+                int have_b = instbatch_dirty_span(
+                    b->last_dirty_lo, b->last_dirty_hi, b->instance_count, &b_lo, &b_hi);
+                if (have_a && have_b) {
+                    lo = a_lo < b_lo ? a_lo : b_lo;
+                    hi = a_hi > b_hi ? a_hi : b_hi;
+                } else if (have_a) {
+                    lo = a_lo;
+                    hi = a_hi;
+                } else if (have_b) {
+                    lo = b_lo;
+                    hi = b_hi;
+                }
+            } else {
+                lo = 0;
+                hi = b->instance_count - 1;
+            }
+            if (lo <= hi) {
+                memcpy(&b->current_snapshot64[(size_t)lo * 16u],
+                       &b->transforms64[(size_t)lo * 16u],
+                       (size_t)(hi - lo + 1) * 16u * sizeof(double));
+            }
+            /* The previous float mirror (non-relative path) lags the previous snapshot by
+             * exactly the range the previous frame applied. */
+            if (b->prev_submit_valid && b->prev_submit_transforms && b->has_prev_snapshot &&
+                b->prev_submit_capacity >= b->prev_count && !b->last_dirty_all) {
+                int32_t m_lo;
+                int32_t m_hi;
+                if (instbatch_dirty_span(
+                        b->last_dirty_lo, b->last_dirty_hi, b->prev_count, &m_lo, &m_hi)) {
+                    for (int32_t i = m_lo; i <= m_hi; i++)
+                        instbatch_copy_matrix64_to_float(
+                            &b->prev_submit_transforms[(size_t)i * 16u],
+                            &b->prev_transforms64[(size_t)i * 16u]);
+                }
+            } else {
+                b->prev_submit_valid = 0;
+            }
+            b->last_dirty_lo = b->dirty_lo;
+            b->last_dirty_hi = b->dirty_hi;
+            b->last_dirty_all = b->dirty_all;
+            b->dirty_lo = 0;
+            b->dirty_hi = -1;
+            b->dirty_all = 0;
             b->motion_snapshot_count = b->instance_count;
             b->last_motion_frame = frame_serial;
             b->motion_frame_initialized = 1;
         }
     }
 
-    if (canvas3d_uses_camera_relative_upload(c)) {
-        int8_t has_prev = b->has_prev_snapshot && b->prev_count > 0 ? 1 : 0;
-        int32_t visible_count = 0;
-        int prepared_bounds =
-            instance_frustum && mesh->bsphere_radius > 0.0f && instbatch_prepare_submit_bounds(b);
-        if (!instbatch_ensure_matrix_scratch(
-                &b->visible_transforms, &b->visible_capacity, b->instance_count) ||
-            (has_prev && !instbatch_ensure_matrix_scratch(&b->prev_submit_transforms,
-                                                          &b->prev_submit_capacity,
-                                                          b->instance_count))) {
-            rt_trap("InstanceBatch3D.Draw: camera-relative matrix scratch allocation failed");
-            return;
-        }
-        for (int32_t i = 0; i < b->instance_count; i++) {
-            const double *model = &b->transforms64[(size_t)i * 16u];
-            float current[16];
-            if (!instbatch_matrix64_to_canvas_frame(c, model, current)) {
-                rt_trap("InstanceBatch3D.Draw: camera-relative matrix is out of float range");
-                return;
-            }
-            if (mesh->bsphere_radius > 0.0f &&
-                !instbatch_instance_visible(b, i, instance_frustum, mesh_min, mesh_max, current))
-                continue;
-            if (prepared_bounds && !instbatch_copy_submit_bounds(b, i, visible_count))
-                prepared_bounds = 0;
-            memcpy(&b->visible_transforms[(size_t)visible_count * 16u], current, sizeof(current));
-            if (has_prev) {
-                const double *previous =
-                    i < b->prev_count ? &b->prev_transforms64[(size_t)i * 16u] : model;
-                if (!instbatch_matrix64_to_canvas_frame(
-                        c, previous, &b->prev_submit_transforms[(size_t)visible_count * 16u])) {
-                    rt_trap("InstanceBatch3D.Draw: previous camera-relative matrix is out of float "
-                            "range");
-                    return;
-                }
-            }
-            visible_count++;
-        }
-        if (visible_count == 0)
-            return;
-        rt_canvas3d_queue_instanced_batch_prepared(canvas_obj,
-                                                   mesh,
-                                                   mat,
-                                                   b->visible_transforms,
-                                                   visible_count,
-                                                   has_prev ? b->prev_submit_transforms : NULL,
-                                                   has_prev,
-                                                   prepared_bounds ? b->submit_bounds : NULL,
-                                                   1);
-        return;
-    }
-
+    /* ADR 0349: retained cells classify the frustum per cell so outside cells (a parked
+     * layer, the far end of a bowl) cost nothing, and every non-outside cell submits its own
+     * compact segment, which also retires the canvas' per-frame counting sort. */
     {
-        const float *submit_transforms = b->transforms;
-        const float *submit_prev = NULL;
-        int8_t has_prev = 0;
-        int32_t submit_count = b->instance_count;
-        int prepared_bounds = 0;
-        int32_t prepared_count = 0;
-        if (b->has_prev_snapshot && b->prev_count > 0) {
-            if (instbatch_ensure_matrix_scratch(
-                    &b->prev_submit_transforms, &b->prev_submit_capacity, b->instance_count)) {
-                int32_t preserved =
-                    b->prev_count < b->instance_count ? b->prev_count : b->instance_count;
-                for (int32_t i = 0; i < preserved; i++) {
-                    instbatch_copy_matrix64_to_float(&b->prev_submit_transforms[(size_t)i * 16u],
-                                                     &b->prev_transforms64[(size_t)i * 16u]);
-                }
-                if (preserved < b->instance_count) {
-                    memcpy(&b->prev_submit_transforms[(size_t)preserved * 16u],
-                           &b->transforms[(size_t)preserved * 16u],
-                           (size_t)(b->instance_count - preserved) * 16u * sizeof(float));
-                }
-                submit_prev = b->prev_submit_transforms;
-                has_prev = 1;
-            }
-        }
-        if (mesh->bsphere_radius > 0.0f && b->instance_count > 0 &&
-            instbatch_ensure_visibility_mask(b, b->instance_count)) {
-            int32_t visible_count = 0;
-            prepared_bounds = instance_frustum && instbatch_prepare_submit_bounds(b);
-            for (int32_t i = 0; i < b->instance_count; i++) {
-                const float *src = &b->transforms[(size_t)i * 16u];
-                b->visibility_mask[i] =
-                    instbatch_instance_visible(b, i, instance_frustum, mesh_min, mesh_max, src)
-                        ? 1u
-                        : 0u;
-                if (prepared_bounds && b->visibility_mask[i] &&
-                    !instbatch_copy_submit_bounds(b, i, visible_count))
-                    prepared_bounds = 0;
-                visible_count += b->visibility_mask[i] ? 1 : 0;
-            }
-            prepared_count = visible_count;
-            if (visible_count == 0)
+        int camera_relative = canvas3d_uses_camera_relative_upload(c);
+        int8_t has_prev = b->has_prev_snapshot && b->prev_count > 0 ? 1 : 0;
+        const float *prev_floats = NULL;
+        if (camera_relative) {
+            if (!instbatch_ensure_matrix_scratch(
+                    &b->visible_transforms, &b->visible_capacity, b->instance_count) ||
+                (has_prev && !instbatch_ensure_matrix_scratch(&b->prev_submit_transforms,
+                                                              &b->prev_submit_capacity,
+                                                              b->instance_count))) {
+                rt_trap("InstanceBatch3D.Draw: camera-relative matrix scratch allocation failed");
                 return;
-            if (visible_count < b->instance_count &&
-                instbatch_ensure_matrix_scratch(
-                    &b->visible_transforms, &b->visible_capacity, visible_count) &&
-                (!has_prev || instbatch_ensure_matrix_scratch(&b->visible_prev_transforms,
-                                                              &b->visible_prev_capacity,
-                                                              visible_count))) {
-                int32_t write_index = 0;
-                float *visible_prev = has_prev ? b->visible_prev_transforms : NULL;
-                for (int32_t i = 0; i < b->instance_count; i++) {
-                    if (!b->visibility_mask[i])
-                        continue;
-                    memcpy(&b->visible_transforms[(size_t)write_index * 16u],
-                           &b->transforms[(size_t)i * 16u],
-                           16u * sizeof(float));
-                    if (visible_prev) {
-                        memcpy(&visible_prev[(size_t)write_index * 16u],
-                               &submit_prev[(size_t)i * 16u],
-                               16u * sizeof(float));
+            }
+            b->prev_submit_valid = 0; /* the scratch now holds frame-space matrices */
+        } else {
+            if (has_prev) {
+                int32_t prev_capacity_before = b->prev_submit_capacity;
+                if (instbatch_ensure_matrix_scratch(&b->prev_submit_transforms,
+                                                    &b->prev_submit_capacity,
+                                                    b->instance_count)) {
+                    int32_t preserved =
+                        b->prev_count < b->instance_count ? b->prev_count : b->instance_count;
+                    /* The mirror persists across frames and is patched over the previous
+                     * frame's dirty range at the snapshot; rebuild it only when it was
+                     * invalidated, reallocated or the camera-relative path last owned it. */
+                    if (!b->prev_submit_valid || b->prev_submit_capacity != prev_capacity_before) {
+                        for (int32_t i = 0; i < preserved; i++) {
+                            instbatch_copy_matrix64_to_float(
+                                &b->prev_submit_transforms[(size_t)i * 16u],
+                                &b->prev_transforms64[(size_t)i * 16u]);
+                        }
+                        b->prev_submit_valid = 1;
                     }
-                    write_index++;
+                    if (preserved < b->instance_count) {
+                        memcpy(&b->prev_submit_transforms[(size_t)preserved * 16u],
+                               &b->transforms[(size_t)preserved * 16u],
+                               (size_t)(b->instance_count - preserved) * 16u * sizeof(float));
+                    }
+                    prev_floats = b->prev_submit_transforms;
+                } else {
+                    has_prev = 0;
                 }
-                submit_transforms = b->visible_transforms;
-                submit_prev = visible_prev;
-                submit_count = visible_count;
-                has_prev = visible_prev ? 1 : 0;
+            }
+            if (!instbatch_ensure_visibility_mask(b, b->instance_count) ||
+                !instbatch_ensure_matrix_scratch(
+                    &b->visible_transforms, &b->visible_capacity, b->instance_count) ||
+                (has_prev && !instbatch_ensure_matrix_scratch(&b->visible_prev_transforms,
+                                                              &b->visible_prev_capacity,
+                                                              b->instance_count))) {
+                /* No scratch: submit everything uncompacted, exactly as before. */
+                rt_canvas3d_queue_instanced_batch_prepared(canvas_obj,
+                                                           mesh,
+                                                           mat,
+                                                           b->transforms,
+                                                           b->instance_count,
+                                                           prev_floats,
+                                                           has_prev,
+                                                           NULL,
+                                                           0);
+                return;
             }
         }
-        // If compaction allocation failed, matrices still include hidden instances;
-        // the visible-only packed bounds must not be paired with that full array.
-        if (submit_count != prepared_count)
-            prepared_bounds = 0;
-        rt_canvas3d_queue_instanced_batch_prepared(canvas_obj,
-                                                   mesh,
-                                                   mat,
-                                                   submit_transforms,
-                                                   submit_count,
-                                                   submit_prev,
-                                                   has_prev,
-                                                   prepared_bounds ? b->submit_bounds : NULL,
-                                                   0);
+        if (!use_cells) {
+            instbatch_queue_segment(canvas_obj, c, b, mesh, mat, NULL, b->instance_count,
+                                    instance_frustum, mesh_min, mesh_max, has_prev, prev_floats,
+                                    camera_relative, 1);
+            return;
+        }
+        for (int32_t cell = 0; cell < b->cell_count; cell++) {
+            int32_t begin = b->cell_start[cell];
+            int32_t count = b->cell_start[cell + 1] - begin;
+            int cls;
+            if (count <= 0)
+                continue;
+            cls = b->cell_bounded[cell]
+                      ? instbatch_cell_classify(instance_frustum, b->cell_min[cell], b->cell_max[cell])
+                      : 1;
+            if (cls == 0) {
+                if (!camera_relative && b->visibility_mask) {
+                    for (int32_t k = begin; k < begin + count; k++)
+                        b->visibility_mask[b->cell_members[k]] = 0u;
+                }
+                continue;
+            }
+            instbatch_queue_segment(canvas_obj, c, b, mesh, mat, &b->cell_members[begin], count,
+                                    instance_frustum, mesh_min, mesh_max, has_prev, prev_floats,
+                                    camera_relative, cls == 1);
+        }
     }
 }
 

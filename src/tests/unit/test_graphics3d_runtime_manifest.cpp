@@ -78,9 +78,9 @@ namespace {
 // ADR 0326: Mesh3D.LoftHeight adds one function and one method.
 // ADR 0328: lossless cluster fallback pressure adds one function/property.
 // ADR 0341: Material3D.TemporalWeight adds two accessors and one property.
-constexpr std::size_t kExpectedFunctionCount = 2295;
+constexpr std::size_t kExpectedFunctionCount = 2296;
 constexpr std::size_t kExpectedClassCount = 131;
-constexpr std::size_t kExpectedPropertyCount = 837;
+constexpr std::size_t kExpectedPropertyCount = 838;
 constexpr std::size_t kExpectedMethodCount = 1241;
 
 bool is3DName(std::string_view name) {
@@ -300,7 +300,8 @@ int main() {
     // ADR 0341: Material3D.TemporalWeight accessors/property; previous d64d2f6e2691f647.
     // ADR 0343: AnimBlend3D.SetPhase/GetPhase; previous 2b859b45eff784d2.
     // ADR 0345: IKSolver3D.SetStrideWarp/ClearStrideWarp; previous cf08af8b2dfc7dab.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x1f2fe626e0c5c3cf);
+    // ADR 0349: InstanceBatch3D.RetainedBytes; previous 1f2fe626e0c5c3cf.
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x0ee92fd98acea706);
     /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
                                                                    AnimController3D.SetBlendTreeFade
                                                                    + SetTransitionContinuity */

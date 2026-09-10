@@ -159,6 +159,80 @@ int vgfx3d_shadow_matrix_is_usable(const float *matrix) {
     return max_abs > 1.0e-12f ? 1 : 0;
 }
 
+/// @brief Derive the receiver-space shadow scale a sampler needs for its bias terms (ADR 0348).
+/// @details Row-major layout: rows 0..3 are shadow_vp[0..3], [4..7], [8..11], [12..15].
+///   Orthographic: texel_world = 2 * texel_ndc / |row0|, depth_scale = 0.5 * |row2|.
+///   Perspective: with w = row3 . p + t3 (distance along the light axis) and z = row2 . p + t2,
+///   ndc_x moves |row0| / w per world unit, so texel_world = 2 * texel_ndc * w / |row0|; the
+///   axial component a = (row2 . row3) / |row3|^2 makes z = a * w + b, so ndc_z = a + b / w and
+///   |d ndc_z / d w| = |b| / w^2 with b = z - a * w; the stored depth halves that.
+/// @param shadow_vp Borrowed 16-float row-major shadow view-projection matrix.
+/// @param projection_type VGFX3D_SHADOW_PROJECTION_* identifier.
+/// @param world_pos Borrowed three-component receiver position.
+/// @param texel_ndc One shadow texel in NDC units along X.
+/// @param[out] out_texel_world World size of one shadow texel at the receiver.
+/// @param[out] out_depth_scale Stored depth change per world unit along the light axis.
+/// @return 1 on success, 0 for unusable input (outputs zeroed).
+int vgfx3d_shadow_receiver_scale(const float *shadow_vp,
+                                 int32_t projection_type,
+                                 const float world_pos[3],
+                                 float texel_ndc,
+                                 float *out_texel_world,
+                                 float *out_depth_scale) {
+    float row0_len;
+    float row2_len;
+    float texel_world = 0.0f;
+    float depth_scale = 0.0f;
+
+    if (out_texel_world)
+        *out_texel_world = 0.0f;
+    if (out_depth_scale)
+        *out_depth_scale = 0.0f;
+    if (!vgfx3d_shadow_matrix_is_usable(shadow_vp) || !world_pos || !out_texel_world ||
+        !out_depth_scale || !isfinite(texel_ndc) || texel_ndc <= 0.0f ||
+        !vgfx3d_float_array_is_bounded(world_pos, 3u, VGFX3D_BACKEND_MATRIX_COMPONENT_ABS_MAX)) {
+        return 0;
+    }
+    if (projection_type != VGFX3D_SHADOW_PROJECTION_ORTHOGRAPHIC &&
+        projection_type != VGFX3D_SHADOW_PROJECTION_PERSPECTIVE &&
+        projection_type != VGFX3D_SHADOW_PROJECTION_CUBE) {
+        return 0;
+    }
+    row0_len = sqrtf(shadow_vp[0] * shadow_vp[0] + shadow_vp[1] * shadow_vp[1] +
+                     shadow_vp[2] * shadow_vp[2]);
+    row2_len = sqrtf(shadow_vp[8] * shadow_vp[8] + shadow_vp[9] * shadow_vp[9] +
+                     shadow_vp[10] * shadow_vp[10]);
+    if (projection_type == VGFX3D_SHADOW_PROJECTION_ORTHOGRAPHIC) {
+        texel_world = row0_len > 1.0e-9f ? 2.0f * texel_ndc / row0_len : 0.0f;
+        depth_scale = 0.5f * row2_len;
+    } else {
+        float w = world_pos[0] * shadow_vp[12] + world_pos[1] * shadow_vp[13] +
+                  world_pos[2] * shadow_vp[14] + shadow_vp[15];
+        float z = world_pos[0] * shadow_vp[8] + world_pos[1] * shadow_vp[9] +
+                  world_pos[2] * shadow_vp[10] + shadow_vp[11];
+        float row3_sq = shadow_vp[12] * shadow_vp[12] + shadow_vp[13] * shadow_vp[13] +
+                        shadow_vp[14] * shadow_vp[14];
+        float axial;
+        float b;
+
+        if (!isfinite(w) || w <= 0.0001f || w >= 1.0e20f || !isfinite(z))
+            return 0;
+        axial = row3_sq > 1.0e-12f
+                    ? (shadow_vp[8] * shadow_vp[12] + shadow_vp[9] * shadow_vp[13] +
+                       shadow_vp[10] * shadow_vp[14]) /
+                          row3_sq
+                    : 0.0f;
+        b = z - axial * w;
+        texel_world = row0_len > 1.0e-9f ? 2.0f * texel_ndc * w / row0_len : 0.0f;
+        depth_scale = 0.5f * fabsf(b) / (w * w);
+    }
+    if (!isfinite(texel_world) || !isfinite(depth_scale))
+        return 0;
+    *out_texel_world = texel_world;
+    *out_depth_scale = depth_scale;
+    return 1;
+}
+
 /// @brief Copy and normalize a direction with deterministic fallback semantics.
 /// @param dst Receives the normalized three-component direction; null is a no-op.
 /// @param src Preferred optional borrowed direction.

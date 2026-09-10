@@ -1201,6 +1201,7 @@ void rt_canvas3d_end_overlay(void *obj) {
         return;
     c->final_overlay_recording = 0;
     c->in_frame = 0;
+    c->frame_light_limit = 0;
     c->frame_is_2d = 0;
 }
 

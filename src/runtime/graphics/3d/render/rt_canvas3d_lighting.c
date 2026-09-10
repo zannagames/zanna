@@ -122,7 +122,7 @@ static void canvas3d_copy_light_params(const rt_canvas3d *c,
 ///   capability are queried.
 /// @return VGFX3D_MAX_LIGHTS for supported clustered lighting; otherwise the
 ///   forward-renderer limit.
-int32_t canvas3d_active_light_limit(rt_canvas3d *c) {
+static int32_t canvas3d_active_light_limit_compute(rt_canvas3d *c) {
     if (c && c->clustered_lighting) {
         rt_string capability = rt_const_cstr("clustered-lighting");
         int8_t supported = rt_canvas3d_backend_supports(c, capability);
@@ -131,6 +131,16 @@ int32_t canvas3d_active_light_limit(rt_canvas3d *c) {
             return VGFX3D_MAX_LIGHTS;
     }
     return VGFX3D_FORWARD_LIGHT_LIMIT;
+}
+
+int32_t canvas3d_active_light_limit(rt_canvas3d *c) {
+    /* Plan 109: the answer cannot change inside a frame, and every queued draw asks. */
+    if (c && c->in_frame) {
+        if (c->frame_light_limit <= 0)
+            c->frame_light_limit = canvas3d_active_light_limit_compute(c);
+        return c->frame_light_limit;
+    }
+    return canvas3d_active_light_limit_compute(c);
 }
 
 /// @brief Relevance score for a local punctual, area, or volume light as seen from the camera.

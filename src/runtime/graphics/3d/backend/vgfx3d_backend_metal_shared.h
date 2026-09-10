@@ -40,6 +40,8 @@
 extern "C" {
 #endif
 
+/* Plan 109: packed-key sampler table size before the dictionary overflow path. */
+#define VGFX3D_METAL_SAMPLER_TABLE_CAPACITY 64
 #define VGFX3D_METAL_MAX_BONES 256
 #define VGFX3D_METAL_BONE_PALETTE_FLOATS (VGFX3D_METAL_MAX_BONES * 16u)
 #define VGFX3D_METAL_BONE_PALETTE_BYTES (sizeof(float) * VGFX3D_METAL_BONE_PALETTE_FLOATS)

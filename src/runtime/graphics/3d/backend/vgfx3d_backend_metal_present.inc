@@ -515,11 +515,11 @@ typedef enum {
 /// @param length Number of bytes to append.
 /// @param[out] out_offset Optional destination for the byte offset of the uploaded slice.
 /// @return The shared buffer containing the slice, or nil when validation or allocation fails.
-static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
-                                                   vgfx3d_metal_transient_stream_t stream,
-                                                   const void *bytes,
-                                                   size_t length,
-                                                   NSUInteger *out_offset) {
+static id<MTLBuffer> metal_reserve_transient_slice(VGFXMetalContext *ctx,
+                                                  vgfx3d_metal_transient_stream_t stream,
+                                                  size_t length,
+                                                  NSUInteger *out_offset,
+                                                  void **out_pointer) {
     id<MTLBuffer> buffer;
     NSUInteger capacity;
     NSUInteger write_offset;
@@ -529,7 +529,9 @@ static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
 
     if (out_offset)
         *out_offset = 0;
-    if (!ctx || !bytes || length == 0 || length > (size_t)max_capacity)
+    if (out_pointer)
+        *out_pointer = NULL;
+    if (!ctx || !out_pointer || length == 0 || length > (size_t)max_capacity)
         return nil;
     switch (stream) {
         case VGFX3D_METAL_TRANSIENT_VERTEX:
@@ -593,7 +595,7 @@ static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
         if (ctx.frameBuffers)
             [ctx.frameBuffers addObject:buffer];
     }
-    memcpy((uint8_t *)buffer.contents + aligned_offset, bytes, length);
+    *out_pointer = (uint8_t *)buffer.contents + aligned_offset;
     switch (stream) {
         case VGFX3D_METAL_TRANSIENT_VERTEX:
             ctx.dynamicVertexWriteOffset = aligned_offset + (NSUInteger)length;
@@ -608,6 +610,25 @@ static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
     }
     if (out_offset)
         *out_offset = aligned_offset;
+    return buffer;
+}
+
+/// @brief Upload transient bytes into a reserved ring slice (see metal_reserve_transient_slice).
+/// @details Plan 109 split the reservation out so instanced draws pack their per-instance
+///   data straight into the slice instead of staging it and copying it again.
+static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
+                                                   vgfx3d_metal_transient_stream_t stream,
+                                                   const void *bytes,
+                                                   size_t length,
+                                                   NSUInteger *out_offset) {
+    void *destination = NULL;
+    id<MTLBuffer> buffer;
+    if (!bytes)
+        return nil;
+    buffer = metal_reserve_transient_slice(ctx, stream, length, out_offset, &destination);
+    if (!buffer || !destination)
+        return nil;
+    memcpy(destination, bytes, length);
     return buffer;
 }
 

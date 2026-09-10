@@ -36,6 +36,7 @@
 #include "rt_string.h"
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <csetjmp>
@@ -411,16 +412,23 @@ static void test_navmesh_find_path_adopts_reconstructed_storage() {
 }
 
 static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
-    /* Keep each search alive across scheduler quanta so the peak-concurrency
-     * assertion remains meaningful on oversubscribed CI workers. */
+    /* Overlap is a scheduling observation, and a fixed iteration count cannot force it: a
+     * corner-to-corner search on this grid costs far less than one scheduler quantum, so a short
+     * burst lets every worker finish before the next one is dispatched and records no overlap at
+     * all. The workers therefore keep issuing searches until the pool has demonstrably granted
+     * more than four simultaneous workspaces, or until a bounded deadline expires. A serialized
+     * implementation never reaches the target and still fails at the deadline. */
     constexpr int cells = 256;
+    constexpr int worker_count = 8;
+    constexpr int min_iterations = 12;
+    constexpr int64_t required_overlap = 5;
     void *nm = make_dense_grid_navmesh(cells);
     void *from = rt_vec3_new(-31.0, 0.0, -31.0);
     void *to = rt_vec3_new(31.0, 0.0, 31.0);
     std::atomic<bool> ok{true};
     std::atomic<int> ready{0};
     std::atomic<bool> start{false};
-    constexpr int worker_count = 8;
+    std::atomic<bool> stop{false};
     std::thread workers[worker_count];
     rt_navmesh3d_test_reset_path_peak_concurrency(nm);
     rt_navmesh3d_test_reset_path_transient_allocation_count(nm);
@@ -429,7 +437,9 @@ static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
             ready.fetch_add(1, std::memory_order_release);
             while (!start.load(std::memory_order_acquire))
                 std::this_thread::yield();
-            for (int iteration = 0; iteration < 12; iteration++) {
+            for (int iteration = 0;
+                 iteration < min_iterations || !stop.load(std::memory_order_acquire);
+                 iteration++) {
                 double *points = nullptr;
                 int64_t count = rt_navmesh3d_copy_path_points(nm, from, to, &points);
                 if (count < 2 || !points || !std::isfinite(points[0]) ||
@@ -442,15 +452,29 @@ static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
     while (ready.load(std::memory_order_acquire) != worker_count)
         std::this_thread::yield();
     start.store(true, std::memory_order_release);
+    /* The watermark only grows, so a coarse poll cannot miss an overlap that already happened,
+     * and sleeping instead of spinning leaves every core to the workers. */
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (rt_navmesh3d_test_get_path_peak_concurrency(nm) < required_overlap &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::microseconds(250));
+    stop.store(true, std::memory_order_release);
     for (auto &worker : workers)
         worker.join();
+    const int64_t peak = rt_navmesh3d_test_get_path_peak_concurrency(nm);
+    char overlap_message[160];
+    std::snprintf(overlap_message,
+                  sizeof(overlap_message),
+                  "NavMesh retained workspaces let more than four searches overlap in flight "
+                  "(peak %lld of %d workers)",
+                  (long long)peak,
+                  worker_count);
     EXPECT_TRUE(ok.load(std::memory_order_relaxed),
                 "NavMesh A* workspace pool is reusable across concurrent queries");
-    EXPECT_TRUE(rt_navmesh3d_test_get_path_peak_concurrency(nm) > 4,
-                "NavMesh retained workspaces let more than four searches overlap in flight");
+    EXPECT_TRUE(peak >= required_overlap, overlap_message);
     EXPECT_TRUE(rt_navmesh3d_test_get_path_transient_allocation_count(nm) == 0,
                 "NavMesh eight-way query bursts perform no transient workspace allocations");
-    EXPECT_TRUE(rt_navmesh3d_test_get_ready_path_scratch_count(nm) >= 2,
+    EXPECT_TRUE(rt_navmesh3d_test_get_ready_path_scratch_count(nm) >= required_overlap,
                 "NavMesh concurrent searches retain per-workspace corridor and portal scratch");
     EXPECT_TRUE(rt_navmesh3d_test_get_path_workspace_permits(nm) == worker_count,
                 "NavMesh returns every blocking workspace permit after concurrent searches");

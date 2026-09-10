@@ -42,6 +42,7 @@ extern "C" {
 #include "vgfx3d_backend.h"
 
 int64_t vgfx3d_software_backend_thread_count_for_test(const void *ctx);
+float vgfx3d_software_backend_shadow_slope_bias_for_test(const void *ctx);
 uint64_t vgfx3d_software_backend_parallel_index_threshold_for_test(const void *ctx);
 uint64_t vgfx3d_software_backend_worker_wait_count_for_test(const void *ctx);
 uint64_t vgfx3d_software_backend_instanced_batch_count_for_test(const void *ctx);
@@ -187,6 +188,10 @@ struct SoftwareSceneRenderResult {
     float shadow_luma = 0.0f;
     float lit_left_luma = 0.0f;
     float lit_right_luma = 0.0f;
+    /* ADR 0348: share of pixels in the lit sample box darker than half its brightest
+     * pixel — self-shadowing acne on a lit receiver, zero on a clean one. */
+    float lit_dark_fraction = 0.0f;
+    float slope_knob = -1.0f;
     int64_t worker_count = 1;
     int64_t color_triangle_scratch_capacity = 0;
     int64_t shadow_triangle_scratch_capacity = 0;
@@ -243,6 +248,44 @@ static int project_world_to_pixel(const rt_canvas3d *canvas,
     *out_x = (int32_t)((ndc_x + 1.0f) * 0.5f * (float)width);
     *out_y = (int32_t)((1.0f - ndc_y) * 0.5f * (float)height);
     return *out_x >= 0 && *out_x < width && *out_y >= 0 && *out_y < height;
+}
+
+static float sample_dark_fraction_box(const vgfx3d_rendertarget_t *target,
+                                      int32_t cx,
+                                      int32_t cy,
+                                      int32_t radius) {
+    float lumas[64 * 64];
+    float peak = 0.0f;
+    int32_t count = 0;
+    int32_t dark = 0;
+
+    if (!target || !target->color_buf || target->width <= 0 || target->height <= 0 ||
+        target->stride < target->width * 4 || radius < 0 || radius > 31)
+        return 0.0f;
+    for (int32_t y = cy - radius; y <= cy + radius; y++) {
+        if (y < 0 || y >= target->height)
+            continue;
+        for (int32_t x = cx - radius; x <= cx + radius; x++) {
+            const uint8_t *px;
+            float luma;
+
+            if (x < 0 || x >= target->width)
+                continue;
+            px = &target->color_buf[y * target->stride + x * 4];
+            luma = (float)px[0] / 255.0f * 0.2126f + (float)px[1] / 255.0f * 0.7152f +
+                   (float)px[2] / 255.0f * 0.0722f;
+            lumas[count++] = luma;
+            if (luma > peak)
+                peak = luma;
+        }
+    }
+    if (count == 0)
+        return 0.0f;
+    for (int32_t i = 0; i < count; i++) {
+        if (lumas[i] < peak * 0.5f)
+            dark++;
+    }
+    return (float)dark / (float)count;
 }
 
 static float sample_luminance_box(const vgfx3d_rendertarget_t *target,
@@ -911,7 +954,9 @@ static void test_software_parallel_granularity_and_instanced_batching() {
     release_obj(target);
 }
 
-static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *result) {
+static int render_software_spot_light_shadow_scene_ex(SoftwareSceneRenderResult *result,
+                                                      double shadow_bias,
+                                                      double slope_factor) {
     const int32_t width = 96;
     const int32_t height = 96;
     rt_canvas3d canvas = {};
@@ -979,7 +1024,11 @@ static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *re
     rt_light3d_set_casts_shadows(spot, 1);
     rt_canvas3d_set_render_target(&canvas, target_obj);
     rt_canvas3d_enable_shadows(&canvas, 128);
-    rt_canvas3d_set_shadow_bias(&canvas, 0.0012);
+    rt_canvas3d_set_shadow_bias(&canvas, shadow_bias);
+    /* A stack fixture never ran the constructor (which defaults the knob to 1.0) and the
+     * public setter accepts registered canvases only, so the knob is written directly. */
+    if (slope_factor >= 0.0)
+        canvas.shadow_slope_bias = (float)slope_factor;
     rt_canvas3d_set_ambient(&canvas, 0.035, 0.035, 0.04);
     rt_canvas3d_set_light(&canvas, 0, spot);
 
@@ -1012,7 +1061,9 @@ static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *re
         result->shadow_luma = shadow_luma;
         result->lit_left_luma = lit_left_luma;
         result->lit_right_luma = lit_right_luma;
+        result->lit_dark_fraction = sample_dark_fraction_box(target, lit_left_x, lit_left_y, 9);
         result->worker_count = vgfx3d_software_backend_thread_count_for_test(canvas.backend_ctx);
+        result->slope_knob = vgfx3d_software_backend_shadow_slope_bias_for_test(canvas.backend_ctx);
         result->color_triangle_scratch_capacity =
             vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 0);
         result->shadow_triangle_scratch_capacity =
@@ -1062,6 +1113,10 @@ cleanup:
     return hash != 0;
 }
 
+static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *result) {
+    return render_software_spot_light_shadow_scene_ex(result, 0.0012, -1.0);
+}
+
 static int rgba_equal(const SoftwareSceneRenderResult &a, const SoftwareSceneRenderResult &b) {
     return a.rgba.size() == b.rgba.size() &&
            (a.rgba.empty() || std::memcmp(a.rgba.data(), b.rgba.data(), a.rgba.size()) == 0);
@@ -1092,6 +1147,33 @@ static void test_software_spot_light_shadow_render_is_stable() {
     EXPECT_EQ_U64(
         result.hash, expected_hash, "Software spot-shadow render snapshot remains stable");
 #endif
+}
+
+/* ADR 0348: a spot light is a perspective shadow map. With a near-zero base bias the
+ * production slope knob keeps the lit plane clean while the sphere's contact shadow
+ * survives, and the software context provably carries the knob the frame was begun with
+ * (a stack fixture never ran the constructor default). The knob's magnitude is not
+ * observable in this fixture: the software sampler reads its map gradient at the
+ * receiver's own texel, so only grazing receivers are affected and the 1.5-texel normal
+ * offset already covers this 45-degree plane; the perspective numbers themselves are
+ * proven by the vgfx3d_shadow_receiver_scale contract test. */
+static void test_software_spot_shadow_perspective_bias_is_clean() {
+    SoftwareSceneRenderResult clean;
+    SoftwareSceneRenderResult maximum;
+
+    EXPECT_TRUE(render_software_spot_light_shadow_scene_ex(&clean, 0.00001, 1.5),
+                "Spot-shadow scene renders with a near-zero bias and the production slope knob");
+    EXPECT_TRUE(render_software_spot_light_shadow_scene_ex(&maximum, 0.00001, 16.0),
+                "Spot-shadow scene renders with a near-zero bias and the maximum slope knob");
+    if (clean.hash == 0 || maximum.hash == 0)
+        return;
+    EXPECT_TRUE(clean.slope_knob == 1.5f && maximum.slope_knob == 16.0f,
+                "The software context retains the slope knob the frame was begun with");
+    EXPECT_TRUE(clean.lit_dark_fraction <= 0.01f && maximum.lit_dark_fraction <= 0.01f,
+                "Perspective-aware bias keeps the lit plane clean at a near-zero base bias");
+    EXPECT_TRUE(clean.lit_left_luma > clean.shadow_luma * 1.25f + 0.015f &&
+                    clean.lit_right_luma > clean.shadow_luma * 1.25f + 0.015f,
+                "The sphere's contact shadow survives the production slope knob");
 }
 
 static void test_software_tiled_raster_threads_are_deterministic() {
@@ -1291,6 +1373,7 @@ int main() {
     test_render_target_notifies_native_cache_before_finalization();
     test_software_tiled_raster_threads_are_deterministic();
     test_software_spot_light_shadow_render_is_stable();
+    test_software_spot_shadow_perspective_bias_is_clean();
     test_software_ibl_environment_lights_pbr_sphere();
 
     if (tests_passed != tests_run) {

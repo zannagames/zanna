@@ -40,6 +40,9 @@ typedef struct {
     void *new_refs[CANVAS3D_DRAW_RESOURCE_ROLLBACK_CAP];
     int32_t new_ref_count;
     const float *prepared_world_bounds; /* borrowed packed min/max; consumed before return */
+    /* ADR 0349: the caller supplied previous matrices, so this draw neither reads nor
+     * maintains the canvas' per-instance motion-history map. */
+    int8_t owns_motion_history;
 } canvas3d_instanced_batch_t;
 
 /// @brief Release the batch's tracked mesh/material temp-object references (material then mesh).
@@ -492,7 +495,9 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
             return;
         }
     }
-    for (int32_t i = 0; i < instance_count; ++i) {
+    /* ADR 0349: a batch that owns its motion history already queued exact previous matrices;
+     * walking the canvas map for every visible instance was pure overhead for it. */
+    for (int32_t i = 0; !b->owns_motion_history && i < instance_count; ++i) {
         int8_t has_prev = 0;
         float ignored_prev[16];
         float *dst_prev =
@@ -793,6 +798,7 @@ static int canvas3d_queue_instanced_batch_common(void *canvas_obj,
 
     batch.c = c;
     batch.prepared_world_bounds = prepared_world_bounds;
+    batch.owns_motion_history = c->instanced_owns_motion_history;
     batch.mesh = mesh;
     batch.mat = mat;
     batch.mesh_obj = mesh_obj;
@@ -971,6 +977,7 @@ void rt_canvas3d_queue_instanced_batch_prepared(void *canvas_obj,
     int8_t saved_camera_relative = c->camera_relative_upload;
     if (frame_matrices)
         c->camera_relative_upload = 0;
+    c->instanced_owns_motion_history = has_prev_instance_matrices && prev_instance_matrices ? 1 : 0;
     (void)canvas3d_queue_instanced_batch_common(canvas_obj,
                                                 mesh_obj,
                                                 material_obj,
@@ -987,6 +994,7 @@ void rt_canvas3d_queue_instanced_batch_prepared(void *canvas_obj,
                                                 0,
                                                 0,
                                                 prepared_world_bounds);
+    c->instanced_owns_motion_history = 0;
     c->camera_relative_upload = saved_camera_relative;
 }
 
