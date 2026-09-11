@@ -145,6 +145,12 @@ rt_string rt_anim_controller3d_get_previous_state(void *controller);
 /// @param[in] controller AnimController3D to inspect.
 /// @return `1` while the base layer is transitioning; otherwise `0`.
 int8_t rt_anim_controller3d_get_is_transitioning(void *controller);
+/// @brief The attached locomotion tree's current contribution to the final pose (ADR 0350).
+/// @param[in] controller AnimController3D to inspect.
+/// @return 1 while the tree drives the palette exclusively, the ramped weight in
+///         (0, 1) during a fade or pending detach, or 0 with no tree / an invalid
+///         controller.
+double rt_anim_controller3d_get_blend_tree_weight(void *controller);
 /// @brief Number of registered states.
 /// @param[in] controller AnimController3D to inspect.
 /// @return Sanitized state count, or zero for an invalid controller.

@@ -3687,6 +3687,7 @@ Stateful skeletal animation controller for gameplay code. `AnimController3D` bui
 | `CurrentState` | String | read | Active base-layer state name |
 | `PreviousState` | String | read | Prior base-layer state name |
 | `IsTransitioning` | Boolean | read | True while the base layer is inside a timed crossfade |
+| `BlendTreeWeight` | Float | read | The attached locomotion tree's contribution to the pose: 1 when it drives the palette exclusively, the ramped weight during a `SetBlendTreeFade` fade or pending detach, 0 with no tree (ADR 0350) |
 | `StateCount` | Integer | read | Number of registered states |
 | `RootMotionDelta` | `Vec3` | read | Accumulated root-motion delta since the last consume/reset |
 

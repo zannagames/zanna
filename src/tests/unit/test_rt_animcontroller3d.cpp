@@ -441,21 +441,53 @@ static void test_controller_blend_tree_fade_produces_intermediate_palettes() {
     rt_anim_controller3d_add_state(controller, rt_const_cstr("idle"), idle);
     rt_anim_controller3d_play(controller, rt_const_cstr("idle"));
     rt_anim_controller3d_set_blend_tree_fade(controller, 0.5);
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(controller),
+                0.0,
+                1e-6,
+                "ADR 0350: no tree attached reads weight 0");
     EXPECT_TRUE(rt_anim_controller3d_set_blend_tree(controller, tree) != 0, "fade attach accepted");
     EXPECT_NEAR(adr0302_root_x(controller), 0.0, 0.01, "attach with a fade starts at weight 0");
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(controller),
+                0.0,
+                1e-6,
+                "ADR 0350: the fade-in starts at weight 0");
     rt_anim_controller3d_update(controller, 0.25);
     EXPECT_NEAR(adr0302_root_x(controller), 2.0, 0.05, "half-way through the fade-in");
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(controller),
+                0.5,
+                0.02,
+                "ADR 0350: the getter reads the ramped weight mid fade-in");
     rt_anim_controller3d_update(controller, 0.25);
     EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "fade-in lands on the tree pose");
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(controller),
+                1.0,
+                1e-6,
+                "ADR 0350: a complete fade-in reads weight 1");
     EXPECT_TRUE(rt_anim_controller3d_set_blend_tree(controller, nullptr) != 0,
                 "fade clear accepted");
     EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "clear with a fade holds the tree pose");
     EXPECT_TRUE(layout->blend_tree != nullptr, "the clearing tree stays retained during the fade");
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(controller),
+                1.0,
+                1e-6,
+                "ADR 0350: a pending detach still reads its full weight before the first step");
     rt_anim_controller3d_update(controller, 0.25);
     EXPECT_NEAR(adr0302_root_x(controller), 2.0, 0.05, "half-way through the fade-out");
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(controller),
+                0.5,
+                0.02,
+                "ADR 0350: the getter reads the ramp toward zero of a pending detach");
     rt_anim_controller3d_update(controller, 0.25);
     EXPECT_NEAR(adr0302_root_x(controller), 0.0, 0.01, "fade-out lands on layer 0");
     EXPECT_TRUE(layout->blend_tree == nullptr, "the tree is released at weight 0");
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(controller),
+                0.0,
+                1e-6,
+                "ADR 0350: a released tree reads weight 0");
+    EXPECT_NEAR(rt_anim_controller3d_get_blend_tree_weight(nullptr),
+                0.0,
+                1e-6,
+                "ADR 0350: an invalid handle reads weight 0");
 }
 
 /// Re-attaching during a fade-out reverses the ramp from the current weight — no jump.

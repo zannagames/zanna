@@ -2540,6 +2540,7 @@ Constructor: `Zanna.Graphics3D.AnimController3D.New`
 | <a id="zanna-graphics3d-animcontroller3d-currentstate"></a>`CurrentState` | `str` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-previousstate"></a>`PreviousState` | `str` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-istransitioning"></a>`IsTransitioning` | `i1` | read-only |
+| <a id="zanna-graphics3d-animcontroller3d-blendtreeweight"></a>`BlendTreeWeight` | `f64` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-statecount"></a>`StateCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-statetime"></a>`StateTime` | `f64` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-rootmotiondelta"></a>`RootMotionDelta` | `obj<Zanna.Math.Vec3>` | read-only |
@@ -4129,6 +4130,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-animcontroller3d-get-currentstate"></a>`Zanna.Graphics3D.AnimController3D.get_CurrentState` | `str(obj)` | `rt_anim_controller3d_get_current_state` |
 | <a id="zanna-graphics3d-animcontroller3d-get-previousstate"></a>`Zanna.Graphics3D.AnimController3D.get_PreviousState` | `str(obj)` | `rt_anim_controller3d_get_previous_state` |
 | <a id="zanna-graphics3d-animcontroller3d-get-istransitioning"></a>`Zanna.Graphics3D.AnimController3D.get_IsTransitioning` | `i1(obj)` | `rt_anim_controller3d_get_is_transitioning` |
+| <a id="zanna-graphics3d-animcontroller3d-get-blendtreeweight"></a>`Zanna.Graphics3D.AnimController3D.get_BlendTreeWeight` | `f64(obj)` | `rt_anim_controller3d_get_blend_tree_weight` |
 | <a id="zanna-graphics3d-animcontroller3d-get-statecount"></a>`Zanna.Graphics3D.AnimController3D.get_StateCount` | `i64(obj)` | `rt_anim_controller3d_get_state_count` |
 | <a id="zanna-graphics3d-animcontroller3d-get-statetime"></a>`Zanna.Graphics3D.AnimController3D.get_StateTime` | `f64(obj)` | `rt_anim_controller3d_get_state_time` |
 | `Zanna.Graphics3D.AnimController3D.IsStatePlaying` | `i1(obj,str)` | `rt_anim_controller3d_is_state_playing` |

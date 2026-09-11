@@ -140,6 +140,7 @@ int main() {
         fn_bits(&rt_anim_controller3d_get_current_state),
         fn_bits(&rt_anim_controller3d_get_previous_state),
         fn_bits(&rt_anim_controller3d_get_is_transitioning),
+        fn_bits(&rt_anim_controller3d_get_blend_tree_weight),
         fn_bits(&rt_anim_controller3d_get_state_count),
         fn_bits(&rt_anim_controller3d_set_state_speed),
         fn_bits(&rt_anim_controller3d_set_state_looping),

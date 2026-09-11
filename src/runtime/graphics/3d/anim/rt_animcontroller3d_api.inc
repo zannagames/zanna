@@ -662,6 +662,31 @@ int8_t rt_anim_controller3d_get_is_transitioning(void *obj) {
     return controller && controller->layers[0].transitioning ? 1 : 0;
 }
 
+/// @brief The locomotion tree's current contribution to the final pose (ADR 0350).
+/// @details 1 while an attached tree drives the palette exclusively (the fade is
+///          off, complete, or was never configured); the ramped weight in (0, 1)
+///          while an ADR 0302 fade is in flight, including the ramp toward zero of
+///          a pending detach; 0 with no tree attached. A read-only probe seam: it
+///          evaluates nothing and advances no clock.
+/// @param[in] obj AnimController3D to inspect.
+/// @return The tree weight in [0, 1], or 0 for an invalid handle.
+double rt_anim_controller3d_get_blend_tree_weight(void *obj) {
+    rt_anim_controller3d *controller = anim_controller3d_checked(obj);
+    float weight;
+    if (!controller || !controller->blend_tree)
+        return 0.0;
+    weight = controller->blend_tree_weight;
+    if (!isfinite((double)weight))
+        return 1.0;
+    if (controller->blend_tree_fade_seconds <= 0.0f && !controller->blend_tree_detach_pending)
+        return 1.0;
+    if (weight < 0.0f)
+        weight = 0.0f;
+    if (weight > 1.0f)
+        weight = 1.0f;
+    return (double)weight;
+}
+
 /// @brief Number of states currently registered with the controller.
 /// @param[in] obj AnimController3D to inspect.
 /// @return Sanitized registered-state count, or zero for an invalid handle.
@@ -885,7 +910,8 @@ int8_t rt_anim_controller3d_set_blend_tree(void *obj, void *blend_tree) {
          * tree-to-tree replacement keeps the current weight (documented limitation:
          * that swap stays instantaneous). */
         if (!had_tree)
-            controller->blend_tree_weight = controller->blend_tree_fade_seconds > 0.0f ? 0.0f : 1.0f;
+            controller->blend_tree_weight =
+                controller->blend_tree_fade_seconds > 0.0f ? 0.0f : 1.0f;
     }
     if (controller->blend_tree_fade_seconds <= 0.0f)
         controller->blend_tree_weight = 1.0f;

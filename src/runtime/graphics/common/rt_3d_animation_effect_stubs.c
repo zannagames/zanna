@@ -520,6 +520,19 @@ int8_t rt_anim_controller3d_get_is_transitioning(void *c) {
     return 0;
 }
 
+/// @brief Stub for `AnimController3D.BlendTreeWeight` — the attached
+///        locomotion tree's current contribution to the pose (ADR 0350).
+///
+/// Silent stub returning `0.0`.
+///
+/// @param c AnimController3D handle (ignored).
+///
+/// @return `0.0`.
+double rt_anim_controller3d_get_blend_tree_weight(void *c) {
+    (void)c;
+    return 0.0;
+}
+
 /// @brief Stub for `AnimController3D.StateCount` — number of registered
 ///        states.
 ///

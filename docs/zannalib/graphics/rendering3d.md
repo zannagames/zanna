@@ -1756,6 +1756,7 @@ Stateful animation controller with named states, triggered transitions, animatio
 | `CurrentState`     | String  | Read   | Name of the currently active state |
 | `PreviousState`    | String  | Read   | Name of the state before the last transition |
 | `IsTransitioning`  | Boolean | Read   | True while a crossfade is in progress |
+| `BlendTreeWeight`  | Float   | Read   | Attached blend tree's pose contribution in [0, 1]; 0 without a tree (ADR 0350) |
 | `StateCount`       | Integer | Read   | Total number of registered states |
 | `RootMotionDelta`  | Object  | Read   | Accumulated root motion `Vec3` since last `ConsumeRootMotion` |
 
