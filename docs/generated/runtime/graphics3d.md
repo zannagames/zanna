@@ -312,6 +312,8 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 |---|---|---|
 | <a id="zanna-graphics3d-mesh3d-vertexcount"></a>`VertexCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-mesh3d-trianglecount"></a>`TriangleCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-mesh3d-bonecount"></a>`BoneCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-mesh3d-skeleton"></a>`Skeleton` | `obj` | read-only |
 | <a id="zanna-graphics3d-mesh3d-resident"></a>`Resident` | `i1` | read/write |
 | <a id="zanna-graphics3d-mesh3d-residentbytes"></a>`ResidentBytes` | `i64` | read-only |
 | <a id="zanna-graphics3d-mesh3d-compactstreams"></a>`CompactStreams` | `i1` | read/write |
@@ -742,6 +744,7 @@ Constructor: `Zanna.Graphics3D.SceneNode.New`
 | <a id="zanna-graphics3d-scenenode-clearlod"></a>`ClearLod` | `void()` | `Zanna.Graphics3D.SceneNode.ClearLod` |
 | <a id="zanna-graphics3d-scenenode-getlodmesh"></a>`GetLodMesh` | `obj(i64)` | `Zanna.Graphics3D.SceneNode.GetLodMesh` |
 | <a id="zanna-graphics3d-scenenode-getloddistance"></a>`GetLodDistance` | `f64(i64)` | `Zanna.Graphics3D.SceneNode.GetLodDistance` |
+| <a id="zanna-graphics3d-scenenode-selectedlod"></a>`SelectedLod` | `i64(obj,obj)` | `Zanna.Graphics3D.SceneNode.SelectedLod` |
 | <a id="zanna-graphics3d-scenenode-setlodresident"></a>`SetLodResident` | `void(i64,i1)` | `Zanna.Graphics3D.SceneNode.SetLodResident` |
 | <a id="zanna-graphics3d-scenenode-getlodresident"></a>`GetLodResident` | `i1(i64)` | `Zanna.Graphics3D.SceneNode.GetLodResident` |
 | <a id="zanna-graphics3d-scenenode-getlodresidentbytes"></a>`GetLodResidentBytes` | `i64(i64)` | `Zanna.Graphics3D.SceneNode.GetLodResidentBytes` |
@@ -2541,6 +2544,7 @@ Constructor: `Zanna.Graphics3D.AnimController3D.New`
 | <a id="zanna-graphics3d-animcontroller3d-previousstate"></a>`PreviousState` | `str` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-istransitioning"></a>`IsTransitioning` | `i1` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-blendtreeweight"></a>`BlendTreeWeight` | `f64` | read-only |
+| <a id="zanna-graphics3d-animcontroller3d-animationlodskips"></a>`AnimationLodSkips` | `i64` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-statecount"></a>`StateCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-statetime"></a>`StateTime` | `f64` | read-only |
 | <a id="zanna-graphics3d-animcontroller3d-rootmotiondelta"></a>`RootMotionDelta` | `obj<Zanna.Math.Vec3>` | read-only |
@@ -2976,6 +2980,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-mesh3d-get-boundssize"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsSize` | `obj<Zanna.Math.Vec3>(obj)` | `rt_mesh3d_get_bounds_size` |
 | <a id="zanna-graphics3d-mesh3d-get-boundsradius"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsRadius` | `f64(obj)` | `rt_mesh3d_get_bounds_radius` |
 | <a id="zanna-graphics3d-mesh3d-get-trianglecount"></a>`Zanna.Graphics3D.Mesh3D.get_TriangleCount` | `i64(obj)` | `rt_mesh3d_get_triangle_count` |
+| <a id="zanna-graphics3d-mesh3d-get-bonecount"></a>`Zanna.Graphics3D.Mesh3D.get_BoneCount` | `i64(obj)` | `rt_mesh3d_get_bone_count` |
+| <a id="zanna-graphics3d-mesh3d-get-skeleton"></a>`Zanna.Graphics3D.Mesh3D.get_Skeleton` | `obj(obj)` | `rt_mesh3d_get_skeleton` |
 | <a id="zanna-graphics3d-mesh3d-get-resident"></a>`Zanna.Graphics3D.Mesh3D.get_Resident` | `i1(obj)` | `rt_mesh3d_get_resident` |
 | <a id="zanna-graphics3d-mesh3d-set-resident"></a>`Zanna.Graphics3D.Mesh3D.set_Resident` | `void(obj,i1)` | `rt_mesh3d_set_resident` |
 | <a id="zanna-graphics3d-mesh3d-get-residentbytes"></a>`Zanna.Graphics3D.Mesh3D.get_ResidentBytes` | `i64(obj)` | `rt_mesh3d_get_resident_bytes` |
@@ -3278,6 +3284,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-scenenode-get-lodcount"></a>`Zanna.Graphics3D.SceneNode.get_LodCount` | `i64(obj)` | `rt_scene_node3d_get_lod_count` |
 | `Zanna.Graphics3D.SceneNode.GetLodMesh` | `obj(obj,i64)` | `rt_scene_node3d_get_lod_mesh` |
 | `Zanna.Graphics3D.SceneNode.GetLodDistance` | `f64(obj,i64)` | `rt_scene_node3d_get_lod_distance` |
+| `Zanna.Graphics3D.SceneNode.SelectedLod` | `i64(obj,obj,obj)` | `rt_scene_node3d_get_selected_lod` |
 | `Zanna.Graphics3D.SceneNode.SetLodResident` | `void(obj,i64,i1)` | `rt_scene_node3d_set_lod_resident` |
 | `Zanna.Graphics3D.SceneNode.GetLodResident` | `i1(obj,i64)` | `rt_scene_node3d_get_lod_resident` |
 | `Zanna.Graphics3D.SceneNode.GetLodResidentBytes` | `i64(obj,i64)` | `rt_scene_node3d_get_lod_resident_bytes` |
@@ -4131,6 +4138,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-animcontroller3d-get-previousstate"></a>`Zanna.Graphics3D.AnimController3D.get_PreviousState` | `str(obj)` | `rt_anim_controller3d_get_previous_state` |
 | <a id="zanna-graphics3d-animcontroller3d-get-istransitioning"></a>`Zanna.Graphics3D.AnimController3D.get_IsTransitioning` | `i1(obj)` | `rt_anim_controller3d_get_is_transitioning` |
 | <a id="zanna-graphics3d-animcontroller3d-get-blendtreeweight"></a>`Zanna.Graphics3D.AnimController3D.get_BlendTreeWeight` | `f64(obj)` | `rt_anim_controller3d_get_blend_tree_weight` |
+| <a id="zanna-graphics3d-animcontroller3d-get-animationlodskips"></a>`Zanna.Graphics3D.AnimController3D.get_AnimationLodSkips` | `i64(obj)` | `rt_anim_controller3d_get_animation_lod_skips` |
 | <a id="zanna-graphics3d-animcontroller3d-get-statecount"></a>`Zanna.Graphics3D.AnimController3D.get_StateCount` | `i64(obj)` | `rt_anim_controller3d_get_state_count` |
 | <a id="zanna-graphics3d-animcontroller3d-get-statetime"></a>`Zanna.Graphics3D.AnimController3D.get_StateTime` | `f64(obj)` | `rt_anim_controller3d_get_state_time` |
 | `Zanna.Graphics3D.AnimController3D.IsStatePlaying` | `i1(obj,str)` | `rt_anim_controller3d_is_state_playing` |

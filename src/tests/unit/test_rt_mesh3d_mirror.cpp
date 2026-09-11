@@ -229,12 +229,39 @@ static void test_mirror_rejects_bad_inputs() {
                 "weightless mesh mirrors");
 }
 
+static void test_bone_count_and_skeleton_readback() {
+    int64_t hips, left, right, lone;
+    void *skel = make_skeleton(&hips, &left, &right, &lone);
+    void *mesh = make_strip(skel, hips, left, lone);
+    EXPECT_TRUE(rt_mesh3d_get_bone_count(mesh) == 4,
+                "ADR 0351: a skinned strip reads the skeleton's palette size");
+    EXPECT_TRUE(rt_mesh3d_get_skeleton(mesh) == skel,
+                "ADR 0351: the bound skeleton reads back borrowed");
+    void *mirrored = rt_mesh3d_mirror(mesh, skel);
+    EXPECT_TRUE(mirrored != NULL && rt_mesh3d_get_bone_count(mirrored) == 4,
+                "ADR 0351: the mirrored copy keeps its palette size");
+    EXPECT_TRUE(mirrored != NULL && rt_mesh3d_get_skeleton(mirrored) == skel,
+                "ADR 0351: the mirrored copy keeps the skeleton binding");
+    void *plain = rt_mesh3d_new_box(2.0, 1.0, 1.0);
+    EXPECT_TRUE(rt_mesh3d_get_bone_count(plain) == 0,
+                "ADR 0351: a weightless box reads 0 bones (draws static)");
+    EXPECT_TRUE(rt_mesh3d_get_skeleton(plain) == NULL,
+                "ADR 0351: a weightless box has no skeleton");
+    void *clone = rt_mesh3d_clone(plain);
+    EXPECT_TRUE(clone != NULL && rt_mesh3d_get_bone_count(clone) == 0,
+                "ADR 0351: a clone of a weightless mesh reads 0 bones");
+    EXPECT_TRUE(rt_mesh3d_get_bone_count(NULL) == 0, "ADR 0351: NULL mesh reads 0");
+    EXPECT_TRUE(rt_mesh3d_get_skeleton(skel) == NULL,
+                "ADR 0351: a non-mesh handle reads no skeleton");
+}
+
 int main() {
     test_mirror_reflects_geometry_and_winding();
     test_mirror_remaps_bone_influences();
     test_mirror_twice_is_identity();
     test_mirror_reflects_morph_deltas();
     test_mirror_rejects_bad_inputs();
+    test_bone_count_and_skeleton_readback();
     printf("%d/%d mesh3d mirror tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

@@ -92,6 +92,34 @@ void rt_mesh3d_set_skeleton(void *mesh, void *skeleton) {
         rt_mesh3d_touch_geometry(m);
 }
 
+/// @brief ADR 0351: the palette size the skinning draw gate reads for this mesh.
+/// @details Zero means the mesh draws as static geometry even under an animated
+///          node — `scene3d_submit_node_draw` skips the controller's palette when
+///          the selected mesh carries no bones. A read-only diagnostic: it repairs
+///          nothing and changes no geometry state.
+/// @param[in] mesh Borrowed Mesh3D handle.
+/// @return The mesh's bone count, or 0 for an invalid handle.
+int64_t rt_mesh3d_get_bone_count(void *mesh) {
+    rt_mesh3d *m = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
+    if (!m || m->bone_count < 0)
+        return 0;
+    return (int64_t)m->bone_count;
+}
+
+/// @brief ADR 0351: the Skeleton3D bound to this mesh, if any.
+/// @details Borrowed; `NULL` when unbound (an imported primitive that skins by raw
+///          joint index) or when the retained slot no longer holds a skeleton. The
+///          draw path fetches a controller's palette only when this is `NULL` or
+///          the controller's own skeleton, so a foreign binding renders static.
+/// @param[in] mesh Borrowed Mesh3D handle.
+/// @return Borrowed Skeleton3D, or `NULL`.
+void *rt_mesh3d_get_skeleton(void *mesh) {
+    rt_mesh3d *m = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
+    if (!m)
+        return NULL;
+    return rt_g3d_checked_or_null(m->skeleton_ref, RT_G3D_SKELETON3D_CLASS_ID);
+}
+
 /// @brief Attach the per-vertex bone influence data (4 indices + 4 weights per vertex) to a mesh.
 ///
 /// Each call overwrites the four influence slots of one existing vertex.

@@ -420,6 +420,36 @@ void *rt_scene_node3d_get_lod_mesh(void *obj, int64_t index) {
     return rt_g3d_checked_or_null(node->lod_levels[index].mesh, RT_G3D_MESH3D_CLASS_ID);
 }
 
+/// @brief ADR 0351: the LOD index the last `Scene3D.Draw` selected for one view.
+/// @details A read-only lookup of the per-view hysteresis cache keyed by the
+///          `(canvas, camera)` pair a draw passed: 0 is the base mesh, `i > 0` is
+///          `lod_levels[i-1]`. It never allocates a view slot, bumps the LRU clock
+///          or reads the legacy global selection, so a probe cannot disturb the
+///          hysteresis it observes.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param canvas3d Borrowed Canvas3D the draw targeted.
+/// @param camera Borrowed Camera3D the draw used.
+/// @return The selected index, or -1 when the node, canvas or camera is invalid
+///         or that view has never drawn the node (or its slot was evicted).
+int64_t rt_scene_node3d_get_selected_lod(void *obj, void *canvas3d, void *camera) {
+    rt_scene_node3d *node = scene_node3d_checked(obj);
+    const rt_canvas3d *canvas = rt_canvas3d_checked_or_stack(canvas3d);
+    const rt_camera3d *cam = rt_camera3d_checked_or_stack(camera);
+    if (!node || !canvas || !cam)
+        return -1;
+    for (int32_t i = 0; i < RT_SCENE3D_LOD_VIEW_STATE_COUNT; ++i) {
+        const rt_scene3d_lod_view_state *state = &node->lod_view_states[i];
+        if (state->canvas_key != canvas || state->camera_key != cam ||
+            state->canvas_identity != canvas->identity_serial ||
+            state->camera_identity != cam->identity_serial)
+            continue;
+        if (!state->lod_selection_valid || state->lod_selected_index < 0)
+            return -1;
+        return (int64_t)state->lod_selected_index;
+    }
+    return -1;
+}
+
 /// @brief Toggle resident state for the mesh backing the @p index-th LOD entry.
 /// @param obj Borrowed SceneNode3D handle.
 /// @param index Zero-based LOD index.

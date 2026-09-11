@@ -366,6 +366,14 @@ void *rt_anim_player3d_get_bone_matrix(void *player, int64_t bone_index);
 /// @param[in,out] mesh Mesh3D to configure.
 /// @param[in,out] skeleton Borrowed Skeleton3D to retain/freeze, or `NULL`.
 void rt_mesh3d_set_skeleton(void *mesh, void *skeleton);
+/// @brief ADR 0351: the bone count the skinning draw gate reads (0 = draws static).
+/// @param[in] mesh Borrowed Mesh3D handle.
+/// @return Non-negative palette bone count, or zero for an invalid handle.
+int64_t rt_mesh3d_get_bone_count(void *mesh);
+/// @brief ADR 0351: the Skeleton3D bound to the mesh.
+/// @param[in] mesh Borrowed Mesh3D handle.
+/// @return Borrowed Skeleton3D, or `NULL` when unbound or invalid.
+void *rt_mesh3d_get_skeleton(void *mesh);
 /// @brief Set and normalize up to four bone influences for one mesh vertex.
 /// @details Bone indexes outside `[0,255]` are replaced with index/weight zero.
 ///          Only positive finite weights contribute and are normalized to sum

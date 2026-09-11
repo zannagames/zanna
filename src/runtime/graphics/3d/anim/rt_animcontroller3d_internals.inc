@@ -166,6 +166,10 @@ typedef struct {
     double animation_lod_rate_hz;
     /// Unconsumed time carried by the animation LOD gate.
     double animation_lod_accum;
+    /// ADR 0351: `Update` calls the LOD gate rejected (the pose held) over the
+    /// controller's lifetime — a monotonic diagnostic counter that survives every
+    /// re-program and disable of the gate.
+    uint64_t animation_lod_skips;
     /// Positive leading-bone evaluation count, or zero to disable bone LOD.
     int32_t animation_lod_max_bones; /* >0 freezes bones at/after this index to bind-local (LOD) */
     /// Root-motion source bone, or `-1` when extraction is disabled.

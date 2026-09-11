@@ -552,6 +552,8 @@ RT_FUNC(Mesh3DBoundsCenter, rt_mesh3d_get_bounds_center, "Zanna.Graphics3D.Mesh3
 RT_FUNC(Mesh3DBoundsSize, rt_mesh3d_get_bounds_size, "Zanna.Graphics3D.Mesh3D.get_BoundsSize", "obj<Zanna.Math.Vec3>(obj)", owned)
 RT_FUNC(Mesh3DBoundsRadius,     rt_mesh3d_get_bounds_radius, "Zanna.Graphics3D.Mesh3D.get_BoundsRadius", "f64(obj)")
 RT_FUNC(Mesh3DGetTriangleCount, rt_mesh3d_get_triangle_count,"Zanna.Graphics3D.Mesh3D.get_TriangleCount","i64(obj)")
+RT_FUNC(Mesh3DGetBoneCount,     rt_mesh3d_get_bone_count,   "Zanna.Graphics3D.Mesh3D.get_BoneCount",    "i64(obj)")
+RT_FUNC(Mesh3DGetSkeleton,      rt_mesh3d_get_skeleton,     "Zanna.Graphics3D.Mesh3D.get_Skeleton",     "obj(obj)", borrowed)
 RT_FUNC(Mesh3DGetResident,      rt_mesh3d_get_resident,     "Zanna.Graphics3D.Mesh3D.get_Resident",     "i1(obj)")
 RT_FUNC(Mesh3DSetResident,      rt_mesh3d_set_resident,     "Zanna.Graphics3D.Mesh3D.set_Resident",     "void(obj,i1)")
 RT_FUNC(Mesh3DGetResidentBytes, rt_mesh3d_get_resident_bytes,"Zanna.Graphics3D.Mesh3D.get_ResidentBytes","i64(obj)")
@@ -585,6 +587,9 @@ RT_FUNC(Mesh3DLoftHeight, rt_mesh3d_loft_height, "Zanna.Graphics3D.Mesh3D.LoftHe
 RT_CLASS_BEGIN("Zanna.Graphics3D.Mesh3D", Mesh3D, "obj", Mesh3DNew)
     RT_PROP("VertexCount", "i64", Mesh3DGetVertexCount, none)
     RT_PROP("TriangleCount", "i64", Mesh3DGetTriangleCount, none)
+    // ADR 0351: the skinning gate inputs (0 bones / a foreign skeleton = a static draw).
+    RT_PROP("BoneCount", "i64", Mesh3DGetBoneCount, none)
+    RT_PROP("Skeleton", "obj", Mesh3DGetSkeleton, none)
     RT_PROP("Resident", "i1", Mesh3DGetResident, Mesh3DSetResident)
     RT_PROP("ResidentBytes", "i64", Mesh3DGetResidentBytes, none)
     RT_PROP("CompactStreams", "i1", Mesh3DGetCompactStreams, Mesh3DSetCompactStreams)

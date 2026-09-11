@@ -1763,6 +1763,38 @@ static void test_controller_animation_lod_throttles_updates_deterministically() 
                 "SetAnimationLOD disables throttling for non-positive inputs");
 }
 
+static void test_controller_animation_lod_skips_count_rejected_updates() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *walk = make_anim("walk", 0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("walk"), walk);
+    rt_anim_controller3d_play(controller, rt_const_cstr("walk"));
+    EXPECT_TRUE(rt_anim_controller3d_get_animation_lod_skips(controller) == 0,
+                "ADR 0351: a fresh controller has rejected no update");
+    rt_anim_controller3d_update(controller, 0.1);
+    EXPECT_TRUE(rt_anim_controller3d_get_animation_lod_skips(controller) == 0,
+                "ADR 0351: an unthrottled update is never rejected");
+
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 2.0);
+    for (int i = 0; i < 4; i++)
+        rt_anim_controller3d_update(controller, 0.1);
+    EXPECT_TRUE(rt_anim_controller3d_get_animation_lod_skips(controller) == 4,
+                "ADR 0351: four sub-interval steps at 2 Hz are rejected and counted");
+    rt_anim_controller3d_update(controller, 0.1);
+    EXPECT_TRUE(rt_anim_controller3d_get_animation_lod_skips(controller) == 4,
+                "ADR 0351: the accepted interval step is not counted");
+
+    rt_anim_controller3d_set_animation_lod(controller, 0.0, 0.0);
+    rt_anim_controller3d_update(controller, 0.1);
+    EXPECT_TRUE(rt_anim_controller3d_get_animation_lod_skips(controller) == 4,
+                "ADR 0351: disabling the gate keeps the history");
+    EXPECT_TRUE(rt_anim_controller3d_get_animation_lod_skips(nullptr) == 0,
+                "ADR 0351: an invalid handle reads 0");
+}
+
 static void test_controller_events_cover_full_loops_and_reverse() {
     void *skel = rt_skeleton3d_new();
     rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -2365,6 +2397,7 @@ int main() {
     test_controller_animation_lod_reprogram_preserves_accumulator();
     test_controller_animation_lod_rate_change_preserves_progress();
     test_controller_animation_lod_throttles_updates_deterministically();
+    test_controller_animation_lod_skips_count_rejected_updates();
     test_controller_bone_count_lod_freezes_distal_bones();
     test_controller_events_cover_full_loops_and_reverse();
     test_controller_rejects_wrong_animation_handles();

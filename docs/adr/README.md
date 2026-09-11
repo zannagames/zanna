@@ -367,3 +367,4 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0348](0348-perspective-shadow-receiver-bias.md) — Perspective shadow receivers get slope-scaled and normal-offset bias
 - [ADR 0349](0349-retained-instance-revisions.md) — Retained instance batches track what changed
 - [ADR 0350](0350-blend-tree-weight-read.md) — Read the attached blend tree's pose weight
+- [ADR 0351](0351-render-truth-readbacks.md) — Mesh bone count, bound skeleton, selected LOD and LOD-gate skips as readbacks

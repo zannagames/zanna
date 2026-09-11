@@ -373,10 +373,13 @@ static int controller_apply_animation_lod(rt_anim_controller3d *controller, doub
             if (!isfinite(controller->animation_lod_accum) ||
                 controller->animation_lod_accum < 0.0) {
                 controller->animation_lod_accum = 0.0;
+                controller->animation_lod_skips++;
                 return 0;
             }
-            if (controller->animation_lod_accum + 1e-12 < interval)
+            if (controller->animation_lod_accum + 1e-12 < interval) {
+                controller->animation_lod_skips++;
                 return 0;
+            }
             double steps = floor(controller->animation_lod_accum / interval);
             double consumed = steps * interval;
             if (!isfinite(consumed) || consumed <= 0.0 ||
@@ -685,6 +688,24 @@ double rt_anim_controller3d_get_blend_tree_weight(void *obj) {
     if (weight > 1.0f)
         weight = 1.0f;
     return (double)weight;
+}
+
+/// @brief ADR 0351: how many `Update` calls the animation LOD gate has rejected.
+/// @details Every rejected call holds the pose — `Update` returns before the
+///          layers, the blend tree, the palette and root motion advance — so a
+///          caller that never wants a moving body throttled can prove it from
+///          the engine's side. The count is monotonic for the controller's
+///          lifetime, survives every `SetAnimationLod` re-program and disable,
+///          and the read evaluates nothing.
+/// @param[in] obj AnimController3D to inspect.
+/// @return The rejected-update count, or 0 for an invalid handle.
+int64_t rt_anim_controller3d_get_animation_lod_skips(void *obj) {
+    rt_anim_controller3d *controller = anim_controller3d_checked(obj);
+    if (!controller)
+        return 0;
+    if (controller->animation_lod_skips > (uint64_t)INT64_MAX)
+        return INT64_MAX;
+    return (int64_t)controller->animation_lod_skips;
 }
 
 /// @brief Number of states currently registered with the controller.

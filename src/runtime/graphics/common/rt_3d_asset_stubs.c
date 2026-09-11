@@ -2068,6 +2068,32 @@ void rt_mesh3d_set_skeleton(void *m, void *s) {
     (void)s;
 }
 
+/// @brief Stub for `Mesh3D.BoneCount` — the palette size the skinning draw
+///        gate reads (ADR 0351).
+///
+/// Silent stub returning `0`.
+///
+/// @param m Mesh3D handle (ignored).
+///
+/// @return `0`.
+int64_t rt_mesh3d_get_bone_count(void *m) {
+    (void)m;
+    return 0;
+}
+
+/// @brief Stub for `Mesh3D.Skeleton` — the Skeleton3D bound to the mesh
+///        (ADR 0351).
+///
+/// Silent stub returning `NULL`.
+///
+/// @param m Mesh3D handle (ignored).
+///
+/// @return `NULL`.
+void *rt_mesh3d_get_skeleton(void *m) {
+    (void)m;
+    return NULL;
+}
+
 /// @brief Stub for `Mesh3D.SetBoneWeights` — set the four bone-weight
 ///        pairs influencing vertex `v`. Bone indices are into the bound
 ///        Skeleton3D; weights should sum to ~1.0.

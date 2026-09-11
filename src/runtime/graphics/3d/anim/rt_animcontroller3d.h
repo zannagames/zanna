@@ -151,6 +151,10 @@ int8_t rt_anim_controller3d_get_is_transitioning(void *controller);
 ///         (0, 1) during a fade or pending detach, or 0 with no tree / an invalid
 ///         controller.
 double rt_anim_controller3d_get_blend_tree_weight(void *controller);
+/// @brief ADR 0351: count of `Update` calls the animation LOD gate rejected (pose held).
+/// @param[in] controller AnimController3D to inspect.
+/// @return Monotonic rejected-update count, or zero for an invalid controller.
+int64_t rt_anim_controller3d_get_animation_lod_skips(void *controller);
 /// @brief Number of registered states.
 /// @param[in] controller AnimController3D to inspect.
 /// @return Sanitized state count, or zero for an invalid controller.

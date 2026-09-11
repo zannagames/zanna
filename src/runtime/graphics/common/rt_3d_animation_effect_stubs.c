@@ -533,6 +533,19 @@ double rt_anim_controller3d_get_blend_tree_weight(void *c) {
     return 0.0;
 }
 
+/// @brief Stub for `AnimController3D.AnimationLodSkips` — the count of
+///        updates the animation LOD gate rejected (ADR 0351).
+///
+/// Silent stub returning `0`.
+///
+/// @param c AnimController3D handle (ignored).
+///
+/// @return `0`.
+int64_t rt_anim_controller3d_get_animation_lod_skips(void *c) {
+    (void)c;
+    return 0;
+}
+
 /// @brief Stub for `AnimController3D.StateCount` — number of registered
 ///        states.
 ///

@@ -1698,6 +1698,23 @@ int64_t rt_scene_node3d_get_lod_count(void *n) {
     return 0;
 }
 
+/// @brief Stub for `SceneNode3D.SelectedLod(canvas, camera)` — the LOD index
+///        the last draw chose for one view (ADR 0351).
+///
+/// Silent stub returning `-1` (never drawn).
+///
+/// @param n SceneNode3D handle (ignored).
+/// @param canvas Canvas3D handle (ignored).
+/// @param camera Camera3D handle (ignored).
+///
+/// @return `-1`.
+int64_t rt_scene_node3d_get_selected_lod(void *n, void *canvas, void *camera) {
+    (void)n;
+    (void)canvas;
+    (void)camera;
+    return -1;
+}
+
 /// @brief Stub for `SceneNode3D.LODDistance(i)` — get the distance
 ///        threshold of the `i`th LOD entry.
 ///

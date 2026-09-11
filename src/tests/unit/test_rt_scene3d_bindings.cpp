@@ -389,6 +389,53 @@ static void test_scene_draw_uses_bound_animator_palette() {
                 "SceneGraph.Draw forwards the animator bone count");
 }
 
+static void test_scene_draw_selected_lod_readback() {
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+    void *scene = rt_scene3d_new();
+    void *node = rt_scene_node3d_new();
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *lod = rt_mesh3d_new_box(0.5, 0.5, 0.5);
+    void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 200.0);
+    void *other = rt_camera3d_new(60.0, 1.0, 0.1, 200.0);
+    void *near_eye = rt_vec3_new(0.0, 0.0, 5.0);
+    void *far_eye = rt_vec3_new(0.0, 0.0, 40.0);
+    void *target = rt_vec3_new(0.0, 0.0, 0.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+
+    backend.name = "opengl";
+    backend.begin_frame = test_begin_frame;
+    backend.end_frame = test_end_frame;
+    backend.submit_draw = test_submit_draw;
+    init_test_canvas(&canvas, &backend);
+    rt_scene_node3d_set_mesh(node, mesh);
+    rt_scene_node3d_set_material(node, material);
+    rt_scene_node3d_add_lod(node, 16.0, lod);
+    rt_scene3d_add(scene, node);
+
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(node, &canvas, camera) == -1,
+                "ADR 0351: a never-drawn view reads -1");
+    rt_camera3d_look_at(camera, near_eye, target, up);
+    rt_scene3d_draw(scene, &canvas, camera);
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(node, &canvas, camera) == 0,
+                "ADR 0351: a near draw selected the base mesh");
+    rt_camera3d_look_at(camera, far_eye, target, up);
+    rt_scene3d_draw(scene, &canvas, camera);
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(node, &canvas, camera) == 1,
+                "ADR 0351: a far draw selected the first LOD");
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(node, &canvas, other) == -1,
+                "ADR 0351: another camera that never drew reads -1");
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(node, &canvas, camera) == 1,
+                "ADR 0351: reading does not disturb the selection");
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(NULL, &canvas, camera) == -1,
+                "ADR 0351: an invalid node reads -1");
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(node, NULL, camera) == -1,
+                "ADR 0351: an invalid canvas reads -1");
+    EXPECT_TRUE(rt_scene_node3d_get_selected_lod(node, &canvas, NULL) == -1,
+                "ADR 0351: an invalid camera reads -1");
+}
+
 static void test_scene_draw_cpu_skins_bound_animators_for_software_backend() {
     vgfx3d_backend_t backend = {};
     rt_canvas3d canvas;
@@ -758,6 +805,7 @@ int main() {
     test_animator_root_motion_mode_consumes_delta_once();
     test_animator_root_motion_applies_rotation_delta();
     test_scene_draw_uses_bound_animator_palette();
+    test_scene_draw_selected_lod_readback();
     test_scene_draw_cpu_skins_bound_animators_for_software_backend();
     test_scene_draw_cpu_skin_applies_attached_morph_before_skinning();
     test_scene_draw_preserves_large_bound_animator_palettes_on_gpu_backends();

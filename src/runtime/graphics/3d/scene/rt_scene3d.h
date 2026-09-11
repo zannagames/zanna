@@ -899,6 +899,13 @@ double rt_scene_node3d_get_lod_distance(void *node, int64_t index);
 /// @return Borrowed Mesh3D handle, or `NULL` when out of range or nonresident.
 void *rt_scene_node3d_get_lod_mesh(void *node, int64_t index);
 
+/// @brief ADR 0351: the LOD index the last draw selected for a `(canvas, camera)` view.
+/// @param node Borrowed SceneNode3D handle.
+/// @param canvas3d Borrowed Canvas3D the draw targeted.
+/// @param camera Borrowed Camera3D the draw used.
+/// @return 0 for the base mesh, a 1-based LOD index, or -1 when unknown or invalid.
+int64_t rt_scene_node3d_get_selected_lod(void *node, void *canvas3d, void *camera);
+
 /// @brief Mark the @p index-th LOD mesh payload resident/nonresident.
 /// @param node Borrowed SceneNode3D handle.
 /// @param index Zero-based LOD entry index.
