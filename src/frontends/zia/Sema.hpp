@@ -899,6 +899,7 @@ class Sema {
     ///          the symbol's type from unknown() to the concrete type. This allows
     ///          forward references to final constants in class/function bodies.
     void registerFinalConstantTypes(std::vector<DeclPtr> &declarations);
+    TypeRef finalConstantLiteralType(Expr *init);
     void registerMirroredFinalTypes(const std::vector<BindDecl> &binds,
                                     std::vector<DeclPtr> &declarations);
 

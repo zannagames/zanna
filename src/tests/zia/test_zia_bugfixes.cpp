@@ -1963,6 +1963,52 @@ func start() {
     EXPECT_TRUE(result.succeeded());
 }
 
+/// @brief A top-level final initialized with a list literal must be exported as
+/// a List so an importing module can call its methods. The pre-pass left list
+/// literals unknown, the export snapshot published them as objects, and the
+/// importer's `mod.IDS.length()` (or a local copy's) reached lowering with an
+/// unresolved field: "internal: unresolved field 'length' reached lowering".
+TEST(ZiaBugFixes, CrossModuleListLiteralFinalKeepsListType) {
+    const fs::path tempRoot = fs::temp_directory_path() / "zia_fe011_tests" /
+                              std::to_string(static_cast<unsigned long long>(::getpid()));
+    const fs::path dir = tempRoot / "cross_module_list_final";
+
+    (void)writeFileFE011(dir,
+                         "listconsts.zia",
+                         R"(
+module ListConsts;
+
+final IDS = ["seated_a", "seated_b", "standing_a"];
+expose final WEIGHTS = [1.5, 2.0, -3.0];
+final SHAPES = [4, 5];
+expose final MIRRORED_IDS = IDS;
+)");
+
+    const std::string mainSource = R"(
+module Main;
+bind "listconsts.zia";
+
+func start() {
+    var local = ListConsts.IDS;
+    var a: Integer = local.length();
+    var b: Integer = ListConsts.IDS.length() + ListConsts.SHAPES.get(1);
+    var c: Integer = ListConsts.MIRRORED_IDS.length();
+    var d: Float = ListConsts.WEIGHTS.get(0) + 0.0;
+    Zanna.Terminal.SayInt(a + b + c);
+    Zanna.Terminal.SayNum(d);
+}
+)";
+
+    const fs::path mainPath = writeFileFE011(dir, "main.zia", mainSource);
+    const std::string mainPathStr = mainPath.string();
+    SourceManager sm;
+    CompilerInput input{.source = mainSource, .path = mainPathStr};
+    CompilerOptions opts{};
+
+    auto result = compile(input, opts, sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
 TEST(ZiaBugFixes, RuntimeTerminalTextCallsAcceptPrimitivesAndObjects) {
     SourceManager sm;
     const std::string source = R"(

@@ -252,6 +252,73 @@ void Sema::registerMemberSignatures(std::vector<DeclPtr> &declarations) {
     }
 }
 
+/// @brief The type a final constant's initializer names without analysing it.
+/// @details Understands scalar literals, negated numeric literals, casts and
+///          list literals whose elements are themselves understood here and
+///          share one type. Everything else (calls, arithmetic, empty lists)
+///          returns null and stays for the body pass.
+/// @param init Initializer expression; may be null.
+/// @return The literal's type, or null when it cannot be known before analysis.
+TypeRef Sema::finalConstantLiteralType(Expr *init) {
+    if (!init)
+        return nullptr;
+    if (dynamic_cast<IntLiteralExpr *>(init))
+        return types::integer();
+    if (dynamic_cast<NumberLiteralExpr *>(init))
+        return types::number();
+    if (dynamic_cast<BoolLiteralExpr *>(init))
+        return types::boolean();
+    if (dynamic_cast<StringLiteralExpr *>(init))
+        return types::string();
+    if (auto *unary = dynamic_cast<UnaryExpr *>(init)) {
+        // Handle negated literals: final X = -42
+        if (unary->op == UnaryOp::Neg) {
+            if (dynamic_cast<IntLiteralExpr *>(unary->operand.get()))
+                return types::integer();
+            if (dynamic_cast<NumberLiteralExpr *>(unary->operand.get()))
+                return types::number();
+        }
+        return nullptr;
+    }
+    if (auto *as = dynamic_cast<AsExpr *>(init)) {
+        // A cast names its own type: final X = (expr) as Integer. Without
+        // this the symbol stayed unknown until the body pass, and an
+        // IMPORTING module that read the exposed final before then saw
+        // an object-typed value (verifier: "expects ptr but got i64").
+        if (as->type) {
+            TypeRef target = resolveTypeNode(as->type.get());
+            if (target && !target->isUnknown())
+                return target;
+        }
+        return nullptr;
+    }
+    if (auto *list = dynamic_cast<ListLiteralExpr *>(init)) {
+        // A list of literals: final IDS = ["a", "b"]. Left unknown, the
+        // export snapshot published the constant as an object and an
+        // importing module's `mod.IDS.length()` reached lowering with an
+        // unresolved field (V-ZIA-INTERNAL). Mixed or non-literal elements
+        // are left for the body pass and its diagnostics.
+        if (list->elements.empty())
+            return nullptr;
+        TypeRef elementType = nullptr;
+        for (auto &elem : list->elements) {
+            TypeRef elemType = finalConstantLiteralType(elem.get());
+            if (!elemType)
+                return nullptr;
+            if (!elementType) {
+                elementType = elemType;
+                continue;
+            }
+            TypeRef combined = commonType(elementType, elemType);
+            if (!combined || combined->isUnknown())
+                return nullptr;
+            elementType = combined;
+        }
+        return types::list(elementType);
+    }
+    return nullptr;
+}
+
 /// @brief Pre-pass: Eagerly resolve types of final constants from literal initializers.
 /// @details Scans declarations for final globals with literal initializers and updates
 ///          the registered symbol type from unknown() to the concrete literal type.
@@ -271,36 +338,7 @@ void Sema::registerFinalConstantTypes(std::vector<DeclPtr> &declarations) {
                 continue;
 
             // Infer type directly from literal initializer
-            Expr *init = gvar->initializer.get();
-            TypeRef inferredType = nullptr;
-            if (dynamic_cast<IntLiteralExpr *>(init))
-                inferredType = types::integer();
-            else if (dynamic_cast<NumberLiteralExpr *>(init))
-                inferredType = types::number();
-            else if (dynamic_cast<BoolLiteralExpr *>(init))
-                inferredType = types::boolean();
-            else if (dynamic_cast<StringLiteralExpr *>(init))
-                inferredType = types::string();
-            else if (auto *unary = dynamic_cast<UnaryExpr *>(init)) {
-                // Handle negated literals: final X = -42
-                if (unary->op == UnaryOp::Neg) {
-                    if (dynamic_cast<IntLiteralExpr *>(unary->operand.get()))
-                        inferredType = types::integer();
-                    else if (dynamic_cast<NumberLiteralExpr *>(unary->operand.get()))
-                        inferredType = types::number();
-                }
-            } else if (auto *as = dynamic_cast<AsExpr *>(init)) {
-                // A cast names its own type: final X = (expr) as Integer. Without
-                // this the symbol stayed unknown until the body pass, and an
-                // IMPORTING module that read the exposed final before then saw
-                // an object-typed value (verifier: "expects ptr but got i64").
-                if (as->type) {
-                    TypeRef target = resolveTypeNode(as->type.get());
-                    if (target && !target->isUnknown())
-                        inferredType = target;
-                }
-            }
-
+            TypeRef inferredType = finalConstantLiteralType(gvar->initializer.get());
             if (inferredType)
                 sym->type = inferredType;
         } else if (decl->kind == DeclKind::Namespace) {
