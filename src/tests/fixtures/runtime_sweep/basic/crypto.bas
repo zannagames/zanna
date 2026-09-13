@@ -18,19 +18,11 @@
 ' COVER: Zanna.Crypto.SecureRandom.Bytes
 ' COVER: Zanna.Crypto.SecureRandom.Int
 
-SUB FillBytes(s AS STRING, b AS Zanna.IO.BinaryBuffer)
-    DIM i AS INTEGER
-    FOR i = 0 TO s.Length - 1
-        b.WriteByte(Zanna.String.Asc(Zanna.String.MidLen(s, i + 1, 1)))
-    NEXT i
-END SUB
-
 DIM data AS STRING
 data = "Hello, World!"
 
-DIM dataBytes AS Zanna.IO.BinaryBuffer
-dataBytes = Zanna.IO.BinaryBuffer.NewCapacity(data.Length)
-FillBytes(data, dataBytes)
+DIM dataBytes AS Zanna.Collections.Bytes
+dataBytes = Zanna.Collections.Bytes.FromStr(data)
 
 Zanna.Core.Diagnostics.AssertEq(Zanna.Crypto.Legacy.Hash.Crc32(data), 3964322768, "crc32")
 Zanna.Core.Diagnostics.AssertEq(Zanna.Crypto.Legacy.Hash.Crc32Bytes(dataBytes), 3964322768, "crc32bytes")
@@ -46,12 +38,10 @@ DIM msgStr AS STRING
 keyStr = "key"
 msgStr = "data"
 
-DIM keyBytes AS Zanna.IO.BinaryBuffer
-DIM msgBytes AS Zanna.IO.BinaryBuffer
-keyBytes = Zanna.IO.BinaryBuffer.NewCapacity(keyStr.Length)
-msgBytes = Zanna.IO.BinaryBuffer.NewCapacity(msgStr.Length)
-FillBytes(keyStr, keyBytes)
-FillBytes(msgStr, msgBytes)
+DIM keyBytes AS Zanna.Collections.Bytes
+DIM msgBytes AS Zanna.Collections.Bytes
+keyBytes = Zanna.Collections.Bytes.FromStr(keyStr)
+msgBytes = Zanna.Collections.Bytes.FromStr(msgStr)
 
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Crypto.Legacy.Hash.HmacMd5(keyStr, msgStr), "9d5c73ef85594d34ec4438b7c97e51d8", "hmac.md5")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Crypto.Legacy.Hash.HmacSha1(keyStr, msgStr), "104152c5bfdca07bc633eebd46199f0255c9f49d", "hmac.sha1")
@@ -62,17 +52,16 @@ Zanna.Core.Diagnostics.AssertEqStr(Zanna.Crypto.Hash.HmacSha256Bytes(keyBytes, m
 
 DIM saltStr AS STRING
 saltStr = "salt"
-DIM saltBytes AS Zanna.IO.BinaryBuffer
-saltBytes = Zanna.IO.BinaryBuffer.NewCapacity(saltStr.Length)
-FillBytes(saltStr, saltBytes)
+DIM saltBytes AS Zanna.Collections.Bytes
+saltBytes = Zanna.Collections.Bytes.FromStr(saltStr)
 
-DIM pbBytes AS Zanna.IO.BinaryBuffer
-pbBytes = Zanna.Crypto.KeyDerive.Pbkdf2Sha256("password", saltBytes, 1000, 32)
+DIM pbBytes AS Zanna.Collections.Bytes
+pbBytes = Zanna.Crypto.KeyDerive.Pbkdf2Sha256("password", saltBytes, 100000, 32)
 Zanna.Core.Diagnostics.AssertEq(pbBytes.Length, 32, "pbkdf2.len")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(pbBytes.ToBytes()), "632c2812e46d4604102ba7618e9d6d7d2f8128f6266b4a03264d2a0460b7dcb3", "pbkdf2.hex")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Crypto.KeyDerive.Pbkdf2Sha256Encoded("password", saltBytes, 1000, 32), "632c2812e46d4604102ba7618e9d6d7d2f8128f6266b4a03264d2a0460b7dcb3", "pbkdf2.str")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(pbBytes), "0394a2ede332c9a13eb82e9b24631604c31df978b4e2f0fbd2c549944f9d79a5", "pbkdf2.hex")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Crypto.KeyDerive.Pbkdf2Sha256Encoded("password", saltBytes, 100000, 32), "0394a2ede332c9a13eb82e9b24631604c31df978b4e2f0fbd2c549944f9d79a5", "pbkdf2.str")
 
-DIM randBytes AS Zanna.IO.BinaryBuffer
+DIM randBytes AS Zanna.Collections.Bytes
 randBytes = Zanna.Crypto.SecureRandom.Bytes(16)
 Zanna.Core.Diagnostics.AssertEq(randBytes.Length, 16, "rand.bytes")
 

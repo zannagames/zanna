@@ -382,18 +382,16 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.Mesh3D.get_BoundsMin" ||
            name == "Zanna.Graphics3D.Mesh3D.get_BoundsMax" ||
            name == "Zanna.Graphics3D.Mesh3D.get_BoundsCenter" ||
-           name == "Zanna.Graphics3D.Mesh3D.get_BoundsSize" ||
-           name == "rt_mesh3d_get_bounds_min" || name == "rt_mesh3d_get_bounds_max" ||
-           name == "rt_mesh3d_get_bounds_center" || name == "rt_mesh3d_get_bounds_size" ||
-           name == "Zanna.Graphics3D.Material3D.get_Color" ||
+           name == "Zanna.Graphics3D.Mesh3D.get_BoundsSize" || name == "rt_mesh3d_get_bounds_min" ||
+           name == "rt_mesh3d_get_bounds_max" || name == "rt_mesh3d_get_bounds_center" ||
+           name == "rt_mesh3d_get_bounds_size" || name == "Zanna.Graphics3D.Material3D.get_Color" ||
            name == "Zanna.Graphics3D.Transform3D.get_Position" ||
            name == "Zanna.Graphics3D.Transform3D.get_Scale" ||
            name == "Zanna.Graphics3D.Transform3D.GetEuler" ||
            name == "Zanna.Graphics3D.Camera3D.get_Up" ||
            name == "Zanna.Graphics3D.Terrain3D.GetScale" ||
            name == "Zanna.Graphics3D.Water3D.get_Position" ||
-           name == "Zanna.Graphics3D.Water3D.get_Color" ||
-           name == "Zanna.Math.Quat.ToEuler" ||
+           name == "Zanna.Graphics3D.Water3D.get_Color" || name == "Zanna.Math.Quat.ToEuler" ||
            name == "Zanna.Graphics3D.LightProbeGrid3D.Sample" ||
            name == "Zanna.Graphics3D.TimeOfDay3D.get_SunDirection" ||
            name == "Zanna.Graphics3D.ReflectionProbe3D.get_Position" ||
@@ -442,13 +440,12 @@ template <std::size_t N>
            name == "rt_sixdof_joint3d_get_angular_limit_min" ||
            name == "rt_sixdof_joint3d_get_angular_limit_max" ||
            name == "rt_sixdof_joint3d_get_linear_motor_velocity" ||
-           name == "rt_character3d_get_position" ||
-           name == "rt_camera3d_get_position" || name == "rt_camera3d_get_forward" ||
-           name == "rt_camera3d_get_right" || name == "rt_camera3d_get_up" ||
-           name == "rt_terrain3d_get_scale" || name == "rt_water3d_get_position" ||
-           name == "rt_water3d_get_color" || name == "rt_transform3d_get_euler" ||
-           name == "rt_quat_to_euler" || name == "rt_mesh3d_get_vertex_position" ||
-           name == "rt_mesh3d_get_vertex_normal" ||
+           name == "rt_character3d_get_position" || name == "rt_camera3d_get_position" ||
+           name == "rt_camera3d_get_forward" || name == "rt_camera3d_get_right" ||
+           name == "rt_camera3d_get_up" || name == "rt_terrain3d_get_scale" ||
+           name == "rt_water3d_get_position" || name == "rt_water3d_get_color" ||
+           name == "rt_transform3d_get_euler" || name == "rt_quat_to_euler" ||
+           name == "rt_mesh3d_get_vertex_position" || name == "rt_mesh3d_get_vertex_normal" ||
            name == "rt_material3d_get_color" || name == "rt_transform3d_get_position" ||
            name == "rt_transform3d_get_scale" || name == "rt_lightprobegrid3d_sample" ||
            name == "rt_timeofday3d_get_sun_direction" ||
@@ -467,6 +464,46 @@ template <std::size_t N>
            name == "rt_game3d_world_get_persistent_position" ||
            name == "rt_game3d_entity_position" || name == "rt_game3d_entity_world_position" ||
            name == "rt_cloth3d_get_point" ||
+           // Vec3 queries whose rows declare obj<Zanna.Math.Vec3> results (ADR 0356).
+           name == "Zanna.Graphics3D.Camera3D.ScreenToRay" || name == "rt_camera3d_screen_to_ray" ||
+           name == "Zanna.Graphics3D.Camera3D.WorldToScreen" ||
+           name == "rt_camera3d_world_to_screen_vec" ||
+           name == "Zanna.Graphics3D.Camera3D.ScreenToRayOrigin" ||
+           name == "rt_camera3d_screen_to_ray_origin" ||
+           name == "Zanna.Graphics3D.AABB3D.Penetration" || name == "rt_aabb3d_penetration" ||
+           name == "Zanna.Graphics3D.AABB3D.ClosestPoint" || name == "rt_aabb3d_closest_point" ||
+           name == "Zanna.Graphics3D.Sphere3D.Penetration" || name == "rt_sphere3d_penetration" ||
+           name == "Zanna.Graphics3D.Segment3D.ClosestPoint" ||
+           name == "rt_segment3d_closest_point" ||
+           name == "Zanna.Graphics3D.PhysicsWorld3D.GetCollisionNormal" ||
+           name == "rt_world3d_get_collision_normal" ||
+           name == "Zanna.Graphics3D.CollisionEvent3D.GetContactPoint" ||
+           name == "rt_collision_event3d_get_contact_point" ||
+           name == "Zanna.Graphics3D.CollisionEvent3D.GetContactNormal" ||
+           name == "rt_collision_event3d_get_contact_normal" ||
+           name == "Zanna.Graphics3D.ContactPoint3D.get_Point" ||
+           name == "rt_contact_point3d_get_point" ||
+           name == "Zanna.Graphics3D.ContactPoint3D.get_Normal" ||
+           name == "rt_contact_point3d_get_normal" ||
+           name == "Zanna.Graphics3D.Collider3D.GetLocalBoundsMin" ||
+           name == "rt_collider3d_get_local_bounds_min" ||
+           name == "Zanna.Graphics3D.Collider3D.GetLocalBoundsMax" ||
+           name == "rt_collider3d_get_local_bounds_max" ||
+           name == "Zanna.Game3D.Collision3DEvent.Point" ||
+           name == "rt_game3d_collision_event_point" ||
+           name == "Zanna.Game3D.Collision3DEvent.Normal" ||
+           name == "rt_game3d_collision_event_normal" ||
+           name == "Zanna.Game3D.Collision3DEvent.ContactPoint" ||
+           name == "rt_game3d_collision_event_contact_point" ||
+           name == "Zanna.Game3D.Collision3DEvent.ContactNormal" ||
+           name == "rt_game3d_collision_event_contact_normal" ||
+           name == "Zanna.Graphics3D.Path3D.GetPositionAt" || name == "rt_path3d_get_position_at" ||
+           name == "Zanna.Graphics3D.Path3D.GetDirectionAt" ||
+           name == "rt_path3d_get_direction_at" ||
+           name == "Zanna.Graphics3D.Terrain3D.GetNormalAt" ||
+           name == "rt_terrain3d_get_normal_at" ||
+           name == "Zanna.Graphics3D.NavMesh3D.SamplePosition" ||
+           name == "rt_navmesh3d_sample_position" ||
            name == "rt_game3d_thirdperson_controller_get_shoulder_offset";
 }
 
@@ -487,14 +524,15 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.Transform3D.get_Matrix" ||
            name == "Zanna.Graphics3D.AnimController3D.GetBoneMatrix" ||
            name == "Zanna.Game3D.Animator3D.GetBoneMatrix" ||
-           name == "rt_camera3d_get_view_matrix" ||
-           name == "rt_camera3d_get_projection_matrix" ||
+           name == "rt_camera3d_get_view_matrix" || name == "rt_camera3d_get_projection_matrix" ||
            name == "rt_skeleton3d_get_bone_bind_pose" || name == "rt_instbatch3d_get" ||
            name == "rt_scene_node3d_get_rotation" || name == "rt_scene_node3d_get_world_matrix" ||
            name == "rt_scene_node3d_get_world_rotation" || name == "rt_body3d_get_orientation" ||
            name == "rt_transform3d_get_rotation" || name == "rt_transform3d_get_matrix" ||
            name == "rt_anim_controller3d_get_bone_matrix" ||
-           name == "rt_game3d_animator_get_bone_matrix";
+           name == "rt_game3d_animator_get_bone_matrix" ||
+           name == "Zanna.Graphics3D.AnimPlayer3D.GetBoneMatrix" ||
+           name == "rt_anim_player3d_get_bone_matrix";
 }
 
 } // namespace detail
@@ -514,11 +552,10 @@ template <std::size_t N>
     // never retain, release, or store any handle, and never call back into
     // user code. Optimizers may hoist retain/release traffic across them.
     if (name == "rt_print_str" || name == "rt_str_len" || name == "rt_str_byte_at" ||
-        name == "rt_str_eq" ||
-        name == "rt_str_cmp" || name == "rt_str_cmp_nocase" || name == "rt_str_is_empty" ||
-        name == "rt_str_starts_with" || name == "rt_str_ends_with" || name == "rt_str_index_of" ||
-        name == "Zanna.Terminal.PrintStr" || name == "Zanna.String.get_Length" ||
-        name == "Zanna.String.ByteAt" ||
+        name == "rt_str_eq" || name == "rt_str_cmp" || name == "rt_str_cmp_nocase" ||
+        name == "rt_str_is_empty" || name == "rt_str_starts_with" || name == "rt_str_ends_with" ||
+        name == "rt_str_index_of" || name == "Zanna.Terminal.PrintStr" ||
+        name == "Zanna.String.get_Length" || name == "Zanna.String.ByteAt" ||
         name == "Zanna.String.Equals" || name == "Zanna.String.Cmp" ||
         name == "Zanna.String.CmpNoCase") {
         effects.knownNeutral = true;

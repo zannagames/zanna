@@ -13,7 +13,7 @@ PRINT "OS: "; Zanna.System.Machine.get_Os()
 
 ' --- get_OsVer ---
 PRINT "--- get_OsVer ---"
-PRINT "OSVer: "; Zanna.System.Machine.get_OsVer()
+PRINT "OSVer: "; Zanna.System.Machine.get_OsVersion()
 
 ' --- get_Cores ---
 PRINT "--- get_Cores ---"
@@ -21,11 +21,11 @@ PRINT "Cores: "; Zanna.System.Machine.get_Cores()
 
 ' --- get_MemTotal ---
 PRINT "--- get_MemTotal ---"
-PRINT "MemTotal (bytes): "; Zanna.System.Machine.get_MemTotal()
+PRINT "MemTotal (bytes): "; Zanna.System.Machine.get_MemoryTotal()
 
 ' --- get_MemFree ---
 PRINT "--- get_MemFree ---"
-PRINT "MemFree (bytes): "; Zanna.System.Machine.get_MemFree()
+PRINT "MemFree (bytes): "; Zanna.System.Machine.get_MemoryFree()
 
 ' --- get_Endian ---
 PRINT "--- get_Endian ---"
@@ -45,7 +45,7 @@ PRINT "Home: "; Zanna.System.Machine.get_Home()
 
 ' --- get_Temp ---
 PRINT "--- get_Temp ---"
-PRINT "Temp: "; Zanna.System.Machine.get_Temp()
+PRINT "Temp: "; Zanna.System.Machine.get_TempDir()
 
 PRINT "=== Machine Demo Complete ==="
 END

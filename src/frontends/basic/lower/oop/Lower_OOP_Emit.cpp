@@ -170,9 +170,10 @@ Lowerer::Value Lowerer::loadSelfPointer(unsigned slotId) {
 /// @brief Release reference-counted fields during destructor emission.
 ///
 /// @details Iterates over the cached @ref ClassLayout to determine which fields
-///          require runtime release calls.  String fields trigger retain/release
-///          helpers, and future field kinds can extend the switch without
-///          altering destructor logic.  The helper uses @c curLoc resets so the
+///          require runtime release calls.  Array fields release their array
+///          with the helper matching the element kind the constructor allocated
+///          (string, object, float or integer); scalar object and string fields
+///          release their reference.  The helper uses @c curLoc resets so the
 ///          emitted instructions are treated as compiler-synthesised clean-up
 ///          rather than user code.
 ///
@@ -186,21 +187,30 @@ void Lowerer::emitFieldReleaseSequence(Value selfPtr, const ClassLayout &layout)
                                     selfPtr,
                                     Value::constInt(static_cast<long long>(field.offset)));
 
-        // BUG-099 fix: Handle object field release
-        // BUG-105 fix: Distinguish object arrays from single objects
+        if (field.isArray) {
+            Value handle = emitLoad(Type(Type::Kind::Ptr), fieldPtr);
+            if (!field.objectClassName.empty()) {
+                requireArrayObjRelease();
+                emitCall("rt_arr_obj_release", {handle});
+            } else if (field.type == AstType::Str) {
+                requireArrayStrRelease();
+                emitCall("rt_arr_str_release", {handle, Value::constInt(0)});
+            } else if (field.type == AstType::F64) {
+                requireArrayF64Release();
+                emitCall("rt_arr_f64_release", {handle});
+            } else {
+                requireArrayI64Release();
+                emitCall("rt_arr_i64_release", {handle});
+            }
+            continue;
+        }
+
         if (!field.objectClassName.empty()) {
             Value fieldValue = emitLoad(Type(Type::Kind::Ptr), fieldPtr);
-            if (field.isArray) {
-                // Object array field: use rt_arr_obj_release
-                requireArrayObjRelease();
-                emitCall("rt_arr_obj_release", {fieldValue});
-            } else {
-                // Single object field: use rt_obj_release_check0
-                requestRuntimeFeature(il::runtime::RuntimeFeature::ObjReleaseChk0);
-                Value needsFree =
-                    emitCallRet(Type(Type::Kind::I1), "rt_obj_release_check0", {fieldValue});
-                (void)needsFree; // Destructor ignores the result
-            }
+            requestRuntimeFeature(il::runtime::RuntimeFeature::ObjReleaseChk0);
+            Value needsFree =
+                emitCallRet(Type(Type::Kind::I1), "rt_obj_release_check0", {fieldValue});
+            (void)needsFree; // Destructor ignores the result
             continue;
         }
 
@@ -512,6 +522,8 @@ void Lowerer::emitClassMethod(const ClassDecl &klass, const MethodDecl &method) 
             // BUG-099 fix: Use methodRetType which handles object returns correctly
             Value slot = Value::temp(*methodNameSym->slotId);
             retValue = emitLoad(methodRetType, slot);
+        } else if (returnsObject || !methodRetAst) {
+            retValue = Value::null();
         } else {
             // No assignment - use default value
             switch (*methodRetAst) {
@@ -770,7 +782,9 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
             if (ctor) {
                 emitClassConstructor(klass, *ctor);
             } else {
-                const ClassInfo *info = oopIndex_.findClass(klass.name);
+                // Classes are indexed by qualified name; a class inside a NAMESPACE
+                // is not found by its bare name.
+                const ClassInfo *info = oopIndex_.findClass(qualify(klass.name));
                 if (info && info->hasSynthCtor) {
                     ConstructorDecl synthCtor;
                     synthCtor.loc = klass.loc;

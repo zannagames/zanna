@@ -11,289 +11,34 @@
 //          resolution, core-export validation, init outcomes, identity and
 //          licensing queries, manual dispatch, payload validation, event
 //          overflow, requests, the frame-pump hook, threading, and packing.
+//          The player features of ADR 0353 are covered by
+//          RTServicesFeatureTests.cpp.
 // Key invariants:
 //   - Every test starts from a shut-down session and a reset fake library.
-//   - Fake libraries are selected through ZANNA_SERVICES_STEAM_LIBRARY and are
-//     inspected through the runtime's own dynamic-library adapter.
-//   - Traps are observed through a vm_trap override that either records and
-//     returns (worker-thread checks) or jumps back to the test.
+//   - Fixtures (fake library view, trap capture, helpers) come from
+//     RTServicesTestSupport.hpp.
 // Ownership/Lifetime:
 //   - Tests release every Result, Request, Seq, and string they receive.
 // Links: src/runtime/services/rt_services.c,
 //        src/runtime/services/steam/rt_steam_provider.c,
+//        src/tests/runtime/RTServicesTestSupport.hpp,
 //        src/tests/runtime/RTServicesFakeSteamApi.c,
 //        docs/adr/0352-platform-services-runtime-loaded-providers.md
 //
 //===----------------------------------------------------------------------===//
 
-#include "rt_args.h"
-#include "rt_object.h"
+#include "RTServicesTestSupport.hpp"
+
 #include "rt_path.h"
-#include "rt_platform.h"
-#include "rt_result.h"
-#include "rt_seq.h"
 #include "rt_service_hooks.h"
-#include "rt_services.h"
-#include "rt_services_dynlib.h"
 #include "rt_steam.h"
 #include "rt_steam_abi.h"
-#include "rt_string.h"
-#include "tests/TestHarness.hpp"
 
-#include <csetjmp>
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <string>
 #include <thread>
-#include <vector>
 
-namespace {
-
-jmp_buf g_trap_jmp;
-bool g_trap_jump = false;
-std::string g_last_trap;
-int g_trap_count = 0;
-
-} // namespace
-
-/// @brief Test trap hook: records the message and optionally jumps back to the test.
-/// @param msg Trap message.
-extern "C" void vm_trap(const char *msg) {
-    g_last_trap = msg ? msg : "";
-    ++g_trap_count;
-    if (g_trap_jump)
-        longjmp(g_trap_jmp, 1);
-}
-
-/// @brief Run @p expr and require that it traps with exactly @p message.
-#define EXPECT_TRAP_MESSAGE(expr, message)                                                         \
-    do {                                                                                           \
-        g_last_trap.clear();                                                                       \
-        g_trap_jump = true;                                                                        \
-        bool trapped_ = false;                                                                     \
-        if (setjmp(g_trap_jmp) == 0) {                                                             \
-            (void)(expr);                                                                          \
-        } else {                                                                                   \
-            trapped_ = true;                                                                       \
-        }                                                                                          \
-        g_trap_jump = false;                                                                       \
-        EXPECT_TRUE(trapped_);                                                                     \
-        EXPECT_EQ(g_last_trap, std::string(message));                                              \
-    } while (0)
-
-namespace {
-
-const char *const kOverrideEnv = "ZANNA_SERVICES_STEAM_LIBRARY";
-
-/// @brief Copy a caller-owned runtime string into std::string and release it.
-std::string take(rt_string value) {
-    std::string out = value ? rt_string_cstr(value) : "";
-    if (value)
-        rt_string_unref(value);
-    return out;
-}
-
-/// @brief Set an environment variable through the runtime's portable helper.
-void setEnv(const char *name, const char *value) {
-    rt_string n = rt_const_cstr(name);
-    rt_string v = rt_const_cstr(value);
-    rt_env_set_var(n, v);
-    rt_string_unref(n);
-    rt_string_unref(v);
-}
-
-/// @brief Read an environment variable through the runtime's portable helper.
-std::string getEnv(const char *name) {
-    rt_string n = rt_const_cstr(name);
-    std::string out = take(rt_env_get_var(n));
-    rt_string_unref(n);
-    return out;
-}
-
-/// @brief Report whether an environment variable is present.
-bool hasEnv(const char *name) {
-    rt_string n = rt_const_cstr(name);
-    bool present = rt_env_has_var(n) != 0;
-    rt_string_unref(n);
-    return present;
-}
-
-/// @brief Release one reference to a runtime object.
-void release(void *obj) {
-    if (obj && rt_obj_release_check0(obj))
-        rt_obj_free(obj);
-}
-
-/// @brief Outcome of Platform.Init.
-struct InitOutcome {
-    bool ok = false;  ///< Result was Ok.
-    std::string text; ///< Ok payload or Err message.
-};
-
-/// @brief Call Platform.Init and decode its Result.
-InitOutcome init(const char *provider, const char *app_id) {
-    rt_string p = rt_const_cstr(provider);
-    rt_string id = rt_const_cstr(app_id);
-    void *result = rt_services_platform_init(p, id);
-    rt_string_unref(p);
-    rt_string_unref(id);
-    InitOutcome out;
-    if (result) {
-        out.ok = rt_result_is_ok(result) != 0;
-        rt_string text = out.ok ? rt_result_unwrap_str(result) : rt_result_unwrap_err_str(result);
-        out.text = text ? rt_string_cstr(text) : "";
-        release(result);
-    }
-    return out;
-}
-
-/// @brief Copy Platform.Diagnostics into a vector.
-std::vector<std::string> diagnostics() {
-    std::vector<std::string> out;
-    void *seq = rt_services_platform_diagnostics();
-    for (int64_t i = 0; seq && i < rt_seq_len(seq); ++i)
-        out.push_back(take(rt_seq_get_str(seq, i)));
-    release(seq);
-    return out;
-}
-
-/// @brief Report whether any retained diagnostic equals @p message.
-bool hasDiagnostic(const std::string &message) {
-    for (const auto &entry : diagnostics()) {
-        if (entry == message)
-            return true;
-    }
-    return false;
-}
-
-/// @brief Test view of a fake steam_api library opened through the runtime adapter.
-struct FakeSteam {
-    void *library = nullptr;
-    std::string path;
-
-    explicit FakeSteam(const char *library_path) : path(library_path) {
-        char error[512];
-        library = rt_services_dynlib_open(library_path, error, sizeof(error));
-    }
-
-    /// @brief Resolve a control export as a typed function pointer.
-    template <typename Fn> Fn fn(const char *name) const {
-        void *symbol = rt_services_dynlib_symbol(library, name);
-        Fn out = nullptr;
-        if (symbol)
-            std::memcpy(&out, &symbol, sizeof(out));
-        return out;
-    }
-
-    void reset() const {
-        fn<void (*)()>("ZannaFakeSteam_Reset")();
-    }
-
-    void setScripted(int enabled) const {
-        fn<void (*)(int)>("ZannaFakeSteam_SetScripted")(enabled);
-    }
-
-    void setScenario(const char *scenario) const {
-        fn<void (*)(const char *)>("ZannaFakeSteam_SetScenario")(scenario);
-    }
-
-    void setRestart(int restart) const {
-        fn<void (*)(int)>("ZannaFakeSteam_SetRestart")(restart);
-    }
-
-    void queue(int32_t id, const std::vector<uint8_t> &bytes, int32_t size) const {
-        fn<void (*)(int32_t, const uint8_t *, int32_t)>("ZannaFakeSteam_QueueCallback")(
-            id, bytes.empty() ? nullptr : bytes.data(), size);
-    }
-
-    int initCount() const {
-        return fn<int (*)()>("ZannaFakeSteam_InitCount")();
-    }
-
-    int shutdownCount() const {
-        return fn<int (*)()>("ZannaFakeSteam_ShutdownCount")();
-    }
-
-    int runFrameCount() const {
-        return fn<int (*)()>("ZannaFakeSteam_RunFrameCount")();
-    }
-
-    int dispatchInitCount() const {
-        return fn<int (*)()>("ZannaFakeSteam_DispatchInitCount")();
-    }
-
-    int queuedCount() const {
-        return fn<int (*)()>("ZannaFakeSteam_QueuedCount")();
-    }
-
-    int protocolViolation() const {
-        return fn<int (*)()>("ZannaFakeSteam_ProtocolViolation")();
-    }
-
-    uint32_t lastRestartAppId() const {
-        return fn<uint32_t (*)()>("ZannaFakeSteam_LastRestartAppId")();
-    }
-
-    std::string appIdEnvAtInit() const {
-        return fn<const char *(*)()>("ZannaFakeSteam_AppIdEnvAtInit")();
-    }
-};
-
-/// @brief Return the fake built for the SDK 1.65 accessor set.
-const FakeSteam &fake165() {
-    static const FakeSteam fake(ZANNA_FAKE_STEAM_LIBRARY);
-    return fake;
-}
-
-/// @brief Return the fake built for the SDK 1.61-1.64 accessor set.
-const FakeSteam &fake164() {
-    static const FakeSteam fake(ZANNA_FAKE_STEAM_LIBRARY_164);
-    return fake;
-}
-
-/// @brief Shut the session down, point the provider at @p fake, and reset it.
-void useFake(const FakeSteam &fake) {
-    rt_services_platform_shutdown();
-    setEnv(kOverrideEnv, fake.path.c_str());
-    fake.reset();
-}
-
-/// @brief Build a little-endian-agnostic payload from explicit field writes.
-std::vector<uint8_t> payload(size_t size) {
-    return std::vector<uint8_t>(size, 0);
-}
-
-/// @brief Store a 32-bit value into a payload at @p offset.
-void put32(std::vector<uint8_t> &bytes, size_t offset, uint32_t value) {
-    std::memcpy(bytes.data() + offset, &value, sizeof(value));
-}
-
-/// @brief Drain every queued event kind.
-std::vector<int64_t> drainEventKinds() {
-    std::vector<int64_t> kinds;
-    for (;;) {
-        int64_t kind = rt_services_platform_poll_event();
-        if (kind == RT_SERVICES_EVENT_NONE)
-            break;
-        kinds.push_back(kind);
-    }
-    return kinds;
-}
-
-/// @brief Platform-specific redistributable file name expected beside the executable.
-const char *expectedLibraryFileName() {
-#if RT_PLATFORM_WINDOWS
-    return "steam_api64.dll";
-#elif RT_PLATFORM_MACOS
-    return "libsteam_api.dylib";
-#else
-    return "libsteam_api.so";
-#endif
-}
-
-} // namespace
+using namespace services_test;
 
 TEST(Services, ConstantsMatchAdr) {
     EXPECT_EQ(rt_services_status_ok(), 0);

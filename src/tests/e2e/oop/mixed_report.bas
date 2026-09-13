@@ -24,7 +24,7 @@ PRINT list.Get(1)
 
 REM Build a simple report string using Concat and StringBuilder
 DIM joined AS STRING
-joined = list.Get(0).Concat("-").Concat(list.Get(1))
+joined = Zanna.Core.Object.ToString(list.Get(0)) + "-" + Zanna.Core.Object.ToString(list.Get(1))
 
 sb = Zanna.Text.StringBuilder.Append(sb, "report:")
 sb = Zanna.Text.StringBuilder.Append(sb, " ")
@@ -35,4 +35,5 @@ PRINT sb.ToString()
 Zanna.IO.File.WriteAllText("oop_mixed_report.tmp", sb.ToString())
 PRINT Zanna.IO.File.Exists("oop_mixed_report.tmp")
 PRINT Zanna.IO.File.ReadAllText("oop_mixed_report.tmp")
+Zanna.IO.File.Delete("oop_mixed_report.tmp")
 PRINT Zanna.IO.File.Exists("oop_mixed_report.tmp")

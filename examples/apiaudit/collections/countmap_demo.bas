@@ -1,5 +1,5 @@
 ' countmap_demo.bas - Comprehensive API audit for Zanna.Collections.CountMap
-' Tests: New, Inc, IncBy, Dec, Get, Set, Has, Total, Keys,
+' Tests: New, Increment, IncrementBy, Decrement, Get, Set, Has, Total, Keys,
 '        MostCommon, Remove, Clear, Len, IsEmpty
 
 PRINT "=== CountMap API Audit ==="
@@ -11,19 +11,19 @@ cm = Zanna.Collections.CountMap.New()
 PRINT cm.Count       ' 0
 PRINT cm.IsEmpty   ' 1
 
-' --- Inc / Len ---
-PRINT "--- Inc / Len ---"
-PRINT cm.Inc("apple")     ' 1
-PRINT cm.Inc("apple")     ' 2
-PRINT cm.Inc("banana")    ' 1
-PRINT cm.Inc("cherry")    ' 1
-PRINT cm.Inc("cherry")    ' 2
-PRINT cm.Inc("cherry")    ' 3
+' --- Increment / Count ---
+PRINT "--- Increment / Count ---"
+PRINT cm.Increment("apple")     ' 1
+PRINT cm.Increment("apple")     ' 2
+PRINT cm.Increment("banana")    ' 1
+PRINT cm.Increment("cherry")    ' 1
+PRINT cm.Increment("cherry")    ' 2
+PRINT cm.Increment("cherry")    ' 3
 PRINT cm.Count               ' 3
 PRINT cm.IsEmpty           ' 0
 
-' --- IncBy ---
-PRINT "--- IncBy ---"
+' --- IncrementBy ---
+PRINT "--- IncrementBy ---"
 PRINT cm.IncrementBy("banana", 5)  ' 6
 
 ' --- Get ---
@@ -48,10 +48,10 @@ PRINT cm.Count              ' 4
 PRINT "--- Total ---"
 PRINT cm.Total            ' 21
 
-' --- Dec ---
-PRINT "--- Dec ---"
-PRINT cm.Dec("apple")    ' 1
-PRINT cm.Dec("apple")    ' 0 (removed)
+' --- Decrement ---
+PRINT "--- Decrement ---"
+PRINT cm.Decrement("apple")    ' 1
+PRINT cm.Decrement("apple")    ' 0 (removed)
 PRINT cm.Has("apple")    ' 0
 PRINT cm.Count              ' 3
 

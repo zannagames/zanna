@@ -419,6 +419,32 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path);
 /// @return Music handle on success, or NULL on open, format, or allocation failure.
 vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path);
 
+/// @brief Load music from an in-memory WAV image for streaming playback.
+/// @details Copies @p data, so the caller may release its buffer as soon as the
+///          call returns. PCM frames are converted from the retained image as
+///          the stream advances, exactly like a file-backed stream.
+/// @param ctx Audio context that owns and services the stream.
+/// @param data Borrowed WAV file bytes.
+/// @param size Size of @p data in bytes.
+/// @return Music handle on success, or NULL on format or allocation failure.
+vaud_music_t vaud_load_music_mem(vaud_context_t ctx, const void *data, size_t size);
+
+/// @brief Load an in-memory OGG Vorbis image for streaming music playback.
+/// @details Copies @p data; otherwise identical to vaud_load_music_ogg().
+/// @param ctx Audio context that owns and services the stream.
+/// @param data Borrowed OGG container bytes.
+/// @param size Size of @p data in bytes.
+/// @return Music handle on success, or NULL on decode, format, or allocation failure.
+vaud_music_t vaud_load_music_ogg_mem(vaud_context_t ctx, const void *data, size_t size);
+
+/// @brief Load an in-memory MP3 image for streaming music playback.
+/// @details Copies @p data; otherwise identical to vaud_load_music_mp3().
+/// @param ctx Audio context that owns and services the stream.
+/// @param data Borrowed MP3 bytes.
+/// @param size Size of @p data in bytes.
+/// @return Music handle on success, or NULL on format or allocation failure.
+vaud_music_t vaud_load_music_mp3_mem(vaud_context_t ctx, const void *data, size_t size);
+
 /// @brief Service streaming music buffers outside the audio render callback.
 /// @details Decodes/refills empty music buffers and processes pending loop
 ///          rewinds. Refills are normally serviced continuously by the

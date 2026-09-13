@@ -87,17 +87,17 @@ func start() {
 
     // --- Component getters (Days, Hours, Minutes, Seconds, Millis) ---
     Say("--- Component getters ---");
-    Say("Using Create(1, 2, 30, 15, 500):");
+    Say("Using FromParts(1, 2, 30, 15, 500):");
     Say("Days:");
-    SayInt(Dur.Days(complex));
+    SayInt(Dur.get_Days(complex));
     Say("Hours:");
-    SayInt(Dur.Hours(complex));
+    SayInt(Dur.get_Hours(complex));
     Say("Minutes:");
-    SayInt(Dur.Minutes(complex));
+    SayInt(Dur.get_Minutes(complex));
     Say("Seconds:");
-    SayInt(Dur.Seconds(complex));
+    SayInt(Dur.get_Seconds(complex));
     Say("Millis:");
-    SayInt(Dur.Millis(complex));
+    SayInt(Dur.get_Millis(complex));
 
     // --- Add ---
     Say("--- Add ---");

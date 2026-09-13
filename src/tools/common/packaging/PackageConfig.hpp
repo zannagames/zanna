@@ -13,11 +13,15 @@
 //   - All paths in AssetEntry are relative to the project root directory.
 //   - displayName defaults to the project name if package-name is absent.
 //   - targetArchitectures defaults to host architecture if empty.
+//   - Steam ids are canonical decimal strings in 1..4294967295; steamDepots
+//     holds at most one entry per platform key and per depot id.
 //
 // Ownership/Lifetime:
 //   - Value type, fully copyable/movable.
 //
-// Links: project_loader.hpp (embedded in ProjectConfig)
+// Links: project_loader.hpp (embedded in ProjectConfig),
+//        StoreDepotBuilder.hpp (steam-* consumers),
+//        docs/adr/0354-store-depot-packaging.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,6 +53,14 @@ struct FileAssoc {
     std::string description;          ///< User-visible file type name.
     std::string mimeType;             ///< MIME identifier used by Linux and UTI generation.
     std::string openCommandArguments; ///< Optional Windows Open verb arguments preceding `"%1"`.
+};
+
+/// @brief One `steam-depot <platform> <depot-id>` mapping.
+/// @details The platform key selects the `content/<platform>/` directory of a
+///          Steam depot build root (see StoreDepotBuilder.hpp).
+struct SteamDepotMapping {
+    std::string platform; ///< `windows`, `macos`, `linux`, or `linux-arm64`.
+    std::string depotId;  ///< Canonical decimal depot id in 1..4294967295.
 };
 
 /// @brief All package-related configuration from zanna.project.
@@ -118,6 +130,13 @@ struct PackageConfig {
     /// Permit package lifecycle hooks to be emitted into installer maintainer scripts.
     bool allowInstallHooks{false};
 
+    std::string steamAppId; ///< steam-app-id (canonical decimal), required by steam-* targets.
+    /// steam-redist: Steamworks SDK redistributable directory, absolute or project-relative.
+    std::string steamRedist;
+    std::vector<SteamDepotMapping> steamDepots; ///< steam-depot mappings in declaration order.
+    std::string steamBuildDescription;          ///< steam-build-description for the build script.
+    std::string steamSetLive;                   ///< steam-set-live non-default branch, or empty.
+
     /// @brief Check if any package-* directives were specified.
     /// @return `true` when any field differs from the no-directives defaults.
     bool hasPackageConfig() const {
@@ -138,7 +157,9 @@ struct PackageConfig {
                !depends.empty() || !rpmDepends.empty() || !linuxStartupWmClass.empty() ||
                !linuxKeywords.empty() || !appstreamId.empty() || !postInstallScript.empty() ||
                !preUninstallScript.empty() || allowInstallHooks || !maintainerEmail.empty() ||
-               macosDisableHardenedRuntime || macosNotaryTimeoutSeconds != 0;
+               macosDisableHardenedRuntime || macosNotaryTimeoutSeconds != 0 ||
+               !steamAppId.empty() || !steamRedist.empty() || !steamDepots.empty() ||
+               !steamBuildDescription.empty() || !steamSetLive.empty();
     }
 };
 

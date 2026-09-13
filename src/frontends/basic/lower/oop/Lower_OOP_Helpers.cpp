@@ -43,8 +43,8 @@ namespace {
 /// @param calleeName The callee name as written (qualified or simple).
 /// @return The qualified return class name, or nullopt when the callee is unknown or does not
 ///         return an object.
-/// @details Resolves a concrete object return class for the exact name (including `Class.New`
-///          constructors). For an unqualified name, retries against each USING-imported
+/// @details Uses the class the function's registry row declares; a bare `obj` return has no
+///          class (ADR 0356). For an unqualified name, retries against each USING-imported
 ///          namespace prefix.
 std::optional<std::string> resolveRuntimeFunctionReturnClassQName(const Lowerer &lowerer,
                                                                   std::string_view calleeName) {
@@ -59,19 +59,6 @@ std::optional<std::string> resolveRuntimeFunctionReturnClassQName(const Lowerer 
             !concrete.empty()) {
             return concrete;
         }
-
-        if (sig->returnType != il::runtime::ILScalarType::Object)
-            return std::nullopt;
-
-        auto lastDot = canonicalName.rfind('.');
-        if (lastDot == std::string_view::npos)
-            return std::nullopt;
-
-        std::string prefix(canonicalName.substr(0, lastDot));
-        std::string_view method = canonicalName.substr(lastDot + 1);
-        if (string_utils::iequals(method, "New") && il::runtime::findRuntimeClassByQName(prefix))
-            return prefix;
-
         return std::nullopt;
     };
 
@@ -154,6 +141,11 @@ std::string Lowerer::resolveObjectClass(const Expr &expr) const {
         else
             calleeName = call->callee;
         if (!calleeName.empty()) {
+            // A user FUNCTION declared AS <Class> returns that class.
+            if (const auto *sig = findProcSignature(calleeName);
+                sig && !sig->returnClassQName.empty())
+                return resolveQualifiedClassCasing(sig->returnClassQName);
+
             if (auto runtimeReturn = resolveRuntimeFunctionReturnClassQName(*this, calleeName))
                 return *runtimeReturn;
 
@@ -165,19 +157,17 @@ std::string Lowerer::resolveObjectClass(const Expr &expr) const {
                     return std::string(klass.qname);
             }
 
-            // Check if callee is a static factory method on a runtime class
-            // (e.g., Zanna.Math.Vec2.Zero → returns Vec2)
+            // Static method on a runtime class (e.g., Zanna.Math.Vec2.Zero): use the class the
+            // method's registry row declares.
             auto lastDot = calleeName.rfind('.');
             if (lastDot != std::string::npos) {
                 std::string prefix = calleeName.substr(0, lastDot);
                 std::string method = calleeName.substr(lastDot + 1);
-                if (const auto *rtClass = il::runtime::findRuntimeClassByQName(prefix)) {
+                if (il::runtime::findRuntimeClassByQName(prefix)) {
                     auto entry = runtimeMethodIndex().find(prefix, method, call->args.size());
-                    if (entry && entry->ret == BasicType::Object) {
-                        if (!entry->returnClassQName.empty())
-                            return entry->returnClassQName;
-                        return std::string(rtClass->qname);
-                    }
+                    if (entry && entry->ret == BasicType::Object &&
+                        !entry->returnClassQName.empty())
+                        return entry->returnClassQName;
                 }
             }
         }

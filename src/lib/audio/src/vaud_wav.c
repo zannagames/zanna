@@ -17,8 +17,9 @@
 //
 // Ownership/Lifetime:
 //   - Eager decode outputs transfer malloc-owned sample storage to the caller.
-//   - Streaming state borrows its FILE only for the lifetime documented by the
-//     owning vaud_music object.
+//   - Streaming state borrows its FILE, or the memory image owned by a
+//     memory-loaded stream, only for the lifetime documented by the owning
+//     vaud_music object.
 //
 // Links: src/lib/audio/src/vaud_file_stdio.h,
 //        src/lib/audio/src/vaud_internal.h,
@@ -886,6 +887,59 @@ int vaud_wav_load_mem(const void *data,
     return 1;
 }
 
+/// @copydoc vaud_wav_open_stream_mem
+int vaud_wav_open_stream_mem(const void *data,
+                             size_t size,
+                             int64_t *out_data_offset,
+                             int64_t *out_data_size,
+                             int64_t *out_frames,
+                             int32_t *out_sample_rate,
+                             int32_t *out_channels,
+                             int32_t *out_bits,
+                             int32_t *out_format) {
+    if (!out_data_offset || !out_data_size || !out_frames || !out_sample_rate || !out_channels ||
+        !out_bits || !out_format) {
+        vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL parameter");
+        return 0;
+    }
+
+    void *unused_file = NULL;
+    reset_wav_stream_outputs(&unused_file,
+                             out_data_offset,
+                             out_data_size,
+                             out_frames,
+                             out_sample_rate,
+                             out_channels,
+                             out_bits,
+                             out_format);
+
+    if (!data) {
+        vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL parameter");
+        return 0;
+    }
+
+    vaud_wav_info info;
+    if (!parse_wav_header((const uint8_t *)data, size, &info))
+        return 0;
+    if (info.data_offset < 0 || info.data_offset + info.data_size > (int64_t)size) {
+        vaud_set_error(VAUD_ERR_FORMAT, "Data chunk extends beyond file");
+        return 0;
+    }
+
+    int32_t bytes_per_frame = 0;
+    if (!wav_bytes_per_frame(&info, &bytes_per_frame))
+        return 0;
+
+    *out_data_offset = info.data_offset;
+    *out_data_size = info.data_size;
+    *out_frames = info.data_size / bytes_per_frame;
+    *out_sample_rate = info.sample_rate;
+    *out_channels = info.channels;
+    *out_bits = info.bits_per_sample;
+    *out_format = info.audio_format;
+    return 1;
+}
+
 /// @copydoc vaud_wav_open_stream
 int vaud_wav_open_stream(const char *path,
                          void **out_file,
@@ -1046,6 +1100,32 @@ int32_t vaud_wav_read_frames_buffered(void *file,
     }
 
     return frames_read;
+}
+
+/// @copydoc vaud_wav_decode_frames_mem
+int32_t vaud_wav_decode_frames_mem(const uint8_t *src,
+                                   int16_t *samples,
+                                   int32_t frames,
+                                   int32_t channels,
+                                   int32_t bits_per_sample,
+                                   int32_t audio_format) {
+    if (!src || !samples || frames <= 0)
+        return 0;
+    if (!wav_decode_layout_supported(channels, bits_per_sample, audio_format)) {
+        vaud_set_error(VAUD_ERR_FORMAT, "Unsupported WAV stream layout");
+        return 0;
+    }
+    int32_t bytes_per_frame = (bits_per_sample / 8) * channels;
+
+    int16_t *dst = samples;
+    for (int32_t i = 0; i < frames; i++) {
+        int16_t left, right;
+        decode_pcm_frame(src, bits_per_sample, channels, audio_format, &left, &right);
+        *dst++ = left;
+        *dst++ = right;
+        src += bytes_per_frame;
+    }
+    return frames;
 }
 
 //===----------------------------------------------------------------------===//

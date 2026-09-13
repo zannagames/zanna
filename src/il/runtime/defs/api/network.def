@@ -20,7 +20,7 @@
 // NETWORK - RATELIMITER
 //=============================================================================
 
-RT_FUNC(RateLimitNew, rt_ratelimit_new, "Zanna.Network.RateLimiter.New", "obj(i64,f64)", owned)
+RT_FUNC(RateLimitNew, rt_ratelimit_new, "Zanna.Network.RateLimiter.New", "obj<Zanna.Network.RateLimiter>(i64,f64)", owned)
 RT_FUNC(RateLimitTryAcquire,     rt_ratelimit_try_acquire,     "Zanna.Network.RateLimiter.TryAcquire",     "i1(obj)")
 RT_FUNC(RateLimitTryAcquireN,    rt_ratelimit_try_acquire_n,   "Zanna.Network.RateLimiter.TryAcquireMany",    "i1(obj,i64)")
 RT_FUNC(RateLimitAvailable,      rt_ratelimit_available,       "Zanna.Network.RateLimiter.get_Available",   "i64(obj)")
@@ -32,7 +32,7 @@ RT_FUNC(RateLimitGetRate,        rt_ratelimit_get_rate,        "Zanna.Network.Ra
 // NETWORK - HTTPROUTER
 //=============================================================================
 
-RT_FUNC(HttpRouterNew, rt_http_router_new, "Zanna.Network.HttpRouter.New", "obj()", owned)
+RT_FUNC(HttpRouterNew, rt_http_router_new, "Zanna.Network.HttpRouter.New", "obj<Zanna.Network.HttpRouter>()", owned)
 RT_FUNC(HttpRouterAdd, rt_http_router_add, "Zanna.Network.HttpRouter.Add", "obj<Zanna.Network.HttpRouter>(obj,str,str)", borrowed)
 RT_FUNC(HttpRouterGet, rt_http_router_get, "Zanna.Network.HttpRouter.Get", "obj<Zanna.Network.HttpRouter>(obj,str)", borrowed)
 RT_FUNC(HttpRouterPost, rt_http_router_post, "Zanna.Network.HttpRouter.Post", "obj<Zanna.Network.HttpRouter>(obj,str)", borrowed)
@@ -48,7 +48,7 @@ RT_FUNC(RouteMatchPattern, rt_route_match_pattern, "Zanna.Network.RouteMatch.get
 // NETWORK - HTTPSERVER
 //=============================================================================
 
-RT_FUNC(HttpServerNew, rt_http_server_new, "Zanna.Network.HttpServer.New", "obj(i64)", owned)
+RT_FUNC(HttpServerNew, rt_http_server_new, "Zanna.Network.HttpServer.New", "obj<Zanna.Network.HttpServer>(i64)", owned)
 RT_FUNC(HttpServerGetRoute,      rt_http_server_get,           "Zanna.Network.HttpServer.Get",              "void(obj,str,str)")
 RT_FUNC(HttpServerPostRoute,     rt_http_server_post,          "Zanna.Network.HttpServer.Post",             "void(obj,str,str)")
 RT_FUNC(HttpServerPutRoute,      rt_http_server_put,           "Zanna.Network.HttpServer.Put",              "void(obj,str,str)")
@@ -65,8 +65,8 @@ RT_FUNC(ServerReqBody, rt_server_req_body, "Zanna.Network.ServerReq.get_Body", "
 RT_FUNC(ServerReqHeader, rt_server_req_header, "Zanna.Network.ServerReq.Header", "str(obj,str)", owned)
 RT_FUNC(ServerReqParam, rt_server_req_param, "Zanna.Network.ServerReq.Param", "str(obj,str)", owned)
 RT_FUNC(ServerReqQuery, rt_server_req_query, "Zanna.Network.ServerReq.Query", "str(obj,str)", owned)
-RT_FUNC(ServerResStatus, rt_server_res_status, "Zanna.Network.ServerRes.Status", "obj(obj,i64)", borrowed)
-RT_FUNC(ServerResHeader, rt_server_res_header, "Zanna.Network.ServerRes.Header", "obj(obj,str,str)", borrowed)
+RT_FUNC(ServerResStatus, rt_server_res_status, "Zanna.Network.ServerRes.Status", "obj<Zanna.Network.ServerRes>(obj,i64)", borrowed)
+RT_FUNC(ServerResHeader, rt_server_res_header, "Zanna.Network.ServerRes.Header", "obj<Zanna.Network.ServerRes>(obj,str,str)", borrowed)
 RT_FUNC(ServerResSend,           rt_server_res_send,           "Zanna.Network.ServerRes.Send",              "void(obj,str)")
 RT_FUNC(ServerResJson,           rt_server_res_json,           "Zanna.Network.ServerRes.Json",              "void(obj,str)")
 
@@ -74,7 +74,7 @@ RT_FUNC(ServerResJson,           rt_server_res_json,           "Zanna.Network.Se
 // NETWORK - HTTPSSERVER
 //=============================================================================
 
-RT_FUNC(HttpsServerNew, rt_https_server_new, "Zanna.Network.HttpsServer.New", "obj(i64,str,str)", owned)
+RT_FUNC(HttpsServerNew, rt_https_server_new, "Zanna.Network.HttpsServer.New", "obj<Zanna.Network.HttpsServer>(i64,str,str)", owned)
 RT_FUNC(HttpsServerGetRoute,     rt_https_server_get,          "Zanna.Network.HttpsServer.Get",             "void(obj,str,str)")
 RT_FUNC(HttpsServerPostRoute,    rt_https_server_post,         "Zanna.Network.HttpsServer.Post",            "void(obj,str,str)")
 RT_FUNC(HttpsServerPutRoute,     rt_https_server_put,          "Zanna.Network.HttpsServer.Put",             "void(obj,str,str)")
@@ -90,7 +90,7 @@ RT_FUNC(HttpsServerIsRunning,    rt_https_server_is_running,   "Zanna.Network.Ht
 // NETWORK - CONNECTIONPOOL
 //=============================================================================
 
-RT_FUNC(ConnPoolNew, rt_connpool_new, "Zanna.Network.ConnectionPool.New", "obj(i64)", owned)
+RT_FUNC(ConnPoolNew, rt_connpool_new, "Zanna.Network.ConnectionPool.New", "obj<Zanna.Network.ConnectionPool>(i64)", owned)
 RT_FUNC(ConnPoolAcquire, rt_connpool_acquire, "Zanna.Network.ConnectionPool.Acquire", "obj<Zanna.Network.Tcp>(obj,str,i64)", owned)
 RT_FUNC(ConnPoolRelease,         rt_connpool_release,          "Zanna.Network.ConnectionPool.Release",      "void(obj,obj)")
 RT_FUNC(ConnPoolClear,           rt_connpool_clear,            "Zanna.Network.ConnectionPool.Clear",        "void(obj)")
@@ -101,9 +101,9 @@ RT_FUNC(ConnPoolAvailable,       rt_connpool_available,        "Zanna.Network.Co
 // NETWORK - MULTIPART
 //=============================================================================
 
-RT_FUNC(MultipartNew, rt_multipart_new, "Zanna.Network.Multipart.New", "obj()", owned)
-RT_FUNC(MultipartAddField, rt_multipart_add_field, "Zanna.Network.Multipart.AddField", "obj(obj,str,str)", borrowed)
-RT_FUNC(MultipartAddFile, rt_multipart_add_file, "Zanna.Network.Multipart.AddFile", "obj(obj,str,str,obj)", borrowed)
+RT_FUNC(MultipartNew, rt_multipart_new, "Zanna.Network.Multipart.New", "obj<Zanna.Network.Multipart>()", owned)
+RT_FUNC(MultipartAddField, rt_multipart_add_field, "Zanna.Network.Multipart.AddField", "obj<Zanna.Network.Multipart>(obj,str,str)", borrowed)
+RT_FUNC(MultipartAddFile, rt_multipart_add_file, "Zanna.Network.Multipart.AddFile", "obj<Zanna.Network.Multipart>(obj,str,str,obj)", borrowed)
 RT_FUNC(MultipartContentType, rt_multipart_content_type, "Zanna.Network.Multipart.get_ContentType", "str(obj)", owned)
 RT_FUNC(MultipartBuild, rt_multipart_build, "Zanna.Network.Multipart.Build", "obj<Zanna.Collections.Bytes>(obj)", owned)
 RT_FUNC(MultipartCount,          rt_multipart_count,           "Zanna.Network.Multipart.get_Count",         "i64(obj)")
@@ -128,7 +128,7 @@ RT_FUNC(NetUtilsLocalIPv4, rt_netutils_local_ipv4, "Zanna.Network.NetUtils.Local
 // NETWORK - WSSERVER
 //=============================================================================
 
-RT_FUNC(WsServerNew, rt_ws_server_new, "Zanna.Network.WsServer.New", "obj(i64)", owned)
+RT_FUNC(WsServerNew, rt_ws_server_new, "Zanna.Network.WsServer.New", "obj<Zanna.Network.WsServer>(i64)", owned)
 RT_FUNC(WsServerStart,           rt_ws_server_start,           "Zanna.Network.WsServer.Start",              "void(obj)")
 RT_FUNC(WsServerStop,            rt_ws_server_stop,            "Zanna.Network.WsServer.Stop",               "void(obj)")
 RT_FUNC(WsServerSetSubprotocol,  rt_ws_server_set_subprotocol, "Zanna.Network.WsServer.SetSubprotocol",     "void(obj,str)")
@@ -143,7 +143,7 @@ RT_FUNC(WsServerIsRunning,       rt_ws_server_is_running,      "Zanna.Network.Ws
 // NETWORK - WSSSERVER
 //=============================================================================
 
-RT_FUNC(WssServerNew, rt_wss_server_new, "Zanna.Network.WssServer.New", "obj(i64,str,str)", owned)
+RT_FUNC(WssServerNew, rt_wss_server_new, "Zanna.Network.WssServer.New", "obj<Zanna.Network.WssServer>(i64,str,str)", owned)
 RT_FUNC(WssServerStart,          rt_wss_server_start,          "Zanna.Network.WssServer.Start",             "void(obj)")
 RT_FUNC(WssServerStop,           rt_wss_server_stop,           "Zanna.Network.WssServer.Stop",              "void(obj)")
 RT_FUNC(WssServerSetSubprotocol, rt_wss_server_set_subprotocol,"Zanna.Network.WssServer.SetSubprotocol",    "void(obj,str)")
@@ -158,7 +158,7 @@ RT_FUNC(WssServerIsRunning,      rt_wss_server_is_running,     "Zanna.Network.Ws
 // NETWORK - SSE
 //=============================================================================
 
-RT_FUNC(SseConnect, rt_sse_connect, "Zanna.Network.SseClient.Connect", "obj(str)", owned)
+RT_FUNC(SseConnect, rt_sse_connect, "Zanna.Network.SseClient.Connect", "obj<Zanna.Network.SseClient>(str)", owned)
 RT_FUNC(SseRecv, rt_sse_recv, "Zanna.Network.SseClient.Recv", "str(obj)", owned)
 RT_FUNC(SseRecvFor, rt_sse_recv_for, "Zanna.Network.SseClient.RecvFor", "str(obj,i64)", owned)
 RT_FUNC(SseRecvForResult, rt_sse_recv_for_result, "Zanna.Network.SseClient.RecvForResult", "obj<Zanna.Result>(obj,i64)", owned)
@@ -171,7 +171,7 @@ RT_FUNC(SseLastEventId, rt_sse_last_event_id, "Zanna.Network.SseClient.get_LastE
 // NETWORK - HTTPCLIENT
 //=============================================================================
 
-RT_FUNC(HttpClientNew, rt_http_client_new, "Zanna.Network.HttpClient.New", "obj()", owned)
+RT_FUNC(HttpClientNew, rt_http_client_new, "Zanna.Network.HttpClient.New", "obj<Zanna.Network.HttpClient>()", owned)
 RT_FUNC(HttpClientGet, rt_http_client_get, "Zanna.Network.HttpClient.Get", "obj<Zanna.Network.HttpRes>(obj,str)", owned)
 RT_FUNC(HttpClientPost, rt_http_client_post, "Zanna.Network.HttpClient.Post", "obj<Zanna.Network.HttpRes>(obj,str,str)", owned)
 RT_FUNC(HttpClientPut, rt_http_client_put, "Zanna.Network.HttpClient.Put", "obj<Zanna.Network.HttpRes>(obj,str,str)", owned)
@@ -192,7 +192,7 @@ RT_FUNC(HttpClientGetCookies, rt_http_client_get_cookies, "Zanna.Network.HttpCli
 // NETWORK - SMTP
 //=============================================================================
 
-RT_FUNC(SmtpNew, rt_smtp_new, "Zanna.Network.SmtpClient.New", "obj(str,i64)", owned)
+RT_FUNC(SmtpNew, rt_smtp_new, "Zanna.Network.SmtpClient.New", "obj<Zanna.Network.SmtpClient>(str,i64)", owned)
 RT_FUNC(SmtpSetAuth,             rt_smtp_set_auth,             "Zanna.Network.SmtpClient.SetAuth",          "void(obj,str,str)")
 RT_FUNC(SmtpSetTls,              rt_smtp_set_tls,              "Zanna.Network.SmtpClient.SetTls",           "void(obj,i1)")
 RT_FUNC(SmtpSendResult, rt_smtp_send_result, "Zanna.Network.SmtpClient.SendResult", "obj<Zanna.Result>(obj,str,str,str,str)", owned)
@@ -211,8 +211,8 @@ RT_FUNC(AsyncRecv, rt_async_recv, "Zanna.Network.AsyncSocket.RecvAsync", "obj<Za
 RT_FUNC(AsyncHttpGet, rt_async_http_get, "Zanna.Network.AsyncSocket.HttpGetAsync", "obj<Zanna.Threads.Future>(str)", owned)
 RT_FUNC(AsyncHttpPost, rt_async_http_post, "Zanna.Network.AsyncSocket.HttpPostAsync", "obj<Zanna.Threads.Future>(str,str)", owned)
 
-RT_FUNC(TcpConnect, rt_tcp_connect, "Zanna.Network.Tcp.Connect", "obj(str,i64)", owned)
-RT_FUNC(TcpConnectFor, rt_tcp_connect_for, "Zanna.Network.Tcp.ConnectFor", "obj(str,i64,i64)", owned)
+RT_FUNC(TcpConnect, rt_tcp_connect, "Zanna.Network.Tcp.Connect", "obj<Zanna.Network.Tcp>(str,i64)", owned)
+RT_FUNC(TcpConnectFor, rt_tcp_connect_for, "Zanna.Network.Tcp.ConnectFor", "obj<Zanna.Network.Tcp>(str,i64,i64)", owned)
 RT_FUNC(TcpHost, rt_tcp_host, "Zanna.Network.Tcp.get_Host", "str(obj)", owned)
 RT_FUNC(TcpPort, rt_tcp_port, "Zanna.Network.Tcp.get_Port", "i64(obj)")
 RT_FUNC(TcpLocalPort, rt_tcp_local_port, "Zanna.Network.Tcp.get_LocalPort", "i64(obj)")
@@ -221,32 +221,32 @@ RT_FUNC(TcpAvailable, rt_tcp_available, "Zanna.Network.Tcp.get_Available", "i64(
 RT_FUNC(TcpSend, rt_tcp_send, "Zanna.Network.Tcp.Send", "i64(obj,obj)")
 RT_FUNC(TcpSendStr, rt_tcp_send_str, "Zanna.Network.Tcp.SendStr", "i64(obj,str)")
 RT_FUNC(TcpSendAll, rt_tcp_send_all, "Zanna.Network.Tcp.SendAll", "void(obj,obj)")
-RT_FUNC(TcpRecv, rt_tcp_recv, "Zanna.Network.Tcp.Recv", "obj(obj,i64)", owned)
+RT_FUNC(TcpRecv, rt_tcp_recv, "Zanna.Network.Tcp.Recv", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
 RT_FUNC(TcpRecvStr, rt_tcp_recv_str, "Zanna.Network.Tcp.RecvStr", "str(obj,i64)", owned)
-RT_FUNC(TcpRecvExact, rt_tcp_recv_exact, "Zanna.Network.Tcp.RecvExact", "obj(obj,i64)", owned)
+RT_FUNC(TcpRecvExact, rt_tcp_recv_exact, "Zanna.Network.Tcp.RecvExact", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
 RT_FUNC(TcpRecvLine, rt_tcp_recv_line, "Zanna.Network.Tcp.RecvLine", "str(obj)", owned)
 RT_FUNC(TcpSetRecvTimeout, rt_tcp_set_recv_timeout, "Zanna.Network.Tcp.SetRecvTimeout", "void(obj,i64)")
 RT_FUNC(TcpSetSendTimeout, rt_tcp_set_send_timeout, "Zanna.Network.Tcp.SetSendTimeout", "void(obj,i64)")
 RT_FUNC(TcpClose, rt_tcp_close, "Zanna.Network.Tcp.Close", "void(obj)")
-RT_FUNC(TcpServerListen, rt_tcp_server_listen, "Zanna.Network.TcpServer.Listen", "obj(i64)", owned)
-RT_FUNC(TcpServerListenAt, rt_tcp_server_listen_at, "Zanna.Network.TcpServer.ListenAt", "obj(str,i64)", owned)
+RT_FUNC(TcpServerListen, rt_tcp_server_listen, "Zanna.Network.TcpServer.Listen", "obj<Zanna.Network.TcpServer>(i64)", owned)
+RT_FUNC(TcpServerListenAt, rt_tcp_server_listen_at, "Zanna.Network.TcpServer.ListenAt", "obj<Zanna.Network.TcpServer>(str,i64)", owned)
 RT_FUNC(TcpServerPort, rt_tcp_server_port, "Zanna.Network.TcpServer.get_Port", "i64(obj)")
 RT_FUNC(TcpServerAddress, rt_tcp_server_address, "Zanna.Network.TcpServer.get_Address", "str(obj)", owned)
 RT_FUNC(TcpServerIsListening, rt_tcp_server_is_listening, "Zanna.Network.TcpServer.get_IsListening", "i1(obj)")
 RT_FUNC(TcpServerAccept, rt_tcp_server_accept, "Zanna.Network.TcpServer.Accept", "obj<Zanna.Network.Tcp>(obj)", owned)
 RT_FUNC(TcpServerAcceptFor, rt_tcp_server_accept_for, "Zanna.Network.TcpServer.AcceptFor", "obj<Zanna.Network.Tcp>(obj,i64)", owned)
 RT_FUNC(TcpServerClose, rt_tcp_server_close, "Zanna.Network.TcpServer.Close", "void(obj)")
-RT_FUNC(UdpNew, rt_udp_new, "Zanna.Network.Udp.New", "obj()", owned)
-RT_FUNC(UdpBind, rt_udp_bind, "Zanna.Network.Udp.Bind", "obj(i64)", owned)
-RT_FUNC(UdpBindAt, rt_udp_bind_at, "Zanna.Network.Udp.BindAt", "obj(str,i64)", owned)
+RT_FUNC(UdpNew, rt_udp_new, "Zanna.Network.Udp.New", "obj<Zanna.Network.Udp>()", owned)
+RT_FUNC(UdpBind, rt_udp_bind, "Zanna.Network.Udp.Bind", "obj<Zanna.Network.Udp>(i64)", owned)
+RT_FUNC(UdpBindAt, rt_udp_bind_at, "Zanna.Network.Udp.BindAt", "obj<Zanna.Network.Udp>(str,i64)", owned)
 RT_FUNC(UdpPort, rt_udp_port, "Zanna.Network.Udp.get_Port", "i64(obj)")
 RT_FUNC(UdpAddress, rt_udp_address, "Zanna.Network.Udp.get_Address", "str(obj)", owned)
 RT_FUNC(UdpIsBound, rt_udp_is_bound, "Zanna.Network.Udp.get_IsBound", "i1(obj)")
 RT_FUNC(UdpSendTo, rt_udp_send_to, "Zanna.Network.Udp.SendTo", "i64(obj,str,i64,obj)")
 RT_FUNC(UdpSendToStr, rt_udp_send_to_str, "Zanna.Network.Udp.SendToStr", "i64(obj,str,i64,str)")
-RT_FUNC(UdpRecv, rt_udp_recv, "Zanna.Network.Udp.Recv", "obj(obj,i64)", owned)
-RT_FUNC(UdpRecvFrom, rt_udp_recv_from, "Zanna.Network.Udp.RecvFrom", "obj(obj,i64)", owned)
-RT_FUNC(UdpRecvFor, rt_udp_recv_for, "Zanna.Network.Udp.RecvFor", "obj(obj,i64,i64)", owned)
+RT_FUNC(UdpRecv, rt_udp_recv, "Zanna.Network.Udp.Recv", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
+RT_FUNC(UdpRecvFrom, rt_udp_recv_from, "Zanna.Network.Udp.RecvFrom", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
+RT_FUNC(UdpRecvFor, rt_udp_recv_for, "Zanna.Network.Udp.RecvFor", "obj<Zanna.Collections.Bytes>(obj,i64,i64)", owned)
 RT_FUNC(UdpSenderHost, rt_udp_sender_host, "Zanna.Network.Udp.SenderHost", "str(obj)", owned)
 RT_FUNC(UdpSenderPort, rt_udp_sender_port, "Zanna.Network.Udp.SenderPort", "i64(obj)")
 RT_FUNC(UdpSetBroadcast, rt_udp_set_broadcast, "Zanna.Network.Udp.SetBroadcast", "void(obj,i1)")
@@ -267,25 +267,25 @@ RT_FUNC(DnsLocalAddrs, rt_dns_local_addrs, "Zanna.Network.Dns.LocalAddrs", "seq<
 RT_FUNC(HttpGet, rt_http_get, "Zanna.Network.Http.Get", "str(str)", owned)
 RT_FUNC(HttpGetBytes, rt_http_get_bytes, "Zanna.Network.Http.GetBytes", "obj<Zanna.Collections.Bytes>(str)", owned)
 RT_FUNC(HttpPost, rt_http_post, "Zanna.Network.Http.Post", "str(str,str)", owned)
-RT_FUNC(HttpPostBytes, rt_http_post_bytes, "Zanna.Network.Http.PostBytes", "obj(str,obj)", owned)
+RT_FUNC(HttpPostBytes, rt_http_post_bytes, "Zanna.Network.Http.PostBytes", "obj<Zanna.Collections.Bytes>(str,obj)", owned)
 RT_FUNC(HttpDownload, rt_http_download, "Zanna.Network.Http.Download", "i1(str,str)")
 RT_FUNC(HttpHead, rt_http_head, "Zanna.Network.Http.Head", "obj<Zanna.Collections.Map>(str)", owned)
 RT_FUNC(HttpPatch, rt_http_patch, "Zanna.Network.Http.Patch", "str(str,str)", owned)
 RT_FUNC(HttpOptions, rt_http_options, "Zanna.Network.Http.Options", "str(str)", owned)
 RT_FUNC(HttpPut, rt_http_put, "Zanna.Network.Http.Put", "str(str,str)", owned)
-RT_FUNC(HttpPutBytes, rt_http_put_bytes, "Zanna.Network.Http.PutBytes", "obj(str,obj)", owned)
+RT_FUNC(HttpPutBytes, rt_http_put_bytes, "Zanna.Network.Http.PutBytes", "obj<Zanna.Collections.Bytes>(str,obj)", owned)
 RT_FUNC(HttpDelete, rt_http_delete, "Zanna.Network.Http.Delete", "str(str)", owned)
-RT_FUNC(HttpDeleteBytes, rt_http_delete_bytes, "Zanna.Network.Http.DeleteBytes", "obj(str)", owned)
-RT_FUNC(HttpReqNew, rt_http_req_new, "Zanna.Network.HttpReq.New", "obj(str,str)", owned)
-RT_FUNC(HttpReqSetHeader, rt_http_req_set_header, "Zanna.Network.HttpReq.SetHeader", "obj(obj,str,str)", borrowed)
-RT_FUNC(HttpReqAddHeader, rt_http_req_add_header, "Zanna.Network.HttpReq.AddHeader", "obj(obj,str,str)", borrowed)
-RT_FUNC(HttpReqSetBody, rt_http_req_set_body, "Zanna.Network.HttpReq.SetBody", "obj(obj,obj)", borrowed)
-RT_FUNC(HttpReqSetBodyStr, rt_http_req_set_body_str, "Zanna.Network.HttpReq.SetBodyStr", "obj(obj,str)", borrowed)
-RT_FUNC(HttpReqSetTimeout, rt_http_req_set_timeout, "Zanna.Network.HttpReq.SetTimeout", "obj(obj,i64)", borrowed)
-RT_FUNC(HttpReqSetForceHttp1, rt_http_req_set_force_http1, "Zanna.Network.HttpReq.SetForceHttp1", "obj(obj,i1)", borrowed)
-RT_FUNC(HttpReqSetTlsVerify, rt_http_req_set_tls_verify, "Zanna.Network.HttpReq.SetTlsVerify", "obj(obj,i1)", borrowed)
-RT_FUNC(HttpReqAllowInsecureCertificatesForTesting, rt_http_req_allow_insecure_certificates_for_testing, "Zanna.Network.HttpReq.AllowInsecureCertificatesForTesting", "obj(obj)", borrowed)
-RT_FUNC(HttpReqSetKeepAlive, rt_http_req_set_keep_alive, "Zanna.Network.HttpReq.SetKeepAlive", "obj(obj,i1)", borrowed)
+RT_FUNC(HttpDeleteBytes, rt_http_delete_bytes, "Zanna.Network.Http.DeleteBytes", "obj<Zanna.Collections.Bytes>(str)", owned)
+RT_FUNC(HttpReqNew, rt_http_req_new, "Zanna.Network.HttpReq.New", "obj<Zanna.Network.HttpReq>(str,str)", owned)
+RT_FUNC(HttpReqSetHeader, rt_http_req_set_header, "Zanna.Network.HttpReq.SetHeader", "obj<Zanna.Network.HttpReq>(obj,str,str)", borrowed)
+RT_FUNC(HttpReqAddHeader, rt_http_req_add_header, "Zanna.Network.HttpReq.AddHeader", "obj<Zanna.Network.HttpReq>(obj,str,str)", borrowed)
+RT_FUNC(HttpReqSetBody, rt_http_req_set_body, "Zanna.Network.HttpReq.SetBody", "obj<Zanna.Network.HttpReq>(obj,obj)", borrowed)
+RT_FUNC(HttpReqSetBodyStr, rt_http_req_set_body_str, "Zanna.Network.HttpReq.SetBodyStr", "obj<Zanna.Network.HttpReq>(obj,str)", borrowed)
+RT_FUNC(HttpReqSetTimeout, rt_http_req_set_timeout, "Zanna.Network.HttpReq.SetTimeout", "obj<Zanna.Network.HttpReq>(obj,i64)", borrowed)
+RT_FUNC(HttpReqSetForceHttp1, rt_http_req_set_force_http1, "Zanna.Network.HttpReq.SetForceHttp1", "obj<Zanna.Network.HttpReq>(obj,i1)", borrowed)
+RT_FUNC(HttpReqSetTlsVerify, rt_http_req_set_tls_verify, "Zanna.Network.HttpReq.SetTlsVerify", "obj<Zanna.Network.HttpReq>(obj,i1)", borrowed)
+RT_FUNC(HttpReqAllowInsecureCertificatesForTesting, rt_http_req_allow_insecure_certificates_for_testing, "Zanna.Network.HttpReq.AllowInsecureCertificatesForTesting", "obj<Zanna.Network.HttpReq>(obj)", borrowed)
+RT_FUNC(HttpReqSetKeepAlive, rt_http_req_set_keep_alive, "Zanna.Network.HttpReq.SetKeepAlive", "obj<Zanna.Network.HttpReq>(obj,i1)", borrowed)
 RT_FUNC(HttpReqSend, rt_http_req_send, "Zanna.Network.HttpReq.Send", "obj<Zanna.Network.HttpRes>(obj)", owned)
 RT_FUNC(HttpReqSendResult, rt_http_req_send_result, "Zanna.Network.HttpReq.SendResult", "obj<Zanna.Result>(obj)", owned)
 RT_FUNC(HttpResStatus, rt_http_res_status, "Zanna.Network.HttpRes.get_Status", "i64(obj)")
@@ -295,8 +295,8 @@ RT_FUNC(HttpResBody, rt_http_res_body, "Zanna.Network.HttpRes.Body", "obj<Zanna.
 RT_FUNC(HttpResBodyStr, rt_http_res_body_str, "Zanna.Network.HttpRes.BodyStr", "str(obj)", owned)
 RT_FUNC(HttpResHeader, rt_http_res_header, "Zanna.Network.HttpRes.Header", "str(obj,str)", owned)
 RT_FUNC(HttpResIsOk, rt_http_res_is_ok, "Zanna.Network.HttpRes.IsOk", "i1(obj)")
-RT_FUNC(UrlParse, rt_url_parse, "Zanna.Network.Url.Parse", "obj(str)", owned)
-RT_FUNC(UrlNew, rt_url_new, "Zanna.Network.Url.New", "obj()", owned)
+RT_FUNC(UrlParse, rt_url_parse, "Zanna.Network.Url.Parse", "obj<Zanna.Network.Url>(str)", owned)
+RT_FUNC(UrlNew, rt_url_new, "Zanna.Network.Url.New", "obj<Zanna.Network.Url>()", owned)
 RT_FUNC(UrlScheme, rt_url_scheme, "Zanna.Network.Url.get_Scheme", "str(obj)", owned)
 RT_FUNC(UrlSetScheme, rt_url_set_scheme, "Zanna.Network.Url.set_Scheme", "void(obj,str)")
 RT_FUNC(UrlHost, rt_url_host, "Zanna.Network.Url.get_Host", "str(obj)", owned)
@@ -316,23 +316,23 @@ RT_FUNC(UrlSetPass, rt_url_set_pass, "Zanna.Network.Url.set_Pass", "void(obj,str
 RT_FUNC(UrlAuthority, rt_url_authority, "Zanna.Network.Url.get_Authority", "str(obj)", owned)
 RT_FUNC(UrlHostPort, rt_url_host_port, "Zanna.Network.Url.get_HostPort", "str(obj)", owned)
 RT_FUNC(UrlFull, rt_url_full, "Zanna.Network.Url.get_Full", "str(obj)", owned)
-RT_FUNC(UrlSetQueryParam, rt_url_set_query_param, "Zanna.Network.Url.SetQueryParam", "obj(obj,str,str)", borrowed)
+RT_FUNC(UrlSetQueryParam, rt_url_set_query_param, "Zanna.Network.Url.SetQueryParam", "obj<Zanna.Network.Url>(obj,str,str)", borrowed)
 RT_FUNC(UrlGetQueryParam, rt_url_get_query_param, "Zanna.Network.Url.GetQueryParam", "str(obj,str)", owned)
 RT_FUNC(UrlHasQueryParam, rt_url_has_query_param, "Zanna.Network.Url.HasQueryParam", "i1(obj,str)")
-RT_FUNC(UrlDelQueryParam, rt_url_del_query_param, "Zanna.Network.Url.RemoveQueryParam", "obj(obj,str)", borrowed)
-RT_FUNC(UrlQueryMap, rt_url_query_map, "Zanna.Network.Url.QueryMap", "obj(obj)", owned)
-RT_FUNC(UrlResolve, rt_url_resolve, "Zanna.Network.Url.Resolve", "obj(obj,str)", owned)
-RT_FUNC(UrlClone, rt_url_clone, "Zanna.Network.Url.Clone", "obj(obj)", owned)
+RT_FUNC(UrlDelQueryParam, rt_url_del_query_param, "Zanna.Network.Url.RemoveQueryParam", "obj<Zanna.Network.Url>(obj,str)", borrowed)
+RT_FUNC(UrlQueryMap, rt_url_query_map, "Zanna.Network.Url.QueryMap", "obj<Zanna.Collections.Map>(obj)", owned)
+RT_FUNC(UrlResolve, rt_url_resolve, "Zanna.Network.Url.Resolve", "obj<Zanna.Network.Url>(obj,str)", owned)
+RT_FUNC(UrlClone, rt_url_clone, "Zanna.Network.Url.Clone", "obj<Zanna.Network.Url>(obj)", owned)
 RT_FUNC(UrlEncodeQueryMap, rt_url_encode_query, "Zanna.Network.Url.EncodeQuery", "str(obj)", owned)
-RT_FUNC(UrlDecodeQueryStr, rt_url_decode_query, "Zanna.Network.Url.DecodeQuery", "obj(str)", owned)
+RT_FUNC(UrlDecodeQueryStr, rt_url_decode_query, "Zanna.Network.Url.DecodeQuery", "obj<Zanna.Collections.Map>(str)", owned)
 RT_FUNC(UrlIsValid, rt_url_is_valid, "Zanna.Network.Url.IsValid", "i1(str)")
 RT_FUNC(UrlIsValidAbsolute, rt_url_is_valid_absolute, "Zanna.Network.Url.IsValidAbsolute", "i1(str)")
 
 // WebSocket client
-RT_FUNC(WsConnect, rt_ws_connect, "Zanna.Network.WebSocket.Connect", "obj(str)", owned)
-RT_FUNC(WsConnectFor, rt_ws_connect_for, "Zanna.Network.WebSocket.ConnectFor", "obj(str,i64)", owned)
-RT_FUNC(WsConnectProtocol, rt_ws_connect_protocol, "Zanna.Network.WebSocket.ConnectProtocol", "obj(str,str)", owned)
-RT_FUNC(WsConnectForProtocol, rt_ws_connect_for_protocol, "Zanna.Network.WebSocket.ConnectForProtocol", "obj(str,i64,str)", owned)
+RT_FUNC(WsConnect, rt_ws_connect, "Zanna.Network.WebSocket.Connect", "obj<Zanna.Network.WebSocket>(str)", owned)
+RT_FUNC(WsConnectFor, rt_ws_connect_for, "Zanna.Network.WebSocket.ConnectFor", "obj<Zanna.Network.WebSocket>(str,i64)", owned)
+RT_FUNC(WsConnectProtocol, rt_ws_connect_protocol, "Zanna.Network.WebSocket.ConnectProtocol", "obj<Zanna.Network.WebSocket>(str,str)", owned)
+RT_FUNC(WsConnectForProtocol, rt_ws_connect_for_protocol, "Zanna.Network.WebSocket.ConnectForProtocol", "obj<Zanna.Network.WebSocket>(str,i64,str)", owned)
 RT_FUNC(WsUrl, rt_ws_url, "Zanna.Network.WebSocket.get_Url", "str(obj)", owned)
 RT_FUNC(WsIsOpen,      rt_ws_is_open,       "Zanna.Network.WebSocket.get_IsOpen",     "i1(obj)")
 RT_FUNC(WsCloseCode,   rt_ws_close_code,    "Zanna.Network.WebSocket.get_CloseCode",  "i64(obj)")
@@ -343,8 +343,8 @@ RT_FUNC(WsSendBytes,   rt_ws_send_bytes,    "Zanna.Network.WebSocket.SendBytes",
 RT_FUNC(WsPing,        rt_ws_ping,          "Zanna.Network.WebSocket.Ping",           "void(obj)")
 RT_FUNC(WsRecv, rt_ws_recv, "Zanna.Network.WebSocket.Recv", "str(obj)", owned)
 RT_FUNC(WsRecvFor, rt_ws_recv_for, "Zanna.Network.WebSocket.RecvFor", "str(obj,i64)", owned)
-RT_FUNC(WsRecvBytes, rt_ws_recv_bytes, "Zanna.Network.WebSocket.RecvBytes", "obj(obj)", owned)
-RT_FUNC(WsRecvBytesFor, rt_ws_recv_bytes_for, "Zanna.Network.WebSocket.RecvBytesFor", "obj(obj,i64)", owned)
+RT_FUNC(WsRecvBytes, rt_ws_recv_bytes, "Zanna.Network.WebSocket.RecvBytes", "obj<Zanna.Collections.Bytes>(obj)", owned)
+RT_FUNC(WsRecvBytesFor, rt_ws_recv_bytes_for, "Zanna.Network.WebSocket.RecvBytesFor", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
 RT_FUNC(WsClose,       rt_ws_close,         "Zanna.Network.WebSocket.Close",          "void(obj)")
 RT_FUNC(WsCloseWith,   rt_ws_close_with,    "Zanna.Network.WebSocket.CloseWith",      "void(obj,i64,str)")
 

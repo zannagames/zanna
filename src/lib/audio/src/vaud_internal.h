@@ -235,6 +235,8 @@ typedef enum {
 struct vaud_music {
     vaud_context_t ctx;         ///< Owning context
     void *file;                 ///< FILE pointer for streaming
+    uint8_t *source_data;       ///< Owned encoded image for memory-loaded streams, else NULL
+    size_t source_size;         ///< Size of source_data in bytes
     int64_t data_offset;        ///< Offset to PCM data in file
     int64_t data_size;          ///< Total PCM data size in bytes
     int64_t frame_count;        ///< Total output frames after any resampling
@@ -472,6 +474,46 @@ int32_t vaud_wav_read_frames_buffered(void *file,
                                       int32_t audio_format,
                                       uint8_t *temp,
                                       size_t temp_size);
+
+/// @brief Parse an in-memory WAV image for streaming (music).
+/// @details Applies exactly the header validation of the eager memory loader;
+///          on success the data chunk lies entirely inside @p data.
+/// @param data Borrowed WAV file bytes.
+/// @param size Size of @p data in bytes.
+/// @param out_data_offset Output: byte offset to PCM data.
+/// @param out_data_size Output: size of PCM data in bytes.
+/// @param out_frames Output: total frame count.
+/// @param out_sample_rate Output: sample rate.
+/// @param out_channels Output: channel count.
+/// @param out_bits Output: bits per sample.
+/// @param out_format Output: WAV encoding identifier (PCM or IEEE float).
+/// @return 1 on success, 0 on failure (outputs zeroed).
+int vaud_wav_open_stream_mem(const void *data,
+                             size_t size,
+                             int64_t *out_data_offset,
+                             int64_t *out_data_size,
+                             int64_t *out_frames,
+                             int32_t *out_sample_rate,
+                             int32_t *out_channels,
+                             int32_t *out_bits,
+                             int32_t *out_format);
+
+/// @brief Convert whole encoded WAV frames from memory to interleaved stereo s16.
+/// @details The caller bounds @p frames to the frames present at @p src; no
+///          allocation or I/O occurs, so the mixer path may call it.
+/// @param src First encoded byte of the first frame to convert.
+/// @param samples Output interleaved signed-16 sample buffer.
+/// @param frames Number of frames to convert.
+/// @param channels Source channel count.
+/// @param bits_per_sample Source bits per sample.
+/// @param audio_format Source WAV encoding identifier.
+/// @return Number of frames converted (0 for an unsupported layout).
+int32_t vaud_wav_decode_frames_mem(const uint8_t *src,
+                                   int16_t *samples,
+                                   int32_t frames,
+                                   int32_t channels,
+                                   int32_t bits_per_sample,
+                                   int32_t audio_format);
 
 //===----------------------------------------------------------------------===//
 // Resampling Functions

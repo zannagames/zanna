@@ -62,8 +62,8 @@ PRINT Zanna.Core.Box.ToI64(pk)  ' 30
 
 ' --- Find / Has ---
 PRINT "--- Find / Has ---"
-PRINT s.Find(Zanna.Core.Box.I64(10))   ' 0
-PRINT s.Find(Zanna.Core.Box.I64(99))   ' -1
+PRINT s.FindOption(Zanna.Core.Box.I64(10)).UnwrapOrI64(-1)   ' 0
+PRINT s.FindOption(Zanna.Core.Box.I64(99)).UnwrapOrI64(-1)   ' -1
 PRINT s.Has(Zanna.Core.Box.I64(30))    ' 1
 PRINT s.Has(Zanna.Core.Box.I64(99))    ' 0
 DIM found AS OBJECT
@@ -86,7 +86,7 @@ PRINT Zanna.Core.Box.ToI64(iv2)        ' 25
 ' --- Remove ---
 PRINT "--- Remove ---"
 DIM removed AS OBJECT
-removed = s.Remove(1)
+removed = s.RemoveAt(1)
 PRINT Zanna.Core.Box.ToI64(removed)    ' 15
 PRINT s.Count                             ' 3
 

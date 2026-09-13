@@ -1,10 +1,10 @@
 ' test_crypto.bas — Zanna.Crypto.Hash + Rand + Password
-PRINT Zanna.Crypto.Hash.Md5("hello")
-PRINT Zanna.Crypto.Hash.Sha1("hello")
+PRINT Zanna.Crypto.Legacy.Hash.Md5("hello")
+PRINT Zanna.Crypto.Legacy.Hash.Sha1("hello")
 PRINT Zanna.Crypto.Hash.Sha256("hello")
-PRINT Zanna.Crypto.Hash.Crc32("hello")
-PRINT Zanna.Crypto.Hash.HmacMd5("hello", "key")
-PRINT Zanna.Crypto.Hash.HmacSha1("hello", "key")
+PRINT Zanna.Crypto.Legacy.Hash.Crc32("hello")
+PRINT Zanna.Crypto.Legacy.Hash.HmacMd5("hello", "key")
+PRINT Zanna.Crypto.Legacy.Hash.HmacSha1("hello", "key")
 PRINT Zanna.Crypto.Hash.HmacSha256("hello", "key")
 
 DIM r1 AS INTEGER
@@ -18,7 +18,7 @@ PRINT rb.Length
 
 DIM pw AS STRING
 LET pw = Zanna.Crypto.Password.Hash("secret")
-PRINT Zanna.String.Has(pw, "$")
+PRINT Zanna.String.Contains(pw, "$")
 PRINT Zanna.Crypto.Password.Verify("secret", pw)
 PRINT Zanna.Crypto.Password.Verify("wrong", pw)
 

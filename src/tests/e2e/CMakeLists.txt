@@ -501,6 +501,26 @@ zanna_add_ctest(oop_collections_string_report
         -P ${CMAKE_SOURCE_DIR}/src/tests/e2e/test_basic_math_phase1.cmake)
 zanna_set_test_labels(oop_collections_string_report e2e vm oop)
 
+# Namespaced class objects in a runtime List; string report built from List elements and a file.
+foreach (_oop_case IN ITEMS collections_object mixed_report)
+    zanna_add_ctest(oop_${_oop_case}
+            ${CMAKE_COMMAND}
+            -DILC=$<TARGET_FILE:zanna>
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/oop/${_oop_case}.bas
+            -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/oop/${_oop_case}.bas.out
+            -P ${CMAKE_SOURCE_DIR}/src/tests/e2e/test_basic_math_phase1.cmake)
+    zanna_set_test_labels(oop_${_oop_case} e2e vm oop)
+endforeach ()
+
+# A string FUNCTION and a SUB calling a numeric FUNCTION.
+zanna_add_ctest(basic_nested_calls
+        ${CMAKE_COMMAND}
+        -DILC=$<TARGET_FILE:zanna>
+        -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/nested_calls.bas
+        -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/nested_calls.bas.out
+        -P ${CMAKE_SOURCE_DIR}/src/tests/e2e/test_basic_math_phase1.cmake)
+zanna_set_test_labels(basic_nested_calls e2e vm)
+
 function(zanna_add_e2e_codegen_tests)
     if (DEFINED ZANNA_E2E_CODEGEN_DONE)
         return()

@@ -23,27 +23,25 @@ PRINT "IsMatch 'hello': "; pat.IsMatch("hello")
 
 ' --- Find ---
 PRINT "--- Find ---"
-PRINT "Find 'abc123def': "; pat.Find("abc123def")
-DIM found AS OBJECT = pat.FindOption("abc123def")
-PRINT "FindOption IsSome: "; found.IsSome
-PRINT "FindOption value: "; found.UnwrapStr()
-PRINT "FindOption no match: "; pat.FindOption("abcdef").IsNone
+DIM found AS OBJECT = pat.Find("abc123def")
+PRINT "Find IsSome: "; found.IsSome
+PRINT "Find value: "; found.UnwrapStr()
+PRINT "Find no match: "; pat.Find("abcdef").IsNone
 
 ' --- FindFrom ---
 PRINT "--- FindFrom ---"
-PRINT "FindFrom pos 6: "; pat.FindFrom("abc123def456", 6)
 DIM foundFrom AS OBJECT = pat.FindFrom("abc123def456", 6)
-PRINT "FindFromOption IsSome: "; foundFrom.IsSome
-PRINT "FindFromOption value: "; foundFrom.UnwrapStr()
+PRINT "FindFrom IsSome: "; foundFrom.IsSome
+PRINT "FindFrom value: "; foundFrom.UnwrapStr()
 
 ' --- FindPos ---
 PRINT "--- FindPos ---"
-PRINT "FindPos 'abc123def': "; pat.FindPos("abc123def")
-PRINT "FindPos 'abcdef': "; pat.FindPos("abcdef")
+PRINT "FindPos 'abc123def': "; pat.FindPos("abc123def").UnwrapOrI64(-1)
+PRINT "FindPos 'abcdef': "; pat.FindPos("abcdef").UnwrapOrI64(-1)
 DIM foundPos AS OBJECT = pat.FindPos("abc123def")
-PRINT "FindPosOption IsSome: "; foundPos.IsSome
-PRINT "FindPosOption value: "; foundPos.UnwrapI64()
-PRINT "FindPosOption no match: "; pat.FindPos("abcdef").IsNone
+PRINT "FindPos IsSome: "; foundPos.IsSome
+PRINT "FindPos value: "; foundPos.UnwrapI64()
+PRINT "FindPos no match IsNone: "; pat.FindPos("abcdef").IsNone
 
 ' --- FindAll ---
 PRINT "--- FindAll ---"
@@ -110,8 +108,7 @@ PRINT "Part 1: "; sn1
 PRINT "--- Second pattern ---"
 DIM wordPat AS OBJECT = Zanna.Text.CompiledPattern.New("[A-Z][a-z]+")
 PRINT Zanna.Text.CompiledPattern.get_Pattern(wordPat)
-PRINT "Find: "; wordPat.Find("hello World foo Bar")
-PRINT "FindOption: "; wordPat.FindOption("hello World foo Bar").UnwrapStr()
+PRINT "Find: "; wordPat.Find("hello World foo Bar").UnwrapStr()
 PRINT "IsMatch 'hello': "; wordPat.IsMatch("hello")
 PRINT "IsMatch 'Hello': "; wordPat.IsMatch("Hello")
 

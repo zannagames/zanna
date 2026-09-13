@@ -1,6 +1,9 @@
 module Benchmark;
 
-// Fibonacci benchmark - compute fib(35)
+bind Zanna.Terminal;
+bind Zanna.Text.Fmt as Fmt;
+
+// Fibonacci benchmark - compute fib(45), matching bench.c
 func fib(n: Integer) -> Integer {
     if (n <= 1) {
         return n;
@@ -10,5 +13,5 @@ func fib(n: Integer) -> Integer {
 
 func start() {
     var result = fib(45);
-    print("fib(45) = " + result.toString());
+    Say("fib(45) = " + Fmt.Int(result));
 }

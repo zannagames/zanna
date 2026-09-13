@@ -41,8 +41,8 @@ PRINT Zanna.Core.Box.ToStr(list.Last())   ' cherry
 
 ' --- Find / Has ---
 PRINT "--- Find / Has ---"
-PRINT list.Find(a)    ' 0
-PRINT list.Find(b)    ' -1 (was replaced)
+PRINT list.FindOption(a).UnwrapOrI64(-1)    ' 0
+PRINT list.FindOption(b).UnwrapOrI64(-1)    ' -1 (was replaced)
 PRINT list.Has(a)     ' 1
 PRINT list.Has(b)     ' 0
 DIM found AS OBJECT

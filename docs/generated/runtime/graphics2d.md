@@ -80,7 +80,7 @@ Constructor: `Zanna.Graphics2D.Tilemap.New`
 | <a id="zanna-graphics2d-tilemap-settileproperty"></a>`SetTileProperty` | `void(i64,str,i64)` | `Zanna.Graphics2D.Tilemap.SetTileProperty` |
 | <a id="zanna-graphics2d-tilemap-gettileproperty"></a>`GetTileProperty` | `i64(i64,str,i64)` | `Zanna.Graphics2D.Tilemap.GetTileProperty` |
 | <a id="zanna-graphics2d-tilemap-hastileproperty"></a>`HasTileProperty` | `i1(i64,str)` | `Zanna.Graphics2D.Tilemap.HasTileProperty` |
-| <a id="zanna-graphics2d-tilemap-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Graphics2D.Tilemap.New` |
+| <a id="zanna-graphics2d-tilemap-new"></a>`New` | `obj<Zanna.Graphics2D.Tilemap>(i64,i64,i64,i64)` | `Zanna.Graphics2D.Tilemap.New` |
 
 <a id="zanna-graphics2d-scenenode"></a>
 ### `Zanna.Graphics2D.SceneNode`
@@ -111,18 +111,18 @@ Constructor: `Zanna.Graphics2D.SceneNode.New`
 | <a id="zanna-graphics2d-scenenode-visible"></a>`Visible` | `i1` | read/write |
 | <a id="zanna-graphics2d-scenenode-depth"></a>`Depth` | `i64` | read/write |
 | <a id="zanna-graphics2d-scenenode-name"></a>`Name` | `str` | read/write |
-| <a id="zanna-graphics2d-scenenode-sprite"></a>`Sprite` | `obj` | read/write |
-| <a id="zanna-graphics2d-scenenode-parent"></a>`Parent` | `obj` | read-only |
+| <a id="zanna-graphics2d-scenenode-sprite"></a>`Sprite` | `obj<Zanna.Graphics.Sprite>` | read/write |
+| <a id="zanna-graphics2d-scenenode-parent"></a>`Parent` | `obj<Zanna.Graphics2D.SceneNode>` | read-only |
 | <a id="zanna-graphics2d-scenenode-childcount"></a>`ChildCount` | `i64` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics2d-scenenode-fromsprite"></a>`FromSprite` | `obj(obj)` | `Zanna.Graphics2D.SceneNode.FromSprite` |
+| <a id="zanna-graphics2d-scenenode-fromsprite"></a>`FromSprite` | `obj<Zanna.Graphics2D.SceneNode>(obj)` | `Zanna.Graphics2D.SceneNode.FromSprite` |
 | <a id="zanna-graphics2d-scenenode-addchild"></a>`AddChild` | `void(obj)` | `Zanna.Graphics2D.SceneNode.AddChild` |
 | <a id="zanna-graphics2d-scenenode-removechild"></a>`RemoveChild` | `void(obj)` | `Zanna.Graphics2D.SceneNode.RemoveChild` |
-| <a id="zanna-graphics2d-scenenode-getchild"></a>`GetChild` | `obj(i64)` | `Zanna.Graphics2D.SceneNode.GetChild` |
+| <a id="zanna-graphics2d-scenenode-getchild"></a>`GetChild` | `obj<Zanna.Graphics2D.SceneNode>(i64)` | `Zanna.Graphics2D.SceneNode.GetChild` |
 | <a id="zanna-graphics2d-scenenode-find"></a>`Find` | `obj<Zanna.Option>(str)` | `Zanna.Graphics2D.SceneNode.Find` |
 | <a id="zanna-graphics2d-scenenode-detach"></a>`Detach` | `void()` | `Zanna.Graphics2D.SceneNode.Detach` |
 | <a id="zanna-graphics2d-scenenode-draw"></a>`Draw` | `void(obj)` | `Zanna.Graphics2D.SceneNode.Draw` |
@@ -131,7 +131,7 @@ Constructor: `Zanna.Graphics2D.SceneNode.New`
 | <a id="zanna-graphics2d-scenenode-move"></a>`Move` | `void(i64,i64)` | `Zanna.Graphics2D.SceneNode.Move` |
 | <a id="zanna-graphics2d-scenenode-setposition"></a>`SetPosition` | `void(i64,i64)` | `Zanna.Graphics2D.SceneNode.SetPosition` |
 | <a id="zanna-graphics2d-scenenode-setscale"></a>`SetScale` | `void(i64)` | `Zanna.Graphics2D.SceneNode.SetScale` |
-| <a id="zanna-graphics2d-scenenode-new"></a>`New` | `obj()` | `Zanna.Graphics2D.SceneNode.New` |
+| <a id="zanna-graphics2d-scenenode-new"></a>`New` | `obj<Zanna.Graphics2D.SceneNode>()` | `Zanna.Graphics2D.SceneNode.New` |
 
 <a id="zanna-graphics2d-scenegraph"></a>
 ### `Zanna.Graphics2D.SceneGraph`
@@ -148,7 +148,7 @@ Constructor: `Zanna.Graphics2D.SceneGraph.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-graphics2d-scenegraph-root"></a>`Root` | `obj` | read-only |
+| <a id="zanna-graphics2d-scenegraph-root"></a>`Root` | `obj<Zanna.Graphics2D.SceneNode>` | read-only |
 | <a id="zanna-graphics2d-scenegraph-nodecount"></a>`NodeCount` | `i64` | read-only |
 
 #### Methods
@@ -162,7 +162,7 @@ Constructor: `Zanna.Graphics2D.SceneGraph.New`
 | <a id="zanna-graphics2d-scenegraph-drawwithcamera"></a>`DrawWithCamera` | `void(obj,obj)` | `Zanna.Graphics2D.SceneGraph.DrawWithCamera` |
 | <a id="zanna-graphics2d-scenegraph-update"></a>`Update` | `void()` | `Zanna.Graphics2D.SceneGraph.Update` |
 | <a id="zanna-graphics2d-scenegraph-clear"></a>`Clear` | `void()` | `Zanna.Graphics2D.SceneGraph.Clear` |
-| <a id="zanna-graphics2d-scenegraph-new"></a>`New` | `obj()` | `Zanna.Graphics2D.SceneGraph.New` |
+| <a id="zanna-graphics2d-scenegraph-new"></a>`New` | `obj<Zanna.Graphics2D.SceneGraph>()` | `Zanna.Graphics2D.SceneGraph.New` |
 
 <a id="zanna-graphics2d-tilemaprenderer2d"></a>
 ### `Zanna.Graphics2D.TilemapRenderer2D`
@@ -188,13 +188,13 @@ Constructor: `Zanna.Graphics2D.TilemapRenderer2D.New`
 | <a id="zanna-graphics2d-tilemaprenderer2d-setchunkcache"></a>`SetChunkCache` | `void(obj)` | `Zanna.Graphics2D.TilemapRenderer2D.SetChunkCache` |
 | <a id="zanna-graphics2d-tilemaprenderer2d-draw"></a>`Draw` | `void(obj,obj,i64,i64)` | `Zanna.Graphics2D.TilemapRenderer2D.Draw` |
 | <a id="zanna-graphics2d-tilemaprenderer2d-drawregion"></a>`DrawRegion` | `void(obj,obj,i64,i64,i64,i64,i64,i64)` | `Zanna.Graphics2D.TilemapRenderer2D.DrawRegion` |
-| <a id="zanna-graphics2d-tilemaprenderer2d-new"></a>`New` | `obj()` | `Zanna.Graphics2D.TilemapRenderer2D.New` |
+| <a id="zanna-graphics2d-tilemaprenderer2d-new"></a>`New` | `obj<Zanna.Graphics2D.TilemapRenderer2D>()` | `Zanna.Graphics2D.TilemapRenderer2D.New` |
 
 ## Functions
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Graphics2D.Tilemap.New` | `obj(i64,i64,i64,i64)` | `rt_tilemap_new` |
+| `Zanna.Graphics2D.Tilemap.New` | `obj<Zanna.Graphics2D.Tilemap>(i64,i64,i64,i64)` | `rt_tilemap_new` |
 | <a id="zanna-graphics2d-tilemap-get-width"></a>`Zanna.Graphics2D.Tilemap.get_Width` | `i64(obj)` | `rt_tilemap_get_width` |
 | <a id="zanna-graphics2d-tilemap-get-height"></a>`Zanna.Graphics2D.Tilemap.get_Height` | `i64(obj)` | `rt_tilemap_get_height` |
 | <a id="zanna-graphics2d-tilemap-get-tilewidth"></a>`Zanna.Graphics2D.Tilemap.get_TileWidth` | `i64(obj)` | `rt_tilemap_get_tile_width` |
@@ -250,8 +250,8 @@ Constructor: `Zanna.Graphics2D.TilemapRenderer2D.New`
 | `Zanna.Graphics2D.Tilemap.SetTileProperty` | `void(obj,i64,str,i64)` | `rt_tilemap_set_tile_property` |
 | `Zanna.Graphics2D.Tilemap.GetTileProperty` | `i64(obj,i64,str,i64)` | `rt_tilemap_get_tile_property` |
 | `Zanna.Graphics2D.Tilemap.HasTileProperty` | `i1(obj,i64,str)` | `rt_tilemap_has_tile_property` |
-| `Zanna.Graphics2D.SceneNode.New` | `obj()` | `rt_scene_node_new` |
-| `Zanna.Graphics2D.SceneNode.FromSprite` | `obj(obj)` | `rt_scene_node_from_sprite` |
+| `Zanna.Graphics2D.SceneNode.New` | `obj<Zanna.Graphics2D.SceneNode>()` | `rt_scene_node_new` |
+| `Zanna.Graphics2D.SceneNode.FromSprite` | `obj<Zanna.Graphics2D.SceneNode>(obj)` | `rt_scene_node_from_sprite` |
 | <a id="zanna-graphics2d-scenenode-get-x"></a>`Zanna.Graphics2D.SceneNode.get_X` | `i64(obj)` | `rt_scene_node_get_x` |
 | <a id="zanna-graphics2d-scenenode-set-x"></a>`Zanna.Graphics2D.SceneNode.set_X` | `void(obj,i64)` | `rt_scene_node_set_x` |
 | <a id="zanna-graphics2d-scenenode-get-y"></a>`Zanna.Graphics2D.SceneNode.get_Y` | `i64(obj)` | `rt_scene_node_get_y` |
@@ -273,13 +273,13 @@ Constructor: `Zanna.Graphics2D.TilemapRenderer2D.New`
 | <a id="zanna-graphics2d-scenenode-set-depth"></a>`Zanna.Graphics2D.SceneNode.set_Depth` | `void(obj,i64)` | `rt_scene_node_set_depth` |
 | <a id="zanna-graphics2d-scenenode-get-name"></a>`Zanna.Graphics2D.SceneNode.get_Name` | `str(obj)` | `rt_scene_node_get_name` |
 | <a id="zanna-graphics2d-scenenode-set-name"></a>`Zanna.Graphics2D.SceneNode.set_Name` | `void(obj,str)` | `rt_scene_node_set_name` |
-| <a id="zanna-graphics2d-scenenode-get-sprite"></a>`Zanna.Graphics2D.SceneNode.get_Sprite` | `obj(obj)` | `rt_scene_node_get_sprite` |
-| <a id="zanna-graphics2d-scenenode-set-sprite"></a>`Zanna.Graphics2D.SceneNode.set_Sprite` | `void(obj,obj)` | `rt_scene_node_set_sprite` |
-| <a id="zanna-graphics2d-scenenode-get-parent"></a>`Zanna.Graphics2D.SceneNode.get_Parent` | `obj(obj)` | `rt_scene_node_get_parent` |
+| <a id="zanna-graphics2d-scenenode-get-sprite"></a>`Zanna.Graphics2D.SceneNode.get_Sprite` | `obj<Zanna.Graphics.Sprite>(obj)` | `rt_scene_node_get_sprite` |
+| <a id="zanna-graphics2d-scenenode-set-sprite"></a>`Zanna.Graphics2D.SceneNode.set_Sprite` | `void(obj,obj<Zanna.Graphics.Sprite>)` | `rt_scene_node_set_sprite` |
+| <a id="zanna-graphics2d-scenenode-get-parent"></a>`Zanna.Graphics2D.SceneNode.get_Parent` | `obj<Zanna.Graphics2D.SceneNode>(obj)` | `rt_scene_node_get_parent` |
 | <a id="zanna-graphics2d-scenenode-get-childcount"></a>`Zanna.Graphics2D.SceneNode.get_ChildCount` | `i64(obj)` | `rt_scene_node_child_count` |
 | `Zanna.Graphics2D.SceneNode.AddChild` | `void(obj,obj)` | `rt_scene_node_add_child` |
 | `Zanna.Graphics2D.SceneNode.RemoveChild` | `void(obj,obj)` | `rt_scene_node_remove_child` |
-| `Zanna.Graphics2D.SceneNode.GetChild` | `obj(obj,i64)` | `rt_scene_node_get_child` |
+| `Zanna.Graphics2D.SceneNode.GetChild` | `obj<Zanna.Graphics2D.SceneNode>(obj,i64)` | `rt_scene_node_get_child` |
 | `Zanna.Graphics2D.SceneNode.Find` | `obj<Zanna.Option>(obj,str)` | `rt_scene_node_find_option` |
 | `Zanna.Graphics2D.SceneNode.Detach` | `void(obj)` | `rt_scene_node_detach` |
 | `Zanna.Graphics2D.SceneNode.Draw` | `void(obj,obj)` | `rt_scene_node_draw` |
@@ -288,8 +288,8 @@ Constructor: `Zanna.Graphics2D.TilemapRenderer2D.New`
 | `Zanna.Graphics2D.SceneNode.Move` | `void(obj,i64,i64)` | `rt_scene_node_move` |
 | `Zanna.Graphics2D.SceneNode.SetPosition` | `void(obj,i64,i64)` | `rt_scene_node_set_position` |
 | `Zanna.Graphics2D.SceneNode.SetScale` | `void(obj,i64)` | `rt_scene_node_set_scale` |
-| `Zanna.Graphics2D.SceneGraph.New` | `obj()` | `rt_scene_new` |
-| <a id="zanna-graphics2d-scenegraph-get-root"></a>`Zanna.Graphics2D.SceneGraph.get_Root` | `obj(obj)` | `rt_scene_get_root` |
+| `Zanna.Graphics2D.SceneGraph.New` | `obj<Zanna.Graphics2D.SceneGraph>()` | `rt_scene_new` |
+| <a id="zanna-graphics2d-scenegraph-get-root"></a>`Zanna.Graphics2D.SceneGraph.get_Root` | `obj<Zanna.Graphics2D.SceneNode>(obj)` | `rt_scene_get_root` |
 | <a id="zanna-graphics2d-scenegraph-get-nodecount"></a>`Zanna.Graphics2D.SceneGraph.get_NodeCount` | `i64(obj)` | `rt_scene_node_count` |
 | `Zanna.Graphics2D.SceneGraph.Add` | `void(obj,obj)` | `rt_scene_add` |
 | `Zanna.Graphics2D.SceneGraph.Remove` | `void(obj,obj)` | `rt_scene_remove` |
@@ -298,7 +298,7 @@ Constructor: `Zanna.Graphics2D.TilemapRenderer2D.New`
 | `Zanna.Graphics2D.SceneGraph.DrawWithCamera` | `void(obj,obj,obj)` | `rt_scene_draw_with_camera` |
 | `Zanna.Graphics2D.SceneGraph.Update` | `void(obj)` | `rt_scene_update` |
 | `Zanna.Graphics2D.SceneGraph.Clear` | `void(obj)` | `rt_scene_clear` |
-| `Zanna.Graphics2D.TilemapRenderer2D.New` | `obj()` | `rt_tilemaprenderer2d_new` |
+| `Zanna.Graphics2D.TilemapRenderer2D.New` | `obj<Zanna.Graphics2D.TilemapRenderer2D>()` | `rt_tilemaprenderer2d_new` |
 | `Zanna.Graphics2D.TilemapRenderer2D.SetChunkCache` | `void(obj,obj)` | `rt_tilemaprenderer2d_set_chunk_cache` |
 | <a id="zanna-graphics2d-tilemaprenderer2d-get-drawcount"></a>`Zanna.Graphics2D.TilemapRenderer2D.get_DrawCount` | `i64(obj)` | `rt_tilemaprenderer2d_get_draw_count` |
 | `Zanna.Graphics2D.TilemapRenderer2D.Draw` | `void(obj,obj,obj,i64,i64)` | `rt_tilemaprenderer2d_draw` |

@@ -5,15 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Type system soundness tests for the Zia frontend.
-//
-// Each test tries to break the type system in a specific way and verifies the
-// compiler either rejects the code with a clear diagnostic or (for known gaps)
-// documents that unsound code compiles silently.
-//
-// Gaps are prefixed with GAP_ and use EXPECT_TRUE(result.succeeded()) with
-// documentary comments. When a gap is fixed, the test will start failing
-// (the compiler rejects the code), signalling the assertion should flip.
+// File: src/tests/zia/test_zia_type_soundness.cpp
+// Purpose: Type system soundness tests for the Zia frontend. Each test tries to
+//          break the type system in a specific way and verifies the compiler
+//          either rejects the code with a clear diagnostic or (for known gaps)
+//          documents that unsound code compiles silently.
+// Key invariants:
+//   - Gaps are prefixed with GAP_ and use EXPECT_TRUE(result.succeeded()) with
+//     documentary comments. When a gap is fixed, the test starts failing (the
+//     compiler rejects the code), signalling the assertion should flip.
+//   - Runtime object results carry exactly the class their registry row
+//     declares; untyped and Zanna.Core.Object results narrow only with `as`
+//     (ADR 0356).
+// Ownership/Lifetime:
+//   - Each test owns its SourceManager and compiles in-memory sources only.
+// Links: docs/adr/0356-runtime-object-results-declare-their-class.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -943,6 +949,127 @@ bind Str = Zanna.String;
 func start() {
     var parts = Str.Split("a,b", ",");
     var n = parts.Count;
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+//=============================================================================
+// Runtime object results declare their class (ADR 0356)
+//=============================================================================
+
+TEST(ZiaTypeSoundness, RuntimeResultHasItsDeclaredClassNotItsOwner) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+func start() {
+    var q = Zanna.Math.Quat.Identity();
+    var turned = q.RotateVec3(Zanna.Math.Vec3.New(1.0, 0.0, 0.0));
+    var x = turned.X;
+    var packed = Zanna.IO.Compress.Gzip(Zanna.Collections.Bytes.New(4));
+    var size = packed.Length;
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, UntypedRuntimeResultNeedsExplicitCast) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+func start() {
+    var items = Zanna.Collections.Seq.New();
+    var wrapped = Zanna.Option.Some(items);
+    var back: Zanna.Collections.Seq = wrapped.Unwrap();
+}
+)",
+                                sm);
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_TRUE(hasErrorContaining(result, "got Any"));
+}
+
+TEST(ZiaTypeSoundness, UntypedRuntimeResultNarrowsWithAs) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+func start() {
+    var items = Zanna.Collections.Seq.New();
+    var wrapped = Zanna.Option.Some(items);
+    var back = wrapped.Unwrap() as Zanna.Collections.Seq;
+    var n = back.Count;
+    var text = Zanna.Option.Some("payload").Unwrap() as String;
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, CoreObjectResultNeedsExplicitCast) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+func start() {
+    var loaded = Zanna.IO.Assets.Load("sprite.png");
+    var pixels: Zanna.Graphics.Pixels = loaded;
+}
+)",
+                                sm);
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_TRUE(hasErrorContaining(result, "Zanna.Core.Object"));
+}
+
+TEST(ZiaTypeSoundness, CoreObjectResultNarrowsWithAsAndAcceptsAnyObject) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+func start() {
+    var loaded = Zanna.IO.Assets.Load("sprite.png");
+    var pixels = loaded as Zanna.Graphics.Pixels;
+    var same = loaded.Equals(loaded);
+    var root: Zanna.Core.Object = Zanna.Graphics.Pixels.New(1, 1);
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, DeclaredCollectionResultsIterateAndKeepTryOptions) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+func start() {
+    var pressed = Zanna.Input.Keyboard.GetPressed();
+    for key in pressed {
+        var name = key as String;
+    }
+    var heap = Zanna.Collections.Heap.New();
+    var top = heap.TryPeek();
+    var emptyHeap = top.IsNone;
+    var queue = Zanna.Collections.Queue.New();
+    var next = queue.TryPop();
+    var emptyQueue = next.IsNone;
+    var groups = Zanna.Collections.MultiMap.New();
+    for member in groups.Get("team") {
+        var tag = member as String;
+    }
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, FormerFunctionNamespacesAreRuntimeClasses) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+func start() {
+    var enemy: Zanna.Game.Entity = Zanna.Game.Entity.New(0, 0, 8, 8);
+    enemy.Health = 3;
+    var brain: Zanna.Game.Behavior = Zanna.Game.Behavior.New();
+    brain.Update(enemy, null, 0, 0, 16);
+    var settings: Zanna.Game.Config? = Zanna.Game.Config.FromString("{}");
 }
 )",
                                 sm);

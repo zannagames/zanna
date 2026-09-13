@@ -44,7 +44,7 @@ func start() {
 
     // --- DeriveKey ---
     Say("--- DeriveKey ---");
-    var salt = Rand.Bytes(16);
+    var salt = SecureRandom.Bytes(16);
     var derived = Cipher.DeriveKey("password", salt);
     Say("Derived key length:");
     SayInt(Bytes.get_Length(derived));

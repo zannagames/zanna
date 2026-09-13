@@ -7,7 +7,8 @@
 //
 // File: tests/unit/test_basic_lowerer_runtime_helpers.cpp
 // Purpose: Verify BASIC lowering requests runtime helpers via the shared AST walker.
-// Key invariants: Array assignment, PRINT #, and INPUT trigger their respective helpers.
+// Key invariants: Array assignment, PRINT #, and INPUT trigger their respective helpers;
+//                 PRINT # formats integers with the 64-bit integer helper.
 // Ownership/Lifetime: Test constructs AST via parser and owns emitted module.
 // Links: docs/internals/codemap.md
 //
@@ -57,20 +58,11 @@ int main() {
     assert(names.count("rt_str_split_fields") == 1 || names.count("Zanna.String.SplitFields") == 1);
     assert(names.count("rt_to_int") == 1 || names.count("Zanna.Core.Convert.ToInt64") == 1);
 
-    const std::string stringHelpers[] = {
-        "rt_str_i16_alloc",
-        "rt_str_i32_alloc",
-        "rt_str_f_alloc",
-        "rt_f64_to_str",
-        // Canonical spellings under Zanna.* runtime namespaces
-        "Zanna.String.FromI16",
-        "Zanna.String.FromI32",
-        "Zanna.String.FromSingle",
-        "Zanna.Core.Convert.ToString_Double",
-    };
-    bool foundStringHelper = false;
-    for (const auto &helper : stringHelpers)
-        foundStringHelper = foundStringHelper || names.count(helper) == 1;
-    assert(foundStringHelper);
+    // PRINT # formats the integer 42 with the 64-bit integer helper; BASIC integers are
+    // never narrowed to 16 or 32 bits for formatting.
+    assert(names.count("rt_int_to_str") == 1 || names.count("Zanna.Core.Convert.ToStringInt") == 1);
+    for (const char *narrow :
+         {"rt_str_i16_alloc", "rt_str_i32_alloc", "Zanna.String.FromI16", "Zanna.String.FromI32"})
+        assert(names.count(narrow) == 0);
     return 0;
 }

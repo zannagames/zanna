@@ -31,6 +31,7 @@
 #include "MacOSPackageBuilder.hpp"
 #include "CpioWriter.hpp"
 #include "IconGenerator.hpp"
+#include "MacOSEntitlements.hpp"
 #include "PkgGzip.hpp"
 #include "PkgUtils.hpp"
 #include "PlistGenerator.hpp"
@@ -1556,12 +1557,16 @@ void verifyMacOSBundleSignatureIfAvailable(const fs::path &appPath) {
 /// @param execPath Main executable used while constructing notarization ZIPs.
 /// @param projectRoot Trusted root for resolving optional entitlements.
 /// @param pkg Signing, notarization, and entitlement configuration.
+/// @param entitlementsOverride Absolute entitlements plist that replaces
+///        `pkg.macosEntitlements` (store packaging merges required keys into it); empty
+///        to use the project entitlements.
 /// @throws std::runtime_error If configuration, signing, notarization, or verification fails.
 void signMacOSBundle(const fs::path &stageRoot,
                      const fs::path &appPath,
                      const fs::path &execPath,
                      const fs::path &projectRoot,
-                     const PackageConfig &pkg) {
+                     const PackageConfig &pkg,
+                     const fs::path &entitlementsOverride = {}) {
     validateMacOSSigningConfig(pkg);
     const std::string mode = resolveMacOSSignModeForHost(pkg);
     if (mode == "none" || mode == "preserve")
@@ -1573,6 +1578,7 @@ void signMacOSBundle(const fs::path &stageRoot,
     (void)execPath;
     (void)projectRoot;
     (void)pkg;
+    (void)entitlementsOverride;
     throw std::runtime_error("macOS signing mode '" + mode + "' requires running on macOS");
 #else
     const bool developerId = mode == "developer-id";
@@ -1596,7 +1602,10 @@ void signMacOSBundle(const fs::path &stageRoot,
         args.push_back("--options");
         args.push_back("runtime");
     }
-    if (!pkg.macosEntitlements.empty()) {
+    if (!entitlementsOverride.empty()) {
+        args.push_back("--entitlements");
+        args.push_back(entitlementsOverride.string());
+    } else if (!pkg.macosEntitlements.empty()) {
         const fs::path entitlements =
             resolvePackageSourcePath(projectRoot, pkg.macosEntitlements, "macOS entitlements");
         args.push_back("--entitlements");
@@ -1607,8 +1616,11 @@ void signMacOSBundle(const fs::path &stageRoot,
     verifyMacOSBundleSignatureIfAvailable(appPath);
 
     if (!pkg.macosNotaryProfile.empty()) {
+        // ZIP entries are named relative to the bundle's parent so they always start with
+        // `<Name>.app/`. The bundle is not always below stageRoot: DMG packaging signs the copy
+        // on the mounted volume and depot packaging signs inside the depot content directory.
         const fs::path notaryZip = stageRoot / "notary-submit.zip";
-        addStagedAppToZip(stageRoot, appPath, execPath, notaryZip.string());
+        addStagedAppToZip(appPath.parent_path(), appPath, execPath, notaryZip.string());
         std::vector<std::string> notaryArgs = {"xcrun",
                                                "notarytool",
                                                "submit",
@@ -1637,6 +1649,33 @@ void signMacOSBundle(const fs::path &stageRoot,
             verifyMacOSBundleSignatureIfAvailable(appPath);
         }
     }
+#endif
+}
+
+/// @brief Sign one nested code file (for example a dylib) with the bundle's identity.
+/// @details Nested code must carry a valid signature before its containing bundle is
+///          signed. Developer ID signatures include a secure timestamp, which notarization
+///          requires of every nested binary. `none` and `preserve` modes leave the file
+///          untouched.
+/// @param file Nested code file inside a staged bundle.
+/// @param pkg Signing configuration.
+/// @throws std::runtime_error If signing is requested off macOS or codesign fails.
+void signMacOSNestedCode(const fs::path &file, const PackageConfig &pkg) {
+    validateMacOSSigningConfig(pkg);
+    const std::string mode = resolveMacOSSignModeForHost(pkg);
+    if (mode == "none" || mode == "preserve")
+        return;
+#if !ZANNA_HOST_MACOS
+    (void)file;
+    throw std::runtime_error("macOS signing mode '" + mode + "' requires running on macOS");
+#else
+    const bool developerId = mode == "developer-id";
+    std::vector<std::string> args = {
+        "codesign", "--force", "--sign", developerId ? pkg.macosSignIdentity : std::string("-")};
+    if (developerId)
+        args.push_back("--timestamp");
+    args.push_back(file.string());
+    runChecked(args, "macOS nested code signing of '" + file.filename().string() + "'");
 #endif
 }
 
@@ -1739,6 +1778,21 @@ static StagedMacOSApp stageMacOSAppBundle(const MacOSBuildParams &params,
         std::string targetDir = sanitizePackageRelativePath(asset.targetPath, "asset target path");
         copyPackageAssetToResources(
             srcPath, params.projectRoot, resourcesDir, targetDir, asset.sourcePath);
+    }
+
+    // The runtime mounts every *.zpak in Contents/Resources at startup (ADR 0355). Packs are
+    // copied after assets so a pack that would overwrite an asset is reported, not hidden.
+    for (const auto &pack : params.packFiles) {
+        const fs::path source = pack;
+        const fs::path target = resourcesDir / source.filename();
+        std::error_code packEc;
+        if (fs::exists(target, packEc))
+            throw std::runtime_error("generated macOS resource would replace a staged file: " +
+                                     source.filename().string());
+        writeFileBytes(target,
+                       readFile(source),
+                       fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
+                           fs::perms::others_read);
     }
 
     if (signBundle)
@@ -1918,6 +1972,92 @@ void buildMacOSAppDmg(const MacOSBuildParams &params) {
     // addStagedAppToDmg has placed the app on that final filesystem.
     const StagedMacOSApp staged = stageMacOSAppBundle(params, stageRoot, false);
     addStagedAppToDmg(params, staged.appPath, displayName, params.outputPath);
+}
+
+/// @brief Stage an application bundle into a directory and sign nested code first.
+/// @details Extra files are copied after the standard staging step (which also places the
+///          packs). Nested-code extras keep an executable mode; everything else follows the
+///          normalized package modes. Required entitlements are merged into a private
+///          temporary plist that replaces the project entitlements for this signature.
+/// @param params Staging parameters.
+/// @return Staged bundle facts.
+/// @throws std::runtime_error on validation, staging, entitlement, or signing failure.
+MacOSAppDirectoryResult buildMacOSAppDirectory(const MacOSAppDirectoryParams &params) {
+    const fs::path destination = params.destinationDir;
+    std::error_code ec;
+    if (!fs::is_directory(destination, ec))
+        throw std::runtime_error("macOS app destination is not a directory: " +
+                                 destination.string());
+    const auto &pkg = params.app.pkgConfig;
+    const StagedMacOSApp staged = stageMacOSAppBundle(params.app, destination, false);
+
+    const fs::perms executableMode = fs::perms::owner_read | fs::perms::owner_write |
+                                     fs::perms::owner_exec | fs::perms::group_read |
+                                     fs::perms::group_exec | fs::perms::others_read |
+                                     fs::perms::others_exec;
+    const fs::perms dataMode = fs::perms::owner_read | fs::perms::owner_write |
+                               fs::perms::group_read | fs::perms::others_read;
+    std::vector<fs::path> nestedCode;
+    for (const auto &extra : params.extraFiles) {
+        const std::string relative =
+            sanitizePackageRelativePath(extra.bundleRelativePath, "macOS bundle extra file path");
+        if (relative.rfind("Contents/", 0) != 0)
+            throw std::runtime_error("macOS bundle extra file must be placed under Contents/: " +
+                                     extra.bundleRelativePath);
+        const fs::path target = staged.appPath / fs::path(relative);
+        if (fs::exists(target, ec))
+            throw std::runtime_error("macOS bundle extra file would replace a staged file: " +
+                                     relative);
+        writeFileBytes(
+            target, readFile(extra.sourcePath), extra.nestedCode ? executableMode : dataMode);
+        if (extra.nestedCode)
+            nestedCode.push_back(target);
+    }
+
+    MacOSAppDirectoryResult result;
+    result.appPath = staged.appPath.string();
+    result.executableRelativePath =
+        fs::relative(staged.stagedExec, destination, ec).generic_string();
+    if (ec)
+        throw std::runtime_error("cannot compute the staged macOS executable path: " +
+                                 ec.message());
+
+    const std::string mode = resolveMacOSSignModeForHost(pkg);
+    if (mode != "adhoc" && mode != "developer-id")
+        return result;
+
+    const fs::path signingRoot = uniqueTempPackagingDir("zanna-macos-app-directory-sign");
+    TempDirGuard cleanup(signingRoot);
+    fs::path entitlementsPath;
+    if (!params.requiredEntitlements.empty() || !params.forbiddenEntitlements.empty()) {
+        std::string existing;
+        std::string label = "(none)";
+        if (!pkg.macosEntitlements.empty()) {
+            const fs::path source = resolvePackageSourcePath(
+                params.app.projectRoot, pkg.macosEntitlements, "macOS entitlements");
+            const auto bytes = readFile(source);
+            existing.assign(bytes.begin(), bytes.end());
+            label = pkg.macosEntitlements;
+        }
+        const EntitlementsMergeResult merged = mergeMacOSEntitlements(existing,
+                                                                      label,
+                                                                      params.requiredEntitlements,
+                                                                      params.forbiddenEntitlements,
+                                                                      params.entitlementsOwner);
+        entitlementsPath = signingRoot / "entitlements.plist";
+        writeFileString(entitlementsPath, merged.xml, dataMode);
+        result.addedEntitlements = merged.addedKeys;
+    }
+    for (const auto &file : nestedCode)
+        signMacOSNestedCode(file, pkg);
+    signMacOSBundle(signingRoot,
+                    staged.appPath,
+                    staged.stagedExec,
+                    params.app.projectRoot,
+                    pkg,
+                    entitlementsPath);
+    result.bundleSigned = true;
+    return result;
 }
 
 /// @brief Build a macOS `.pkg` installer for the staged toolchain.

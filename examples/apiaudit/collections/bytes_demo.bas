@@ -1,5 +1,5 @@
 ' bytes_demo.bas - Comprehensive API audit for Zanna.Collections.Bytes
-' Tests: New, Get, Set, Len, Fill, Find, FindOption, Clone, Slice, Copy,
+' Tests: New, Get, Set, Len, Fill, Find, Clone, Slice, Copy,
 '        ToHex, FromHex, ToBase64, FromBase64, ToStr, FromStr
 
 PRINT "=== Bytes API Audit ==="
@@ -63,17 +63,14 @@ PRINT fill.ToHex()       ' ffffffff
 
 ' --- Find ---
 PRINT "--- Find ---"
-PRINT hello.Find(108)    ' 2
-PRINT hello.Find(111)    ' 4
-PRINT hello.Find(99)     ' -1
-
-' --- FindOption ---
-PRINT "--- FindOption ---"
+PRINT hello.Find(108).UnwrapOrI64(-1)    ' 2
+PRINT hello.Find(111).UnwrapOrI64(-1)    ' 4
+PRINT hello.Find(99).UnwrapOrI64(-1)     ' -1
 DIM found AS OBJECT
-found = hello.FindOption(108)
+found = hello.Find(108)
 PRINT found.IsSome
 PRINT found.UnwrapI64()  ' 2
-PRINT hello.FindOption(99).IsNone
+PRINT hello.Find(99).IsNone
 
 ' --- Clone ---
 PRINT "--- Clone ---"

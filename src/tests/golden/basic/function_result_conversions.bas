@@ -1,0 +1,28 @@
+REM FUNCTION results convert to the declared result type, both on RETURN and on
+REM assignment to the function name. FLOAT to INTEGER rounds half to even.
+FUNCTION HALF(N)
+    RETURN N / 2.5
+END FUNCTION
+FUNCTION WHOLE#(N)
+    RETURN 3
+END FUNCTION
+FUNCTION AVG(A, B)
+    AVG = (A + B) / 2
+END FUNCTION
+FUNCTION CNT()
+    CNT = 1
+    CNT = CNT + 1
+END FUNCTION
+FUNCTION ISBIG(N) AS BOOLEAN
+    RETURN N > 10
+END FUNCTION
+FUNCTION RATIO#(A, B)
+    RATIO# = A / B
+END FUNCTION
+PRINT HALF(5)
+PRINT WHOLE#(1)
+PRINT AVG(3, 4)
+PRINT CNT()
+PRINT ISBIG(11)
+PRINT RATIO#(1, 4)
+END

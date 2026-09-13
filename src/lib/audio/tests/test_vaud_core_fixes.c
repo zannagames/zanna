@@ -54,6 +54,12 @@ ogg_reader_t *ogg_reader_open_file(const char *path) {
     return NULL;
 }
 
+ogg_reader_t *ogg_reader_open_mem(const uint8_t *data, size_t len) {
+    (void)data;
+    (void)len;
+    return NULL;
+}
+
 void ogg_reader_free(ogg_reader_t *r) {
     (void)r;
 }
@@ -118,6 +124,12 @@ mp3_stream_t *mp3_stream_open(const char *filepath) {
         g_fake_zero_total_mp3.freed = 0;
         return &g_fake_zero_total_mp3;
     }
+    return NULL;
+}
+
+mp3_stream_t *mp3_stream_open_mem(const uint8_t *data, size_t len) {
+    (void)data;
+    (void)len;
     return NULL;
 }
 
@@ -517,6 +529,99 @@ static void test_mp3_music_allows_unknown_total_samples(void) {
     EXPECT_TRUE(music->state == VAUD_MUSIC_STOPPED);
     vaud_free_music(music);
     EXPECT_TRUE(g_fake_zero_total_mp3.freed == 1);
+    vaud_destroy(ctx);
+}
+
+/// @brief Drain a stream from @p start_frame into @p out; returns frames written.
+static int64_t drain_music(vaud_music_t music, int64_t start_frame, int16_t *out, int64_t cap) {
+    if (!vaud_music_seek_output_frame(music, start_frame))
+        return -1;
+    int64_t total = 0;
+    int32_t got = music->buffer_frames[0] - music->buffer_position;
+    const int16_t *first = music->buffers[0] + music->buffer_position * 2;
+    while (got > 0) {
+        if (total + got > cap)
+            return -1;
+        memcpy(out + total * 2, first, (size_t)got * 2 * sizeof(int16_t));
+        total += got;
+        got = vaud_music_fill_buffer(music, 0);
+        first = music->buffers[0];
+    }
+    return total;
+}
+
+static void run_memory_wav_music_matches_file_stream(int32_t sample_rate, int32_t frames) {
+    char path[128];
+    make_temp_wav_path(path, sizeof(path), "memmusic");
+    EXPECT_TRUE(write_mono_wav(path, sample_rate, frames));
+
+    FILE *f = fopen(path, "rb");
+    EXPECT_TRUE(f != NULL);
+    size_t size = 44u + (size_t)frames * sizeof(int16_t);
+    uint8_t *image = (uint8_t *)malloc(size);
+    EXPECT_TRUE(image != NULL);
+    EXPECT_TRUE(fread(image, 1, size, f) == size);
+    fclose(f);
+
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    vaud_music_t from_file = vaud_load_music(ctx, path);
+    vaud_music_t from_mem = vaud_load_music_mem(ctx, image, size);
+    EXPECT_TRUE(from_file != NULL);
+    EXPECT_TRUE(from_mem != NULL);
+    EXPECT_TRUE(from_mem->file == NULL && from_mem->source_data != NULL);
+    EXPECT_TRUE(from_mem->frame_count == from_file->frame_count);
+
+    // The stream owns a copy: the caller's image may be destroyed right away.
+    memset(image, 0xAB, size);
+    free(image);
+
+    int64_t cap = from_file->frame_count + VAUD_MUSIC_BUFFER_FRAMES;
+    int16_t *want = (int16_t *)malloc((size_t)cap * 2 * sizeof(int16_t));
+    int16_t *got = (int16_t *)malloc((size_t)cap * 2 * sizeof(int16_t));
+    EXPECT_TRUE(want != NULL && got != NULL);
+
+    // Whole stream, then a mid-stream seek, then a second pass (rewind).
+    int64_t starts[3] = {0, from_file->frame_count / 3, 0};
+    for (int i = 0; i < 3; i++) {
+        int64_t n_want = drain_music(from_file, starts[i], want, cap);
+        int64_t n_got = drain_music(from_mem, starts[i], got, cap);
+        EXPECT_TRUE(n_want > 0);
+        EXPECT_TRUE(n_got == n_want);
+        EXPECT_TRUE(memcmp(want, got, (size_t)n_want * 2 * sizeof(int16_t)) == 0);
+    }
+
+    free(want);
+    free(got);
+    vaud_free_music(from_file);
+    vaud_free_music(from_mem);
+    vaud_destroy(ctx);
+    remove(path);
+}
+
+static void test_memory_wav_music_matches_file_stream(void) {
+    run_memory_wav_music_matches_file_stream(VAUD_SAMPLE_RATE, 3 * VAUD_MUSIC_BUFFER_FRAMES + 17);
+    run_memory_wav_music_matches_file_stream(48000, 48000);
+}
+
+static void test_memory_music_rejects_invalid_images(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    uint8_t wav[128];
+    size_t size = make_wav_mem(wav, sizeof(wav), 2, 44100, 16, 44100u * 4u, 4, 8);
+    EXPECT_TRUE(size > 0);
+
+    EXPECT_TRUE(vaud_load_music_mem(ctx, NULL, size) == NULL);
+    EXPECT_TRUE(vaud_load_music_mem(ctx, wav, 0) == NULL);
+    // A data chunk that runs past the image is rejected, never read out of bounds.
+    EXPECT_TRUE(vaud_load_music_mem(ctx, wav, size - 4) == NULL);
+    EXPECT_TRUE(vaud_load_music_ogg_mem(ctx, NULL, 16) == NULL);
+    EXPECT_TRUE(vaud_load_music_mp3_mem(ctx, wav, 0) == NULL);
+
+    vaud_music_t music = vaud_load_music_mem(ctx, wav, size);
+    EXPECT_TRUE(music != NULL);
+    EXPECT_TRUE(music->frame_count == 2);
+    vaud_free_music(music);
     vaud_destroy(ctx);
 }
 
@@ -1303,6 +1408,8 @@ int main(void) {
     test_wav_rejects_partial_pcm_frame();
     test_streaming_resample_preserves_total_frame_count();
     test_mp3_music_allows_unknown_total_samples();
+    test_memory_wav_music_matches_file_stream();
+    test_memory_music_rejects_invalid_images();
     test_buffered_stream_read_rejects_partial_frame();
     test_mixer_does_not_decode_empty_music_buffers();
     test_mixer_renders_oversized_requests_in_chunks();

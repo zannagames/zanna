@@ -292,7 +292,7 @@ LowerResult Lowerer::lowerField(FieldExpr *expr) {
         }
     }
 
-    // Handle List.count, List.size, List.length, and List.Len property
+    // Handle List.count, List.size, List.length, List.Len, and List.IsEmpty properties
     if (baseType->kind == TypeKindSem::List) {
         if (expr->field == "Count" || expr->field == "count" || expr->field == "size" ||
             expr->field == "length" || expr->field == "Len" || expr->field == "Length") {
@@ -300,9 +300,15 @@ LowerResult Lowerer::lowerField(FieldExpr *expr) {
             Value result = emitCallRet(Type(Type::Kind::I64), kListCount, {base.value});
             return {result, Type(Type::Kind::I64)};
         }
+        if (expr->field == "IsEmpty") {
+            Value count = emitCallRet(Type(Type::Kind::I64), kListCount, {base.value});
+            Value empty =
+                emitBinary(Opcode::ICmpEq, Type(Type::Kind::I1), count, Value::constInt(0));
+            return {empty, Type(Type::Kind::I1)};
+        }
     }
 
-    // Handle Map.Length, Map.Len, Map.Count, etc. property
+    // Handle Map.Length, Map.Len, Map.Count, Map.IsEmpty, etc. properties
     if (baseType->kind == TypeKindSem::Map) {
         if (expr->field == "Length" || expr->field == "length" || expr->field == "Len" ||
             expr->field == "Count" || expr->field == "count" || expr->field == "size") {
@@ -311,14 +317,28 @@ LowerResult Lowerer::lowerField(FieldExpr *expr) {
                                        {base.value});
             return {result, Type(Type::Kind::I64)};
         }
+        if (expr->field == "IsEmpty") {
+            Value count = emitCallRet(Type(Type::Kind::I64),
+                                      usesIntegerMapRuntime(baseType) ? kIntMapCount : kMapCount,
+                                      {base.value});
+            Value empty =
+                emitBinary(Opcode::ICmpEq, Type(Type::Kind::I1), count, Value::constInt(0));
+            return {empty, Type(Type::Kind::I1)};
+        }
     }
 
-    // Handle Set.Length, Set.Len, Set.Count, etc. property
+    // Handle Set.Length, Set.Len, Set.Count, Set.IsEmpty, etc. properties
     if (baseType->kind == TypeKindSem::Set) {
         if (expr->field == "Length" || expr->field == "length" || expr->field == "Len" ||
             expr->field == "Count" || expr->field == "count" || expr->field == "size") {
             Value result = emitCallRet(Type(Type::Kind::I64), kSetCount, {base.value});
             return {result, Type(Type::Kind::I64)};
+        }
+        if (expr->field == "IsEmpty") {
+            Value count = emitCallRet(Type(Type::Kind::I64), kSetCount, {base.value});
+            Value empty =
+                emitBinary(Opcode::ICmpEq, Type(Type::Kind::I1), count, Value::constInt(0));
+            return {empty, Type(Type::Kind::I1)};
         }
     }
 

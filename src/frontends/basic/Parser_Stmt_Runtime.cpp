@@ -203,10 +203,7 @@ StmtPtr Parser::parseDimStatement() {
                 // Peek to decide between builtin keyword vs. qualified class name
                 if (at(TokenKind::Identifier)) {
                     std::string first = peek().lexeme;
-                    std::string upper = string_utils::to_upper(first);
-                    if (upper == "INTEGER" || upper == "INT" || upper == "LONG" ||
-                        upper == "DOUBLE" || upper == "FLOAT" || upper == "SINGLE" ||
-                        upper == "STRING" || upper == "BOOLEAN") {
+                    if (primitiveTypeFromName(first)) {
                         node->type = parseTypeKeyword();
                     } else {
                         // Parse qualified class name: Ident ('.' Ident)*
@@ -260,10 +257,7 @@ StmtPtr Parser::parseDimStatement() {
                     return list;
                 } else if (at(TokenKind::Identifier)) {
                     std::string first = peek().lexeme;
-                    std::string upper = string_utils::to_upper(first);
-                    if (upper == "INTEGER" || upper == "INT" || upper == "LONG" ||
-                        upper == "DOUBLE" || upper == "FLOAT" || upper == "SINGLE" ||
-                        upper == "STRING" || upper == "BOOLEAN") {
+                    if (primitiveTypeFromName(first)) {
                         node->type = parseTypeKeyword();
                     } else {
                         std::vector<std::string> segs;

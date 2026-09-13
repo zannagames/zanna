@@ -1,15 +1,13 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-09-13
 ---
 
 # Zanna.Game.Behavior
 
-`Behavior` is a composable controller for the legacy 2D `Entity` and `Tilemap` APIs. Add one or
-more presets, then call `Update` with a delta in milliseconds. The current registry exposes this
-as a function namespace whose constructor provenance supports instance-style calls in Zia; use the
-fully qualified constructor name.
+`Behavior` is a composable controller for the 2D `Zanna.Game.Entity` and `Tilemap` APIs. Add one
+or more presets, then call `Update` with a delta in milliseconds.
 
 ## API
 
@@ -47,6 +45,6 @@ func start() {
 
     var enemy = Zanna.Game.Entity.New(10000, 5000, 24, 16);
     behavior.Update(enemy, null, 0, 0, 16);
-    Zanna.Terminal.SayInt(behavior.get_AnimFrame());
+    Zanna.Terminal.SayInt(behavior.AnimFrame);
 }
 ```

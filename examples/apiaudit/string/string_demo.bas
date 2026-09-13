@@ -45,8 +45,8 @@ PRINT "LastIndexOf: "; Zanna.String.LastIndexOf("hello world hello", "hello")
 
 ' --- Has / StartsWith / EndsWith ---
 PRINT "--- Has / StartsWith / EndsWith ---"
-PRINT "Has 'world': "; Zanna.String.Has("hello world", "world")
-PRINT "Has 'xyz': "; Zanna.String.Has("hello world", "xyz")
+PRINT "Contains 'world': "; Zanna.String.Contains("hello world", "world")
+PRINT "Contains 'xyz': "; Zanna.String.Contains("hello world", "xyz")
 PRINT "StartsWith 'hello': "; Zanna.String.StartsWith("hello world", "hello")
 PRINT "StartsWith 'world': "; Zanna.String.StartsWith("hello world", "world")
 PRINT "EndsWith 'world': "; Zanna.String.EndsWith("hello world", "world")
@@ -75,8 +75,8 @@ PRINT "Join: "; Zanna.String.Join("-", parts)
 
 ' --- Flip ---
 PRINT "--- Flip ---"
-PRINT Zanna.String.Flip("abcde")
-PRINT Zanna.String.Flip("racecar")
+PRINT Zanna.String.Reverse("abcde")
+PRINT Zanna.String.Reverse("racecar")
 
 ' --- Repeat ---
 PRINT "--- Repeat ---"
@@ -96,9 +96,9 @@ PRINT "Count 'z' in 'hello': "; Zanna.String.Count("hello", "z")
 
 ' --- Cmp / CmpNoCase / Equals ---
 PRINT "--- Cmp / CmpNoCase / Equals ---"
-PRINT "Cmp apple/banana: "; Zanna.String.Cmp("apple", "banana")
-PRINT "Cmp banana/apple: "; Zanna.String.Cmp("banana", "apple")
-PRINT "Cmp apple/apple: "; Zanna.String.Cmp("apple", "apple")
+PRINT "Compare apple/banana: "; Zanna.String.Compare("apple", "banana")
+PRINT "Compare banana/apple: "; Zanna.String.Compare("banana", "apple")
+PRINT "Compare apple/apple: "; Zanna.String.Compare("apple", "apple")
 PRINT "CmpNoCase Hello/hello: "; Zanna.String.CompareIgnoreCase("Hello", "hello")
 PRINT "Equals abc/abc: "; Zanna.String.Equals("abc", "abc")
 PRINT "Equals abc/xyz: "; Zanna.String.Equals("abc", "xyz")

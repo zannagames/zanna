@@ -34,6 +34,8 @@
 /// @brief Fixed-capacity frame-based animation state machine API.
 #pragma once
 
+#include "rt_string.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -162,8 +164,8 @@ void rt_animstate_play(void *asm_, void *name);
 
 /// @brief Get the name of the current state. Returns "" if no name.
 /// @param asm_ Borrowed machine.
-/// @return Owned copied runtime string.
-void *rt_animstate_current_name(void *asm_);
+/// @return Owned copied runtime string (the registry row is `str`).
+rt_string rt_animstate_current_name(void *asm_);
 
 /// @brief Set a frame event (fires when animation reaches this frame).
 /// @param asm_ Borrowed machine.

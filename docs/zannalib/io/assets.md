@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-09-13
 ---
 
 # Zanna.IO.Assets
@@ -36,6 +36,14 @@ Pre-compressed formats (`.png`, `.jpg`, `.ogg`, `.mp3`, `.glb`, etc.) automatica
 Generated pack filenames are `<project-name>-<pack-name>.zpak`; the logical asset
 names inside a pack come from the source paths, not from the pack name.
 
+`zanna build` writes the packs beside the executable, and every `zanna package` target ships them
+where the runtime mounts them at startup: beside the executable in Windows installers, tarballs,
+and Windows or Linux store depots; in `Contents/Resources` inside a macOS `.app`; and, for Linux
+`.deb`, `.rpm`, and `linux-bundle` packages, in `/usr/lib/<package>/` beside the real executable,
+which `/usr/bin/<exe>` links to ([ADR 0355](../../adr/0355-package-formats-ship-pack-groups.md)).
+Do not also list a generated pack as an `asset`: it would ship twice, and the formats that place
+both copies in the same directory reject the collision.
+
 ## API Reference
 
 Asset names may be written either as plain package paths such as
@@ -43,9 +51,10 @@ Asset names may be written either as plain package paths such as
 `"asset://models/tree.glb"`. The scheme is stripped before lookup; it is useful
 when code needs to make it clear that the value is a packaged asset path.
 
-### Assets.Load(name: String) -> Object?
+### Assets.Load(name: String) -> Zanna.Core.Object?
 
-Load an asset by name. Returns a typed object based on file extension:
+Load an asset by name. Returns a typed object based on file extension, as a `Zanna.Core.Object`;
+narrow it with `as` to use the members of its type:
 
 | Extension | Return Type |
 |-----------|-------------|
@@ -54,6 +63,11 @@ Load an asset by name. Returns a typed object based on file extension:
 | Other | Bytes |
 
 Returns null if not found.
+
+```zia
+var hero = Assets.Load("sprites/hero.png") as Zanna.Graphics.Pixels;
+var click = Assets.Load("audio/click.wav") as Zanna.Audio.Sound;
+```
 
 Each recognized extension has one stable result type: a recognized image/audio extension returns
 its typed object (`Pixels` or `Sound`), or `null` when the bytes are malformed — it never
@@ -72,12 +86,11 @@ Returns 1 if asset exists (embedded, in pack, or as a regular file on disk), 0 o
 
 Returns asset size in bytes, or -1 if the asset is missing or resolves to a non-regular filesystem path such as a directory. A found zero-byte asset reports 0, so zero-byte files are distinguishable from missing assets without a separate `Exists()` call.
 
-### Assets.List() -> Object (runtime Seq\<String\>)
+### Assets.List() -> Seq\<String\>
 
 Returns names from the embedded archive followed by every mounted pack in mount
 order. Loose filesystem assets are not enumerated, and duplicate logical names
-from different sources are retained. The registry exposes the result as opaque
-`Object`; use `Zanna.Collections.Seq` operations to inspect it from a frontend.
+from different sources are retained.
 
 ### Assets.Mount(path: String) -> Integer
 
@@ -191,14 +204,14 @@ bind Zanna.IO;
 bind Zanna.Graphics;
 
 // Load from embedded or mounted packs — transparent
-var hero = Assets.Load("sprites/hero.png");
-var hero2 = Assets.Load("asset://sprites/hero.png");
-var sound = Assets.Load("audio/click.wav");
+var hero = Assets.Load("sprites/hero.png") as Pixels;
+var hero2 = Assets.Load("asset://sprites/hero.png") as Pixels;
+var sound = Assets.Load("audio/click.wav") as Zanna.Audio.Sound;
 var data = Assets.LoadBytes("config.json");
 
 // Mount additional pack files
 Assets.Mount("level2.zpak");
-var bg = Assets.Load("backgrounds/sky.png");
+var bg = Assets.Load("backgrounds/sky.png") as Pixels;
 Assets.Unmount("level2.zpak");
 ```
 

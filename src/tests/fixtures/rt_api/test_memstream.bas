@@ -3,7 +3,7 @@
 ' --- MemStream: integer read/write ---
 DIM ms AS Zanna.IO.MemStream
 ms = Zanna.IO.MemStream.New()
-PRINT "ms pos: "; ms.Pos
+PRINT "ms pos: "; ms.Position
 PRINT "ms len: "; ms.Length
 
 ms.WriteI8(42)
@@ -44,7 +44,7 @@ ms.WriteI8(2)
 ms.WriteI8(3)
 ms.Seek(0)
 ms.Skip(1)
-PRINT "after skip pos: "; ms.Pos
+PRINT "after skip pos: "; ms.Position
 
 ' --- Text streams via runtime constructor aliases ---
 DIM textPath AS STRING

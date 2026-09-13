@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-09-13
 ---
 
 # Adding a New Runtime Class: Complete Guide
@@ -231,7 +231,7 @@ The header declares your class's public C API. All runtime headers follow the sa
 | 64-bit integer | `int64_t` | `i64` |
 | 64-bit float | `double` | `f64` |
 | String | `rt_string` | `str` |
-| Object reference | `void*` | `obj` |
+| Object reference | `void*` | `obj<Class>` (result), `obj` (parameter) |
 
 ### The Dual-Signature Convention
 
@@ -246,6 +246,8 @@ This is the trickiest part of runtime class development. The same C function is 
 The `RT_FUNC` describes the actual C ABI. The `RT_METHOD` describes the user-facing API (what the programmer sees). For instance methods, the receiver is implicit in `RT_METHOD` because it comes from the object the method is called on. Static/factory methods are receiverless: their `RT_FUNC` ABI has the same parameter count as the `RT_METHOD` signature, and frontend metadata records `hasReceiver=false`.
 
 Every `RT_FUNC` row that returns a managed reference (`obj`, `obj<…>`, `seq<…>`, or `str`) must end with an ownership token: `owned` when the function hands the caller a new reference (constructors, loaders, copied strings), or `borrowed` when it returns a view the caller must not release (a stored field, the receiver itself). `rtgen` rejects a reference-returning row without the token and a token on a row that returns no reference ([ADR 0314](../adr/0314-declared-runtime-result-ownership.md)). Decide the token from what the C code actually returns, not from the name. `src/il/runtime/RuntimeOwnership.hpp` is still updated by hand, but only for argument consumption and retention masks and other optimizer facts; the row's token alone decides result ownership.
+
+Every object result also declares its class, because no frontend infers one ([ADR 0356](../adr/0356-runtime-object-results-declare-their-class.md)). Write `obj<Zanna.NS.Class>` for a concrete class (a constructor, a fluent method returning its receiver, a getter returning a stored object), `seq<str>`, `seq<i64>`, or `seq<obj>` for a sequence, and `obj<Zanna.Core.Object>` when the result is always a runtime object whose class depends on the value. Leave a bare `obj` only when the result can be any value, such as a stored collection element or a parsed document, and list that function with `RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT` in `src/il/runtime/RuntimeSurfacePolicy.inc`; `test_runtime_surface_audit` fails otherwise. As with ownership, decide the class from what the C code returns, not from the name.
 
 Inside the implementation, pass string literals to runtime APIs as `RT_STR_LIT("key")`, which returns an immortal cached string, never as an inline `rt_const_cstr("key")`. `rt_const_cstr` returns an owned copy, so an inline call passed to a borrowing or retaining API (map keys, `rt_result_err_str`, promise errors) leaks it. For non-literal C strings, keep the `rt_const_cstr` handle and `rt_string_unref` it after the call.
 
@@ -649,8 +651,8 @@ Every handler ID referenced in `RT_METHOD` or `RT_PROP` **must** have a correspo
 // GAUGE (Bounded Numeric Value)
 //=============================================================================
 
-RT_FUNC(GaugeNew,           rt_gauge_new,            "Zanna.Utils.Gauge.New",            "obj(i64,i64)", owned)
-RT_FUNC(GaugeNewDefault,    rt_gauge_new_default,    "Zanna.Utils.Gauge.NewDefault",     "obj()", owned)
+RT_FUNC(GaugeNew,           rt_gauge_new,            "Zanna.Utils.Gauge.New",            "obj<Zanna.Utils.Gauge>(i64,i64)", owned)
+RT_FUNC(GaugeNewDefault,    rt_gauge_new_default,    "Zanna.Utils.Gauge.NewDefault",     "obj<Zanna.Utils.Gauge>()", owned)
 RT_FUNC(GaugeGetValue,      rt_gauge_get_value,      "Zanna.Utils.Gauge.get_Value",      "i64(obj)")
 RT_FUNC(GaugeSetValue,      rt_gauge_set_value,      "Zanna.Utils.Gauge.set_Value",      "void(obj,i64)")
 RT_FUNC(GaugeGetMin,        rt_gauge_get_min,        "Zanna.Utils.Gauge.get_Min",        "i64(obj)")
@@ -1311,8 +1313,8 @@ The primary constructor goes in `ctor_id`. Additional factories are regular meth
 
 ```c
 // runtime.def
-RT_FUNC(GaugeNew,        rt_gauge_new,         "Zanna.Utils.Gauge.New",        "obj(i64,i64)", owned)
-RT_FUNC(GaugeNewDefault, rt_gauge_new_default,  "Zanna.Utils.Gauge.NewDefault", "obj()", owned)
+RT_FUNC(GaugeNew,        rt_gauge_new,         "Zanna.Utils.Gauge.New",        "obj<Zanna.Utils.Gauge>(i64,i64)", owned)
+RT_FUNC(GaugeNewDefault, rt_gauge_new_default,  "Zanna.Utils.Gauge.NewDefault", "obj<Zanna.Utils.Gauge>()", owned)
 
 RT_CLASS_BEGIN("Zanna.Utils.Gauge", Gauge, "obj", GaugeNew)
     // GaugeNewDefault is accessible as Gauge.NewDefault() via RT_FUNC canonical name
@@ -1350,12 +1352,12 @@ void *rt_builder_append(void *obj, rt_string text)
 }
 
 // runtime.def
-RT_METHOD("Append", "obj(str)", BuilderAppend)
+RT_METHOD("Append", "obj<Zanna.Text.Builder>(str)", BuilderAppend)
 ```
 
 Usage: `builder.Append("Hello").Append(" World")`
 
-The receiver comes back without a retain, so the matching `RT_FUNC` row declares `borrowed`, for example `RT_FUNC(BuilderAppend, rt_builder_append, "Zanna.Text.Builder.Append", "obj(obj,str)", borrowed)`.
+The result declares the receiver's class, because frontends never infer one ([ADR 0356](../adr/0356-runtime-object-results-declare-their-class.md)). The receiver comes back without a retain, so the matching `RT_FUNC` row declares `borrowed`, for example `RT_FUNC(BuilderAppend, rt_builder_append, "Zanna.Text.Builder.Append", "obj<Zanna.Text.Builder>(obj,str)", borrowed)`.
 
 ### Pattern 6: Overloaded Methods (Different Arities)
 
@@ -1426,8 +1428,8 @@ void *rt_stack_to_list(void *obj)
 }
 
 // runtime.def
-RT_METHOD("ToList", "obj()", StackToList)
-RT_METHOD("ToSeq", "obj()", StackToSeq)
+RT_METHOD("ToList", "obj<Zanna.Collections.List>()", StackToList)
+RT_METHOD("ToSeq", "seq<obj>()", StackToSeq)
 ```
 
 ### Pattern 10: Cross-Class References
@@ -1443,9 +1445,9 @@ void *rt_physics_add_body(void *world, void *body)
     return body;
 }
 
-// runtime.def — both params are "obj" regardless of specific class. The result is the
-// caller's own body argument returned without a retain, so it is declared borrowed.
-RT_FUNC(PhysAddBody, rt_physics_add_body, "Zanna.Physics2D.World.AddBody", "obj(obj,obj)", borrowed)
+// runtime.def — the result declares the body class it returns. The result is the caller's own
+// body argument returned without a retain, so it is declared borrowed.
+RT_FUNC(PhysAddBody, rt_physics_add_body, "Zanna.Physics2D.World.AddBody", "obj<Zanna.Physics2D.Body>(obj,obj)", borrowed)
 ```
 
 ---
@@ -1646,7 +1648,7 @@ void     rt_myclass_do_thing(void *obj);
 
 **runtime.def (RT_FUNC):**
 ```c
-RT_FUNC(MyClassNew,      rt_myclass_new,       "Zanna.NS.MyClass.New",       "obj()", owned)
+RT_FUNC(MyClassNew,      rt_myclass_new,       "Zanna.NS.MyClass.New",       "obj<Zanna.NS.MyClass>()", owned)
 RT_FUNC(MyClassGetValue, rt_myclass_get_value,  "Zanna.NS.MyClass.get_Value", "i64(obj)")
 RT_FUNC(MyClassDoThing,  rt_myclass_do_thing,   "Zanna.NS.MyClass.DoThing",   "void(obj)")
 ```

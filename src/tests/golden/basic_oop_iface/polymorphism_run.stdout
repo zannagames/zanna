@@ -1,0 +1,16 @@
+=== OOP Interfaces Test ===
+
+--- Circle ---
+Shape: Circle
+Area: 78.53975
+Radius: 5
+
+--- Rectangle ---
+Shape: Rectangle
+Area: 24
+
+--- Polymorphism via Interface ---
+As IShape (circle): Circle area = 78.53975
+As IShape (rect): Rectangle area = 24
+
+=== OOP Interfaces test complete ===

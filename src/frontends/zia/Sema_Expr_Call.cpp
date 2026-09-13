@@ -733,34 +733,30 @@ TypeRef Sema::refineRuntimeCallReturnType(const CallExpr *expr,
 
     if (calleeName == "Zanna.Collections.Seq.Get" || calleeName == "Zanna.Collections.Seq.First" ||
         calleeName == "Zanna.Collections.Seq.Last" || calleeName == "Zanna.Collections.Seq.Peek" ||
-        calleeName == "Zanna.Collections.Seq.Pop" || calleeName == "Zanna.Collections.Seq.RemoveAt" ||
+        calleeName == "Zanna.Collections.Seq.Pop" ||
+        calleeName == "Zanna.Collections.Seq.RemoveAt" ||
         calleeName == "Zanna.Collections.Seq.FindWhere") {
         return elementReceiver && elementReceiver->elementType()
                    ? normalizeRuntimeSurfaceType(elementReceiver->elementType())
                    : fallback;
     }
 
+    // Element accessors return the receiver's element type. The Try* forms (TryPop, TryPeek,
+    // TryPopFront, TryPopBack) are not listed: they return a Zanna.Option, as their rows declare.
     if (calleeName == "Zanna.Collections.List.Get" ||
         calleeName == "Zanna.Collections.List.First" ||
         calleeName == "Zanna.Collections.List.Last" || calleeName == "Zanna.Collections.List.Pop" ||
         calleeName == "Zanna.Collections.Queue.Peek" ||
         calleeName == "Zanna.Collections.Queue.Pop" ||
-        calleeName == "Zanna.Collections.Queue.TryPop" ||
         calleeName == "Zanna.Collections.Stack.Peek" ||
-        calleeName == "Zanna.Collections.Stack.Pop" ||
-        calleeName == "Zanna.Collections.Stack.TryPop" ||
-        calleeName == "Zanna.Collections.Ring.Get" || calleeName == "Zanna.Collections.Ring.Peek" ||
-        calleeName == "Zanna.Collections.Ring.Pop" || calleeName == "Zanna.Collections.Heap.Peek" ||
-        calleeName == "Zanna.Collections.Heap.Pop" ||
-        calleeName == "Zanna.Collections.Heap.TryPeek" ||
-        calleeName == "Zanna.Collections.Heap.TryPop" ||
+        calleeName == "Zanna.Collections.Stack.Pop" || calleeName == "Zanna.Collections.Ring.Get" ||
+        calleeName == "Zanna.Collections.Ring.Peek" || calleeName == "Zanna.Collections.Ring.Pop" ||
+        calleeName == "Zanna.Collections.Heap.Peek" || calleeName == "Zanna.Collections.Heap.Pop" ||
         calleeName == "Zanna.Collections.Deque.Get" ||
         calleeName == "Zanna.Collections.Deque.PeekFront" ||
         calleeName == "Zanna.Collections.Deque.PeekBack" ||
         calleeName == "Zanna.Collections.Deque.PopFront" ||
-        calleeName == "Zanna.Collections.Deque.PopBack" ||
-        calleeName == "Zanna.Collections.Deque.TryPopFront" ||
-        calleeName == "Zanna.Collections.Deque.TryPopBack") {
+        calleeName == "Zanna.Collections.Deque.PopBack") {
         return elementReceiver && elementReceiver->elementType()
                    ? normalizeRuntimeSurfaceType(elementReceiver->elementType())
                    : fallback;
@@ -776,11 +772,16 @@ TypeRef Sema::refineRuntimeCallReturnType(const CallExpr *expr,
         calleeName == "Zanna.Collections.WeakMap.Get" ||
         calleeName == "Zanna.Collections.LruCache.Get" ||
         calleeName == "Zanna.Collections.LruCache.Peek" ||
-        calleeName == "Zanna.Collections.MultiMap.Get" ||
         calleeName == "Zanna.Collections.MultiMap.GetFirst") {
         return mapReceiver && mapReceiver->valueType()
                    ? normalizeRuntimeSurfaceType(mapReceiver->valueType())
                    : fallback;
+    }
+
+    // MultiMap.Get returns every value stored under the key, so its result is a sequence of the
+    // value type rather than one value.
+    if (calleeName == "Zanna.Collections.MultiMap.Get") {
+        return mapReceiver && mapReceiver->valueType() ? asSeq(mapReceiver->valueType()) : fallback;
     }
 
     if (calleeName == "Zanna.Collections.Map.Keys" ||
@@ -846,8 +847,9 @@ std::optional<TypeRef> Sema::analyzeListCombinatorCall(CallExpr *expr,
             error(expr->loc, "sum() takes no arguments");
         if (elemType->kind != TypeKindSem::Integer && elemType->kind != TypeKindSem::Number &&
             elemType->kind != TypeKindSem::Unknown)
-            error(expr->loc, "sum() requires a List of Integer or Number, got List of " +
-                                 elemType->toDisplayString());
+            error(expr->loc,
+                  "sum() requires a List of Integer or Number, got List of " +
+                      elemType->toDisplayString());
         return elemType;
     }
 
@@ -881,8 +883,8 @@ std::optional<TypeRef> Sema::analyzeListCombinatorCall(CallExpr *expr,
         error(expr->args[0].value->loc, m + "() argument must be a function");
         return TypeRef(types::unknown());
     }
-    TypeRef fnRet = (fnType && fnType->kind == TypeKindSem::Function) ? fnType->returnType()
-                                                                      : types::unknown();
+    TypeRef fnRet =
+        (fnType && fnType->kind == TypeKindSem::Function) ? fnType->returnType() : types::unknown();
     if (m == "map")
         return TypeRef(types::list(fnRet));
     if (fnRet && fnRet->kind != TypeKindSem::Boolean && fnRet->kind != TypeKindSem::Unknown)

@@ -163,10 +163,10 @@ operations including `None`, `All`, `Of`, `Include`.
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-layermask-none"></a>`None` | `obj()` | `Zanna.Game3D.LayerMask.None` |
-| <a id="zanna-game3d-layermask-all"></a>`All` | `obj()` | `Zanna.Game3D.LayerMask.All` |
-| <a id="zanna-game3d-layermask-of"></a>`Of` | `obj(i64)` | `Zanna.Game3D.LayerMask.Of` |
-| <a id="zanna-game3d-layermask-include"></a>`Include` | `obj(i64)` | `Zanna.Game3D.LayerMask.Include` |
+| <a id="zanna-game3d-layermask-none"></a>`None` | `obj<Zanna.Game3D.LayerMask>()` | `Zanna.Game3D.LayerMask.None` |
+| <a id="zanna-game3d-layermask-all"></a>`All` | `obj<Zanna.Game3D.LayerMask>()` | `Zanna.Game3D.LayerMask.All` |
+| <a id="zanna-game3d-layermask-of"></a>`Of` | `obj<Zanna.Game3D.LayerMask>(i64)` | `Zanna.Game3D.LayerMask.Of` |
+| <a id="zanna-game3d-layermask-include"></a>`Include` | `obj<Zanna.Game3D.LayerMask>(i64)` | `Zanna.Game3D.LayerMask.Include` |
 | <a id="zanna-game3d-layermask-includes"></a>`Includes` | `i1(i64)` | `Zanna.Game3D.LayerMask.Includes` |
 
 <a id="zanna-game3d-input3d"></a>
@@ -199,18 +199,18 @@ Constructor: `Zanna.Game3D.Input3D.New`
 | <a id="zanna-game3d-input3d-isdown"></a>`IsDown` | `i1(i64)` | `Zanna.Game3D.Input3D.IsDown` |
 | <a id="zanna-game3d-input3d-pressed"></a>`Pressed` | `i1(i64)` | `Zanna.Game3D.Input3D.Pressed` |
 | <a id="zanna-game3d-input3d-released"></a>`Released` | `i1(i64)` | `Zanna.Game3D.Input3D.Released` |
-| <a id="zanna-game3d-input3d-mousedelta"></a>`MouseDelta` | `obj()` | `Zanna.Game3D.Input3D.MouseDelta` |
+| <a id="zanna-game3d-input3d-mousedelta"></a>`MouseDelta` | `obj<Zanna.Math.Vec2>()` | `Zanna.Game3D.Input3D.MouseDelta` |
 | <a id="zanna-game3d-input3d-mouseposition"></a>`MousePosition` | `obj<Zanna.Math.Vec2>()` | `Zanna.Game3D.Input3D.MousePosition` |
 | <a id="zanna-game3d-input3d-mousebutton"></a>`MouseButton` | `i1(i64)` | `Zanna.Game3D.Input3D.MouseButton` |
 | <a id="zanna-game3d-input3d-mousepressed"></a>`MousePressed` | `i1(i64)` | `Zanna.Game3D.Input3D.MousePressed` |
 | <a id="zanna-game3d-input3d-wheely"></a>`WheelY` | `f64()` | `Zanna.Game3D.Input3D.WheelY` |
-| <a id="zanna-game3d-input3d-moveaxis"></a>`MoveAxis` | `obj()` | `Zanna.Game3D.Input3D.MoveAxis` |
-| <a id="zanna-game3d-input3d-lookaxis"></a>`LookAxis` | `obj()` | `Zanna.Game3D.Input3D.LookAxis` |
+| <a id="zanna-game3d-input3d-moveaxis"></a>`MoveAxis` | `obj<Zanna.Math.Vec3>()` | `Zanna.Game3D.Input3D.MoveAxis` |
+| <a id="zanna-game3d-input3d-lookaxis"></a>`LookAxis` | `obj<Zanna.Math.Vec2>()` | `Zanna.Game3D.Input3D.LookAxis` |
 | <a id="zanna-game3d-input3d-capturemouse"></a>`CaptureMouse` | `void()` | `Zanna.Game3D.Input3D.CaptureMouse` |
 | <a id="zanna-game3d-input3d-releasemouse"></a>`ReleaseMouse` | `void()` | `Zanna.Game3D.Input3D.ReleaseMouse` |
 | <a id="zanna-game3d-input3d-setrelativelook"></a>`SetRelativeLook` | `void(i1)` | `Zanna.Game3D.Input3D.SetRelativeLook` |
 | <a id="zanna-game3d-input3d-bindpad"></a>`BindPad` | `void(i64)` | `Zanna.Game3D.Input3D.BindPad` |
-| <a id="zanna-game3d-input3d-new"></a>`New` | `obj()` | `Zanna.Game3D.Input3D.New` |
+| <a id="zanna-game3d-input3d-new"></a>`New` | `obj<Zanna.Game3D.Input3D>()` | `Zanna.Game3D.Input3D.New` |
 
 <a id="zanna-game3d-entity3d"></a>
 ### `Zanna.Game3D.Entity3D`
@@ -231,7 +231,7 @@ Constructor: `Zanna.Game3D.Entity3D.New`
 | <a id="zanna-game3d-entity3d-node"></a>`Node` | `obj<Zanna.Graphics3D.SceneNode>` | read-only |
 | <a id="zanna-game3d-entity3d-mesh"></a>`Mesh` | `obj<Zanna.Graphics3D.Mesh3D>` | read/write |
 | <a id="zanna-game3d-entity3d-material"></a>`Material` | `obj<Zanna.Graphics3D.Material3D>` | read/write |
-| <a id="zanna-game3d-entity3d-body"></a>`Body` | `obj` | read-only |
+| <a id="zanna-game3d-entity3d-body"></a>`Body` | `obj<Zanna.Graphics3D.PhysicsBody3D>` | read-only |
 | <a id="zanna-game3d-entity3d-anim"></a>`Anim` | `obj<Zanna.Game3D.Animator3D>` | read-only |
 | <a id="zanna-game3d-entity3d-layer"></a>`Layer` | `i64` | read/write |
 | <a id="zanna-game3d-entity3d-collisionmask"></a>`CollisionMask` | `obj<Zanna.Game3D.LayerMask>` | read/write |
@@ -249,33 +249,33 @@ Constructor: `Zanna.Game3D.Entity3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-entity3d-of"></a>`Of` | `obj(obj,obj)` | `Zanna.Game3D.Entity3D.Of` |
-| <a id="zanna-game3d-entity3d-fromnode"></a>`FromNode` | `obj(obj)` | `Zanna.Game3D.Entity3D.FromNode` |
-| <a id="zanna-game3d-entity3d-setposition"></a>`SetPosition` | `obj(f64,f64,f64)` | `Zanna.Game3D.Entity3D.SetPosition` |
-| <a id="zanna-game3d-entity3d-setpositionv"></a>`SetPositionV` | `obj(obj)` | `Zanna.Game3D.Entity3D.SetPositionV` |
-| <a id="zanna-game3d-entity3d-setscale"></a>`SetScale` | `obj(f64)` | `Zanna.Game3D.Entity3D.SetScale` |
-| <a id="zanna-game3d-entity3d-setscalexyz"></a>`SetScaleXYZ` | `obj(f64,f64,f64)` | `Zanna.Game3D.Entity3D.SetScaleXYZ` |
-| <a id="zanna-game3d-entity3d-setrotationeuler"></a>`SetRotationEuler` | `obj(f64,f64,f64)` | `Zanna.Game3D.Entity3D.SetRotationEuler` |
-| <a id="zanna-game3d-entity3d-setmeshrecursive"></a>`SetMeshRecursive` | `obj(obj)` | `Zanna.Game3D.Entity3D.SetMeshRecursive` |
-| <a id="zanna-game3d-entity3d-setmaterialrecursive"></a>`SetMaterialRecursive` | `obj(obj)` | `Zanna.Game3D.Entity3D.SetMaterialRecursive` |
-| <a id="zanna-game3d-entity3d-addchild"></a>`AddChild` | `obj(obj)` | `Zanna.Game3D.Entity3D.AddChild` |
+| <a id="zanna-game3d-entity3d-of"></a>`Of` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `Zanna.Game3D.Entity3D.Of` |
+| <a id="zanna-game3d-entity3d-fromnode"></a>`FromNode` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.FromNode` |
+| <a id="zanna-game3d-entity3d-setposition"></a>`SetPosition` | `obj<Zanna.Game3D.Entity3D>(f64,f64,f64)` | `Zanna.Game3D.Entity3D.SetPosition` |
+| <a id="zanna-game3d-entity3d-setpositionv"></a>`SetPositionV` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.SetPositionV` |
+| <a id="zanna-game3d-entity3d-setscale"></a>`SetScale` | `obj<Zanna.Game3D.Entity3D>(f64)` | `Zanna.Game3D.Entity3D.SetScale` |
+| <a id="zanna-game3d-entity3d-setscalexyz"></a>`SetScaleXYZ` | `obj<Zanna.Game3D.Entity3D>(f64,f64,f64)` | `Zanna.Game3D.Entity3D.SetScaleXYZ` |
+| <a id="zanna-game3d-entity3d-setrotationeuler"></a>`SetRotationEuler` | `obj<Zanna.Game3D.Entity3D>(f64,f64,f64)` | `Zanna.Game3D.Entity3D.SetRotationEuler` |
+| <a id="zanna-game3d-entity3d-setmeshrecursive"></a>`SetMeshRecursive` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.SetMeshRecursive` |
+| <a id="zanna-game3d-entity3d-setmaterialrecursive"></a>`SetMaterialRecursive` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.SetMaterialRecursive` |
+| <a id="zanna-game3d-entity3d-addchild"></a>`AddChild` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.AddChild` |
 | <a id="zanna-game3d-entity3d-isgroup"></a>`IsGroup` | `i1()` | `Zanna.Game3D.Entity3D.IsGroup` |
-| <a id="zanna-game3d-entity3d-attachbody"></a>`AttachBody` | `obj(obj)` | `Zanna.Game3D.Entity3D.AttachBody` |
-| <a id="zanna-game3d-entity3d-attachhealth"></a>`AttachHealth` | `obj(obj<Zanna.Game3D.Health3D>)` | `Zanna.Game3D.Entity3D.AttachHealth` |
+| <a id="zanna-game3d-entity3d-attachbody"></a>`AttachBody` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.AttachBody` |
+| <a id="zanna-game3d-entity3d-attachhealth"></a>`AttachHealth` | `obj<Zanna.Game3D.Entity3D>(obj<Zanna.Game3D.Health3D>)` | `Zanna.Game3D.Entity3D.AttachHealth` |
 | <a id="zanna-game3d-entity3d-enableragdoll"></a>`EnableRagdoll` | `obj<Zanna.Graphics3D.Ragdoll3D>()` | `Zanna.Game3D.Entity3D.EnableRagdoll` |
 | <a id="zanna-game3d-entity3d-disableragdoll"></a>`DisableRagdoll` | `i1(f64)` | `Zanna.Game3D.Entity3D.DisableRagdoll` |
-| <a id="zanna-game3d-entity3d-attachanimator"></a>`AttachAnimator` | `obj(obj)` | `Zanna.Game3D.Entity3D.AttachAnimator` |
-| <a id="zanna-game3d-entity3d-attachtobone"></a>`AttachToBone` | `obj(obj,str)` | `Zanna.Game3D.Entity3D.AttachToBone` |
-| <a id="zanna-game3d-entity3d-attachtoboneoffset"></a>`AttachToBoneOffset` | `obj(obj,str,f64,f64,f64)` | `Zanna.Game3D.Entity3D.AttachToBoneOffset` |
-| <a id="zanna-game3d-entity3d-attachtoboneoffsetrotated"></a>`AttachToBoneOffsetRotated` | `obj(obj,str,f64,f64,f64,f64,f64,f64)` | `Zanna.Game3D.Entity3D.AttachToBoneOffsetRotated` |
-| <a id="zanna-game3d-entity3d-detachfrombone"></a>`DetachFromBone` | `obj()` | `Zanna.Game3D.Entity3D.DetachFromBone` |
-| <a id="zanna-game3d-entity3d-attachbehavior"></a>`AttachBehavior` | `obj(obj)` | `Zanna.Game3D.Entity3D.AttachBehavior` |
+| <a id="zanna-game3d-entity3d-attachanimator"></a>`AttachAnimator` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.AttachAnimator` |
+| <a id="zanna-game3d-entity3d-attachtobone"></a>`AttachToBone` | `obj<Zanna.Game3D.Entity3D>(obj,str)` | `Zanna.Game3D.Entity3D.AttachToBone` |
+| <a id="zanna-game3d-entity3d-attachtoboneoffset"></a>`AttachToBoneOffset` | `obj<Zanna.Game3D.Entity3D>(obj,str,f64,f64,f64)` | `Zanna.Game3D.Entity3D.AttachToBoneOffset` |
+| <a id="zanna-game3d-entity3d-attachtoboneoffsetrotated"></a>`AttachToBoneOffsetRotated` | `obj<Zanna.Game3D.Entity3D>(obj,str,f64,f64,f64,f64,f64,f64)` | `Zanna.Game3D.Entity3D.AttachToBoneOffsetRotated` |
+| <a id="zanna-game3d-entity3d-detachfrombone"></a>`DetachFromBone` | `obj<Zanna.Game3D.Entity3D>()` | `Zanna.Game3D.Entity3D.DetachFromBone` |
+| <a id="zanna-game3d-entity3d-attachbehavior"></a>`AttachBehavior` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Entity3D.AttachBehavior` |
 | <a id="zanna-game3d-entity3d-applyimpulse"></a>`ApplyImpulse` | `void(f64,f64,f64)` | `Zanna.Game3D.Entity3D.ApplyImpulse` |
 | <a id="zanna-game3d-entity3d-setvelocity"></a>`SetVelocity` | `void(f64,f64,f64)` | `Zanna.Game3D.Entity3D.SetVelocity` |
-| <a id="zanna-game3d-entity3d-setpersistent"></a>`SetPersistent` | `obj(str)` | `Zanna.Game3D.Entity3D.SetPersistent` |
+| <a id="zanna-game3d-entity3d-setpersistent"></a>`SetPersistent` | `obj<Zanna.Game3D.Entity3D>(str)` | `Zanna.Game3D.Entity3D.SetPersistent` |
 | <a id="zanna-game3d-entity3d-isspawned"></a>`IsSpawned` | `i1()` | `Zanna.Game3D.Entity3D.IsSpawned` |
 | <a id="zanna-game3d-entity3d-isdestroyed"></a>`IsDestroyed` | `i1()` | `Zanna.Game3D.Entity3D.IsDestroyed` |
-| <a id="zanna-game3d-entity3d-new"></a>`New` | `obj()` | `Zanna.Game3D.Entity3D.New` |
+| <a id="zanna-game3d-entity3d-new"></a>`New` | `obj<Zanna.Game3D.Entity3D>()` | `Zanna.Game3D.Entity3D.New` |
 
 <a id="zanna-game3d-sound3d"></a>
 ### `Zanna.Game3D.Sound3D`
@@ -389,7 +389,7 @@ Constructor: `Zanna.Game3D.Minimap3D.New`
 | <a id="zanna-game3d-minimap3d-mapx"></a>`MapX` | `f64(f64,f64)` | `Zanna.Game3D.Minimap3D.MapX` |
 | <a id="zanna-game3d-minimap3d-mapy"></a>`MapY` | `f64(f64,f64)` | `Zanna.Game3D.Minimap3D.MapY` |
 | <a id="zanna-game3d-minimap3d-draw"></a>`Draw` | `void()` | `Zanna.Game3D.Minimap3D.Draw` |
-| <a id="zanna-game3d-minimap3d-new"></a>`New` | `obj(obj<Zanna.Game3D.World3D>,i64)` | `Zanna.Game3D.Minimap3D.New` |
+| <a id="zanna-game3d-minimap3d-new"></a>`New` | `obj<Zanna.Game3D.Minimap3D>(obj<Zanna.Game3D.World3D>,i64)` | `Zanna.Game3D.Minimap3D.New` |
 
 <a id="zanna-game3d-reverbzone3d"></a>
 ### `Zanna.Game3D.ReverbZone3D`
@@ -412,8 +412,8 @@ Constructor: `Zanna.Game3D.ReverbZone3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-reverbzone3d-withreverb"></a>`WithReverb` | `obj(f64,f64,f64)` | `Zanna.Game3D.ReverbZone3D.WithReverb` |
-| <a id="zanna-game3d-reverbzone3d-new"></a>`New` | `obj(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>)` | `Zanna.Game3D.ReverbZone3D.New` |
+| <a id="zanna-game3d-reverbzone3d-withreverb"></a>`WithReverb` | `obj<Zanna.Game3D.ReverbZone3D>(f64,f64,f64)` | `Zanna.Game3D.ReverbZone3D.WithReverb` |
+| <a id="zanna-game3d-reverbzone3d-new"></a>`New` | `obj<Zanna.Game3D.ReverbZone3D>(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>)` | `Zanna.Game3D.ReverbZone3D.New` |
 
 <a id="zanna-game3d-ambientbed3d"></a>
 ### `Zanna.Game3D.AmbientBed3D`
@@ -437,9 +437,9 @@ Constructor: `Zanna.Game3D.AmbientBed3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-ambientbed3d-addzone"></a>`AddZone` | `obj(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,obj<Zanna.Audio.Sound>,i64)` | `Zanna.Game3D.AmbientBed3D.AddZone` |
-| <a id="zanna-game3d-ambientbed3d-setdefault"></a>`SetDefault` | `obj(obj<Zanna.Audio.Sound>,i64)` | `Zanna.Game3D.AmbientBed3D.SetDefault` |
-| <a id="zanna-game3d-ambientbed3d-new"></a>`New` | `obj(obj<Zanna.Game3D.World3D>)` | `Zanna.Game3D.AmbientBed3D.New` |
+| <a id="zanna-game3d-ambientbed3d-addzone"></a>`AddZone` | `obj<Zanna.Game3D.AmbientBed3D>(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,obj<Zanna.Audio.Sound>,i64)` | `Zanna.Game3D.AmbientBed3D.AddZone` |
+| <a id="zanna-game3d-ambientbed3d-setdefault"></a>`SetDefault` | `obj<Zanna.Game3D.AmbientBed3D>(obj<Zanna.Audio.Sound>,i64)` | `Zanna.Game3D.AmbientBed3D.SetDefault` |
+| <a id="zanna-game3d-ambientbed3d-new"></a>`New` | `obj<Zanna.Game3D.AmbientBed3D>(obj<Zanna.Game3D.World3D>)` | `Zanna.Game3D.AmbientBed3D.New` |
 
 <a id="zanna-game3d-effectregistry3d"></a>
 ### `Zanna.Game3D.EffectRegistry3D`
@@ -526,7 +526,7 @@ Constructor: `Zanna.Game3D.CharacterController3D.New`
 | <a id="zanna-game3d-charactercontroller3d-groundentity"></a>`GroundEntity` | `obj<Zanna.Game3D.Entity3D>()` | `Zanna.Game3D.CharacterController3D.GroundEntity` |
 | <a id="zanna-game3d-charactercontroller3d-probeledge"></a>`ProbeLedge` | `obj<Zanna.Graphics3D.LedgeHit3D>(f64)` | `Zanna.Game3D.CharacterController3D.ProbeLedge` |
 | <a id="zanna-game3d-charactercontroller3d-probevault"></a>`ProbeVault` | `obj<Zanna.Graphics3D.LedgeHit3D>(f64,f64)` | `Zanna.Game3D.CharacterController3D.ProbeVault` |
-| <a id="zanna-game3d-charactercontroller3d-new"></a>`New` | `obj(obj,obj,f64,f64,f64)` | `Zanna.Game3D.CharacterController3D.New` |
+| <a id="zanna-game3d-charactercontroller3d-new"></a>`New` | `obj<Zanna.Game3D.CharacterController3D>(obj,obj,f64,f64,f64)` | `Zanna.Game3D.CharacterController3D.New` |
 
 <a id="zanna-game3d-firstpersoncontroller"></a>
 ### `Zanna.Game3D.FirstPersonController`
@@ -556,7 +556,7 @@ Constructor: `Zanna.Game3D.FirstPersonController.New`
 | <a id="zanna-game3d-firstpersoncontroller-releasemouse"></a>`ReleaseMouse` | `void()` | `Zanna.Game3D.FirstPersonController.ReleaseMouse` |
 | <a id="zanna-game3d-firstpersoncontroller-update"></a>`Update` | `void(obj,f64)` | `Zanna.Game3D.FirstPersonController.Update` |
 | <a id="zanna-game3d-firstpersoncontroller-lateupdate"></a>`LateUpdate` | `void(obj,f64)` | `Zanna.Game3D.FirstPersonController.LateUpdate` |
-| <a id="zanna-game3d-firstpersoncontroller-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.FirstPersonController.New` |
+| <a id="zanna-game3d-firstpersoncontroller-new"></a>`New` | `obj<Zanna.Game3D.FirstPersonController>(obj)` | `Zanna.Game3D.FirstPersonController.New` |
 
 <a id="zanna-game3d-freeflycontroller"></a>
 ### `Zanna.Game3D.FreeFlyController`
@@ -585,7 +585,7 @@ Constructor: `Zanna.Game3D.FreeFlyController.New`
 | <a id="zanna-game3d-freeflycontroller-releasemouse"></a>`ReleaseMouse` | `void()` | `Zanna.Game3D.FreeFlyController.ReleaseMouse` |
 | <a id="zanna-game3d-freeflycontroller-update"></a>`Update` | `void(obj,f64)` | `Zanna.Game3D.FreeFlyController.Update` |
 | <a id="zanna-game3d-freeflycontroller-lateupdate"></a>`LateUpdate` | `void(obj,f64)` | `Zanna.Game3D.FreeFlyController.LateUpdate` |
-| <a id="zanna-game3d-freeflycontroller-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.FreeFlyController.New` |
+| <a id="zanna-game3d-freeflycontroller-new"></a>`New` | `obj<Zanna.Game3D.FreeFlyController>(obj)` | `Zanna.Game3D.FreeFlyController.New` |
 
 <a id="zanna-game3d-orbitcontroller"></a>
 ### `Zanna.Game3D.OrbitController`
@@ -613,7 +613,7 @@ Constructor: `Zanna.Game3D.OrbitController.New`
 |---|---|---|
 | <a id="zanna-game3d-orbitcontroller-update"></a>`Update` | `void(obj,f64)` | `Zanna.Game3D.OrbitController.Update` |
 | <a id="zanna-game3d-orbitcontroller-lateupdate"></a>`LateUpdate` | `void(obj,f64)` | `Zanna.Game3D.OrbitController.LateUpdate` |
-| <a id="zanna-game3d-orbitcontroller-new"></a>`New` | `obj(obj,obj)` | `Zanna.Game3D.OrbitController.New` |
+| <a id="zanna-game3d-orbitcontroller-new"></a>`New` | `obj<Zanna.Game3D.OrbitController>(obj,obj)` | `Zanna.Game3D.OrbitController.New` |
 
 <a id="zanna-game3d-followcontroller"></a>
 ### `Zanna.Game3D.FollowController`
@@ -640,7 +640,7 @@ Constructor: `Zanna.Game3D.FollowController.New`
 |---|---|---|
 | <a id="zanna-game3d-followcontroller-update"></a>`Update` | `void(obj,f64)` | `Zanna.Game3D.FollowController.Update` |
 | <a id="zanna-game3d-followcontroller-lateupdate"></a>`LateUpdate` | `void(obj,f64)` | `Zanna.Game3D.FollowController.LateUpdate` |
-| <a id="zanna-game3d-followcontroller-new"></a>`New` | `obj(obj,obj,obj)` | `Zanna.Game3D.FollowController.New` |
+| <a id="zanna-game3d-followcontroller-new"></a>`New` | `obj<Zanna.Game3D.FollowController>(obj,obj,obj)` | `Zanna.Game3D.FollowController.New` |
 
 <a id="zanna-game3d-thirdpersoncontroller"></a>
 ### `Zanna.Game3D.ThirdPersonController`
@@ -681,7 +681,7 @@ Constructor: `Zanna.Game3D.ThirdPersonController.New`
 |---|---|---|
 | <a id="zanna-game3d-thirdpersoncontroller-update"></a>`Update` | `void(obj,f64)` | `Zanna.Game3D.ThirdPersonController.Update` |
 | <a id="zanna-game3d-thirdpersoncontroller-lateupdate"></a>`LateUpdate` | `void(obj,f64)` | `Zanna.Game3D.ThirdPersonController.LateUpdate` |
-| <a id="zanna-game3d-thirdpersoncontroller-new"></a>`New` | `obj(obj,obj<Zanna.Game3D.Entity3D>)` | `Zanna.Game3D.ThirdPersonController.New` |
+| <a id="zanna-game3d-thirdpersoncontroller-new"></a>`New` | `obj<Zanna.Game3D.ThirdPersonController>(obj,obj<Zanna.Game3D.Entity3D>)` | `Zanna.Game3D.ThirdPersonController.New` |
 
 <a id="zanna-game3d-railcamera3d"></a>
 ### `Zanna.Game3D.RailCamera3D`
@@ -711,11 +711,11 @@ Constructor: `Zanna.Game3D.RailCamera3D.New`
 | <a id="zanna-game3d-railcamera3d-setlookentity"></a>`SetLookEntity` | `void(obj<Zanna.Game3D.Entity3D>)` | `Zanna.Game3D.RailCamera3D.SetLookEntity` |
 | <a id="zanna-game3d-railcamera3d-setlookpoint"></a>`SetLookPoint` | `void(obj<Zanna.Math.Vec3>)` | `Zanna.Game3D.RailCamera3D.SetLookPoint` |
 | <a id="zanna-game3d-railcamera3d-setlookpath"></a>`SetLookPath` | `void(obj<Zanna.Graphics3D.Path3D>)` | `Zanna.Game3D.RailCamera3D.SetLookPath` |
-| <a id="zanna-game3d-railcamera3d-addfovkey"></a>`AddFovKey` | `obj(f64,f64)` | `Zanna.Game3D.RailCamera3D.AddFovKey` |
-| <a id="zanna-game3d-railcamera3d-addrollkey"></a>`AddRollKey` | `obj(f64,f64)` | `Zanna.Game3D.RailCamera3D.AddRollKey` |
+| <a id="zanna-game3d-railcamera3d-addfovkey"></a>`AddFovKey` | `obj<Zanna.Game3D.RailCamera3D>(f64,f64)` | `Zanna.Game3D.RailCamera3D.AddFovKey` |
+| <a id="zanna-game3d-railcamera3d-addrollkey"></a>`AddRollKey` | `obj<Zanna.Game3D.RailCamera3D>(f64,f64)` | `Zanna.Game3D.RailCamera3D.AddRollKey` |
 | <a id="zanna-game3d-railcamera3d-update"></a>`Update` | `void(obj,f64)` | `Zanna.Game3D.RailCamera3D.Update` |
 | <a id="zanna-game3d-railcamera3d-lateupdate"></a>`LateUpdate` | `void(obj,f64)` | `Zanna.Game3D.RailCamera3D.LateUpdate` |
-| <a id="zanna-game3d-railcamera3d-new"></a>`New` | `obj(obj,obj<Zanna.Graphics3D.Path3D>)` | `Zanna.Game3D.RailCamera3D.New` |
+| <a id="zanna-game3d-railcamera3d-new"></a>`New` | `obj<Zanna.Game3D.RailCamera3D>(obj,obj<Zanna.Graphics3D.Path3D>)` | `Zanna.Game3D.RailCamera3D.New` |
 
 <a id="zanna-game3d-targetlock3d"></a>
 ### `Zanna.Game3D.TargetLock3D`
@@ -753,7 +753,7 @@ Constructor: `Zanna.Game3D.TargetLock3D.New`
 | <a id="zanna-game3d-targetlock3d-justacquired"></a>`JustAcquired` | `i1()` | `Zanna.Game3D.TargetLock3D.JustAcquired` |
 | <a id="zanna-game3d-targetlock3d-justlost"></a>`JustLost` | `i1()` | `Zanna.Game3D.TargetLock3D.JustLost` |
 | <a id="zanna-game3d-targetlock3d-lockedmovebias"></a>`LockedMoveBias` | `obj<Zanna.Math.Vec3>(obj<Zanna.Math.Vec3>)` | `Zanna.Game3D.TargetLock3D.LockedMoveBias` |
-| <a id="zanna-game3d-targetlock3d-new"></a>`New` | `obj(obj,obj<Zanna.Game3D.Entity3D>)` | `Zanna.Game3D.TargetLock3D.New` |
+| <a id="zanna-game3d-targetlock3d-new"></a>`New` | `obj<Zanna.Game3D.TargetLock3D>(obj,obj<Zanna.Game3D.Entity3D>)` | `Zanna.Game3D.TargetLock3D.New` |
 
 <a id="zanna-game3d-timeline3d"></a>
 ### `Zanna.Game3D.Timeline3D`
@@ -781,22 +781,22 @@ Constructor: `Zanna.Game3D.Timeline3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-timeline3d-addcameracut"></a>`AddCameraCut` | `obj(f64,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,f64)` | `Zanna.Game3D.Timeline3D.AddCameraCut` |
-| <a id="zanna-game3d-timeline3d-addcameramove"></a>`AddCameraMove` | `obj(f64,f64,obj<Zanna.Graphics3D.Path3D>,obj,i64)` | `Zanna.Game3D.Timeline3D.AddCameraMove` |
-| <a id="zanna-game3d-timeline3d-addfovramp"></a>`AddFovRamp` | `obj(f64,f64,f64,f64,i64)` | `Zanna.Game3D.Timeline3D.AddFovRamp` |
-| <a id="zanna-game3d-timeline3d-addanim"></a>`AddAnim` | `obj(f64,str,str,f64)` | `Zanna.Game3D.Timeline3D.AddAnim` |
-| <a id="zanna-game3d-timeline3d-addaudio"></a>`AddAudio` | `obj(f64,obj,i1,obj<Zanna.Math.Vec3>)` | `Zanna.Game3D.Timeline3D.AddAudio` |
-| <a id="zanna-game3d-timeline3d-addsubtitle"></a>`AddSubtitle` | `obj(f64,f64,str)` | `Zanna.Game3D.Timeline3D.AddSubtitle` |
-| <a id="zanna-game3d-timeline3d-addletterbox"></a>`AddLetterbox` | `obj(f64,f64,f64)` | `Zanna.Game3D.Timeline3D.AddLetterbox` |
-| <a id="zanna-game3d-timeline3d-addfade"></a>`AddFade` | `obj(f64,f64,f64,f64)` | `Zanna.Game3D.Timeline3D.AddFade` |
-| <a id="zanna-game3d-timeline3d-addmarker"></a>`AddMarker` | `obj(f64,i64)` | `Zanna.Game3D.Timeline3D.AddMarker` |
+| <a id="zanna-game3d-timeline3d-addcameracut"></a>`AddCameraCut` | `obj<Zanna.Game3D.Timeline3D>(f64,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,f64)` | `Zanna.Game3D.Timeline3D.AddCameraCut` |
+| <a id="zanna-game3d-timeline3d-addcameramove"></a>`AddCameraMove` | `obj<Zanna.Game3D.Timeline3D>(f64,f64,obj<Zanna.Graphics3D.Path3D>,obj,i64)` | `Zanna.Game3D.Timeline3D.AddCameraMove` |
+| <a id="zanna-game3d-timeline3d-addfovramp"></a>`AddFovRamp` | `obj<Zanna.Game3D.Timeline3D>(f64,f64,f64,f64,i64)` | `Zanna.Game3D.Timeline3D.AddFovRamp` |
+| <a id="zanna-game3d-timeline3d-addanim"></a>`AddAnim` | `obj<Zanna.Game3D.Timeline3D>(f64,str,str,f64)` | `Zanna.Game3D.Timeline3D.AddAnim` |
+| <a id="zanna-game3d-timeline3d-addaudio"></a>`AddAudio` | `obj<Zanna.Game3D.Timeline3D>(f64,obj,i1,obj<Zanna.Math.Vec3>)` | `Zanna.Game3D.Timeline3D.AddAudio` |
+| <a id="zanna-game3d-timeline3d-addsubtitle"></a>`AddSubtitle` | `obj<Zanna.Game3D.Timeline3D>(f64,f64,str)` | `Zanna.Game3D.Timeline3D.AddSubtitle` |
+| <a id="zanna-game3d-timeline3d-addletterbox"></a>`AddLetterbox` | `obj<Zanna.Game3D.Timeline3D>(f64,f64,f64)` | `Zanna.Game3D.Timeline3D.AddLetterbox` |
+| <a id="zanna-game3d-timeline3d-addfade"></a>`AddFade` | `obj<Zanna.Game3D.Timeline3D>(f64,f64,f64,f64)` | `Zanna.Game3D.Timeline3D.AddFade` |
+| <a id="zanna-game3d-timeline3d-addmarker"></a>`AddMarker` | `obj<Zanna.Game3D.Timeline3D>(f64,i64)` | `Zanna.Game3D.Timeline3D.AddMarker` |
 | <a id="zanna-game3d-timeline3d-justfinished"></a>`JustFinished` | `i1()` | `Zanna.Game3D.Timeline3D.JustFinished` |
 | <a id="zanna-game3d-timeline3d-eventsfiredcount"></a>`EventsFiredCount` | `i64()` | `Zanna.Game3D.Timeline3D.EventsFiredCount` |
 | <a id="zanna-game3d-timeline3d-eventfiredid"></a>`EventFiredId` | `i64(i64)` | `Zanna.Game3D.Timeline3D.EventFiredId` |
 | <a id="zanna-game3d-timeline3d-activesubtitle"></a>`ActiveSubtitle` | `str()` | `Zanna.Game3D.Timeline3D.ActiveSubtitle` |
 | <a id="zanna-game3d-timeline3d-skip"></a>`Skip` | `void()` | `Zanna.Game3D.Timeline3D.Skip` |
 | <a id="zanna-game3d-timeline3d-stop"></a>`Stop` | `void()` | `Zanna.Game3D.Timeline3D.Stop` |
-| <a id="zanna-game3d-timeline3d-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.Timeline3D.New` |
+| <a id="zanna-game3d-timeline3d-new"></a>`New` | `obj<Zanna.Game3D.Timeline3D>(obj)` | `Zanna.Game3D.Timeline3D.New` |
 
 <a id="zanna-game3d-dialogue3d"></a>
 ### `Zanna.Game3D.Dialogue3D`
@@ -822,9 +822,9 @@ Constructor: `Zanna.Game3D.Dialogue3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-dialogue3d-say"></a>`Say` | `obj(str,str)` | `Zanna.Game3D.Dialogue3D.Say` |
-| <a id="zanna-game3d-dialogue3d-sayvoiced"></a>`SayVoiced` | `obj(str,str,obj)` | `Zanna.Game3D.Dialogue3D.SayVoiced` |
-| <a id="zanna-game3d-dialogue3d-askchoice"></a>`AskChoice` | `obj(obj)` | `Zanna.Game3D.Dialogue3D.AskChoice` |
+| <a id="zanna-game3d-dialogue3d-say"></a>`Say` | `obj<Zanna.Game3D.Dialogue3D>(str,str)` | `Zanna.Game3D.Dialogue3D.Say` |
+| <a id="zanna-game3d-dialogue3d-sayvoiced"></a>`SayVoiced` | `obj<Zanna.Game3D.Dialogue3D>(str,str,obj)` | `Zanna.Game3D.Dialogue3D.SayVoiced` |
+| <a id="zanna-game3d-dialogue3d-askchoice"></a>`AskChoice` | `obj<Zanna.Game3D.Dialogue3D>(obj)` | `Zanna.Game3D.Dialogue3D.AskChoice` |
 | <a id="zanna-game3d-dialogue3d-show"></a>`Show` | `void()` | `Zanna.Game3D.Dialogue3D.Show` |
 | <a id="zanna-game3d-dialogue3d-hide"></a>`Hide` | `void()` | `Zanna.Game3D.Dialogue3D.Hide` |
 | <a id="zanna-game3d-dialogue3d-advance"></a>`Advance` | `void()` | `Zanna.Game3D.Dialogue3D.Advance` |
@@ -840,7 +840,7 @@ Constructor: `Zanna.Game3D.Dialogue3D.New`
 | <a id="zanna-game3d-dialogue3d-setrevealspeed"></a>`SetRevealSpeed` | `void(f64)` | `Zanna.Game3D.Dialogue3D.SetRevealSpeed` |
 | <a id="zanna-game3d-dialogue3d-setlocale"></a>`SetLocale` | `void(obj)` | `Zanna.Game3D.Dialogue3D.SetLocale` |
 | <a id="zanna-game3d-dialogue3d-setstyle"></a>`SetStyle` | `void(f64,i64)` | `Zanna.Game3D.Dialogue3D.SetStyle` |
-| <a id="zanna-game3d-dialogue3d-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.Dialogue3D.New` |
+| <a id="zanna-game3d-dialogue3d-new"></a>`New` | `obj<Zanna.Game3D.Dialogue3D>(obj)` | `Zanna.Game3D.Dialogue3D.New` |
 
 <a id="zanna-game3d-lipsync3d"></a>
 ### `Zanna.Game3D.LipSync3D`
@@ -865,15 +865,15 @@ Constructor: `Zanna.Game3D.LipSync3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-lipsync3d-bindmorph"></a>`BindMorph` | `obj(obj<Zanna.Graphics3D.MorphTarget3D>)` | `Zanna.Game3D.LipSync3D.BindMorph` |
-| <a id="zanna-game3d-lipsync3d-bindmouthshape"></a>`BindMouthShape` | `obj(str,f64)` | `Zanna.Game3D.LipSync3D.BindMouthShape` |
-| <a id="zanna-game3d-lipsync3d-bindheadbone"></a>`BindHeadBone` | `obj(str)` | `Zanna.Game3D.LipSync3D.BindHeadBone` |
+| <a id="zanna-game3d-lipsync3d-bindmorph"></a>`BindMorph` | `obj<Zanna.Game3D.LipSync3D>(obj<Zanna.Graphics3D.MorphTarget3D>)` | `Zanna.Game3D.LipSync3D.BindMorph` |
+| <a id="zanna-game3d-lipsync3d-bindmouthshape"></a>`BindMouthShape` | `obj<Zanna.Game3D.LipSync3D>(str,f64)` | `Zanna.Game3D.LipSync3D.BindMouthShape` |
+| <a id="zanna-game3d-lipsync3d-bindheadbone"></a>`BindHeadBone` | `obj<Zanna.Game3D.LipSync3D>(str)` | `Zanna.Game3D.LipSync3D.BindHeadBone` |
 | <a id="zanna-game3d-lipsync3d-drive"></a>`Drive` | `void(i64)` | `Zanna.Game3D.LipSync3D.Drive` |
 | <a id="zanna-game3d-lipsync3d-drivelevel"></a>`DriveLevel` | `void(f64)` | `Zanna.Game3D.LipSync3D.DriveLevel` |
 | <a id="zanna-game3d-lipsync3d-stop"></a>`Stop` | `void()` | `Zanna.Game3D.LipSync3D.Stop` |
 | <a id="zanna-game3d-lipsync3d-setblink"></a>`SetBlink` | `void(i1,str,f64,f64)` | `Zanna.Game3D.LipSync3D.SetBlink` |
 | <a id="zanna-game3d-lipsync3d-setgaze"></a>`SetGaze` | `void(obj)` | `Zanna.Game3D.LipSync3D.SetGaze` |
-| <a id="zanna-game3d-lipsync3d-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.LipSync3D.New` |
+| <a id="zanna-game3d-lipsync3d-new"></a>`New` | `obj<Zanna.Game3D.LipSync3D>(obj)` | `Zanna.Game3D.LipSync3D.New` |
 
 <a id="zanna-game3d-hitbox3d"></a>
 ### `Zanna.Game3D.Hitbox3D`
@@ -900,10 +900,10 @@ Constructor: `Zanna.Game3D.Hitbox3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-hitbox3d-newonbone"></a>`NewOnBone` | `obj(obj,str,obj<Zanna.Graphics3D.Collider3D>)` | `Zanna.Game3D.Hitbox3D.NewOnBone` |
-| <a id="zanna-game3d-hitbox3d-bindwindow"></a>`BindWindow` | `obj(str,f64,f64)` | `Zanna.Game3D.Hitbox3D.BindWindow` |
-| <a id="zanna-game3d-hitbox3d-setlocaloffset"></a>`SetLocalOffset` | `obj(f64,f64,f64)` | `Zanna.Game3D.Hitbox3D.SetLocalOffset` |
-| <a id="zanna-game3d-hitbox3d-new"></a>`New` | `obj(obj,obj<Zanna.Graphics3D.Collider3D>)` | `Zanna.Game3D.Hitbox3D.New` |
+| <a id="zanna-game3d-hitbox3d-newonbone"></a>`NewOnBone` | `obj<Zanna.Game3D.Hitbox3D>(obj,str,obj<Zanna.Graphics3D.Collider3D>)` | `Zanna.Game3D.Hitbox3D.NewOnBone` |
+| <a id="zanna-game3d-hitbox3d-bindwindow"></a>`BindWindow` | `obj<Zanna.Game3D.Hitbox3D>(str,f64,f64)` | `Zanna.Game3D.Hitbox3D.BindWindow` |
+| <a id="zanna-game3d-hitbox3d-setlocaloffset"></a>`SetLocalOffset` | `obj<Zanna.Game3D.Hitbox3D>(f64,f64,f64)` | `Zanna.Game3D.Hitbox3D.SetLocalOffset` |
+| <a id="zanna-game3d-hitbox3d-new"></a>`New` | `obj<Zanna.Game3D.Hitbox3D>(obj,obj<Zanna.Graphics3D.Collider3D>)` | `Zanna.Game3D.Hitbox3D.New` |
 
 <a id="zanna-game3d-hitboxkind"></a>
 ### `Zanna.Game3D.HitboxKind`
@@ -978,7 +978,7 @@ Constructor: `Zanna.Game3D.Health3D.New`
 | <a id="zanna-game3d-health3d-lastdamage"></a>`LastDamage` | `f64()` | `Zanna.Game3D.Health3D.LastDamage` |
 | <a id="zanna-game3d-health3d-lasttag"></a>`LastTag` | `i64()` | `Zanna.Game3D.Health3D.LastTag` |
 | <a id="zanna-game3d-health3d-applyknockback"></a>`ApplyKnockback` | `i1(obj<Zanna.Math.Vec3>,f64,obj<Zanna.Math.Vec3>)` | `Zanna.Game3D.Health3D.ApplyKnockback` |
-| <a id="zanna-game3d-health3d-new"></a>`New` | `obj(f64)` | `Zanna.Game3D.Health3D.New` |
+| <a id="zanna-game3d-health3d-new"></a>`New` | `obj<Zanna.Game3D.Health3D>(f64)` | `Zanna.Game3D.Health3D.New` |
 
 <a id="zanna-game3d-damageevent3d"></a>
 ### `Zanna.Game3D.DamageEvent3D`
@@ -1065,20 +1065,20 @@ Constructor: `Zanna.Game3D.World3D.New`
 | <a id="zanna-game3d-world3d-hitchsource"></a>`HitchSource` | `i64(i64)` | `Zanna.Game3D.World3D.HitchSource` |
 | <a id="zanna-game3d-world3d-hitchms"></a>`HitchMs` | `f64(i64)` | `Zanna.Game3D.World3D.HitchMs` |
 | <a id="zanna-game3d-world3d-clearhitches"></a>`ClearHitches` | `void()` | `Zanna.Game3D.World3D.ClearHitches` |
-| <a id="zanna-game3d-world3d-newwithcamera"></a>`NewWithCamera` | `obj(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.NewWithCamera` |
-| <a id="zanna-game3d-world3d-newwithhorizontalcamera"></a>`NewWithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.NewWithHorizontalCamera` |
-| <a id="zanna-game3d-world3d-withcamera"></a>`WithCamera` | `obj(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.WithCamera` |
-| <a id="zanna-game3d-world3d-withhorizontalcamera"></a>`WithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.WithHorizontalCamera` |
-| <a id="zanna-game3d-world3d-withcanvascamera"></a>`WithCanvasCamera` | `obj(obj<Zanna.Graphics.Canvas>,f64,f64,f64)` | `Zanna.Game3D.World3D.WithCanvasCamera` |
-| <a id="zanna-game3d-world3d-newfullscreen"></a>`NewFullscreen` | `obj(str)` | `Zanna.Game3D.World3D.NewFullscreen` |
-| <a id="zanna-game3d-world3d-newfullscreenwithhorizontalcamera"></a>`NewFullscreenWithHorizontalCamera` | `obj(str,f64,f64,f64)` | `Zanna.Game3D.World3D.NewFullscreenWithHorizontalCamera` |
+| <a id="zanna-game3d-world3d-newwithcamera"></a>`NewWithCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.NewWithCamera` |
+| <a id="zanna-game3d-world3d-newwithhorizontalcamera"></a>`NewWithHorizontalCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.NewWithHorizontalCamera` |
+| <a id="zanna-game3d-world3d-withcamera"></a>`WithCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.WithCamera` |
+| <a id="zanna-game3d-world3d-withhorizontalcamera"></a>`WithHorizontalCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.WithHorizontalCamera` |
+| <a id="zanna-game3d-world3d-withcanvascamera"></a>`WithCanvasCamera` | `obj<Zanna.Game3D.World3D>(obj<Zanna.Graphics.Canvas>,f64,f64,f64)` | `Zanna.Game3D.World3D.WithCanvasCamera` |
+| <a id="zanna-game3d-world3d-newfullscreen"></a>`NewFullscreen` | `obj<Zanna.Game3D.World3D>(str)` | `Zanna.Game3D.World3D.NewFullscreen` |
+| <a id="zanna-game3d-world3d-newfullscreenwithhorizontalcamera"></a>`NewFullscreenWithHorizontalCamera` | `obj<Zanna.Game3D.World3D>(str,f64,f64,f64)` | `Zanna.Game3D.World3D.NewFullscreenWithHorizontalCamera` |
 | <a id="zanna-game3d-world3d-destroy"></a>`Destroy` | `void()` | `Zanna.Game3D.World3D.Destroy` |
 | <a id="zanna-game3d-world3d-isdestroyed"></a>`IsDestroyed` | `i1()` | `Zanna.Game3D.World3D.IsDestroyed` |
 | <a id="zanna-game3d-world3d-setworkercount"></a>`SetWorkerCount` | `void(i64)` | `Zanna.Game3D.World3D.SetWorkerCount` |
 | <a id="zanna-game3d-world3d-setoriginrebasethreshold"></a>`SetOriginRebaseThreshold` | `void(f64)` | `Zanna.Game3D.World3D.SetOriginRebaseThreshold` |
 | <a id="zanna-game3d-world3d-rebaseorigin"></a>`RebaseOrigin` | `void(f64,f64,f64)` | `Zanna.Game3D.World3D.RebaseOrigin` |
-| <a id="zanna-game3d-world3d-spawn"></a>`Spawn` | `obj(obj)` | `Zanna.Game3D.World3D.Spawn` |
-| <a id="zanna-game3d-world3d-spawnheightfieldcollider"></a>`SpawnHeightfieldCollider` | `obj(obj,f64,f64,f64,f64,f64,f64)` | `Zanna.Game3D.World3D.SpawnHeightfieldCollider` |
+| <a id="zanna-game3d-world3d-spawn"></a>`Spawn` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.World3D.Spawn` |
+| <a id="zanna-game3d-world3d-spawnheightfieldcollider"></a>`SpawnHeightfieldCollider` | `obj<Zanna.Game3D.Entity3D>(obj,f64,f64,f64,f64,f64,f64)` | `Zanna.Game3D.World3D.SpawnHeightfieldCollider` |
 | <a id="zanna-game3d-world3d-despawn"></a>`Despawn` | `void(obj)` | `Zanna.Game3D.World3D.Despawn` |
 | <a id="zanna-game3d-world3d-findnode"></a>`FindNode` | `obj<Zanna.Option>(str)` | `Zanna.Game3D.World3D.FindNode` |
 | <a id="zanna-game3d-world3d-findentity"></a>`FindEntity` | `obj<Zanna.Option>(str)` | `Zanna.Game3D.World3D.FindEntity` |
@@ -1122,7 +1122,7 @@ Constructor: `Zanna.Game3D.World3D.New`
 | <a id="zanna-game3d-world3d-drawoverlay"></a>`DrawOverlay` | `void(obj)` | `Zanna.Game3D.World3D.DrawOverlay` |
 | <a id="zanna-game3d-world3d-capturefinalframe"></a>`CaptureFinalFrame` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Game3D.World3D.CaptureFinalFrame` |
 | <a id="zanna-game3d-world3d-present"></a>`Present` | `void()` | `Zanna.Game3D.World3D.Present` |
-| <a id="zanna-game3d-world3d-new"></a>`New` | `obj(str,i64,i64)` | `Zanna.Game3D.World3D.New` |
+| <a id="zanna-game3d-world3d-new"></a>`New` | `obj<Zanna.Game3D.World3D>(str,i64,i64)` | `Zanna.Game3D.World3D.New` |
 
 <a id="zanna-game3d-worldstream3d"></a>
 ### `Zanna.Game3D.WorldStream3D`
@@ -1232,13 +1232,13 @@ Its public surface exposes operations including `Plastic`, `Metal`, `Rubber`, `G
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-materials-plastic"></a>`Plastic` | `obj(f64,f64,f64)` | `Zanna.Game3D.Materials.Plastic` |
-| <a id="zanna-game3d-materials-metal"></a>`Metal` | `obj(f64,f64,f64)` | `Zanna.Game3D.Materials.Metal` |
-| <a id="zanna-game3d-materials-rubber"></a>`Rubber` | `obj(f64,f64,f64)` | `Zanna.Game3D.Materials.Rubber` |
-| <a id="zanna-game3d-materials-glass"></a>`Glass` | `obj(f64,f64,f64,f64)` | `Zanna.Game3D.Materials.Glass` |
-| <a id="zanna-game3d-materials-emissive"></a>`Emissive` | `obj(f64,f64,f64,f64)` | `Zanna.Game3D.Materials.Emissive` |
-| <a id="zanna-game3d-materials-unlit"></a>`Unlit` | `obj(f64,f64,f64)` | `Zanna.Game3D.Materials.Unlit` |
-| <a id="zanna-game3d-materials-fromalbedomap"></a>`FromAlbedoMap` | `obj(obj)` | `Zanna.Game3D.Materials.FromAlbedoMap` |
+| <a id="zanna-game3d-materials-plastic"></a>`Plastic` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `Zanna.Game3D.Materials.Plastic` |
+| <a id="zanna-game3d-materials-metal"></a>`Metal` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `Zanna.Game3D.Materials.Metal` |
+| <a id="zanna-game3d-materials-rubber"></a>`Rubber` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `Zanna.Game3D.Materials.Rubber` |
+| <a id="zanna-game3d-materials-glass"></a>`Glass` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64,f64)` | `Zanna.Game3D.Materials.Glass` |
+| <a id="zanna-game3d-materials-emissive"></a>`Emissive` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64,f64)` | `Zanna.Game3D.Materials.Emissive` |
+| <a id="zanna-game3d-materials-unlit"></a>`Unlit` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `Zanna.Game3D.Materials.Unlit` |
+| <a id="zanna-game3d-materials-fromalbedomap"></a>`FromAlbedoMap` | `obj<Zanna.Graphics3D.Material3D>(obj)` | `Zanna.Game3D.Materials.FromAlbedoMap` |
 
 <a id="zanna-game3d-postfx"></a>
 ### `Zanna.Game3D.PostFX`
@@ -1292,8 +1292,8 @@ Its public surface exposes operations including `Box`, `BoxXYZ`, `Sphere`, `Cyli
 | <a id="zanna-game3d-prefab-loadasset"></a>`LoadAsset` | `obj<Zanna.Game3D.SceneTemplate>(str)` | `Zanna.Game3D.Prefab.LoadAsset` |
 | <a id="zanna-game3d-prefab-loadresult"></a>`LoadResult` | `obj<Zanna.Result>(str)` | `Zanna.Game3D.Prefab.LoadResult` |
 | <a id="zanna-game3d-prefab-loadassetresult"></a>`LoadAssetResult` | `obj<Zanna.Result>(str)` | `Zanna.Game3D.Prefab.LoadAssetResult` |
-| <a id="zanna-game3d-prefab-loadasync"></a>`LoadAsync` | `obj(str)` | `Zanna.Game3D.Prefab.LoadAsync` |
-| <a id="zanna-game3d-prefab-loadassetasync"></a>`LoadAssetAsync` | `obj(str)` | `Zanna.Game3D.Prefab.LoadAssetAsync` |
+| <a id="zanna-game3d-prefab-loadasync"></a>`LoadAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `Zanna.Game3D.Prefab.LoadAsync` |
+| <a id="zanna-game3d-prefab-loadassetasync"></a>`LoadAssetAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `Zanna.Game3D.Prefab.LoadAssetAsync` |
 
 <a id="zanna-game3d-bodydef"></a>
 ### `Zanna.Game3D.BodyDef`
@@ -1324,15 +1324,15 @@ construct the class directly. Its public surface exposes properties such as `Sha
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-bodydef-box"></a>`Box` | `obj(f64,f64,f64,f64)` | `Zanna.Game3D.BodyDef.Box` |
-| <a id="zanna-game3d-bodydef-sphere"></a>`Sphere` | `obj(f64,f64)` | `Zanna.Game3D.BodyDef.Sphere` |
-| <a id="zanna-game3d-bodydef-capsule"></a>`Capsule` | `obj(f64,f64,f64)` | `Zanna.Game3D.BodyDef.Capsule` |
-| <a id="zanna-game3d-bodydef-staticbox"></a>`StaticBox` | `obj(f64,f64,f64)` | `Zanna.Game3D.BodyDef.StaticBox` |
-| <a id="zanna-game3d-bodydef-staticplane"></a>`StaticPlane` | `obj(f64)` | `Zanna.Game3D.BodyDef.StaticPlane` |
-| <a id="zanna-game3d-bodydef-withlayer"></a>`WithLayer` | `obj(i64)` | `Zanna.Game3D.BodyDef.WithLayer` |
-| <a id="zanna-game3d-bodydef-withmask"></a>`WithMask` | `obj(obj)` | `Zanna.Game3D.BodyDef.WithMask` |
-| <a id="zanna-game3d-bodydef-astrigger"></a>`AsTrigger` | `obj()` | `Zanna.Game3D.BodyDef.AsTrigger` |
-| <a id="zanna-game3d-bodydef-withsync"></a>`WithSync` | `obj(i64)` | `Zanna.Game3D.BodyDef.WithSync` |
+| <a id="zanna-game3d-bodydef-box"></a>`Box` | `obj<Zanna.Game3D.BodyDef>(f64,f64,f64,f64)` | `Zanna.Game3D.BodyDef.Box` |
+| <a id="zanna-game3d-bodydef-sphere"></a>`Sphere` | `obj<Zanna.Game3D.BodyDef>(f64,f64)` | `Zanna.Game3D.BodyDef.Sphere` |
+| <a id="zanna-game3d-bodydef-capsule"></a>`Capsule` | `obj<Zanna.Game3D.BodyDef>(f64,f64,f64)` | `Zanna.Game3D.BodyDef.Capsule` |
+| <a id="zanna-game3d-bodydef-staticbox"></a>`StaticBox` | `obj<Zanna.Game3D.BodyDef>(f64,f64,f64)` | `Zanna.Game3D.BodyDef.StaticBox` |
+| <a id="zanna-game3d-bodydef-staticplane"></a>`StaticPlane` | `obj<Zanna.Game3D.BodyDef>(f64)` | `Zanna.Game3D.BodyDef.StaticPlane` |
+| <a id="zanna-game3d-bodydef-withlayer"></a>`WithLayer` | `obj<Zanna.Game3D.BodyDef>(i64)` | `Zanna.Game3D.BodyDef.WithLayer` |
+| <a id="zanna-game3d-bodydef-withmask"></a>`WithMask` | `obj<Zanna.Game3D.BodyDef>(obj)` | `Zanna.Game3D.BodyDef.WithMask` |
+| <a id="zanna-game3d-bodydef-astrigger"></a>`AsTrigger` | `obj<Zanna.Game3D.BodyDef>()` | `Zanna.Game3D.BodyDef.AsTrigger` |
+| <a id="zanna-game3d-bodydef-withsync"></a>`WithSync` | `obj<Zanna.Game3D.BodyDef>(i64)` | `Zanna.Game3D.BodyDef.WithSync` |
 
 <a id="zanna-game3d-collision3devent"></a>
 ### `Zanna.Game3D.Collision3DEvent`
@@ -1361,12 +1361,12 @@ callers to construct the class directly. Its public surface exposes properties s
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-collision3devent-point"></a>`Point` | `obj()` | `Zanna.Game3D.Collision3DEvent.Point` |
-| <a id="zanna-game3d-collision3devent-normal"></a>`Normal` | `obj()` | `Zanna.Game3D.Collision3DEvent.Normal` |
-| <a id="zanna-game3d-collision3devent-contactpoint"></a>`ContactPoint` | `obj(i64)` | `Zanna.Game3D.Collision3DEvent.ContactPoint` |
-| <a id="zanna-game3d-collision3devent-contactnormal"></a>`ContactNormal` | `obj(i64)` | `Zanna.Game3D.Collision3DEvent.ContactNormal` |
+| <a id="zanna-game3d-collision3devent-point"></a>`Point` | `obj<Zanna.Math.Vec3>()` | `Zanna.Game3D.Collision3DEvent.Point` |
+| <a id="zanna-game3d-collision3devent-normal"></a>`Normal` | `obj<Zanna.Math.Vec3>()` | `Zanna.Game3D.Collision3DEvent.Normal` |
+| <a id="zanna-game3d-collision3devent-contactpoint"></a>`ContactPoint` | `obj<Zanna.Math.Vec3>(i64)` | `Zanna.Game3D.Collision3DEvent.ContactPoint` |
+| <a id="zanna-game3d-collision3devent-contactnormal"></a>`ContactNormal` | `obj<Zanna.Math.Vec3>(i64)` | `Zanna.Game3D.Collision3DEvent.ContactNormal` |
 | <a id="zanna-game3d-collision3devent-contactseparation"></a>`ContactSeparation` | `f64(i64)` | `Zanna.Game3D.Collision3DEvent.ContactSeparation` |
-| <a id="zanna-game3d-collision3devent-other"></a>`Other` | `obj(obj)` | `Zanna.Game3D.Collision3DEvent.Other` |
+| <a id="zanna-game3d-collision3devent-other"></a>`Other` | `obj<Zanna.Game3D.Entity3D>(obj)` | `Zanna.Game3D.Collision3DEvent.Other` |
 
 <a id="zanna-game3d-assets3d"></a>
 ### `Zanna.Game3D.Assets3D`
@@ -1381,8 +1381,8 @@ Its public surface exposes operations including `LoadEntity`, `LoadEntityAsset`,
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-assets3d-loadentity"></a>`LoadEntity` | `obj(str)` | `Zanna.Game3D.Assets3D.LoadEntity` |
-| <a id="zanna-game3d-assets3d-loadentityasset"></a>`LoadEntityAsset` | `obj(str)` | `Zanna.Game3D.Assets3D.LoadEntityAsset` |
+| <a id="zanna-game3d-assets3d-loadentity"></a>`LoadEntity` | `obj<Zanna.Game3D.Entity3D>(str)` | `Zanna.Game3D.Assets3D.LoadEntity` |
+| <a id="zanna-game3d-assets3d-loadentityasset"></a>`LoadEntityAsset` | `obj<Zanna.Game3D.Entity3D>(str)` | `Zanna.Game3D.Assets3D.LoadEntityAsset` |
 | <a id="zanna-game3d-assets3d-loadanimation"></a>`LoadAnimation` | `obj<Zanna.Graphics3D.Animation3D>(str,i64)` | `Zanna.Game3D.Assets3D.LoadAnimation` |
 | <a id="zanna-game3d-assets3d-loadanimationasset"></a>`LoadAnimationAsset` | `obj<Zanna.Graphics3D.Animation3D>(str,i64)` | `Zanna.Game3D.Assets3D.LoadAnimationAsset` |
 | <a id="zanna-game3d-assets3d-loadnodeanimation"></a>`LoadNodeAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(str,i64)` | `Zanna.Game3D.Assets3D.LoadNodeAnimation` |
@@ -1393,8 +1393,8 @@ Its public surface exposes operations including `LoadEntity`, `LoadEntityAsset`,
 | <a id="zanna-game3d-assets3d-loadanimationassetresult"></a>`LoadAnimationAssetResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Game3D.Assets3D.LoadAnimationAssetResult` |
 | <a id="zanna-game3d-assets3d-loadnodeanimationresult"></a>`LoadNodeAnimationResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Game3D.Assets3D.LoadNodeAnimationResult` |
 | <a id="zanna-game3d-assets3d-loadnodeanimationassetresult"></a>`LoadNodeAnimationAssetResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Game3D.Assets3D.LoadNodeAnimationAssetResult` |
-| <a id="zanna-game3d-assets3d-loadentityasync"></a>`LoadEntityAsync` | `obj(str)` | `Zanna.Game3D.Assets3D.LoadEntityAsync` |
-| <a id="zanna-game3d-assets3d-loadentityassetasync"></a>`LoadEntityAssetAsync` | `obj(str)` | `Zanna.Game3D.Assets3D.LoadEntityAssetAsync` |
+| <a id="zanna-game3d-assets3d-loadentityasync"></a>`LoadEntityAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `Zanna.Game3D.Assets3D.LoadEntityAsync` |
+| <a id="zanna-game3d-assets3d-loadentityassetasync"></a>`LoadEntityAssetAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `Zanna.Game3D.Assets3D.LoadEntityAssetAsync` |
 | <a id="zanna-game3d-assets3d-setresidencybudget"></a>`SetResidencyBudget` | `void(i64)` | `Zanna.Game3D.Assets3D.SetResidencyBudget` |
 | <a id="zanna-game3d-assets3d-getresidentbytes"></a>`GetResidentBytes` | `i64()` | `Zanna.Game3D.Assets3D.GetResidentBytes` |
 | <a id="zanna-game3d-assets3d-setresidencyhint"></a>`SetResidencyHint` | `void(obj,f64,f64)` | `Zanna.Game3D.Assets3D.SetResidencyHint` |
@@ -1427,7 +1427,7 @@ to construct the class directly. Its public surface exposes properties such as `
 |---|---|---|
 | <a id="zanna-game3d-assethandle3d-cancel"></a>`Cancel` | `void()` | `Zanna.Game3D.AssetHandle3D.Cancel` |
 | <a id="zanna-game3d-assethandle3d-getentity"></a>`GetEntity` | `obj<Zanna.Game3D.Entity3D>()` | `Zanna.Game3D.AssetHandle3D.GetEntity` |
-| <a id="zanna-game3d-assethandle3d-getprefab"></a>`GetPrefab` | `obj()` | `Zanna.Game3D.AssetHandle3D.GetPrefab` |
+| <a id="zanna-game3d-assethandle3d-getprefab"></a>`GetPrefab` | `obj<Zanna.Game3D.SceneTemplate>()` | `Zanna.Game3D.AssetHandle3D.GetPrefab` |
 
 <a id="zanna-game3d-scenetemplate"></a>
 ### `Zanna.Game3D.SceneTemplate`
@@ -1454,7 +1454,7 @@ to construct the class directly. Its public surface exposes properties such as `
 |---|---|---|
 | <a id="zanna-game3d-scenetemplate-getscenename"></a>`GetSceneName` | `str(i64)` | `Zanna.Game3D.SceneTemplate.GetSceneName` |
 | <a id="zanna-game3d-scenetemplate-getcameracount"></a>`GetCameraCount` | `i64(i64)` | `Zanna.Game3D.SceneTemplate.GetCameraCount` |
-| <a id="zanna-game3d-scenetemplate-getcamera"></a>`GetCamera` | `obj(i64,i64)` | `Zanna.Game3D.SceneTemplate.GetCamera` |
+| <a id="zanna-game3d-scenetemplate-getcamera"></a>`GetCamera` | `obj<Zanna.Graphics3D.Camera3D>(i64,i64)` | `Zanna.Game3D.SceneTemplate.GetCamera` |
 | <a id="zanna-game3d-scenetemplate-instantiate"></a>`Instantiate` | `obj<Zanna.Game3D.Entity3D>()` | `Zanna.Game3D.SceneTemplate.Instantiate` |
 | <a id="zanna-game3d-scenetemplate-instantiatesceneat"></a>`InstantiateSceneAt` | `obj<Zanna.Game3D.Entity3D>(i64)` | `Zanna.Game3D.SceneTemplate.InstantiateSceneAt` |
 
@@ -1473,16 +1473,16 @@ Constructor: `Zanna.Game3D.Behavior3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-behavior3d-addspin"></a>`AddSpin` | `obj(f64,f64,f64,f64)` | `Zanna.Game3D.Behavior3D.AddSpin` |
-| <a id="zanna-game3d-behavior3d-addorbit"></a>`AddOrbit` | `obj(f64,f64,f64,f64,f64)` | `Zanna.Game3D.Behavior3D.AddOrbit` |
-| <a id="zanna-game3d-behavior3d-addsinefloat"></a>`AddSineFloat` | `obj(f64,f64)` | `Zanna.Game3D.Behavior3D.AddSineFloat` |
-| <a id="zanna-game3d-behavior3d-addfacetarget"></a>`AddFaceTarget` | `obj(obj)` | `Zanna.Game3D.Behavior3D.AddFaceTarget` |
-| <a id="zanna-game3d-behavior3d-addchase"></a>`AddChase` | `obj(obj,f64,f64)` | `Zanna.Game3D.Behavior3D.AddChase` |
-| <a id="zanna-game3d-behavior3d-addfollowpath"></a>`AddFollowPath` | `obj(obj,f64,i1)` | `Zanna.Game3D.Behavior3D.AddFollowPath` |
-| <a id="zanna-game3d-behavior3d-addlifetime"></a>`AddLifetime` | `obj(f64)` | `Zanna.Game3D.Behavior3D.AddLifetime` |
-| <a id="zanna-game3d-behavior3d-setnavagent"></a>`SetNavAgent` | `obj(obj)` | `Zanna.Game3D.Behavior3D.SetNavAgent` |
+| <a id="zanna-game3d-behavior3d-addspin"></a>`AddSpin` | `obj<Zanna.Game3D.Behavior3D>(f64,f64,f64,f64)` | `Zanna.Game3D.Behavior3D.AddSpin` |
+| <a id="zanna-game3d-behavior3d-addorbit"></a>`AddOrbit` | `obj<Zanna.Game3D.Behavior3D>(f64,f64,f64,f64,f64)` | `Zanna.Game3D.Behavior3D.AddOrbit` |
+| <a id="zanna-game3d-behavior3d-addsinefloat"></a>`AddSineFloat` | `obj<Zanna.Game3D.Behavior3D>(f64,f64)` | `Zanna.Game3D.Behavior3D.AddSineFloat` |
+| <a id="zanna-game3d-behavior3d-addfacetarget"></a>`AddFaceTarget` | `obj<Zanna.Game3D.Behavior3D>(obj)` | `Zanna.Game3D.Behavior3D.AddFaceTarget` |
+| <a id="zanna-game3d-behavior3d-addchase"></a>`AddChase` | `obj<Zanna.Game3D.Behavior3D>(obj,f64,f64)` | `Zanna.Game3D.Behavior3D.AddChase` |
+| <a id="zanna-game3d-behavior3d-addfollowpath"></a>`AddFollowPath` | `obj<Zanna.Game3D.Behavior3D>(obj,f64,i1)` | `Zanna.Game3D.Behavior3D.AddFollowPath` |
+| <a id="zanna-game3d-behavior3d-addlifetime"></a>`AddLifetime` | `obj<Zanna.Game3D.Behavior3D>(f64)` | `Zanna.Game3D.Behavior3D.AddLifetime` |
+| <a id="zanna-game3d-behavior3d-setnavagent"></a>`SetNavAgent` | `obj<Zanna.Game3D.Behavior3D>(obj)` | `Zanna.Game3D.Behavior3D.SetNavAgent` |
 | <a id="zanna-game3d-behavior3d-update"></a>`Update` | `void(obj,f64)` | `Zanna.Game3D.Behavior3D.Update` |
-| <a id="zanna-game3d-behavior3d-new"></a>`New` | `obj()` | `Zanna.Game3D.Behavior3D.New` |
+| <a id="zanna-game3d-behavior3d-new"></a>`New` | `obj<Zanna.Game3D.Behavior3D>()` | `Zanna.Game3D.Behavior3D.New` |
 
 <a id="zanna-game3d-animator3d"></a>
 ### `Zanna.Game3D.Animator3D`
@@ -1522,7 +1522,7 @@ Constructor: `Zanna.Game3D.Animator3D.New`
 | <a id="zanna-game3d-animator3d-eventcount"></a>`EventCount` | `i64()` | `Zanna.Game3D.Animator3D.EventCount` |
 | <a id="zanna-game3d-animator3d-eventname"></a>`EventName` | `str(i64)` | `Zanna.Game3D.Animator3D.EventName` |
 | <a id="zanna-game3d-animator3d-update"></a>`Update` | `void(f64)` | `Zanna.Game3D.Animator3D.Update` |
-| <a id="zanna-game3d-animator3d-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.Animator3D.New` |
+| <a id="zanna-game3d-animator3d-new"></a>`New` | `obj<Zanna.Game3D.Animator3D>(obj)` | `Zanna.Game3D.Animator3D.New` |
 
 <a id="zanna-game3d-environment3d"></a>
 ### `Zanna.Game3D.Environment3D`
@@ -1536,10 +1536,10 @@ Its public surface exposes operations including `Outdoor`, `Sunset`, `Overcast`,
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-environment3d-outdoor"></a>`Outdoor` | `obj(obj)` | `Zanna.Game3D.Environment3D.Outdoor` |
-| <a id="zanna-game3d-environment3d-sunset"></a>`Sunset` | `obj(obj)` | `Zanna.Game3D.Environment3D.Sunset` |
-| <a id="zanna-game3d-environment3d-overcast"></a>`Overcast` | `obj(obj)` | `Zanna.Game3D.Environment3D.Overcast` |
-| <a id="zanna-game3d-environment3d-night"></a>`Night` | `obj(obj)` | `Zanna.Game3D.Environment3D.Night` |
+| <a id="zanna-game3d-environment3d-outdoor"></a>`Outdoor` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `Zanna.Game3D.Environment3D.Outdoor` |
+| <a id="zanna-game3d-environment3d-sunset"></a>`Sunset` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `Zanna.Game3D.Environment3D.Sunset` |
+| <a id="zanna-game3d-environment3d-overcast"></a>`Overcast` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `Zanna.Game3D.Environment3D.Overcast` |
+| <a id="zanna-game3d-environment3d-night"></a>`Night` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `Zanna.Game3D.Environment3D.Night` |
 
 <a id="zanna-game3d-envhandle"></a>
 ### `Zanna.Game3D.EnvHandle`
@@ -1554,10 +1554,10 @@ construct the class directly. Its public surface exposes operations including `W
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-envhandle-withterrain"></a>`WithTerrain` | `obj(f64,f64)` | `Zanna.Game3D.EnvHandle.WithTerrain` |
-| <a id="zanna-game3d-envhandle-withwater"></a>`WithWater` | `obj(f64)` | `Zanna.Game3D.EnvHandle.WithWater` |
-| <a id="zanna-game3d-envhandle-withfog"></a>`WithFog` | `obj(f64,f64)` | `Zanna.Game3D.EnvHandle.WithFog` |
-| <a id="zanna-game3d-envhandle-withheightfog"></a>`WithHeightFog` | `obj(f64,f64,f64)` | `Zanna.Game3D.EnvHandle.WithHeightFog` |
+| <a id="zanna-game3d-envhandle-withterrain"></a>`WithTerrain` | `obj<Zanna.Game3D.EnvHandle>(f64,f64)` | `Zanna.Game3D.EnvHandle.WithTerrain` |
+| <a id="zanna-game3d-envhandle-withwater"></a>`WithWater` | `obj<Zanna.Game3D.EnvHandle>(f64)` | `Zanna.Game3D.EnvHandle.WithWater` |
+| <a id="zanna-game3d-envhandle-withfog"></a>`WithFog` | `obj<Zanna.Game3D.EnvHandle>(f64,f64)` | `Zanna.Game3D.EnvHandle.WithFog` |
+| <a id="zanna-game3d-envhandle-withheightfog"></a>`WithHeightFog` | `obj<Zanna.Game3D.EnvHandle>(f64,f64,f64)` | `Zanna.Game3D.EnvHandle.WithHeightFog` |
 
 <a id="zanna-game3d-debug3d"></a>
 ### `Zanna.Game3D.Debug3D`
@@ -1593,10 +1593,10 @@ Constructor: `Zanna.Game3D.SurfaceTable3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-surfacetable3d-addclip"></a>`AddClip` | `obj(i64,obj)` | `Zanna.Game3D.SurfaceTable3D.AddClip` |
-| <a id="zanna-game3d-surfacetable3d-setloudness"></a>`SetLoudness` | `obj(i64,f64)` | `Zanna.Game3D.SurfaceTable3D.SetLoudness` |
+| <a id="zanna-game3d-surfacetable3d-addclip"></a>`AddClip` | `obj<Zanna.Game3D.SurfaceTable3D>(i64,obj)` | `Zanna.Game3D.SurfaceTable3D.AddClip` |
+| <a id="zanna-game3d-surfacetable3d-setloudness"></a>`SetLoudness` | `obj<Zanna.Game3D.SurfaceTable3D>(i64,f64)` | `Zanna.Game3D.SurfaceTable3D.SetLoudness` |
 | <a id="zanna-game3d-surfacetable3d-clipcount"></a>`ClipCount` | `i64(i64)` | `Zanna.Game3D.SurfaceTable3D.ClipCount` |
-| <a id="zanna-game3d-surfacetable3d-new"></a>`New` | `obj()` | `Zanna.Game3D.SurfaceTable3D.New` |
+| <a id="zanna-game3d-surfacetable3d-new"></a>`New` | `obj<Zanna.Game3D.SurfaceTable3D>()` | `Zanna.Game3D.SurfaceTable3D.New` |
 
 <a id="zanna-game3d-perception3d"></a>
 ### `Zanna.Game3D.Perception3D`
@@ -1618,13 +1618,13 @@ Constructor: `Zanna.Game3D.Perception3D.New`
 | <a id="zanna-game3d-perception3d-settargetmask"></a>`SetTargetMask` | `void(i64)` | `Zanna.Game3D.Perception3D.SetTargetMask` |
 | <a id="zanna-game3d-perception3d-setlosmask"></a>`SetLosMask` | `void(i64)` | `Zanna.Game3D.Perception3D.SetLosMask` |
 | <a id="zanna-game3d-perception3d-seencount"></a>`SeenCount` | `i64()` | `Zanna.Game3D.Perception3D.SeenCount` |
-| <a id="zanna-game3d-perception3d-seentarget"></a>`SeenTarget` | `obj(i64)` | `Zanna.Game3D.Perception3D.SeenTarget` |
+| <a id="zanna-game3d-perception3d-seentarget"></a>`SeenTarget` | `obj<Zanna.Game3D.Entity3D>(i64)` | `Zanna.Game3D.Perception3D.SeenTarget` |
 | <a id="zanna-game3d-perception3d-lastknownposition"></a>`LastKnownPosition` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Game3D.Perception3D.LastKnownPosition` |
 | <a id="zanna-game3d-perception3d-seenchanged"></a>`SeenChanged` | `i1()` | `Zanna.Game3D.Perception3D.SeenChanged` |
 | <a id="zanna-game3d-perception3d-heardcount"></a>`HeardCount` | `i64()` | `Zanna.Game3D.Perception3D.HeardCount` |
 | <a id="zanna-game3d-perception3d-heardposition"></a>`HeardPosition` | `obj<Zanna.Math.Vec3>(i64)` | `Zanna.Game3D.Perception3D.HeardPosition` |
 | <a id="zanna-game3d-perception3d-heardtag"></a>`HeardTag` | `i64(i64)` | `Zanna.Game3D.Perception3D.HeardTag` |
-| <a id="zanna-game3d-perception3d-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.Perception3D.New` |
+| <a id="zanna-game3d-perception3d-new"></a>`New` | `obj<Zanna.Game3D.Perception3D>(obj)` | `Zanna.Game3D.Perception3D.New` |
 
 <a id="zanna-game3d-behaviortree3d"></a>
 ### `Zanna.Game3D.BehaviorTree3D`
@@ -1651,7 +1651,7 @@ Constructor: `Zanna.Game3D.BehaviorTree3D.New`
 | <a id="zanna-game3d-behaviortree3d-custom"></a>`Custom` | `i64(i64)` | `Zanna.Game3D.BehaviorTree3D.Custom` |
 | <a id="zanna-game3d-behaviortree3d-addchild"></a>`AddChild` | `void(i64,i64)` | `Zanna.Game3D.BehaviorTree3D.AddChild` |
 | <a id="zanna-game3d-behaviortree3d-setroot"></a>`SetRoot` | `void(i64)` | `Zanna.Game3D.BehaviorTree3D.SetRoot` |
-| <a id="zanna-game3d-behaviortree3d-new"></a>`New` | `obj()` | `Zanna.Game3D.BehaviorTree3D.New` |
+| <a id="zanna-game3d-behaviortree3d-new"></a>`New` | `obj<Zanna.Game3D.BehaviorTree3D>()` | `Zanna.Game3D.BehaviorTree3D.New` |
 
 <a id="zanna-game3d-behaviortreeinstance3d"></a>
 ### `Zanna.Game3D.BehaviorTreeInstance3D`
@@ -1676,7 +1676,7 @@ Constructor: `Zanna.Game3D.BehaviorTreeInstance3D.New`
 |---|---|---|
 | <a id="zanna-game3d-behaviortreeinstance3d-settarget"></a>`SetTarget` | `void(obj)` | `Zanna.Game3D.BehaviorTreeInstance3D.SetTarget` |
 | <a id="zanna-game3d-behaviortreeinstance3d-resolve"></a>`Resolve` | `void(i1)` | `Zanna.Game3D.BehaviorTreeInstance3D.Resolve` |
-| <a id="zanna-game3d-behaviortreeinstance3d-new"></a>`New` | `obj(obj,obj<Zanna.Game3D.BehaviorTree3D>)` | `Zanna.Game3D.BehaviorTreeInstance3D.New` |
+| <a id="zanna-game3d-behaviortreeinstance3d-new"></a>`New` | `obj<Zanna.Game3D.BehaviorTreeInstance3D>(obj,obj<Zanna.Game3D.BehaviorTree3D>)` | `Zanna.Game3D.BehaviorTreeInstance3D.New` |
 
 <a id="zanna-game3d-interactable3d"></a>
 ### `Zanna.Game3D.Interactable3D`
@@ -1703,10 +1703,10 @@ Constructor: `Zanna.Game3D.Interactable3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-interactable3d-withprompt"></a>`WithPrompt` | `obj(str)` | `Zanna.Game3D.Interactable3D.WithPrompt` |
-| <a id="zanna-game3d-interactable3d-withkind"></a>`WithKind` | `obj(i64)` | `Zanna.Game3D.Interactable3D.WithKind` |
-| <a id="zanna-game3d-interactable3d-withradius"></a>`WithRadius` | `obj(f64)` | `Zanna.Game3D.Interactable3D.WithRadius` |
-| <a id="zanna-game3d-interactable3d-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.Interactable3D.New` |
+| <a id="zanna-game3d-interactable3d-withprompt"></a>`WithPrompt` | `obj<Zanna.Game3D.Interactable3D>(str)` | `Zanna.Game3D.Interactable3D.WithPrompt` |
+| <a id="zanna-game3d-interactable3d-withkind"></a>`WithKind` | `obj<Zanna.Game3D.Interactable3D>(i64)` | `Zanna.Game3D.Interactable3D.WithKind` |
+| <a id="zanna-game3d-interactable3d-withradius"></a>`WithRadius` | `obj<Zanna.Game3D.Interactable3D>(f64)` | `Zanna.Game3D.Interactable3D.WithRadius` |
+| <a id="zanna-game3d-interactable3d-new"></a>`New` | `obj<Zanna.Game3D.Interactable3D>(obj)` | `Zanna.Game3D.Interactable3D.New` |
 
 <a id="zanna-game3d-interactor3d"></a>
 ### `Zanna.Game3D.Interactor3D`
@@ -1727,9 +1727,9 @@ Constructor: `Zanna.Game3D.Interactor3D.New`
 | <a id="zanna-game3d-interactor3d-conedegrees"></a>`ConeDegrees` | `f64` | read/write |
 | <a id="zanna-game3d-interactor3d-requirelineofsight"></a>`RequireLineOfSight` | `i1` | read/write |
 | <a id="zanna-game3d-interactor3d-losmask"></a>`LosMask` | `i64` | read/write |
-| <a id="zanna-game3d-interactor3d-focused"></a>`Focused` | `obj` | read-only |
+| <a id="zanna-game3d-interactor3d-focused"></a>`Focused` | `obj<Zanna.Game3D.Interactable3D>` | read-only |
 | <a id="zanna-game3d-interactor3d-interactcount"></a>`InteractCount` | `i64` | read-only |
-| <a id="zanna-game3d-interactor3d-lastinteracted"></a>`LastInteracted` | `obj` | read-only |
+| <a id="zanna-game3d-interactor3d-lastinteracted"></a>`LastInteracted` | `obj<Zanna.Game3D.Interactable3D>` | read-only |
 
 #### Methods
 
@@ -1737,7 +1737,7 @@ Constructor: `Zanna.Game3D.Interactor3D.New`
 |---|---|---|
 | <a id="zanna-game3d-interactor3d-focuschanged"></a>`FocusChanged` | `i1()` | `Zanna.Game3D.Interactor3D.FocusChanged` |
 | <a id="zanna-game3d-interactor3d-interact"></a>`Interact` | `i1()` | `Zanna.Game3D.Interactor3D.Interact` |
-| <a id="zanna-game3d-interactor3d-new"></a>`New` | `obj(obj)` | `Zanna.Game3D.Interactor3D.New` |
+| <a id="zanna-game3d-interactor3d-new"></a>`New` | `obj<Zanna.Game3D.Interactor3D>(obj)` | `Zanna.Game3D.Interactor3D.New` |
 
 <a id="zanna-game3d-footsteps3d"></a>
 ### `Zanna.Game3D.Footsteps3D`
@@ -1762,10 +1762,10 @@ Constructor: `Zanna.Game3D.Footsteps3D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-footsteps3d-seteventprefix"></a>`SetEventPrefix` | `obj(str)` | `Zanna.Game3D.Footsteps3D.SetEventPrefix` |
-| <a id="zanna-game3d-footsteps3d-setgroundmask"></a>`SetGroundMask` | `obj(i64)` | `Zanna.Game3D.Footsteps3D.SetGroundMask` |
-| <a id="zanna-game3d-footsteps3d-setvolumescale"></a>`SetVolumeScale` | `obj(f64)` | `Zanna.Game3D.Footsteps3D.SetVolumeScale` |
-| <a id="zanna-game3d-footsteps3d-new"></a>`New` | `obj(obj,obj<Zanna.Game3D.SurfaceTable3D>)` | `Zanna.Game3D.Footsteps3D.New` |
+| <a id="zanna-game3d-footsteps3d-seteventprefix"></a>`SetEventPrefix` | `obj<Zanna.Game3D.Footsteps3D>(str)` | `Zanna.Game3D.Footsteps3D.SetEventPrefix` |
+| <a id="zanna-game3d-footsteps3d-setgroundmask"></a>`SetGroundMask` | `obj<Zanna.Game3D.Footsteps3D>(i64)` | `Zanna.Game3D.Footsteps3D.SetGroundMask` |
+| <a id="zanna-game3d-footsteps3d-setvolumescale"></a>`SetVolumeScale` | `obj<Zanna.Game3D.Footsteps3D>(f64)` | `Zanna.Game3D.Footsteps3D.SetVolumeScale` |
+| <a id="zanna-game3d-footsteps3d-new"></a>`New` | `obj<Zanna.Game3D.Footsteps3D>(obj,obj<Zanna.Game3D.SurfaceTable3D>)` | `Zanna.Game3D.Footsteps3D.New` |
 
 <a id="zanna-game3d-surfaces"></a>
 ### `Zanna.Game3D.Surfaces`
@@ -1861,14 +1861,14 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-mousebuttons-get-middle"></a>`Zanna.Game3D.MouseButtons.get_Middle` | `i64()` | `rt_game3d_mouse_middle` |
 | <a id="zanna-game3d-mousebuttons-get-buttonx1"></a>`Zanna.Game3D.MouseButtons.get_ButtonX1` | `i64()` | `rt_game3d_mouse_x1` |
 | <a id="zanna-game3d-mousebuttons-get-buttonx2"></a>`Zanna.Game3D.MouseButtons.get_ButtonX2` | `i64()` | `rt_game3d_mouse_x2` |
-| `Zanna.Game3D.LayerMask.None` | `obj()` | `rt_game3d_layermask_none` |
-| `Zanna.Game3D.LayerMask.All` | `obj()` | `rt_game3d_layermask_all` |
-| `Zanna.Game3D.LayerMask.Of` | `obj(i64)` | `rt_game3d_layermask_of` |
+| `Zanna.Game3D.LayerMask.None` | `obj<Zanna.Game3D.LayerMask>()` | `rt_game3d_layermask_none` |
+| `Zanna.Game3D.LayerMask.All` | `obj<Zanna.Game3D.LayerMask>()` | `rt_game3d_layermask_all` |
+| `Zanna.Game3D.LayerMask.Of` | `obj<Zanna.Game3D.LayerMask>(i64)` | `rt_game3d_layermask_of` |
 | <a id="zanna-game3d-layermask-get-bits"></a>`Zanna.Game3D.LayerMask.get_Bits` | `i64(obj)` | `rt_game3d_layermask_get_bits` |
 | <a id="zanna-game3d-layermask-set-bits"></a>`Zanna.Game3D.LayerMask.set_Bits` | `void(obj,i64)` | `rt_game3d_layermask_set_bits` |
-| `Zanna.Game3D.LayerMask.Include` | `obj(obj,i64)` | `rt_game3d_layermask_include` |
+| `Zanna.Game3D.LayerMask.Include` | `obj<Zanna.Game3D.LayerMask>(obj,i64)` | `rt_game3d_layermask_include` |
 | `Zanna.Game3D.LayerMask.Includes` | `i1(obj,i64)` | `rt_game3d_layermask_includes` |
-| `Zanna.Game3D.Input3D.New` | `obj()` | `rt_game3d_input_new` |
+| `Zanna.Game3D.Input3D.New` | `obj<Zanna.Game3D.Input3D>()` | `rt_game3d_input_new` |
 | <a id="zanna-game3d-input3d-get-looksensitivity"></a>`Zanna.Game3D.Input3D.get_LookSensitivity` | `f64(obj)` | `rt_game3d_input_get_look_sensitivity` |
 | <a id="zanna-game3d-input3d-set-looksensitivity"></a>`Zanna.Game3D.Input3D.set_LookSensitivity` | `void(obj,f64)` | `rt_game3d_input_set_look_sensitivity` |
 | `Zanna.Game3D.Input3D.Update` | `void(obj)` | `rt_game3d_input_update` |
@@ -1891,16 +1891,16 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-input3d-get-padbound"></a>`Zanna.Game3D.Input3D.get_PadBound` | `i64(obj)` | `rt_game3d_input_get_pad_bound` |
 | <a id="zanna-game3d-input3d-set-padlooksensitivity"></a>`Zanna.Game3D.Input3D.set_PadLookSensitivity` | `void(obj,f64)` | `rt_game3d_input_set_pad_look_sensitivity` |
 | <a id="zanna-game3d-input3d-get-padlooksensitivity"></a>`Zanna.Game3D.Input3D.get_PadLookSensitivity` | `f64(obj)` | `rt_game3d_input_get_pad_look_sensitivity` |
-| `Zanna.Game3D.Entity3D.New` | `obj()` | `rt_game3d_entity_new` |
-| `Zanna.Game3D.Entity3D.Of` | `obj(obj,obj)` | `rt_game3d_entity_of` |
-| `Zanna.Game3D.Entity3D.FromNode` | `obj(obj)` | `rt_game3d_entity_from_node` |
+| `Zanna.Game3D.Entity3D.New` | `obj<Zanna.Game3D.Entity3D>()` | `rt_game3d_entity_new` |
+| `Zanna.Game3D.Entity3D.Of` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_of` |
+| `Zanna.Game3D.Entity3D.FromNode` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_entity_from_node` |
 | <a id="zanna-game3d-entity3d-get-id"></a>`Zanna.Game3D.Entity3D.get_Id` | `i64(obj)` | `rt_game3d_entity_get_id` |
 | <a id="zanna-game3d-entity3d-get-node"></a>`Zanna.Game3D.Entity3D.get_Node` | `obj<Zanna.Graphics3D.SceneNode>(obj)` | `rt_game3d_entity_get_node` |
 | <a id="zanna-game3d-entity3d-get-mesh"></a>`Zanna.Game3D.Entity3D.get_Mesh` | `obj<Zanna.Graphics3D.Mesh3D>(obj)` | `rt_game3d_entity_get_mesh` |
 | <a id="zanna-game3d-entity3d-set-mesh"></a>`Zanna.Game3D.Entity3D.set_Mesh` | `void(obj,obj<Zanna.Graphics3D.Mesh3D>)` | `rt_game3d_entity_set_mesh_prop` |
 | <a id="zanna-game3d-entity3d-get-material"></a>`Zanna.Game3D.Entity3D.get_Material` | `obj<Zanna.Graphics3D.Material3D>(obj)` | `rt_game3d_entity_get_material` |
 | <a id="zanna-game3d-entity3d-set-material"></a>`Zanna.Game3D.Entity3D.set_Material` | `void(obj,obj<Zanna.Graphics3D.Material3D>)` | `rt_game3d_entity_set_material_prop` |
-| <a id="zanna-game3d-entity3d-get-body"></a>`Zanna.Game3D.Entity3D.get_Body` | `obj(obj)` | `rt_game3d_entity_get_body` |
+| <a id="zanna-game3d-entity3d-get-body"></a>`Zanna.Game3D.Entity3D.get_Body` | `obj<Zanna.Graphics3D.PhysicsBody3D>(obj)` | `rt_game3d_entity_get_body` |
 | <a id="zanna-game3d-entity3d-get-anim"></a>`Zanna.Game3D.Entity3D.get_Anim` | `obj<Zanna.Game3D.Animator3D>(obj)` | `rt_game3d_entity_get_anim` |
 | <a id="zanna-game3d-entity3d-get-layer"></a>`Zanna.Game3D.Entity3D.get_Layer` | `i64(obj)` | `rt_game3d_entity_get_layer` |
 | <a id="zanna-game3d-entity3d-set-layer"></a>`Zanna.Game3D.Entity3D.set_Layer` | `void(obj,i64)` | `rt_game3d_entity_set_layer_prop` |
@@ -1908,24 +1908,24 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-entity3d-set-collisionmask"></a>`Zanna.Game3D.Entity3D.set_CollisionMask` | `void(obj,obj<Zanna.Game3D.LayerMask>)` | `rt_game3d_entity_set_collision_mask_prop` |
 | <a id="zanna-game3d-entity3d-get-name"></a>`Zanna.Game3D.Entity3D.get_Name` | `str(obj)` | `rt_game3d_entity_get_name` |
 | <a id="zanna-game3d-entity3d-set-name"></a>`Zanna.Game3D.Entity3D.set_Name` | `void(obj,str)` | `rt_game3d_entity_set_name_prop` |
-| `Zanna.Game3D.Entity3D.SetPosition` | `obj(obj,f64,f64,f64)` | `rt_game3d_entity_set_position` |
-| `Zanna.Game3D.Entity3D.SetPositionV` | `obj(obj,obj)` | `rt_game3d_entity_set_position_v` |
-| `Zanna.Game3D.Entity3D.SetScale` | `obj(obj,f64)` | `rt_game3d_entity_set_scale` |
-| `Zanna.Game3D.Entity3D.SetScaleXYZ` | `obj(obj,f64,f64,f64)` | `rt_game3d_entity_set_scale_xyz` |
-| `Zanna.Game3D.Entity3D.SetRotationEuler` | `obj(obj,f64,f64,f64)` | `rt_game3d_entity_set_rotation_euler` |
-| `Zanna.Game3D.Entity3D.SetMeshRecursive` | `obj(obj,obj)` | `rt_game3d_entity_set_mesh_recursive` |
-| `Zanna.Game3D.Entity3D.SetMaterialRecursive` | `obj(obj,obj)` | `rt_game3d_entity_set_material_recursive` |
-| `Zanna.Game3D.Entity3D.AddChild` | `obj(obj,obj)` | `rt_game3d_entity_add_child` |
+| `Zanna.Game3D.Entity3D.SetPosition` | `obj<Zanna.Game3D.Entity3D>(obj,f64,f64,f64)` | `rt_game3d_entity_set_position` |
+| `Zanna.Game3D.Entity3D.SetPositionV` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_set_position_v` |
+| `Zanna.Game3D.Entity3D.SetScale` | `obj<Zanna.Game3D.Entity3D>(obj,f64)` | `rt_game3d_entity_set_scale` |
+| `Zanna.Game3D.Entity3D.SetScaleXYZ` | `obj<Zanna.Game3D.Entity3D>(obj,f64,f64,f64)` | `rt_game3d_entity_set_scale_xyz` |
+| `Zanna.Game3D.Entity3D.SetRotationEuler` | `obj<Zanna.Game3D.Entity3D>(obj,f64,f64,f64)` | `rt_game3d_entity_set_rotation_euler` |
+| `Zanna.Game3D.Entity3D.SetMeshRecursive` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_set_mesh_recursive` |
+| `Zanna.Game3D.Entity3D.SetMaterialRecursive` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_set_material_recursive` |
+| `Zanna.Game3D.Entity3D.AddChild` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_add_child` |
 | `Zanna.Game3D.Entity3D.IsGroup` | `i1(obj)` | `rt_game3d_entity_is_group` |
-| `Zanna.Game3D.Entity3D.AttachBody` | `obj(obj,obj)` | `rt_game3d_entity_attach_body` |
-| `Zanna.Game3D.Entity3D.AttachHealth` | `obj(obj,obj<Zanna.Game3D.Health3D>)` | `rt_game3d_entity_attach_health` |
+| `Zanna.Game3D.Entity3D.AttachBody` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_attach_body` |
+| `Zanna.Game3D.Entity3D.AttachHealth` | `obj<Zanna.Game3D.Entity3D>(obj,obj<Zanna.Game3D.Health3D>)` | `rt_game3d_entity_attach_health` |
 | <a id="zanna-game3d-entity3d-get-health"></a>`Zanna.Game3D.Entity3D.get_Health` | `obj<Zanna.Game3D.Health3D>(obj)` | `rt_game3d_entity_get_health` |
 | `Zanna.Game3D.Entity3D.EnableRagdoll` | `obj<Zanna.Graphics3D.Ragdoll3D>(obj)` | `rt_game3d_entity_enable_ragdoll` |
 | `Zanna.Game3D.Entity3D.DisableRagdoll` | `i1(obj,f64)` | `rt_game3d_entity_disable_ragdoll` |
 | <a id="zanna-game3d-entity3d-get-ragdoll"></a>`Zanna.Game3D.Entity3D.get_Ragdoll` | `obj<Zanna.Graphics3D.Ragdoll3D>(obj)` | `rt_game3d_entity_get_ragdoll` |
 | <a id="zanna-game3d-entity3d-get-lipsync"></a>`Zanna.Game3D.Entity3D.get_LipSync` | `obj<Zanna.Game3D.LipSync3D>(obj)` | `rt_game3d_entity_get_lipsync` |
-| `Zanna.Game3D.Entity3D.AttachAnimator` | `obj(obj,obj)` | `rt_game3d_entity_attach_animator` |
-| `Zanna.Game3D.Entity3D.SetPersistent` | `obj(obj,str)` | `rt_game3d_entity_set_persistent` |
+| `Zanna.Game3D.Entity3D.AttachAnimator` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_attach_animator` |
+| `Zanna.Game3D.Entity3D.SetPersistent` | `obj<Zanna.Game3D.Entity3D>(obj,str)` | `rt_game3d_entity_set_persistent` |
 | <a id="zanna-game3d-entity3d-get-persistentkey"></a>`Zanna.Game3D.Entity3D.get_PersistentKey` | `str(obj)` | `rt_game3d_entity_get_persistent_key` |
 | <a id="zanna-game3d-entity3d-get-statetag"></a>`Zanna.Game3D.Entity3D.get_StateTag` | `i64(obj)` | `rt_game3d_entity_get_state_tag` |
 | <a id="zanna-game3d-entity3d-set-statetag"></a>`Zanna.Game3D.Entity3D.set_StateTag` | `void(obj,i64)` | `rt_game3d_entity_set_state_tag` |
@@ -1952,21 +1952,21 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-renderpass-get-present"></a>`Zanna.Game3D.RenderPass.get_Present` | `i64()` | `rt_game3d_renderpass_present` |
 | <a id="zanna-game3d-hitchsource-get-streamcommit"></a>`Zanna.Game3D.HitchSource.get_StreamCommit` | `i64()` | `rt_game3d_hitchsource_stream_commit` |
 | <a id="zanna-game3d-hitchsource-get-frametotal"></a>`Zanna.Game3D.HitchSource.get_FrameTotal` | `i64()` | `rt_game3d_hitchsource_frame_total` |
-| `Zanna.Game3D.Entity3D.AttachToBone` | `obj(obj,obj,str)` | `rt_game3d_entity_attach_to_bone` |
-| `Zanna.Game3D.Entity3D.AttachToBoneOffset` | `obj(obj,obj,str,f64,f64,f64)` | `rt_game3d_entity_attach_to_bone_offset` |
-| `Zanna.Game3D.Entity3D.AttachToBoneOffsetRotated` | `obj(obj,obj,str,f64,f64,f64,f64,f64,f64)` | `rt_game3d_entity_attach_to_bone_offset_rotated` |
-| `Zanna.Game3D.Entity3D.DetachFromBone` | `obj(obj)` | `rt_game3d_entity_detach_from_bone` |
-| `Zanna.Game3D.Entity3D.AttachBehavior` | `obj(obj,obj)` | `rt_game3d_entity_attach_behavior` |
+| `Zanna.Game3D.Entity3D.AttachToBone` | `obj<Zanna.Game3D.Entity3D>(obj,obj,str)` | `rt_game3d_entity_attach_to_bone` |
+| `Zanna.Game3D.Entity3D.AttachToBoneOffset` | `obj<Zanna.Game3D.Entity3D>(obj,obj,str,f64,f64,f64)` | `rt_game3d_entity_attach_to_bone_offset` |
+| `Zanna.Game3D.Entity3D.AttachToBoneOffsetRotated` | `obj<Zanna.Game3D.Entity3D>(obj,obj,str,f64,f64,f64,f64,f64,f64)` | `rt_game3d_entity_attach_to_bone_offset_rotated` |
+| `Zanna.Game3D.Entity3D.DetachFromBone` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_entity_detach_from_bone` |
+| `Zanna.Game3D.Entity3D.AttachBehavior` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_entity_attach_behavior` |
 | <a id="zanna-game3d-entity3d-get-behavior"></a>`Zanna.Game3D.Entity3D.get_Behavior` | `obj<Zanna.Game3D.Behavior3D>(obj)` | `rt_game3d_entity_get_behavior` |
-| `Zanna.Game3D.Behavior3D.New` | `obj()` | `rt_game3d_behavior_new` |
-| `Zanna.Game3D.Behavior3D.AddSpin` | `obj(obj,f64,f64,f64,f64)` | `rt_game3d_behavior_add_spin` |
-| `Zanna.Game3D.Behavior3D.AddOrbit` | `obj(obj,f64,f64,f64,f64,f64)` | `rt_game3d_behavior_add_orbit` |
-| `Zanna.Game3D.Behavior3D.AddSineFloat` | `obj(obj,f64,f64)` | `rt_game3d_behavior_add_sine_float` |
-| `Zanna.Game3D.Behavior3D.AddFaceTarget` | `obj(obj,obj)` | `rt_game3d_behavior_add_face_target` |
-| `Zanna.Game3D.Behavior3D.AddChase` | `obj(obj,obj,f64,f64)` | `rt_game3d_behavior_add_chase` |
-| `Zanna.Game3D.Behavior3D.AddFollowPath` | `obj(obj,obj,f64,i1)` | `rt_game3d_behavior_add_follow_path` |
-| `Zanna.Game3D.Behavior3D.AddLifetime` | `obj(obj,f64)` | `rt_game3d_behavior_add_lifetime` |
-| `Zanna.Game3D.Behavior3D.SetNavAgent` | `obj(obj,obj)` | `rt_game3d_behavior_set_nav_agent` |
+| `Zanna.Game3D.Behavior3D.New` | `obj<Zanna.Game3D.Behavior3D>()` | `rt_game3d_behavior_new` |
+| `Zanna.Game3D.Behavior3D.AddSpin` | `obj<Zanna.Game3D.Behavior3D>(obj,f64,f64,f64,f64)` | `rt_game3d_behavior_add_spin` |
+| `Zanna.Game3D.Behavior3D.AddOrbit` | `obj<Zanna.Game3D.Behavior3D>(obj,f64,f64,f64,f64,f64)` | `rt_game3d_behavior_add_orbit` |
+| `Zanna.Game3D.Behavior3D.AddSineFloat` | `obj<Zanna.Game3D.Behavior3D>(obj,f64,f64)` | `rt_game3d_behavior_add_sine_float` |
+| `Zanna.Game3D.Behavior3D.AddFaceTarget` | `obj<Zanna.Game3D.Behavior3D>(obj,obj)` | `rt_game3d_behavior_add_face_target` |
+| `Zanna.Game3D.Behavior3D.AddChase` | `obj<Zanna.Game3D.Behavior3D>(obj,obj,f64,f64)` | `rt_game3d_behavior_add_chase` |
+| `Zanna.Game3D.Behavior3D.AddFollowPath` | `obj<Zanna.Game3D.Behavior3D>(obj,obj,f64,i1)` | `rt_game3d_behavior_add_follow_path` |
+| `Zanna.Game3D.Behavior3D.AddLifetime` | `obj<Zanna.Game3D.Behavior3D>(obj,f64)` | `rt_game3d_behavior_add_lifetime` |
+| `Zanna.Game3D.Behavior3D.SetNavAgent` | `obj<Zanna.Game3D.Behavior3D>(obj,obj)` | `rt_game3d_behavior_set_nav_agent` |
 | `Zanna.Game3D.Behavior3D.Update` | `void(obj,obj,f64)` | `rt_game3d_behavior_update` |
 | `Zanna.Game3D.Entity3D.ApplyImpulse` | `void(obj,f64,f64,f64)` | `rt_game3d_entity_apply_impulse` |
 | `Zanna.Game3D.Entity3D.SetVelocity` | `void(obj,f64,f64,f64)` | `rt_game3d_entity_set_velocity` |
@@ -1999,7 +1999,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Sound3D.PlayDialogue` | `i64(obj,obj)` | `rt_game3d_audio_play_dialogue` |
 | `Zanna.Game3D.World3D.AddCloth` | `void(obj,obj<Zanna.Graphics3D.Cloth3D>)` | `rt_game3d_world_add_cloth` |
 | `Zanna.Game3D.World3D.RemoveCloth` | `void(obj,obj<Zanna.Graphics3D.Cloth3D>)` | `rt_game3d_world_remove_cloth` |
-| `Zanna.Game3D.Minimap3D.New` | `obj(obj<Zanna.Game3D.World3D>,i64)` | `rt_game3d_minimap_new` |
+| `Zanna.Game3D.Minimap3D.New` | `obj<Zanna.Game3D.Minimap3D>(obj<Zanna.Game3D.World3D>,i64)` | `rt_game3d_minimap_new` |
 | `Zanna.Game3D.Minimap3D.SetMapImage` | `void(obj,obj,f64,f64,f64,f64)` | `rt_game3d_minimap_set_map_image` |
 | `Zanna.Game3D.Minimap3D.SetTrackedEntity` | `void(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_minimap_set_tracked_entity` |
 | `Zanna.Game3D.Minimap3D.SetViewport` | `void(obj,f64,f64,f64,f64)` | `rt_game3d_minimap_set_viewport` |
@@ -2015,13 +2015,13 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Minimap3D.MapX` | `f64(obj,f64,f64)` | `rt_game3d_minimap_map_x` |
 | `Zanna.Game3D.Minimap3D.MapY` | `f64(obj,f64,f64)` | `rt_game3d_minimap_map_y` |
 | `Zanna.Game3D.Minimap3D.Draw` | `void(obj)` | `rt_game3d_minimap_draw` |
-| `Zanna.Game3D.ReverbZone3D.New` | `obj(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>)` | `rt_game3d_reverbzone_new` |
-| `Zanna.Game3D.ReverbZone3D.WithReverb` | `obj(obj,f64,f64,f64)` | `rt_game3d_reverbzone_set_reverb` |
+| `Zanna.Game3D.ReverbZone3D.New` | `obj<Zanna.Game3D.ReverbZone3D>(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>)` | `rt_game3d_reverbzone_new` |
+| `Zanna.Game3D.ReverbZone3D.WithReverb` | `obj<Zanna.Game3D.ReverbZone3D>(obj,f64,f64,f64)` | `rt_game3d_reverbzone_set_reverb` |
 | <a id="zanna-game3d-reverbzone3d-get-priority"></a>`Zanna.Game3D.ReverbZone3D.get_Priority` | `i64(obj)` | `rt_game3d_reverbzone_get_priority` |
 | <a id="zanna-game3d-reverbzone3d-set-priority"></a>`Zanna.Game3D.ReverbZone3D.set_Priority` | `void(obj,i64)` | `rt_game3d_reverbzone_set_priority` |
-| `Zanna.Game3D.AmbientBed3D.New` | `obj(obj<Zanna.Game3D.World3D>)` | `rt_game3d_ambientbed_new` |
-| `Zanna.Game3D.AmbientBed3D.AddZone` | `obj(obj,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,obj<Zanna.Audio.Sound>,i64)` | `rt_game3d_ambientbed_add_zone` |
-| `Zanna.Game3D.AmbientBed3D.SetDefault` | `obj(obj,obj<Zanna.Audio.Sound>,i64)` | `rt_game3d_ambientbed_set_default` |
+| `Zanna.Game3D.AmbientBed3D.New` | `obj<Zanna.Game3D.AmbientBed3D>(obj<Zanna.Game3D.World3D>)` | `rt_game3d_ambientbed_new` |
+| `Zanna.Game3D.AmbientBed3D.AddZone` | `obj<Zanna.Game3D.AmbientBed3D>(obj,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,obj<Zanna.Audio.Sound>,i64)` | `rt_game3d_ambientbed_add_zone` |
+| `Zanna.Game3D.AmbientBed3D.SetDefault` | `obj<Zanna.Game3D.AmbientBed3D>(obj,obj<Zanna.Audio.Sound>,i64)` | `rt_game3d_ambientbed_set_default` |
 | <a id="zanna-game3d-ambientbed3d-get-crossfadeseconds"></a>`Zanna.Game3D.AmbientBed3D.get_CrossfadeSeconds` | `f64(obj)` | `rt_game3d_ambientbed_get_crossfade` |
 | <a id="zanna-game3d-ambientbed3d-set-crossfadeseconds"></a>`Zanna.Game3D.AmbientBed3D.set_CrossfadeSeconds` | `void(obj,f64)` | `rt_game3d_ambientbed_set_crossfade` |
 | <a id="zanna-game3d-ambientbed3d-get-activezone"></a>`Zanna.Game3D.AmbientBed3D.get_ActiveZone` | `i64(obj)` | `rt_game3d_ambientbed_get_active_zone` |
@@ -2039,7 +2039,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Effects3D.Dust` | `obj<Zanna.Graphics3D.Particles3D>(obj,obj)` | `rt_game3d_effects3d_dust` |
 | `Zanna.Game3D.Effects3D.Smoke` | `obj<Zanna.Graphics3D.Particles3D>(obj,obj)` | `rt_game3d_effects3d_smoke` |
 | `Zanna.Game3D.Effects3D.ImpactDecal` | `obj<Zanna.Graphics3D.Decal3D>(obj,obj,obj)` | `rt_game3d_effects3d_impact_decal` |
-| `Zanna.Game3D.CharacterController3D.New` | `obj(obj,obj,f64,f64,f64)` | `rt_game3d_character_controller_new` |
+| `Zanna.Game3D.CharacterController3D.New` | `obj<Zanna.Game3D.CharacterController3D>(obj,obj,f64,f64,f64)` | `rt_game3d_character_controller_new` |
 | <a id="zanna-game3d-charactercontroller3d-get-character"></a>`Zanna.Game3D.CharacterController3D.get_Character` | `obj<Zanna.Graphics3D.Character3D>(obj)` | `rt_game3d_character_controller_get_character` |
 | <a id="zanna-game3d-charactercontroller3d-get-entity"></a>`Zanna.Game3D.CharacterController3D.get_Entity` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_character_controller_get_entity` |
 | <a id="zanna-game3d-charactercontroller3d-get-speed"></a>`Zanna.Game3D.CharacterController3D.get_Speed` | `f64(obj)` | `rt_game3d_character_controller_get_speed` |
@@ -2063,7 +2063,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.CharacterController3D.GroundEntity` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_character_controller_ground_entity` |
 | `Zanna.Game3D.CharacterController3D.ProbeLedge` | `obj<Zanna.Graphics3D.LedgeHit3D>(obj,f64)` | `rt_game3d_character_controller_probe_ledge` |
 | `Zanna.Game3D.CharacterController3D.ProbeVault` | `obj<Zanna.Graphics3D.LedgeHit3D>(obj,f64,f64)` | `rt_game3d_character_controller_probe_vault` |
-| `Zanna.Game3D.FirstPersonController.New` | `obj(obj)` | `rt_game3d_first_person_controller_new` |
+| `Zanna.Game3D.FirstPersonController.New` | `obj<Zanna.Game3D.FirstPersonController>(obj)` | `rt_game3d_first_person_controller_new` |
 | <a id="zanna-game3d-firstpersoncontroller-get-character"></a>`Zanna.Game3D.FirstPersonController.get_Character` | `obj<Zanna.Game3D.CharacterController3D>(obj)` | `rt_game3d_first_person_controller_get_character` |
 | <a id="zanna-game3d-firstpersoncontroller-set-character"></a>`Zanna.Game3D.FirstPersonController.set_Character` | `void(obj,obj<Zanna.Game3D.CharacterController3D>)` | `rt_game3d_first_person_controller_set_character` |
 | <a id="zanna-game3d-firstpersoncontroller-get-speed"></a>`Zanna.Game3D.FirstPersonController.get_Speed` | `f64(obj)` | `rt_game3d_first_person_controller_get_speed` |
@@ -2074,7 +2074,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.FirstPersonController.ReleaseMouse` | `void(obj)` | `rt_game3d_first_person_controller_release_mouse` |
 | `Zanna.Game3D.FirstPersonController.Update` | `void(obj,obj,f64)` | `rt_game3d_first_person_controller_update` |
 | `Zanna.Game3D.FirstPersonController.LateUpdate` | `void(obj,obj,f64)` | `rt_game3d_first_person_controller_late_update` |
-| `Zanna.Game3D.FreeFlyController.New` | `obj(obj)` | `rt_game3d_free_fly_controller_new` |
+| `Zanna.Game3D.FreeFlyController.New` | `obj<Zanna.Game3D.FreeFlyController>(obj)` | `rt_game3d_free_fly_controller_new` |
 | <a id="zanna-game3d-freeflycontroller-get-speed"></a>`Zanna.Game3D.FreeFlyController.get_Speed` | `f64(obj)` | `rt_game3d_free_fly_controller_get_speed` |
 | <a id="zanna-game3d-freeflycontroller-set-speed"></a>`Zanna.Game3D.FreeFlyController.set_Speed` | `void(obj,f64)` | `rt_game3d_free_fly_controller_set_speed` |
 | <a id="zanna-game3d-freeflycontroller-get-looksensitivity"></a>`Zanna.Game3D.FreeFlyController.get_LookSensitivity` | `f64(obj)` | `rt_game3d_free_fly_controller_get_look_sensitivity` |
@@ -2083,7 +2083,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.FreeFlyController.ReleaseMouse` | `void(obj)` | `rt_game3d_free_fly_controller_release_mouse` |
 | `Zanna.Game3D.FreeFlyController.Update` | `void(obj,obj,f64)` | `rt_game3d_free_fly_controller_update` |
 | `Zanna.Game3D.FreeFlyController.LateUpdate` | `void(obj,obj,f64)` | `rt_game3d_free_fly_controller_late_update` |
-| `Zanna.Game3D.OrbitController.New` | `obj(obj,obj)` | `rt_game3d_orbit_controller_new` |
+| `Zanna.Game3D.OrbitController.New` | `obj<Zanna.Game3D.OrbitController>(obj,obj)` | `rt_game3d_orbit_controller_new` |
 | <a id="zanna-game3d-orbitcontroller-get-target"></a>`Zanna.Game3D.OrbitController.get_Target` | `obj<Zanna.Math.Vec3>(obj)` | `rt_game3d_orbit_controller_get_target` |
 | <a id="zanna-game3d-orbitcontroller-set-target"></a>`Zanna.Game3D.OrbitController.set_Target` | `void(obj,obj<Zanna.Math.Vec3>)` | `rt_game3d_orbit_controller_set_target` |
 | <a id="zanna-game3d-orbitcontroller-get-distance"></a>`Zanna.Game3D.OrbitController.get_Distance` | `f64(obj)` | `rt_game3d_orbit_controller_get_distance` |
@@ -2094,7 +2094,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-orbitcontroller-set-pitch"></a>`Zanna.Game3D.OrbitController.set_Pitch` | `void(obj,f64)` | `rt_game3d_orbit_controller_set_pitch` |
 | `Zanna.Game3D.OrbitController.Update` | `void(obj,obj,f64)` | `rt_game3d_orbit_controller_update` |
 | `Zanna.Game3D.OrbitController.LateUpdate` | `void(obj,obj,f64)` | `rt_game3d_orbit_controller_late_update` |
-| `Zanna.Game3D.FollowController.New` | `obj(obj,obj,obj)` | `rt_game3d_follow_controller_new` |
+| `Zanna.Game3D.FollowController.New` | `obj<Zanna.Game3D.FollowController>(obj,obj,obj)` | `rt_game3d_follow_controller_new` |
 | <a id="zanna-game3d-followcontroller-get-target"></a>`Zanna.Game3D.FollowController.get_Target` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_follow_controller_get_target` |
 | <a id="zanna-game3d-followcontroller-set-target"></a>`Zanna.Game3D.FollowController.set_Target` | `void(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_follow_controller_set_target` |
 | <a id="zanna-game3d-followcontroller-get-offset"></a>`Zanna.Game3D.FollowController.get_Offset` | `obj<Zanna.Math.Vec3>(obj)` | `rt_game3d_follow_controller_get_offset` |
@@ -2103,7 +2103,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-followcontroller-set-damping"></a>`Zanna.Game3D.FollowController.set_Damping` | `void(obj,f64)` | `rt_game3d_follow_controller_set_damping` |
 | `Zanna.Game3D.FollowController.Update` | `void(obj,obj,f64)` | `rt_game3d_follow_controller_update` |
 | `Zanna.Game3D.FollowController.LateUpdate` | `void(obj,obj,f64)` | `rt_game3d_follow_controller_late_update` |
-| `Zanna.Game3D.ThirdPersonController.New` | `obj(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_thirdperson_controller_new` |
+| `Zanna.Game3D.ThirdPersonController.New` | `obj<Zanna.Game3D.ThirdPersonController>(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_thirdperson_controller_new` |
 | <a id="zanna-game3d-thirdpersoncontroller-get-target"></a>`Zanna.Game3D.ThirdPersonController.get_Target` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_thirdperson_controller_get_target` |
 | <a id="zanna-game3d-thirdpersoncontroller-set-target"></a>`Zanna.Game3D.ThirdPersonController.set_Target` | `void(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_thirdperson_controller_set_target` |
 | <a id="zanna-game3d-thirdpersoncontroller-get-character"></a>`Zanna.Game3D.ThirdPersonController.get_Character` | `obj<Zanna.Game3D.CharacterController3D>(obj)` | `rt_game3d_thirdperson_controller_get_character` |
@@ -2140,7 +2140,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.ThirdPersonController.LateUpdate` | `void(obj,obj,f64)` | `rt_game3d_thirdperson_controller_late_update` |
 | <a id="zanna-game3d-thirdpersoncontroller-get-locktarget"></a>`Zanna.Game3D.ThirdPersonController.get_LockTarget` | `obj<Zanna.Game3D.TargetLock3D>(obj)` | `rt_game3d_thirdperson_controller_get_lock_target` |
 | <a id="zanna-game3d-thirdpersoncontroller-set-locktarget"></a>`Zanna.Game3D.ThirdPersonController.set_LockTarget` | `void(obj,obj<Zanna.Game3D.TargetLock3D>)` | `rt_game3d_thirdperson_controller_set_lock_target` |
-| `Zanna.Game3D.RailCamera3D.New` | `obj(obj,obj<Zanna.Graphics3D.Path3D>)` | `rt_game3d_rail_camera_new` |
+| `Zanna.Game3D.RailCamera3D.New` | `obj<Zanna.Game3D.RailCamera3D>(obj,obj<Zanna.Graphics3D.Path3D>)` | `rt_game3d_rail_camera_new` |
 | <a id="zanna-game3d-railcamera3d-get-progress"></a>`Zanna.Game3D.RailCamera3D.get_Progress` | `f64(obj)` | `rt_game3d_rail_camera_get_progress` |
 | <a id="zanna-game3d-railcamera3d-set-progress"></a>`Zanna.Game3D.RailCamera3D.set_Progress` | `void(obj,f64)` | `rt_game3d_rail_camera_set_progress` |
 | <a id="zanna-game3d-railcamera3d-get-speed"></a>`Zanna.Game3D.RailCamera3D.get_Speed` | `f64(obj)` | `rt_game3d_rail_camera_get_speed` |
@@ -2152,11 +2152,11 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.RailCamera3D.SetLookEntity` | `void(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_rail_camera_set_look_entity` |
 | `Zanna.Game3D.RailCamera3D.SetLookPoint` | `void(obj,obj<Zanna.Math.Vec3>)` | `rt_game3d_rail_camera_set_look_point` |
 | `Zanna.Game3D.RailCamera3D.SetLookPath` | `void(obj,obj<Zanna.Graphics3D.Path3D>)` | `rt_game3d_rail_camera_set_look_path` |
-| `Zanna.Game3D.RailCamera3D.AddFovKey` | `obj(obj,f64,f64)` | `rt_game3d_rail_camera_add_fov_key` |
-| `Zanna.Game3D.RailCamera3D.AddRollKey` | `obj(obj,f64,f64)` | `rt_game3d_rail_camera_add_roll_key` |
+| `Zanna.Game3D.RailCamera3D.AddFovKey` | `obj<Zanna.Game3D.RailCamera3D>(obj,f64,f64)` | `rt_game3d_rail_camera_add_fov_key` |
+| `Zanna.Game3D.RailCamera3D.AddRollKey` | `obj<Zanna.Game3D.RailCamera3D>(obj,f64,f64)` | `rt_game3d_rail_camera_add_roll_key` |
 | `Zanna.Game3D.RailCamera3D.Update` | `void(obj,obj,f64)` | `rt_game3d_rail_camera_update` |
 | `Zanna.Game3D.RailCamera3D.LateUpdate` | `void(obj,obj,f64)` | `rt_game3d_rail_camera_late_update` |
-| `Zanna.Game3D.TargetLock3D.New` | `obj(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_targetlock_new` |
+| `Zanna.Game3D.TargetLock3D.New` | `obj<Zanna.Game3D.TargetLock3D>(obj,obj<Zanna.Game3D.Entity3D>)` | `rt_game3d_targetlock_new` |
 | <a id="zanna-game3d-targetlock3d-get-target"></a>`Zanna.Game3D.TargetLock3D.get_Target` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_targetlock_get_target` |
 | <a id="zanna-game3d-targetlock3d-get-maxdistance"></a>`Zanna.Game3D.TargetLock3D.get_MaxDistance` | `f64(obj)` | `rt_game3d_targetlock_get_max_distance` |
 | <a id="zanna-game3d-targetlock3d-set-maxdistance"></a>`Zanna.Game3D.TargetLock3D.set_MaxDistance` | `void(obj,f64)` | `rt_game3d_targetlock_set_max_distance` |
@@ -2179,16 +2179,16 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.TargetLock3D.JustAcquired` | `i1(obj)` | `rt_game3d_targetlock_just_acquired` |
 | `Zanna.Game3D.TargetLock3D.JustLost` | `i1(obj)` | `rt_game3d_targetlock_just_lost` |
 | `Zanna.Game3D.TargetLock3D.LockedMoveBias` | `obj<Zanna.Math.Vec3>(obj,obj<Zanna.Math.Vec3>)` | `rt_game3d_targetlock_locked_move_bias` |
-| `Zanna.Game3D.Timeline3D.New` | `obj(obj)` | `rt_game3d_timeline_new` |
-| `Zanna.Game3D.Timeline3D.AddCameraCut` | `obj(obj,f64,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,f64)` | `rt_game3d_timeline_add_camera_cut` |
-| `Zanna.Game3D.Timeline3D.AddCameraMove` | `obj(obj,f64,f64,obj<Zanna.Graphics3D.Path3D>,obj,i64)` | `rt_game3d_timeline_add_camera_move` |
-| `Zanna.Game3D.Timeline3D.AddFovRamp` | `obj(obj,f64,f64,f64,f64,i64)` | `rt_game3d_timeline_add_fov_ramp` |
-| `Zanna.Game3D.Timeline3D.AddAnim` | `obj(obj,f64,str,str,f64)` | `rt_game3d_timeline_add_anim` |
-| `Zanna.Game3D.Timeline3D.AddAudio` | `obj(obj,f64,obj,i1,obj<Zanna.Math.Vec3>)` | `rt_game3d_timeline_add_audio` |
-| `Zanna.Game3D.Timeline3D.AddSubtitle` | `obj(obj,f64,f64,str)` | `rt_game3d_timeline_add_subtitle` |
-| `Zanna.Game3D.Timeline3D.AddLetterbox` | `obj(obj,f64,f64,f64)` | `rt_game3d_timeline_add_letterbox` |
-| `Zanna.Game3D.Timeline3D.AddFade` | `obj(obj,f64,f64,f64,f64)` | `rt_game3d_timeline_add_fade` |
-| `Zanna.Game3D.Timeline3D.AddMarker` | `obj(obj,f64,i64)` | `rt_game3d_timeline_add_marker` |
+| `Zanna.Game3D.Timeline3D.New` | `obj<Zanna.Game3D.Timeline3D>(obj)` | `rt_game3d_timeline_new` |
+| `Zanna.Game3D.Timeline3D.AddCameraCut` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,f64)` | `rt_game3d_timeline_add_camera_cut` |
+| `Zanna.Game3D.Timeline3D.AddCameraMove` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,f64,obj<Zanna.Graphics3D.Path3D>,obj,i64)` | `rt_game3d_timeline_add_camera_move` |
+| `Zanna.Game3D.Timeline3D.AddFovRamp` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,f64,f64,f64,i64)` | `rt_game3d_timeline_add_fov_ramp` |
+| `Zanna.Game3D.Timeline3D.AddAnim` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,str,str,f64)` | `rt_game3d_timeline_add_anim` |
+| `Zanna.Game3D.Timeline3D.AddAudio` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,obj,i1,obj<Zanna.Math.Vec3>)` | `rt_game3d_timeline_add_audio` |
+| `Zanna.Game3D.Timeline3D.AddSubtitle` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,f64,str)` | `rt_game3d_timeline_add_subtitle` |
+| `Zanna.Game3D.Timeline3D.AddLetterbox` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,f64,f64)` | `rt_game3d_timeline_add_letterbox` |
+| `Zanna.Game3D.Timeline3D.AddFade` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,f64,f64,f64)` | `rt_game3d_timeline_add_fade` |
+| `Zanna.Game3D.Timeline3D.AddMarker` | `obj<Zanna.Game3D.Timeline3D>(obj,f64,i64)` | `rt_game3d_timeline_add_marker` |
 | <a id="zanna-game3d-timeline3d-get-duration"></a>`Zanna.Game3D.Timeline3D.get_Duration` | `f64(obj)` | `rt_game3d_timeline_get_duration` |
 | <a id="zanna-game3d-timeline3d-get-time"></a>`Zanna.Game3D.Timeline3D.get_Time` | `f64(obj)` | `rt_game3d_timeline_get_time` |
 | <a id="zanna-game3d-timeline3d-get-isplaying"></a>`Zanna.Game3D.Timeline3D.get_IsPlaying` | `i1(obj)` | `rt_game3d_timeline_get_playing` |
@@ -2201,10 +2201,10 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Timeline3D.ActiveSubtitle` | `str(obj)` | `rt_game3d_timeline_active_subtitle` |
 | `Zanna.Game3D.Timeline3D.Skip` | `void(obj)` | `rt_game3d_timeline_skip` |
 | `Zanna.Game3D.Timeline3D.Stop` | `void(obj)` | `rt_game3d_timeline_stop` |
-| `Zanna.Game3D.Dialogue3D.New` | `obj(obj)` | `rt_game3d_dialogue_new` |
-| `Zanna.Game3D.Dialogue3D.Say` | `obj(obj,str,str)` | `rt_game3d_dialogue_say` |
-| `Zanna.Game3D.Dialogue3D.SayVoiced` | `obj(obj,str,str,obj)` | `rt_game3d_dialogue_say_voiced` |
-| `Zanna.Game3D.Dialogue3D.AskChoice` | `obj(obj,obj)` | `rt_game3d_dialogue_ask_choice` |
+| `Zanna.Game3D.Dialogue3D.New` | `obj<Zanna.Game3D.Dialogue3D>(obj)` | `rt_game3d_dialogue_new` |
+| `Zanna.Game3D.Dialogue3D.Say` | `obj<Zanna.Game3D.Dialogue3D>(obj,str,str)` | `rt_game3d_dialogue_say` |
+| `Zanna.Game3D.Dialogue3D.SayVoiced` | `obj<Zanna.Game3D.Dialogue3D>(obj,str,str,obj)` | `rt_game3d_dialogue_say_voiced` |
+| `Zanna.Game3D.Dialogue3D.AskChoice` | `obj<Zanna.Game3D.Dialogue3D>(obj,obj)` | `rt_game3d_dialogue_ask_choice` |
 | `Zanna.Game3D.Dialogue3D.Show` | `void(obj)` | `rt_game3d_dialogue_show` |
 | `Zanna.Game3D.Dialogue3D.Hide` | `void(obj)` | `rt_game3d_dialogue_hide` |
 | `Zanna.Game3D.Dialogue3D.Advance` | `void(obj)` | `rt_game3d_dialogue_advance` |
@@ -2223,10 +2223,10 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Dialogue3D.SetRevealSpeed` | `void(obj,f64)` | `rt_game3d_dialogue_set_reveal_speed` |
 | `Zanna.Game3D.Dialogue3D.SetLocale` | `void(obj,obj)` | `rt_game3d_dialogue_set_locale` |
 | `Zanna.Game3D.Dialogue3D.SetStyle` | `void(obj,f64,i64)` | `rt_game3d_dialogue_set_style` |
-| `Zanna.Game3D.LipSync3D.New` | `obj(obj)` | `rt_game3d_lipsync_new` |
-| `Zanna.Game3D.LipSync3D.BindMorph` | `obj(obj,obj<Zanna.Graphics3D.MorphTarget3D>)` | `rt_game3d_lipsync_bind_morph` |
-| `Zanna.Game3D.LipSync3D.BindMouthShape` | `obj(obj,str,f64)` | `rt_game3d_lipsync_bind_mouth_shape` |
-| `Zanna.Game3D.LipSync3D.BindHeadBone` | `obj(obj,str)` | `rt_game3d_lipsync_bind_head_bone` |
+| `Zanna.Game3D.LipSync3D.New` | `obj<Zanna.Game3D.LipSync3D>(obj)` | `rt_game3d_lipsync_new` |
+| `Zanna.Game3D.LipSync3D.BindMorph` | `obj<Zanna.Game3D.LipSync3D>(obj,obj<Zanna.Graphics3D.MorphTarget3D>)` | `rt_game3d_lipsync_bind_morph` |
+| `Zanna.Game3D.LipSync3D.BindMouthShape` | `obj<Zanna.Game3D.LipSync3D>(obj,str,f64)` | `rt_game3d_lipsync_bind_mouth_shape` |
+| `Zanna.Game3D.LipSync3D.BindHeadBone` | `obj<Zanna.Game3D.LipSync3D>(obj,str)` | `rt_game3d_lipsync_bind_head_bone` |
 | `Zanna.Game3D.LipSync3D.Drive` | `void(obj,i64)` | `rt_game3d_lipsync_drive` |
 | `Zanna.Game3D.LipSync3D.DriveLevel` | `void(obj,f64)` | `rt_game3d_lipsync_drive_level` |
 | `Zanna.Game3D.LipSync3D.Stop` | `void(obj)` | `rt_game3d_lipsync_stop` |
@@ -2234,8 +2234,8 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.LipSync3D.SetGaze` | `void(obj,obj)` | `rt_game3d_lipsync_set_gaze` |
 | <a id="zanna-game3d-lipsync3d-get-isdriving"></a>`Zanna.Game3D.LipSync3D.get_IsDriving` | `i1(obj)` | `rt_game3d_lipsync_get_driving` |
 | <a id="zanna-game3d-lipsync3d-get-level"></a>`Zanna.Game3D.LipSync3D.get_Level` | `f64(obj)` | `rt_game3d_lipsync_get_level` |
-| `Zanna.Game3D.Hitbox3D.New` | `obj(obj,obj<Zanna.Graphics3D.Collider3D>)` | `rt_game3d_hitbox_new` |
-| `Zanna.Game3D.Hitbox3D.NewOnBone` | `obj(obj,str,obj<Zanna.Graphics3D.Collider3D>)` | `rt_game3d_hitbox_new_on_bone` |
+| `Zanna.Game3D.Hitbox3D.New` | `obj<Zanna.Game3D.Hitbox3D>(obj,obj<Zanna.Graphics3D.Collider3D>)` | `rt_game3d_hitbox_new` |
+| `Zanna.Game3D.Hitbox3D.NewOnBone` | `obj<Zanna.Game3D.Hitbox3D>(obj,str,obj<Zanna.Graphics3D.Collider3D>)` | `rt_game3d_hitbox_new_on_bone` |
 | <a id="zanna-game3d-hitbox3d-get-kind"></a>`Zanna.Game3D.Hitbox3D.get_Kind` | `i64(obj)` | `rt_game3d_hitbox_get_kind` |
 | <a id="zanna-game3d-hitbox3d-set-kind"></a>`Zanna.Game3D.Hitbox3D.set_Kind` | `void(obj,i64)` | `rt_game3d_hitbox_set_kind` |
 | <a id="zanna-game3d-hitbox3d-get-team"></a>`Zanna.Game3D.Hitbox3D.get_Team` | `i64(obj)` | `rt_game3d_hitbox_get_team` |
@@ -2246,8 +2246,8 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-hitbox3d-set-isactive"></a>`Zanna.Game3D.Hitbox3D.set_IsActive` | `void(obj,i1)` | `rt_game3d_hitbox_set_active` |
 | <a id="zanna-game3d-hitbox3d-get-friendlyfire"></a>`Zanna.Game3D.Hitbox3D.get_FriendlyFire` | `i1(obj)` | `rt_game3d_hitbox_get_friendly_fire` |
 | <a id="zanna-game3d-hitbox3d-set-friendlyfire"></a>`Zanna.Game3D.Hitbox3D.set_FriendlyFire` | `void(obj,i1)` | `rt_game3d_hitbox_set_friendly_fire` |
-| `Zanna.Game3D.Hitbox3D.BindWindow` | `obj(obj,str,f64,f64)` | `rt_game3d_hitbox_bind_window` |
-| `Zanna.Game3D.Hitbox3D.SetLocalOffset` | `obj(obj,f64,f64,f64)` | `rt_game3d_hitbox_set_local_offset` |
+| `Zanna.Game3D.Hitbox3D.BindWindow` | `obj<Zanna.Game3D.Hitbox3D>(obj,str,f64,f64)` | `rt_game3d_hitbox_bind_window` |
+| `Zanna.Game3D.Hitbox3D.SetLocalOffset` | `obj<Zanna.Game3D.Hitbox3D>(obj,f64,f64,f64)` | `rt_game3d_hitbox_set_local_offset` |
 | <a id="zanna-game3d-hitboxkind-get-hurt"></a>`Zanna.Game3D.HitboxKind.get_Hurt` | `i64()` | `rt_game3d_hitbox_kind_hurt` |
 | <a id="zanna-game3d-hitboxkind-get-hit"></a>`Zanna.Game3D.HitboxKind.get_Hit` | `i64()` | `rt_game3d_hitbox_kind_hit` |
 | <a id="zanna-game3d-hitevent3d-get-attacker"></a>`Zanna.Game3D.HitEvent3D.get_Attacker` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_hit_event_get_attacker` |
@@ -2256,7 +2256,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-hitevent3d-get-hurtbox"></a>`Zanna.Game3D.HitEvent3D.get_Hurtbox` | `obj<Zanna.Game3D.Hitbox3D>(obj)` | `rt_game3d_hit_event_get_hurtbox` |
 | `Zanna.Game3D.HitEvent3D.Point` | `obj<Zanna.Math.Vec3>(obj)` | `rt_game3d_hit_event_point` |
 | `Zanna.Game3D.HitEvent3D.Normal` | `obj<Zanna.Math.Vec3>(obj)` | `rt_game3d_hit_event_normal` |
-| `Zanna.Game3D.Health3D.New` | `obj(f64)` | `rt_game3d_health_new` |
+| `Zanna.Game3D.Health3D.New` | `obj<Zanna.Game3D.Health3D>(f64)` | `rt_game3d_health_new` |
 | <a id="zanna-game3d-health3d-get-current"></a>`Zanna.Game3D.Health3D.get_Current` | `f64(obj)` | `rt_game3d_health_get_current` |
 | <a id="zanna-game3d-health3d-get-max"></a>`Zanna.Game3D.Health3D.get_Max` | `f64(obj)` | `rt_game3d_health_get_max` |
 | <a id="zanna-game3d-health3d-set-max"></a>`Zanna.Game3D.Health3D.set_Max` | `void(obj,f64)` | `rt_game3d_health_set_max` |
@@ -2277,14 +2277,14 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-damageevent3d-get-amount"></a>`Zanna.Game3D.DamageEvent3D.get_Amount` | `f64(obj)` | `rt_game3d_damage_event_get_amount` |
 | <a id="zanna-game3d-damageevent3d-get-tag"></a>`Zanna.Game3D.DamageEvent3D.get_Tag` | `i64(obj)` | `rt_game3d_damage_event_get_tag` |
 | <a id="zanna-game3d-damageevent3d-get-waslethal"></a>`Zanna.Game3D.DamageEvent3D.get_WasLethal` | `i1(obj)` | `rt_game3d_damage_event_get_was_lethal` |
-| `Zanna.Game3D.World3D.New` | `obj(str,i64,i64)` | `rt_game3d_world_new` |
-| `Zanna.Game3D.World3D.NewWithCamera` | `obj(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_camera` |
-| `Zanna.Game3D.World3D.NewWithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_horizontal_camera` |
-| `Zanna.Game3D.World3D.WithCamera` | `obj(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_camera` |
-| `Zanna.Game3D.World3D.WithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_horizontal_camera` |
-| `Zanna.Game3D.World3D.WithCanvasCamera` | `obj(obj<Zanna.Graphics.Canvas>,f64,f64,f64)` | `rt_game3d_world_new_with_canvas_camera` |
-| `Zanna.Game3D.World3D.NewFullscreen` | `obj(str)` | `rt_game3d_world_new_fullscreen` |
-| `Zanna.Game3D.World3D.NewFullscreenWithHorizontalCamera` | `obj(str,f64,f64,f64)` | `rt_game3d_world_new_fullscreen_with_horizontal_camera` |
+| `Zanna.Game3D.World3D.New` | `obj<Zanna.Game3D.World3D>(str,i64,i64)` | `rt_game3d_world_new` |
+| `Zanna.Game3D.World3D.NewWithCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_camera` |
+| `Zanna.Game3D.World3D.NewWithHorizontalCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_horizontal_camera` |
+| `Zanna.Game3D.World3D.WithCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_camera` |
+| `Zanna.Game3D.World3D.WithHorizontalCamera` | `obj<Zanna.Game3D.World3D>(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_horizontal_camera` |
+| `Zanna.Game3D.World3D.WithCanvasCamera` | `obj<Zanna.Game3D.World3D>(obj<Zanna.Graphics.Canvas>,f64,f64,f64)` | `rt_game3d_world_new_with_canvas_camera` |
+| `Zanna.Game3D.World3D.NewFullscreen` | `obj<Zanna.Game3D.World3D>(str)` | `rt_game3d_world_new_fullscreen` |
+| `Zanna.Game3D.World3D.NewFullscreenWithHorizontalCamera` | `obj<Zanna.Game3D.World3D>(str,f64,f64,f64)` | `rt_game3d_world_new_fullscreen_with_horizontal_camera` |
 | `Zanna.Game3D.World3D.Destroy` | `void(obj)` | `rt_game3d_world_destroy` |
 | <a id="zanna-game3d-world3d-get-timescale"></a>`Zanna.Game3D.World3D.get_TimeScale` | `f64(obj)` | `rt_game3d_world_get_time_scale` |
 | <a id="zanna-game3d-world3d-set-timescale"></a>`Zanna.Game3D.World3D.set_TimeScale` | `void(obj,f64)` | `rt_game3d_world_set_time_scale` |
@@ -2334,8 +2334,8 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-world3d-get-worldorigin"></a>`Zanna.Game3D.World3D.get_WorldOrigin` | `obj<Zanna.Math.Vec3>(obj)` | `rt_game3d_world_get_world_origin` |
 | `Zanna.Game3D.World3D.SetOriginRebaseThreshold` | `void(obj,f64)` | `rt_game3d_world_set_origin_rebase_threshold` |
 | `Zanna.Game3D.World3D.RebaseOrigin` | `void(obj,f64,f64,f64)` | `rt_game3d_world_rebase_origin` |
-| `Zanna.Game3D.World3D.Spawn` | `obj(obj,obj)` | `rt_game3d_world_spawn` |
-| `Zanna.Game3D.World3D.SpawnHeightfieldCollider` | `obj(obj,obj,f64,f64,f64,f64,f64,f64)` | `rt_game3d_world_spawn_heightfield_collider` |
+| `Zanna.Game3D.World3D.Spawn` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_world_spawn` |
+| `Zanna.Game3D.World3D.SpawnHeightfieldCollider` | `obj<Zanna.Game3D.Entity3D>(obj,obj,f64,f64,f64,f64,f64,f64)` | `rt_game3d_world_spawn_heightfield_collider` |
 | `Zanna.Game3D.World3D.Despawn` | `void(obj,obj)` | `rt_game3d_world_despawn` |
 | `Zanna.Game3D.World3D.FindNode` | `obj<Zanna.Option>(obj,str)` | `rt_game3d_world_find_node_option` |
 | `Zanna.Game3D.World3D.FindEntity` | `obj<Zanna.Option>(obj,str)` | `rt_game3d_world_find_entity_option` |
@@ -2430,34 +2430,34 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Lighting.Night` | `void(obj)` | `rt_game3d_lighting_night` |
 | `Zanna.Game3D.Lighting.Interior` | `void(obj)` | `rt_game3d_lighting_interior` |
 | `Zanna.Game3D.Lighting.Clear` | `void(obj)` | `rt_game3d_lighting_clear` |
-| `Zanna.Game3D.Materials.Plastic` | `obj(f64,f64,f64)` | `rt_game3d_materials_plastic` |
-| `Zanna.Game3D.Materials.Metal` | `obj(f64,f64,f64)` | `rt_game3d_materials_metal` |
-| `Zanna.Game3D.Materials.Rubber` | `obj(f64,f64,f64)` | `rt_game3d_materials_rubber` |
-| `Zanna.Game3D.Materials.Glass` | `obj(f64,f64,f64,f64)` | `rt_game3d_materials_glass` |
-| `Zanna.Game3D.Materials.Emissive` | `obj(f64,f64,f64,f64)` | `rt_game3d_materials_emissive` |
-| `Zanna.Game3D.Materials.Unlit` | `obj(f64,f64,f64)` | `rt_game3d_materials_unlit` |
-| `Zanna.Game3D.Materials.FromAlbedoMap` | `obj(obj)` | `rt_game3d_materials_from_albedo_map` |
+| `Zanna.Game3D.Materials.Plastic` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `rt_game3d_materials_plastic` |
+| `Zanna.Game3D.Materials.Metal` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `rt_game3d_materials_metal` |
+| `Zanna.Game3D.Materials.Rubber` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `rt_game3d_materials_rubber` |
+| `Zanna.Game3D.Materials.Glass` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64,f64)` | `rt_game3d_materials_glass` |
+| `Zanna.Game3D.Materials.Emissive` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64,f64)` | `rt_game3d_materials_emissive` |
+| `Zanna.Game3D.Materials.Unlit` | `obj<Zanna.Graphics3D.Material3D>(f64,f64,f64)` | `rt_game3d_materials_unlit` |
+| `Zanna.Game3D.Materials.FromAlbedoMap` | `obj<Zanna.Graphics3D.Material3D>(obj)` | `rt_game3d_materials_from_albedo_map` |
 | `Zanna.Game3D.PostFX.Cinematic` | `void(obj)` | `rt_game3d_postfx_cinematic` |
 | `Zanna.Game3D.PostFX.Crisp` | `void(obj)` | `rt_game3d_postfx_crisp` |
 | `Zanna.Game3D.PostFX.None` | `void(obj)` | `rt_game3d_postfx_none` |
 | `Zanna.Game3D.Quality.Apply` | `void(obj,i64)` | `rt_game3d_quality_apply` |
-| `Zanna.Game3D.Prefab.Box` | `obj(f64,obj)` | `rt_game3d_prefab_box` |
-| `Zanna.Game3D.Prefab.BoxXYZ` | `obj(f64,f64,f64,obj)` | `rt_game3d_prefab_box_xyz` |
-| `Zanna.Game3D.Prefab.Sphere` | `obj(f64,i64,obj)` | `rt_game3d_prefab_sphere` |
-| `Zanna.Game3D.Prefab.Cylinder` | `obj(f64,f64,i64,obj)` | `rt_game3d_prefab_cylinder` |
-| `Zanna.Game3D.Prefab.Plane` | `obj(f64,f64,obj)` | `rt_game3d_prefab_plane` |
-| `Zanna.Game3D.Prefab.Ground` | `obj(f64,obj)` | `rt_game3d_prefab_ground` |
+| `Zanna.Game3D.Prefab.Box` | `obj<Zanna.Game3D.Entity3D>(f64,obj)` | `rt_game3d_prefab_box` |
+| `Zanna.Game3D.Prefab.BoxXYZ` | `obj<Zanna.Game3D.Entity3D>(f64,f64,f64,obj)` | `rt_game3d_prefab_box_xyz` |
+| `Zanna.Game3D.Prefab.Sphere` | `obj<Zanna.Game3D.Entity3D>(f64,i64,obj)` | `rt_game3d_prefab_sphere` |
+| `Zanna.Game3D.Prefab.Cylinder` | `obj<Zanna.Game3D.Entity3D>(f64,f64,i64,obj)` | `rt_game3d_prefab_cylinder` |
+| `Zanna.Game3D.Prefab.Plane` | `obj<Zanna.Game3D.Entity3D>(f64,f64,obj)` | `rt_game3d_prefab_plane` |
+| `Zanna.Game3D.Prefab.Ground` | `obj<Zanna.Game3D.Entity3D>(f64,obj)` | `rt_game3d_prefab_ground` |
 | `Zanna.Game3D.Prefab.Load` | `obj<Zanna.Game3D.SceneTemplate>(str)` | `rt_game3d_assets_load_model_template` |
 | `Zanna.Game3D.Prefab.LoadAsset` | `obj<Zanna.Game3D.SceneTemplate>(str)` | `rt_game3d_assets_load_model_template_asset` |
 | `Zanna.Game3D.Prefab.LoadResult` | `obj<Zanna.Result>(str)` | `rt_game3d_assets_load_model_template_result` |
 | `Zanna.Game3D.Prefab.LoadAssetResult` | `obj<Zanna.Result>(str)` | `rt_game3d_assets_load_model_template_asset_result` |
 | `Zanna.Game3D.Prefab.LoadAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `rt_game3d_assets_load_model_template_async` |
 | `Zanna.Game3D.Prefab.LoadAssetAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `rt_game3d_assets_load_model_template_asset_async` |
-| `Zanna.Game3D.BodyDef.Box` | `obj(f64,f64,f64,f64)` | `rt_game3d_body_def_box` |
-| `Zanna.Game3D.BodyDef.Sphere` | `obj(f64,f64)` | `rt_game3d_body_def_sphere` |
-| `Zanna.Game3D.BodyDef.Capsule` | `obj(f64,f64,f64)` | `rt_game3d_body_def_capsule` |
-| `Zanna.Game3D.BodyDef.StaticBox` | `obj(f64,f64,f64)` | `rt_game3d_body_def_static_box` |
-| `Zanna.Game3D.BodyDef.StaticPlane` | `obj(f64)` | `rt_game3d_body_def_static_plane` |
+| `Zanna.Game3D.BodyDef.Box` | `obj<Zanna.Game3D.BodyDef>(f64,f64,f64,f64)` | `rt_game3d_body_def_box` |
+| `Zanna.Game3D.BodyDef.Sphere` | `obj<Zanna.Game3D.BodyDef>(f64,f64)` | `rt_game3d_body_def_sphere` |
+| `Zanna.Game3D.BodyDef.Capsule` | `obj<Zanna.Game3D.BodyDef>(f64,f64,f64)` | `rt_game3d_body_def_capsule` |
+| `Zanna.Game3D.BodyDef.StaticBox` | `obj<Zanna.Game3D.BodyDef>(f64,f64,f64)` | `rt_game3d_body_def_static_box` |
+| `Zanna.Game3D.BodyDef.StaticPlane` | `obj<Zanna.Game3D.BodyDef>(f64)` | `rt_game3d_body_def_static_plane` |
 | <a id="zanna-game3d-bodydef-get-shape"></a>`Zanna.Game3D.BodyDef.get_Shape` | `i64(obj)` | `rt_game3d_body_def_get_shape` |
 | <a id="zanna-game3d-bodydef-set-shape"></a>`Zanna.Game3D.BodyDef.set_Shape` | `void(obj,i64)` | `rt_game3d_body_def_set_shape` |
 | <a id="zanna-game3d-bodydef-get-mass"></a>`Zanna.Game3D.BodyDef.get_Mass` | `f64(obj)` | `rt_game3d_body_def_get_mass` |
@@ -2480,10 +2480,10 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-bodydef-set-mask"></a>`Zanna.Game3D.BodyDef.set_Mask` | `void(obj,obj<Zanna.Game3D.LayerMask>)` | `rt_game3d_body_def_set_mask_prop` |
 | <a id="zanna-game3d-bodydef-get-syncmode"></a>`Zanna.Game3D.BodyDef.get_SyncMode` | `i64(obj)` | `rt_game3d_body_def_get_sync_mode` |
 | <a id="zanna-game3d-bodydef-set-syncmode"></a>`Zanna.Game3D.BodyDef.set_SyncMode` | `void(obj,i64)` | `rt_game3d_body_def_set_sync_mode_prop` |
-| `Zanna.Game3D.BodyDef.WithLayer` | `obj(obj,i64)` | `rt_game3d_body_def_with_layer` |
-| `Zanna.Game3D.BodyDef.WithMask` | `obj(obj,obj)` | `rt_game3d_body_def_with_mask` |
-| `Zanna.Game3D.BodyDef.AsTrigger` | `obj(obj)` | `rt_game3d_body_def_as_trigger` |
-| `Zanna.Game3D.BodyDef.WithSync` | `obj(obj,i64)` | `rt_game3d_body_def_with_sync` |
+| `Zanna.Game3D.BodyDef.WithLayer` | `obj<Zanna.Game3D.BodyDef>(obj,i64)` | `rt_game3d_body_def_with_layer` |
+| `Zanna.Game3D.BodyDef.WithMask` | `obj<Zanna.Game3D.BodyDef>(obj,obj)` | `rt_game3d_body_def_with_mask` |
+| `Zanna.Game3D.BodyDef.AsTrigger` | `obj<Zanna.Game3D.BodyDef>(obj)` | `rt_game3d_body_def_as_trigger` |
+| `Zanna.Game3D.BodyDef.WithSync` | `obj<Zanna.Game3D.BodyDef>(obj,i64)` | `rt_game3d_body_def_with_sync` |
 | <a id="zanna-game3d-collision3devent-get-phase"></a>`Zanna.Game3D.Collision3DEvent.get_Phase` | `i64(obj)` | `rt_game3d_collision_event_get_phase` |
 | <a id="zanna-game3d-collision3devent-get-entitya"></a>`Zanna.Game3D.Collision3DEvent.get_EntityA` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_collision_event_get_a` |
 | <a id="zanna-game3d-collision3devent-get-entityb"></a>`Zanna.Game3D.Collision3DEvent.get_EntityB` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_collision_event_get_b` |
@@ -2492,14 +2492,14 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-collision3devent-get-relativespeed"></a>`Zanna.Game3D.Collision3DEvent.get_RelativeSpeed` | `f64(obj)` | `rt_game3d_collision_event_get_relative_speed` |
 | <a id="zanna-game3d-collision3devent-get-normalimpulse"></a>`Zanna.Game3D.Collision3DEvent.get_NormalImpulse` | `f64(obj)` | `rt_game3d_collision_event_get_normal_impulse` |
 | <a id="zanna-game3d-collision3devent-get-contactcount"></a>`Zanna.Game3D.Collision3DEvent.get_ContactCount` | `i64(obj)` | `rt_game3d_collision_event_get_contact_count` |
-| `Zanna.Game3D.Collision3DEvent.Point` | `obj(obj)` | `rt_game3d_collision_event_point` |
-| `Zanna.Game3D.Collision3DEvent.Normal` | `obj(obj)` | `rt_game3d_collision_event_normal` |
-| `Zanna.Game3D.Collision3DEvent.ContactPoint` | `obj(obj,i64)` | `rt_game3d_collision_event_contact_point` |
-| `Zanna.Game3D.Collision3DEvent.ContactNormal` | `obj(obj,i64)` | `rt_game3d_collision_event_contact_normal` |
+| `Zanna.Game3D.Collision3DEvent.Point` | `obj<Zanna.Math.Vec3>(obj)` | `rt_game3d_collision_event_point` |
+| `Zanna.Game3D.Collision3DEvent.Normal` | `obj<Zanna.Math.Vec3>(obj)` | `rt_game3d_collision_event_normal` |
+| `Zanna.Game3D.Collision3DEvent.ContactPoint` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_game3d_collision_event_contact_point` |
+| `Zanna.Game3D.Collision3DEvent.ContactNormal` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_game3d_collision_event_contact_normal` |
 | `Zanna.Game3D.Collision3DEvent.ContactSeparation` | `f64(obj,i64)` | `rt_game3d_collision_event_contact_separation` |
-| `Zanna.Game3D.Collision3DEvent.Other` | `obj(obj,obj)` | `rt_game3d_collision_event_other` |
-| `Zanna.Game3D.Assets3D.LoadEntity` | `obj(str)` | `rt_game3d_assets_load_model` |
-| `Zanna.Game3D.Assets3D.LoadEntityAsset` | `obj(str)` | `rt_game3d_assets_load_model_asset` |
+| `Zanna.Game3D.Collision3DEvent.Other` | `obj<Zanna.Game3D.Entity3D>(obj,obj)` | `rt_game3d_collision_event_other` |
+| `Zanna.Game3D.Assets3D.LoadEntity` | `obj<Zanna.Game3D.Entity3D>(str)` | `rt_game3d_assets_load_model` |
+| `Zanna.Game3D.Assets3D.LoadEntityAsset` | `obj<Zanna.Game3D.Entity3D>(str)` | `rt_game3d_assets_load_model_asset` |
 | `Zanna.Game3D.Assets3D.LoadAnimation` | `obj<Zanna.Graphics3D.Animation3D>(str,i64)` | `rt_game3d_assets_load_animation` |
 | `Zanna.Game3D.Assets3D.LoadAnimationAsset` | `obj<Zanna.Graphics3D.Animation3D>(str,i64)` | `rt_game3d_assets_load_animation_asset` |
 | `Zanna.Game3D.Assets3D.LoadNodeAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(str,i64)` | `rt_game3d_assets_load_node_animation` |
@@ -2535,7 +2535,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.SceneTemplate.GetCamera` | `obj<Zanna.Graphics3D.Camera3D>(obj,i64,i64)` | `rt_game3d_model_template_get_camera` |
 | `Zanna.Game3D.SceneTemplate.Instantiate` | `obj<Zanna.Game3D.Entity3D>(obj)` | `rt_game3d_model_template_instantiate` |
 | `Zanna.Game3D.SceneTemplate.InstantiateSceneAt` | `obj<Zanna.Game3D.Entity3D>(obj,i64)` | `rt_game3d_model_template_instantiate_scene_at` |
-| `Zanna.Game3D.Animator3D.New` | `obj(obj)` | `rt_game3d_animator_new` |
+| `Zanna.Game3D.Animator3D.New` | `obj<Zanna.Game3D.Animator3D>(obj)` | `rt_game3d_animator_new` |
 | <a id="zanna-game3d-animator3d-get-controller"></a>`Zanna.Game3D.Animator3D.get_Controller` | `obj<Zanna.Graphics3D.AnimController3D>(obj)` | `rt_game3d_animator_get_controller` |
 | `Zanna.Game3D.Animator3D.GetBoneMatrix` | `obj<Zanna.Math.Mat4>(obj,i64)` | `rt_game3d_animator_get_bone_matrix` |
 | `Zanna.Game3D.Animator3D.FindBone` | `i64(obj,str)` | `rt_game3d_animator_find_bone` |
@@ -2553,14 +2553,14 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Animator3D.EventCount` | `i64(obj)` | `rt_game3d_animator_event_count` |
 | `Zanna.Game3D.Animator3D.EventName` | `str(obj,i64)` | `rt_game3d_animator_event_name` |
 | `Zanna.Game3D.Animator3D.Update` | `void(obj,f64)` | `rt_game3d_animator_update` |
-| `Zanna.Game3D.Environment3D.Outdoor` | `obj(obj)` | `rt_game3d_environment_outdoor` |
-| `Zanna.Game3D.Environment3D.Sunset` | `obj(obj)` | `rt_game3d_environment_sunset` |
-| `Zanna.Game3D.Environment3D.Overcast` | `obj(obj)` | `rt_game3d_environment_overcast` |
-| `Zanna.Game3D.Environment3D.Night` | `obj(obj)` | `rt_game3d_environment_night` |
-| `Zanna.Game3D.EnvHandle.WithTerrain` | `obj(obj,f64,f64)` | `rt_game3d_env_handle_with_terrain` |
-| `Zanna.Game3D.EnvHandle.WithWater` | `obj(obj,f64)` | `rt_game3d_env_handle_with_water` |
-| `Zanna.Game3D.EnvHandle.WithFog` | `obj(obj,f64,f64)` | `rt_game3d_env_handle_with_fog` |
-| `Zanna.Game3D.EnvHandle.WithHeightFog` | `obj(obj,f64,f64,f64)` | `rt_game3d_env_handle_with_height_fog` |
+| `Zanna.Game3D.Environment3D.Outdoor` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `rt_game3d_environment_outdoor` |
+| `Zanna.Game3D.Environment3D.Sunset` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `rt_game3d_environment_sunset` |
+| `Zanna.Game3D.Environment3D.Overcast` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `rt_game3d_environment_overcast` |
+| `Zanna.Game3D.Environment3D.Night` | `obj<Zanna.Game3D.EnvHandle>(obj)` | `rt_game3d_environment_night` |
+| `Zanna.Game3D.EnvHandle.WithTerrain` | `obj<Zanna.Game3D.EnvHandle>(obj,f64,f64)` | `rt_game3d_env_handle_with_terrain` |
+| `Zanna.Game3D.EnvHandle.WithWater` | `obj<Zanna.Game3D.EnvHandle>(obj,f64)` | `rt_game3d_env_handle_with_water` |
+| `Zanna.Game3D.EnvHandle.WithFog` | `obj<Zanna.Game3D.EnvHandle>(obj,f64,f64)` | `rt_game3d_env_handle_with_fog` |
+| `Zanna.Game3D.EnvHandle.WithHeightFog` | `obj<Zanna.Game3D.EnvHandle>(obj,f64,f64,f64)` | `rt_game3d_env_handle_with_height_fog` |
 | `Zanna.Game3D.Debug3D.ShowOverlay` | `void(obj,i1)` | `rt_game3d_debug_show_overlay` |
 | `Zanna.Game3D.Debug3D.DrawAxes` | `void(obj,obj,f64)` | `rt_game3d_debug_draw_axes` |
 | `Zanna.Game3D.Debug3D.DrawPhysics` | `void(obj,i1)` | `rt_game3d_debug_draw_physics` |
@@ -2585,24 +2585,24 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Surfaces.NameOf` | `str(i64)` | `rt_game3d_surfaces_name_of` |
 | `Zanna.Game3D.Surfaces.IdOf` | `i64(str)` | `rt_game3d_surfaces_id_of` |
 | <a id="zanna-game3d-surfaces-get-count"></a>`Zanna.Game3D.Surfaces.get_Count` | `i64()` | `rt_game3d_surfaces_count` |
-| `Zanna.Game3D.SurfaceTable3D.New` | `obj()` | `rt_game3d_surface_table_new` |
-| `Zanna.Game3D.SurfaceTable3D.AddClip` | `obj(obj,i64,obj)` | `rt_game3d_surface_table_add_clip` |
-| `Zanna.Game3D.SurfaceTable3D.SetLoudness` | `obj(obj,i64,f64)` | `rt_game3d_surface_table_set_loudness` |
+| `Zanna.Game3D.SurfaceTable3D.New` | `obj<Zanna.Game3D.SurfaceTable3D>()` | `rt_game3d_surface_table_new` |
+| `Zanna.Game3D.SurfaceTable3D.AddClip` | `obj<Zanna.Game3D.SurfaceTable3D>(obj,i64,obj)` | `rt_game3d_surface_table_add_clip` |
+| `Zanna.Game3D.SurfaceTable3D.SetLoudness` | `obj<Zanna.Game3D.SurfaceTable3D>(obj,i64,f64)` | `rt_game3d_surface_table_set_loudness` |
 | `Zanna.Game3D.SurfaceTable3D.ClipCount` | `i64(obj,i64)` | `rt_game3d_surface_table_clip_count` |
-| `Zanna.Game3D.Perception3D.New` | `obj(obj)` | `rt_game3d_perception_new` |
+| `Zanna.Game3D.Perception3D.New` | `obj<Zanna.Game3D.Perception3D>(obj)` | `rt_game3d_perception_new` |
 | `Zanna.Game3D.Perception3D.SetSight` | `void(obj,f64,f64,f64)` | `rt_game3d_perception_set_sight` |
 | `Zanna.Game3D.Perception3D.SetHearing` | `void(obj,f64)` | `rt_game3d_perception_set_hearing` |
 | `Zanna.Game3D.Perception3D.SetTargetMask` | `void(obj,i64)` | `rt_game3d_perception_set_target_mask` |
 | `Zanna.Game3D.Perception3D.SetLosMask` | `void(obj,i64)` | `rt_game3d_perception_set_los_mask` |
 | `Zanna.Game3D.Perception3D.SeenCount` | `i64(obj)` | `rt_game3d_perception_seen_count` |
-| `Zanna.Game3D.Perception3D.SeenTarget` | `obj(obj,i64)` | `rt_game3d_perception_seen_target` |
+| `Zanna.Game3D.Perception3D.SeenTarget` | `obj<Zanna.Game3D.Entity3D>(obj,i64)` | `rt_game3d_perception_seen_target` |
 | `Zanna.Game3D.Perception3D.LastKnownPosition` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_game3d_perception_last_known_position` |
 | `Zanna.Game3D.Perception3D.SeenChanged` | `i1(obj)` | `rt_game3d_perception_seen_changed` |
 | `Zanna.Game3D.Perception3D.HeardCount` | `i64(obj)` | `rt_game3d_perception_heard_count` |
 | `Zanna.Game3D.Perception3D.HeardPosition` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_game3d_perception_heard_position` |
 | `Zanna.Game3D.Perception3D.HeardTag` | `i64(obj,i64)` | `rt_game3d_perception_heard_tag` |
 | `Zanna.Game3D.World3D.ReportSound` | `void(obj,obj<Zanna.Math.Vec3>,f64,i64)` | `rt_game3d_world_report_sound` |
-| `Zanna.Game3D.BehaviorTree3D.New` | `obj()` | `rt_game3d_btree_new` |
+| `Zanna.Game3D.BehaviorTree3D.New` | `obj<Zanna.Game3D.BehaviorTree3D>()` | `rt_game3d_btree_new` |
 | `Zanna.Game3D.BehaviorTree3D.Sequence` | `i64(obj)` | `rt_game3d_btree_sequence` |
 | `Zanna.Game3D.BehaviorTree3D.Selector` | `i64(obj)` | `rt_game3d_btree_selector` |
 | `Zanna.Game3D.BehaviorTree3D.Inverter` | `i64(obj)` | `rt_game3d_btree_inverter` |
@@ -2613,37 +2613,37 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.BehaviorTree3D.Custom` | `i64(obj,i64)` | `rt_game3d_btree_custom` |
 | `Zanna.Game3D.BehaviorTree3D.AddChild` | `void(obj,i64,i64)` | `rt_game3d_btree_add_child` |
 | `Zanna.Game3D.BehaviorTree3D.SetRoot` | `void(obj,i64)` | `rt_game3d_btree_set_root` |
-| `Zanna.Game3D.BehaviorTreeInstance3D.New` | `obj(obj,obj<Zanna.Game3D.BehaviorTree3D>)` | `rt_game3d_bt_instance_new` |
+| `Zanna.Game3D.BehaviorTreeInstance3D.New` | `obj<Zanna.Game3D.BehaviorTreeInstance3D>(obj,obj<Zanna.Game3D.BehaviorTree3D>)` | `rt_game3d_bt_instance_new` |
 | `Zanna.Game3D.BehaviorTreeInstance3D.SetTarget` | `void(obj,obj)` | `rt_game3d_bt_instance_set_target` |
 | <a id="zanna-game3d-behaviortreeinstance3d-get-pendingcustom"></a>`Zanna.Game3D.BehaviorTreeInstance3D.get_PendingCustom` | `i64(obj)` | `rt_game3d_bt_instance_pending_custom` |
 | `Zanna.Game3D.BehaviorTreeInstance3D.Resolve` | `void(obj,i1)` | `rt_game3d_bt_instance_resolve` |
-| `Zanna.Game3D.Interactable3D.New` | `obj(obj)` | `rt_game3d_interactable_new` |
-| `Zanna.Game3D.Interactable3D.WithPrompt` | `obj(obj,str)` | `rt_game3d_interactable_with_prompt` |
+| `Zanna.Game3D.Interactable3D.New` | `obj<Zanna.Game3D.Interactable3D>(obj)` | `rt_game3d_interactable_new` |
+| `Zanna.Game3D.Interactable3D.WithPrompt` | `obj<Zanna.Game3D.Interactable3D>(obj,str)` | `rt_game3d_interactable_with_prompt` |
 | <a id="zanna-game3d-interactable3d-get-prompt"></a>`Zanna.Game3D.Interactable3D.get_Prompt` | `str(obj)` | `rt_game3d_interactable_get_prompt` |
-| `Zanna.Game3D.Interactable3D.WithKind` | `obj(obj,i64)` | `rt_game3d_interactable_with_kind` |
+| `Zanna.Game3D.Interactable3D.WithKind` | `obj<Zanna.Game3D.Interactable3D>(obj,i64)` | `rt_game3d_interactable_with_kind` |
 | <a id="zanna-game3d-interactable3d-get-kind"></a>`Zanna.Game3D.Interactable3D.get_Kind` | `i64(obj)` | `rt_game3d_interactable_get_kind` |
-| `Zanna.Game3D.Interactable3D.WithRadius` | `obj(obj,f64)` | `rt_game3d_interactable_with_radius` |
+| `Zanna.Game3D.Interactable3D.WithRadius` | `obj<Zanna.Game3D.Interactable3D>(obj,f64)` | `rt_game3d_interactable_with_radius` |
 | <a id="zanna-game3d-interactable3d-get-radius"></a>`Zanna.Game3D.Interactable3D.get_Radius` | `f64(obj)` | `rt_game3d_interactable_get_radius` |
 | <a id="zanna-game3d-interactable3d-set-isenabled"></a>`Zanna.Game3D.Interactable3D.set_IsEnabled` | `void(obj,i1)` | `rt_game3d_interactable_set_enabled` |
 | <a id="zanna-game3d-interactable3d-get-isenabled"></a>`Zanna.Game3D.Interactable3D.get_IsEnabled` | `i1(obj)` | `rt_game3d_interactable_get_enabled` |
 | <a id="zanna-game3d-interactable3d-set-focuspriority"></a>`Zanna.Game3D.Interactable3D.set_FocusPriority` | `void(obj,f64)` | `rt_game3d_interactable_set_focus_priority` |
 | <a id="zanna-game3d-interactable3d-get-focuspriority"></a>`Zanna.Game3D.Interactable3D.get_FocusPriority` | `f64(obj)` | `rt_game3d_interactable_get_focus_priority` |
-| `Zanna.Game3D.Interactor3D.New` | `obj(obj)` | `rt_game3d_interactor_new` |
+| `Zanna.Game3D.Interactor3D.New` | `obj<Zanna.Game3D.Interactor3D>(obj)` | `rt_game3d_interactor_new` |
 | <a id="zanna-game3d-interactor3d-set-conedegrees"></a>`Zanna.Game3D.Interactor3D.set_ConeDegrees` | `void(obj,f64)` | `rt_game3d_interactor_set_cone_degrees` |
 | <a id="zanna-game3d-interactor3d-get-conedegrees"></a>`Zanna.Game3D.Interactor3D.get_ConeDegrees` | `f64(obj)` | `rt_game3d_interactor_get_cone_degrees` |
 | <a id="zanna-game3d-interactor3d-set-requirelineofsight"></a>`Zanna.Game3D.Interactor3D.set_RequireLineOfSight` | `void(obj,i1)` | `rt_game3d_interactor_set_require_los` |
 | <a id="zanna-game3d-interactor3d-get-requirelineofsight"></a>`Zanna.Game3D.Interactor3D.get_RequireLineOfSight` | `i1(obj)` | `rt_game3d_interactor_get_require_los` |
 | <a id="zanna-game3d-interactor3d-set-losmask"></a>`Zanna.Game3D.Interactor3D.set_LosMask` | `void(obj,i64)` | `rt_game3d_interactor_set_los_mask` |
 | <a id="zanna-game3d-interactor3d-get-losmask"></a>`Zanna.Game3D.Interactor3D.get_LosMask` | `i64(obj)` | `rt_game3d_interactor_get_los_mask` |
-| <a id="zanna-game3d-interactor3d-get-focused"></a>`Zanna.Game3D.Interactor3D.get_Focused` | `obj(obj)` | `rt_game3d_interactor_get_focused` |
+| <a id="zanna-game3d-interactor3d-get-focused"></a>`Zanna.Game3D.Interactor3D.get_Focused` | `obj<Zanna.Game3D.Interactable3D>(obj)` | `rt_game3d_interactor_get_focused` |
 | `Zanna.Game3D.Interactor3D.FocusChanged` | `i1(obj)` | `rt_game3d_interactor_focus_changed` |
 | `Zanna.Game3D.Interactor3D.Interact` | `i1(obj)` | `rt_game3d_interactor_interact` |
 | <a id="zanna-game3d-interactor3d-get-interactcount"></a>`Zanna.Game3D.Interactor3D.get_InteractCount` | `i64(obj)` | `rt_game3d_interactor_get_interact_count` |
-| <a id="zanna-game3d-interactor3d-get-lastinteracted"></a>`Zanna.Game3D.Interactor3D.get_LastInteracted` | `obj(obj)` | `rt_game3d_interactor_get_last_interacted` |
-| `Zanna.Game3D.Footsteps3D.New` | `obj(obj,obj<Zanna.Game3D.SurfaceTable3D>)` | `rt_game3d_footsteps_new` |
-| `Zanna.Game3D.Footsteps3D.SetEventPrefix` | `obj(obj,str)` | `rt_game3d_footsteps_set_event_prefix` |
-| `Zanna.Game3D.Footsteps3D.SetGroundMask` | `obj(obj,i64)` | `rt_game3d_footsteps_set_ground_mask` |
-| `Zanna.Game3D.Footsteps3D.SetVolumeScale` | `obj(obj,f64)` | `rt_game3d_footsteps_set_volume_scale` |
+| <a id="zanna-game3d-interactor3d-get-lastinteracted"></a>`Zanna.Game3D.Interactor3D.get_LastInteracted` | `obj<Zanna.Game3D.Interactable3D>(obj)` | `rt_game3d_interactor_get_last_interacted` |
+| `Zanna.Game3D.Footsteps3D.New` | `obj<Zanna.Game3D.Footsteps3D>(obj,obj<Zanna.Game3D.SurfaceTable3D>)` | `rt_game3d_footsteps_new` |
+| `Zanna.Game3D.Footsteps3D.SetEventPrefix` | `obj<Zanna.Game3D.Footsteps3D>(obj,str)` | `rt_game3d_footsteps_set_event_prefix` |
+| `Zanna.Game3D.Footsteps3D.SetGroundMask` | `obj<Zanna.Game3D.Footsteps3D>(obj,i64)` | `rt_game3d_footsteps_set_ground_mask` |
+| `Zanna.Game3D.Footsteps3D.SetVolumeScale` | `obj<Zanna.Game3D.Footsteps3D>(obj,f64)` | `rt_game3d_footsteps_set_volume_scale` |
 | <a id="zanna-game3d-footsteps3d-get-stepcount"></a>`Zanna.Game3D.Footsteps3D.get_StepCount` | `i64(obj)` | `rt_game3d_footsteps_get_step_count` |
 | <a id="zanna-game3d-footsteps3d-get-lastsurface"></a>`Zanna.Game3D.Footsteps3D.get_LastSurface` | `i64(obj)` | `rt_game3d_footsteps_get_last_surface` |
 

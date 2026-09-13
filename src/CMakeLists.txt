@@ -324,7 +324,10 @@ add_library(zanna_packaging STATIC
         tools/common/packaging/PlistGenerator.cpp
         tools/common/packaging/DesktopEntryGenerator.cpp
         tools/common/packaging/IconGenerator.cpp
+        tools/common/packaging/MacOSEntitlements.cpp
         tools/common/packaging/MacOSPackageBuilder.cpp
+        tools/common/packaging/NativeBinaryInspector.cpp
+        tools/common/packaging/StoreDepotBuilder.cpp
         tools/common/packaging/LinuxPackageBuilder.cpp
         tools/common/packaging/LinuxRuntimeStubGen.cpp
         tools/common/packaging/ToolchainInstallManifest.cpp

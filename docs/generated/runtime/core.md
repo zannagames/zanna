@@ -126,7 +126,7 @@ Constructor: `Zanna.Core.MessageBus.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-core-messagebus-callback"></a>`Callback` | `obj(obj)` | `Zanna.Core.MessageBus.Callback` |
+| <a id="zanna-core-messagebus-callback"></a>`Callback` | `obj<Zanna.Core.Object>(obj)` | `Zanna.Core.MessageBus.Callback` |
 | <a id="zanna-core-messagebus-clear"></a>`Clear` | `void()` | `Zanna.Core.MessageBus.Clear` |
 | <a id="zanna-core-messagebus-cleartopic"></a>`ClearTopic` | `void(str)` | `Zanna.Core.MessageBus.ClearTopic` |
 | <a id="zanna-core-messagebus-publish"></a>`Publish` | `i64(str,obj)` | `Zanna.Core.MessageBus.Publish` |
@@ -134,7 +134,7 @@ Constructor: `Zanna.Core.MessageBus.New`
 | <a id="zanna-core-messagebus-subscribercount"></a>`SubscriberCount` | `i64(str)` | `Zanna.Core.MessageBus.SubscriberCount` |
 | <a id="zanna-core-messagebus-topics"></a>`Topics` | `seq<str>()` | `Zanna.Core.MessageBus.Topics` |
 | <a id="zanna-core-messagebus-unsubscribe"></a>`Unsubscribe` | `i1(i64)` | `Zanna.Core.MessageBus.Unsubscribe` |
-| <a id="zanna-core-messagebus-new"></a>`New` | `obj()` | `Zanna.Core.MessageBus.New` |
+| <a id="zanna-core-messagebus-new"></a>`New` | `obj<Zanna.Core.MessageBus>()` | `Zanna.Core.MessageBus.New` |
 
 <a id="zanna-core-object"></a>
 ### `Zanna.Core.Object`
@@ -178,8 +178,8 @@ construct the class directly. Its public surface exposes operations including `E
 | `Zanna.Core.Box.EqI64` | `i1(obj,i64)` | `rt_box_eq_i64` |
 | `Zanna.Core.Box.EqF64` | `i1(obj,f64)` | `rt_box_eq_f64` |
 | `Zanna.Core.Box.EqStr` | `i1(obj,str)` | `rt_box_eq_str` |
-| `Zanna.Core.MessageBus.New` | `obj()` | `rt_msgbus_new` |
-| `Zanna.Core.MessageBus.Callback` | `obj(obj)` | `rt_msgbus_callback_new` |
+| `Zanna.Core.MessageBus.New` | `obj<Zanna.Core.MessageBus>()` | `rt_msgbus_new` |
+| `Zanna.Core.MessageBus.Callback` | `obj<Zanna.Core.Object>(obj)` | `rt_msgbus_callback_new` |
 | `Zanna.Core.MessageBus.Subscribe` | `i64(obj,str,obj)` | `rt_msgbus_subscribe` |
 | `Zanna.Core.MessageBus.Unsubscribe` | `i1(obj,i64)` | `rt_msgbus_unsubscribe` |
 | `Zanna.Core.MessageBus.Publish` | `i64(obj,str,obj)` | `rt_msgbus_publish` |

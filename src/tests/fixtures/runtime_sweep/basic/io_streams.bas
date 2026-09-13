@@ -76,10 +76,8 @@ DIM bf AS Zanna.IO.BinFile
 bf = Zanna.IO.BinFile.Open(binPath, "w")
 bf.WriteByte(202)
 bf.WriteByte(254)
-DIM buf AS Zanna.IO.BinaryBuffer
-buf = Zanna.IO.BinaryBuffer.NewCapacity(2)
-buf.WriteByte(1)
-buf.WriteByte(2)
+DIM buf AS Zanna.Collections.Bytes
+buf = Zanna.Collections.Bytes.FromHex("0102")
 bf.Write(buf, 0, 2)
 bf.Flush()
 bf.Close()
@@ -90,12 +88,12 @@ Zanna.Core.Diagnostics.AssertEq(bf.Position, 0, "bin.pos0")
 DIM b0 AS INTEGER
 b0 = bf.ReadByte()
 Zanna.Core.Diagnostics.AssertEq(b0, 202, "bin.readbyte")
-DIM readBuf AS Zanna.IO.BinaryBuffer
-readBuf = Zanna.IO.BinaryBuffer.NewCapacity(2)
+DIM readBuf AS Zanna.Collections.Bytes
+readBuf = Zanna.Collections.Bytes.New(2)
 DIM readCount AS INTEGER
 readCount = bf.Read(readBuf, 0, 2)
 Zanna.Core.Diagnostics.AssertEq(readCount, 2, "bin.read")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(readBuf.ToBytes()), "fe01", "bin.read.hex")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(readBuf), "fe01", "bin.read.hex")
 DIM newPos AS INTEGER
 newPos = bf.Seek(0, 0)
 Zanna.Core.Diagnostics.AssertEq(newPos, 0, "bin.seek")
@@ -140,10 +138,8 @@ ms.WriteI64(-123456789)
 ms.WriteF32(1.5)
 ms.WriteF64(2.25)
 ms.WriteStr("hi")
-DIM msBytes AS Zanna.IO.BinaryBuffer
-msBytes = Zanna.IO.BinaryBuffer.NewCapacity(2)
-msBytes.WriteByte(7)
-msBytes.WriteByte(8)
+DIM msBytes AS Zanna.Collections.Bytes
+msBytes = Zanna.Collections.Bytes.FromHex("0708")
 ms.WriteBytes(msBytes)
 
 Zanna.Core.Diagnostics.Assert(ms.Length > 0, "ms.len")
@@ -160,12 +156,12 @@ Zanna.Core.Diagnostics.AssertEq(ms.ReadI64(), -123456789, "ms.readi64")
 AssertApprox(ms.ReadF32(), 1.5, 0.0001, "ms.readf32")
 AssertApprox(ms.ReadF64(), 2.25, 0.0001, "ms.readf64")
 Zanna.Core.Diagnostics.AssertEqStr(ms.ReadStr(2), "hi", "ms.readstr")
-DIM rb AS Zanna.IO.BinaryBuffer
+DIM rb AS Zanna.Collections.Bytes
 rb = ms.ReadBytes(2)
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(rb.ToBytes()), "0708", "ms.readbytes")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(rb), "0708", "ms.readbytes")
 
 ms.Skip(0)
-DIM allBytes AS Zanna.IO.BinaryBuffer
+DIM allBytes AS Zanna.Collections.Bytes
 allBytes = ms.ToBytes()
 Zanna.Core.Diagnostics.Assert(allBytes.Length >= 0, "ms.tobytes")
 

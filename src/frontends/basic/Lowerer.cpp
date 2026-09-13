@@ -170,12 +170,10 @@ std::optional<::il::frontends::basic::Type> Lowerer::findMethodReturnType(
 }
 
 /// @brief Infer the concrete class returned by an object-valued method.
-/// @details User-defined metadata is checked first. Runtime metadata then uses
-///          the optional arity, explicit return-class annotations, cross-class
-///          target prefixes, and parsed signatures. As a fallback, object
-///          methods on runtime types without Push, Set, or Enqueue are treated
-///          as returning their receiver class; collection-like results remain
-///          unknown.
+/// @details User-defined metadata is checked first. A runtime method result has exactly the
+///          class its registry row declares (`obj<Class>`, `seq<T>`, `list<T>`); a bare `obj`
+///          result stays unknown, and nothing is inferred from the receiver class or the target
+///          function's name (ADR 0356).
 /// @param className Qualified receiver class name.
 /// @param methodName Method name, compared case-insensitively for runtime classes.
 /// @param arity Optional argument count used to disambiguate overloads.
@@ -194,26 +192,11 @@ std::string Lowerer::findMethodReturnClassName(std::string_view className,
             return it->second.sig.returnClassName;
     }
 
-    // Check runtime classes: if a method returns 'obj' and belongs to a known
-    // runtime class, infer the class name from the method's target function.
+    // Runtime classes: use the class declared by the method's registry row.
     if (const auto *rtClass = il::runtime::findRuntimeClassByQName(std::string(className))) {
         if (arity) {
-            if (auto entry = runtimeMethodIndex().find(className, methodName, *arity)) {
-                if (!entry->returnClassQName.empty())
-                    return entry->returnClassQName;
-
-                if (entry->ret == BasicType::Object && !entry->target.empty()) {
-                    std::string_view target(entry->target);
-                    auto lastDot = target.rfind('.');
-                    if (lastDot != std::string_view::npos) {
-                        std::string prefix(target.substr(0, lastDot));
-                        if (!string_utils::iequals(prefix, className) &&
-                            il::runtime::findRuntimeClassByQName(prefix)) {
-                            return prefix;
-                        }
-                    }
-                }
-            }
+            if (auto entry = runtimeMethodIndex().find(className, methodName, *arity))
+                return entry->returnClassQName;
         }
 
         for (const auto &m : rtClass->methods) {
@@ -221,46 +204,8 @@ std::string Lowerer::findMethodReturnClassName(std::string_view className,
                 auto sig = il::runtime::parseRuntimeSignature(m.signature);
                 if (arity && sig.arity() != *arity)
                     continue;
-                if (sig.returnType == il::runtime::ILScalarType::Object) {
-                    if (std::string concrete = il::runtime::concreteRuntimeReturnClassQName(sig);
-                        !concrete.empty()) {
-                        return concrete;
-                    }
-
-                    // Method returns obj — check if target function belongs to
-                    // a DIFFERENT runtime class (cross-class factory method).
-                    if (m.target) {
-                        std::string_view target(m.target);
-                        auto lastDot = target.rfind('.');
-                        if (lastDot != std::string_view::npos) {
-                            std::string prefix(target.substr(0, lastDot));
-                            if (!string_utils::iequals(prefix, className)) {
-                                if (il::runtime::findRuntimeClassByQName(prefix))
-                                    return prefix;
-                            }
-                        }
-                    }
-                    // Target belongs to the same class. Distinguish between:
-                    // - Value/math types (Vec2/Vec3/Quat) where obj-returning
-                    //   methods return the same type
-                    // - Collection types (List/Seq/Map/Queue/Stack/etc.) where
-                    //   getters return generic stored elements
-                    // Collections have a "Get" or "Push" method — check for this.
-                    {
-                        bool isCollection = false;
-                        for (const auto &cm : rtClass->methods) {
-                            if (cm.name && (std::string_view(cm.name) == "Push" ||
-                                            std::string_view(cm.name) == "Set" ||
-                                            std::string_view(cm.name) == "Enqueue")) {
-                                isCollection = true;
-                                break;
-                            }
-                        }
-                        if (!isCollection)
-                            return std::string(className);
-                    }
-                    return {};
-                }
+                if (sig.returnType == il::runtime::ILScalarType::Object)
+                    return il::runtime::concreteRuntimeReturnClassQName(sig);
                 break;
             }
         }

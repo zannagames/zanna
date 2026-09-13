@@ -7,7 +7,7 @@ PRINT Zanna.Collections.Map.Has(j, "name")
 PRINT Zanna.Collections.Map.Has(j, "missing")
 DIM js AS STRING
 LET js = Zanna.Data.Json.Format(j)
-PRINT Zanna.String.Has(js, "zanna")
+PRINT Zanna.String.Contains(js, "zanna")
 
 DIM j2 AS OBJECT
 LET j2 = Zanna.Data.Json.NewObject()
@@ -22,7 +22,7 @@ PRINT Zanna.Data.Json.Format(j2)
 ' Uuid
 DIM u1 AS STRING
 LET u1 = Zanna.Text.Uuid.Generate()
-PRINT Zanna.String.Has(u1, "-")
+PRINT Zanna.String.Contains(u1, "-")
 DIM u2 AS STRING
 LET u2 = Zanna.Text.Uuid.Generate()
 PRINT u1 <> u2

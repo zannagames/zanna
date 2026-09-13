@@ -40,7 +40,7 @@ descriptions come from the modular `runtime.def` registry.
 | [Input/Output](io/README.md)           | `Archive`, `BinaryBuffer`, `BinFile`, `Compress`, `Dir`, `File`, `Glob`, `LineReader`, `LineWriter`, `MemStream`, `Path`, `Stream`, `TempFile`, `Watcher` |
 | [Mathematics](math.md)          | `BigInt`, `Bits`, `Easing`, `Mat3`, `Mat4`, `Math`, `PerlinNoise`, `Quat`, `Random`, `Spline`, `Vec2`, `Vec3` |
 | [Network](network.md)           | `Dns`, `Http`, `HttpReq`, `HttpRes`, `RateLimiter`, `RestClient`, `RetryPolicy`, `Tcp`, `TcpServer`, `Udp`, `Url`, `WebSocket` |
-| [Platform Services](services.md) | `Platform`, `Request`, `Steam`, `Status`, `EventKind`, `Feature`, `RequestKind`, `SteamHardware` — store identity, licensing, DLC, events, and requests (Steam first) |
+| [Platform Services](services.md) | `Platform`, `Request`, `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`, `OnScreenKeyboard`, `Cloud`, `Steam`, and constants — store identity, licensing, DLC, events, achievements, stats, leaderboards, presence, overlay, keyboards, and cloud files (Steam first) |
 | [System](system.md)             | `Environment`, `Clipboard`, `Exec`, `Machine`, `Terminal`; `Zanna.Runtime.Unsafe`, `Zanna.Runtime.GC`, compatibility `Zanna.Memory`, and `Zanna.Memory.WeakRef` |
 | [Text & Data](text/README.md)          | `Codec`, `CompiledPattern`, `Csv`, `Diff`, `Html`, `Ini`, `Json`, `JsonPath`, `JsonStream`, `Markdown`, `InvariantNumberFormat`, `Pattern`, `Pluralize`, `Scanner`, `StringBuilder`, `Template`, `TextWrapper`, `Toml`, `Uuid`, `Version`; `Zanna.Data`: `Serialize`, `Xml`, `Yaml` |
 | [Threads](threads.md)           | `Async`, `Barrier`, `CancelToken`, `Channel`, `ConcurrentMap`, `Debouncer`, `Future`, `Gate`, `Monitor`, `Parallel`, `Pool`, `Promise`, `RwLock`, `SafeI64`, `Scheduler`, `Thread`, `Throttler` |
@@ -346,11 +346,24 @@ the conceptual guide does not provide a class-specific section.
 |---------------------------------------------------------|----------|----------------------------------------------------|
 | [`Platform`](services.md#zannaservicesplatform)         | Static   | Provider-neutral lifecycle, identity, licensing, events |
 | [`Request`](services.md#zannaservicesrequest)           | Instance | Non-blocking platform request                      |
+| [`Achievements`](services.md#zannaservicesachievements) | Static   | Unlock and inspect achievements                    |
+| [`Stats`](services.md#zannaservicesstats)               | Static   | Read, update, and commit player stats              |
+| [`Leaderboards`](services.md#zannaservicesleaderboards) | Static   | Find boards, upload scores, download entries       |
+| [`Presence`](services.md#zannaservicespresence)         | Static   | Rich presence for friends                          |
+| [`Overlay`](services.md#zannaservicesoverlay)           | Static   | Platform overlay pages and notification placement  |
+| [`OnScreenKeyboard`](services.md#zannaservicesonscreenkeyboard) | Static | On-screen keyboards for controller-only devices |
+| [`Cloud`](services.md#zannaservicescloud)               | Static   | Per-user files synchronized across devices         |
 | [`Steam`](services.md#zannaservicessteam)               | Static   | Steam-only extension (relaunch, SteamID, hardware) |
 | [`Status`](services.md#zannaservicesstatus)             | Static   | Platform services status codes                     |
 | [`EventKind`](services.md#zannaserviceseventkind)       | Static   | Platform event kinds                               |
 | [`Feature`](services.md#zannaservicesfeature)           | Static   | Feature identifiers for `Platform.HasFeature`      |
 | [`RequestKind`](services.md#zannaservicesrequestkind)   | Static   | Request kinds                                      |
+| [`LeaderboardScope`](services.md#zannaservicesleaderboardscope) | Static | Leaderboard download ranges                  |
+| [`LeaderboardSort`](services.md#zannaservicesleaderboardsort) | Static | Leaderboard ranking order                      |
+| [`LeaderboardDisplay`](services.md#zannaservicesleaderboarddisplay) | Static | Leaderboard score formats               |
+| [`OverlayPage`](services.md#zannaservicesoverlaypage)   | Static   | Overlay pages for `Overlay.Open`                   |
+| [`NotificationPosition`](services.md#zannaservicesnotificationposition) | Static | Overlay notification corners         |
+| [`TextInputMode`](services.md#zannaservicestextinputmode) | Static | On-screen keyboard layouts                         |
 | [`SteamHardware`](services.md#zannaservicessteamhardware) | Static | Steam hardware identifiers                         |
 
 ### Zanna.Text

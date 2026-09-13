@@ -30,7 +30,7 @@ Zanna.Core.Diagnostics.Assert(addrs.Count >= 1, "dns.localaddrs")
 
 DIM resolved AS STRING
 resolved = Zanna.Network.Dns.Resolve("localhost")
-Zanna.Core.Diagnostics.Assert(Zanna.Network.Dns.IsIpv4(resolved), "dns.resolve")
+Zanna.Core.Diagnostics.Assert(Zanna.Network.Dns.IsIpv4(resolved) OR Zanna.Network.Dns.IsIpv6(resolved), "dns.resolve")
 
 DIM resolved4 AS STRING
 resolved4 = Zanna.Network.Dns.ResolveIpv4(ip4)

@@ -39,7 +39,7 @@ Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.NumFixed(3.14159, 2), "3.14", 
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.Scientific(1234.5, 2), "1.23e+03", "fmt.numsci")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.Percent(0.756, 1), "75.6%", "fmt.numpct")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.Bool(TRUE), "true", "fmt.bool")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.YesNo(FALSE), "No", "fmt.boolyn")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.YesNo(FALSE), "no", "fmt.boolyn")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.SizeBytes(1024), "1.0 KB", "fmt.size")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.Hex(255), "ff", "fmt.hex")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Fmt.HexPad(255, 4), "00ff", "fmt.hexpad")

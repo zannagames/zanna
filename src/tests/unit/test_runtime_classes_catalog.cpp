@@ -10,8 +10,10 @@
 // Key invariants:
 //   - Public runtime classes expose authored documentation and canonical method
 //     signatures through the generated registry catalog.
+//   - Object results carry the class their row declares (ADR 0356).
 // Ownership/Lifetime: Catalog descriptors are process-lifetime immutable data.
-// Links: docs/il/il-guide.md#reference, src/il/runtime/defs/classes/
+// Links: docs/il/il-guide.md#reference, src/il/runtime/defs/classes/,
+//        docs/adr/0356-runtime-object-results-declare-their-class.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -236,15 +238,15 @@ int main() {
 
     const il::runtime::RuntimeClass *guiToastCls = findClass("Zanna.GUI.Toast");
     assert(guiToastCls != nullptr && "Zanna.GUI.Toast not found in catalog");
-    assert(hasMethod(*guiToastCls, "New", "obj(str,i64,i64)"));
+    assert(hasMethod(*guiToastCls, "New", "obj<Zanna.GUI.Toast>(str,i64,i64)"));
 
     const il::runtime::RuntimeClass *guiFontCls = findClass("Zanna.GUI.Font");
     assert(guiFontCls != nullptr && "Zanna.GUI.Font not found in catalog");
-    assert(hasMethod(*guiFontCls, "Load", "obj(str)"));
+    assert(hasMethod(*guiFontCls, "Load", "obj<Zanna.GUI.Font>(str)"));
 
     const il::runtime::RuntimeClass *guiTreeViewCls = findClass("Zanna.GUI.TreeView");
     assert(guiTreeViewCls != nullptr && "Zanna.GUI.TreeView not found in catalog");
-    assert(hasMethod(*guiTreeViewCls, "GetNodeAt", "obj(i64,i64)"));
+    assert(hasMethod(*guiTreeViewCls, "GetNodeAt", "obj<Zanna.GUI.TreeView.Node>(i64,i64)"));
     assert(hasMethod(*guiTreeViewCls, "SetVirtualModel", "i1(obj)"));
     assert(hasMethod(*guiTreeViewCls, "ClearVirtualModel", "void()"));
 
@@ -291,7 +293,7 @@ int main() {
 
     const il::runtime::RuntimeClass *guiMessageBoxCls = findClass("Zanna.GUI.MessageBox");
     assert(guiMessageBoxCls != nullptr && "Zanna.GUI.MessageBox not found in catalog");
-    assert(hasMethod(*guiMessageBoxCls, "New", "obj(str,str,i64)"));
+    assert(hasMethod(*guiMessageBoxCls, "New", "obj<Zanna.GUI.MessageBox>(str,str,i64)"));
     assert(hasMethod(*guiMessageBoxCls, "PromptOption", "obj<Zanna.Option>(str,str)"));
     assert(hasMethod(*guiMessageBoxCls, "AddButtonWithRole", "void(str,i64,i64)"));
     assert(hasMethod(*guiMessageBoxCls, "SetCancelButton", "i1(i64)"));
@@ -300,7 +302,7 @@ int main() {
 
     const il::runtime::RuntimeClass *guiFileDialogCls = findClass("Zanna.GUI.FileDialog");
     assert(guiFileDialogCls != nullptr && "Zanna.GUI.FileDialog not found in catalog");
-    assert(hasMethod(*guiFileDialogCls, "New", "obj(i64)"));
+    assert(hasMethod(*guiFileDialogCls, "New", "obj<Zanna.GUI.FileDialog>(i64)"));
     assert(hasMethod(*guiFileDialogCls, "OpenOption", "obj<Zanna.Option>(str,str,str)"));
     assert(
         hasMethod(*guiFileDialogCls, "OpenMultipleSeq", "obj<Zanna.Collections.Seq>(str,str,str)"));
@@ -310,7 +312,7 @@ int main() {
 
     const il::runtime::RuntimeClass *guiToolbarCls = findClass("Zanna.GUI.Toolbar");
     assert(guiToolbarCls != nullptr && "Zanna.GUI.Toolbar not found in catalog");
-    assert(hasMethod(*guiToolbarCls, "NewVertical", "obj(obj)"));
+    assert(hasMethod(*guiToolbarCls, "NewVertical", "obj<Zanna.GUI.Toolbar>(obj)"));
 
     constexpr std::array<std::string_view, 43> graphics2DClasses = {
         "Zanna.Graphics.RenderTarget2D",

@@ -28,6 +28,13 @@
 
 namespace il::frontends::basic {
 
+/// @brief Tests whether a FUNCTION declares an object result.
+/// @param f Declaration to inspect.
+/// @return @c true for `AS OBJECT` and `AS <Class>` results.
+static bool declaresObjectResult(const FunctionDecl &f) {
+    return !f.explicitClassRetQname.empty() || f.explicitRetType == BasicType::Object;
+}
+
 /// @brief Construct a registry and seed its runtime-visible procedures.
 /// @param d Diagnostic service borrowed for the registry's lifetime.
 /// @pre @p d outlives this registry.
@@ -57,6 +64,8 @@ ProcSignature ProcRegistry::buildSignature(const ProcDescriptor &descriptor) {
     ProcSignature sig;
     sig.kind = descriptor.kind;
     sig.retType = descriptor.retType;
+    sig.objectReturn = descriptor.objectReturn;
+    sig.returnClassQName = descriptor.returnClassQName;
 
     std::unordered_set<std::string> paramNames;
     for (const auto &p : descriptor.params) {
@@ -190,8 +199,12 @@ void ProcRegistry::registerProcImpl(std::string_view name,
 ///          unqualified name before delegating to @ref registerProcImpl.
 /// @param f Function declaration to index; no AST pointer is retained.
 void ProcRegistry::registerProc(const FunctionDecl &f) {
-    const ProcDescriptor descriptor{
-        ProcSignature::Kind::Function, f.ret, std::span<const Param>{f.params}, f.loc};
+    const ProcDescriptor descriptor{ProcSignature::Kind::Function,
+                                    f.ret,
+                                    std::span<const Param>{f.params},
+                                    f.loc,
+                                    declaresObjectResult(f),
+                                    JoinDots(f.explicitClassRetQname)};
     std::string nameBuf;
     std::string_view nm;
     if (!f.qualifiedName.empty()) {
@@ -218,7 +231,7 @@ void ProcRegistry::registerProc(const FunctionDecl &f) {
 /// @param s Subroutine declaration to index; no AST pointer is retained.
 void ProcRegistry::registerProc(const SubDecl &s) {
     const ProcDescriptor descriptor{
-        ProcSignature::Kind::Sub, std::nullopt, std::span<const Param>{s.params}, s.loc};
+        ProcSignature::Kind::Sub, std::nullopt, std::span<const Param>{s.params}, s.loc, false, {}};
     std::string nameBuf;
     std::string_view nm;
     if (!s.qualifiedName.empty()) {
@@ -277,8 +290,12 @@ const ProcSignature *ProcRegistry::lookup(std::string_view name) const {
 void ProcRegistry::AddProc(const FunctionDecl *fn, il::support::SourceLoc loc) {
     if (!fn)
         return;
-    const ProcDescriptor descriptor{
-        ProcSignature::Kind::Function, fn->ret, std::span<const Param>{fn->params}, loc};
+    const ProcDescriptor descriptor{ProcSignature::Kind::Function,
+                                    fn->ret,
+                                    std::span<const Param>{fn->params},
+                                    loc,
+                                    declaresObjectResult(*fn),
+                                    JoinDots(fn->explicitClassRetQname)};
     std::string_view nm = fn->qualifiedName.empty() ? std::string_view{fn->name}
                                                     : std::string_view{fn->qualifiedName};
     registerProcImpl(nm, descriptor, loc);

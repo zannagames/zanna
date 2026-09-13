@@ -69,7 +69,7 @@ func start() {
         fail("enemy_0 should be spawned and findable");
         return;
     }
-    var enemy: Entity3D = enemyOpt.Unwrap();
+    var enemy = enemyOpt.Unwrap() as Entity3D;
     var downBefore = arena.enemiesDown;
     var swingsLeft = 6;
     while swingsLeft > 0 and arena.enemiesDown == downBefore {

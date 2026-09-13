@@ -1,0 +1,3 @@
+src/tests/basic/semantics/array_write_out_of_bounds.bas:4:5: warning[B3001]: index out of bounds
+LET V(4) = 1
+    ^

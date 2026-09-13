@@ -29,7 +29,7 @@ func start() {
     Canvas3D.SetAmbient(canvas, 0.2, 0.2, 0.2);
 
     var frame = 0;
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (not Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         if (Keyboard.WasPressed(Key.Escape)) { break; }
 

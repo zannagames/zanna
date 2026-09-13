@@ -67,10 +67,10 @@ class RedScene implements IScene {
     }
 
     expose func draw(canvas: Canvas) {
-        canvas.Clear(RGB(80, 20, 20));
-        canvas.Text(20, 20, "RED SCENE", RGB(255, 100, 100));
-        canvas.Text(20, 50, "Press SPACE to switch to Blue", RGB(200, 200, 200));
-        canvas.Text(20, 80, "Press ESC to exit", RGB(150, 150, 150));
+        canvas.Clear(Rgb(80, 20, 20));
+        canvas.Text(20, 20, "RED SCENE", Rgb(255, 100, 100));
+        canvas.Text(20, 50, "Press SPACE to switch to Blue", Rgb(200, 200, 200));
+        canvas.Text(20, 80, "Press ESC to exit", Rgb(150, 150, 150));
     }
 
     expose func onEnter() {
@@ -115,10 +115,10 @@ class BlueScene implements IScene {
     }
 
     expose func draw(canvas: Canvas) {
-        canvas.Clear(RGB(20, 20, 80));
-        canvas.Text(20, 20, "BLUE SCENE", RGB(100, 100, 255));
-        canvas.Text(20, 50, "Press SPACE to switch to Red", RGB(200, 200, 200));
-        canvas.Text(20, 80, "Press ESC to exit", RGB(150, 150, 150));
+        canvas.Clear(Rgb(20, 20, 80));
+        canvas.Text(20, 20, "BLUE SCENE", Rgb(100, 100, 255));
+        canvas.Text(20, 50, "Press SPACE to switch to Red", Rgb(200, 200, 200));
+        canvas.Text(20, 80, "Press ESC to exit", Rgb(150, 150, 150));
     }
 
     expose func onEnter() {
@@ -158,7 +158,7 @@ class TestGame extends GameBase {
     override expose func onFrame(dt: Integer) {
         // Global overlay: show frame info at bottom
         var canvas = self.getCanvas();
-        canvas.Text(20, self.getHeight() - 30, "GameBase + IScene Test", RGB(80, 80, 80));
+        canvas.Text(20, self.getHeight() - 30, "GameBase + IScene Test", Rgb(80, 80, 80));
     }
 }
 

@@ -8,8 +8,10 @@
 // File: src/tests/fixtures/runtime/test_services_platform.zia
 // Purpose: End-to-end check of Zanna.Services from Zia on the VM and in native
 //          binaries: the neutral Platform lifecycle, identity and licensing
-//          queries, event polling, a non-blocking request, the Steam extension
-//          class, and the unavailable path when no redistributable exists.
+//          queries, event polling, non-blocking requests, the Steam extension
+//          class, the player features (achievements, stats, leaderboards,
+//          presence, overlay, text input, cloud), and the unavailable path
+//          when no redistributable exists.
 // Key invariants:
 //   - ZANNA_SERVICES_TEST_EXPECT selects the scenario: "available" runs
 //     against the fake steam_api library named by ZANNA_SERVICES_STEAM_LIBRARY;
@@ -17,8 +19,9 @@
 //   - Every query must return a neutral value when no provider is started.
 //   - Prints "RESULT: ok" only when every check passes.
 // Ownership/Lifetime:
-//   - Results and requests are owned by locals of start().
+//   - Results, requests, and byte buffers are owned by function locals.
 // Links: docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        docs/adr/0353-platform-services-player-features.md,
 //        src/tests/runtime/RTServicesFakeSteamApi.c,
 //        src/tests/e2e/test_zia_services_run.cmake
 //
@@ -28,6 +31,7 @@ bind Zanna.Terminal as Terminal;
 bind Zanna.Text.Fmt as Fmt;
 bind Zanna.System.Environment as Env;
 bind Zanna.Services as Services;
+bind Zanna.Collections.Bytes as Bytes;
 
 var fails: Integer = 0;
 
@@ -47,6 +51,112 @@ func checkNeutral(label: String) {
     check(Services.Platform.PollEvent() == Services.EventKind.None, label + ": no events");
     check(!Services.Steam.IsActive, label + ": Steam must be inactive");
     check(Services.Steam.HardwareType == Services.SteamHardware.Unknown, label + ": hardware unknown");
+    check(Services.Platform.EventTotal == 0, label + ": no event total");
+    check(!Services.Platform.HasFeature(Services.Feature.Cloud), label + ": no Cloud feature");
+    check(!Services.Achievements.Unlock("ACH_WIN_ONE_GAME"), label + ": no achievements");
+    check(Services.Achievements.Count == 0, label + ": no achievement count");
+    check(Services.Stats.GetInt("NumGames") == 0, label + ": no stats");
+    check(!Services.Stats.Store(), label + ": no stat store");
+    check(!Services.Presence.Set("status", "Managing Boston"), label + ": no presence");
+    check(!Services.Overlay.IsEnabled, label + ": no overlay");
+    check(!Services.OnScreenKeyboard.ShowFloating(Services.TextInputMode.SingleLine, 0, 0, 1, 1),
+          label + ": no floating keyboard");
+    check(!Services.Cloud.Exists("league.sav"), label + ": no cloud files");
+    check(Services.Cloud.Read("league.sav").IsErr, label + ": cloud read must fail");
+    var board = Services.Leaderboards.Download("HOME_RUNS", Services.LeaderboardScope.Friends, 0, 0);
+    check(board.IsDone && !board.Succeeded && board.EntryCount == 0,
+          label + ": leaderboard request must fail");
+}
+
+func pump(request: Services.Request) -> Boolean {
+    var frames = 0;
+    while !request.IsDone && frames < 4 {
+        Services.Platform.Update();
+        frames = frames + 1;
+    }
+    return request.IsDone;
+}
+
+func runFeatures() {
+    check(Services.Platform.HasFeature(Services.Feature.Achievements), "Achievements feature");
+    check(Services.Platform.HasFeature(Services.Feature.Stats), "Stats feature");
+    check(Services.Platform.HasFeature(Services.Feature.Leaderboards), "Leaderboards feature");
+    check(Services.Platform.HasFeature(Services.Feature.Presence), "Presence feature");
+    check(Services.Platform.HasFeature(Services.Feature.Overlay), "Overlay feature");
+    check(Services.Platform.HasFeature(Services.Feature.TextInput), "TextInput feature");
+    check(Services.Platform.HasFeature(Services.Feature.Cloud), "Cloud feature");
+
+    check(Services.Achievements.Count == 3, "three achievements");
+    check(Services.Achievements.IdAt(0) == "ACH_WIN_ONE_GAME", "first achievement id");
+    check(Services.Achievements.DisplayName("ACH_WIN_ONE_GAME") == "Winner", "achievement name");
+    check(Services.Achievements.IsHidden("ACH_HIT_FOR_CYCLE"), "hidden achievement");
+    check(Services.Achievements.Unlock("ACH_WIN_ONE_GAME"), "unlock");
+    check(Services.Achievements.IsUnlocked("ACH_WIN_ONE_GAME"), "unlocked");
+    check(Services.Achievements.UnlockTime("ACH_WIN_ONE_GAME") == 1700000000, "unlock time");
+    check(Services.Stats.SetInt("NumGames", 7), "SetInt");
+    check(Services.Stats.GetInt("NumGames") == 7, "GetInt");
+    check(!Services.Stats.SetInt("NumGames", 3000000000), "int32 stat limit");
+    check(Services.Stats.SetFloat("FeetTraveled", 12.5), "SetFloat");
+    check(Zanna.Math.Abs(Services.Stats.GetFloat("FeetTraveled") - 12.5) < 0.001, "GetFloat");
+    check(Services.Stats.Store(), "Store");
+    Services.Platform.Update();
+    check(Services.Platform.PollEvent() == Services.EventKind.StatsStored, "StatsStored event");
+    check(Services.Platform.EventFlag, "stats stored successfully");
+    check(Services.Platform.PollEvent() == Services.EventKind.AchievementStored, "AchievementStored event");
+    check(Services.Platform.EventText == "ACH_WIN_ONE_GAME", "stored achievement id");
+    check(Services.Platform.EventFlag, "stored achievement unlocked");
+    check(Services.Achievements.IndicateProgress("ACH_TRAVEL_FAR", 10, 40), "progress notification");
+    Services.Platform.Update();
+    check(Services.Platform.PollEvent() == Services.EventKind.AchievementStored, "progress event");
+    check(Services.Platform.EventValue == 10 && Services.Platform.EventTotal == 40, "progress payload");
+
+    var upload = Services.Leaderboards.Upload("HOME_RUNS", 75, true);
+    check(upload.Kind == Services.RequestKind.LeaderboardUpload, "upload kind");
+    check(pump(upload) && upload.Succeeded, "upload: " + upload.Error);
+    check(upload.Value == 1 && upload.Flag, "upload rank and change");
+    var download = Services.Leaderboards.Download("HOME_RUNS", Services.LeaderboardScope.Global, 1, 3);
+    check(pump(download) && download.Succeeded, "download: " + download.Error);
+    check(download.EntryCount == 3 && download.Value == 3, "three entries");
+    check(download.Text == "HOME_RUNS", "download board name");
+    if download.EntryCount == 3 {
+        check(download.EntryRank(0) == 1 && download.EntryScore(0) == 75, "first entry");
+        check(download.EntryUserId(0) == "76561198000000001", "first entry user id");
+        check(download.EntryUserName(1) == "Slugger", "second entry name");
+    }
+    var missingBoard = Services.Leaderboards.Find("NOPE");
+    check(pump(missingBoard) && !missingBoard.Succeeded, "missing board must fail");
+    check(missingBoard.Error == "Steam: leaderboard 'NOPE' was not found",
+          "missing board error: " + missingBoard.Error);
+
+    check(Services.Presence.Set("status", "Managing Boston"), "presence");
+    Services.Presence.Clear();
+    check(Services.Overlay.IsEnabled, "overlay enabled");
+    check(Services.Overlay.Open(Services.OverlayPage.Achievements), "overlay page");
+    check(Services.Overlay.SetNotificationPosition(Services.NotificationPosition.BottomRight),
+          "notification position");
+    check(Services.OnScreenKeyboard.ShowFloating(Services.TextInputMode.SingleLine, 10, 10, 200, 30),
+          "floating keyboard");
+    check(Services.OnScreenKeyboard.DismissFloating(), "dismiss floating keyboard");
+    Services.Platform.Update();
+    check(Services.Platform.PollEvent() == Services.EventKind.TextInputDismissed, "keyboard dismissed event");
+    var entered = Services.OnScreenKeyboard.RequestText("Team name", "Sox", 32, Services.TextInputMode.SingleLine);
+    check(pump(entered) && entered.Succeeded, "text input: " + entered.Error);
+    check(entered.Text == "Home Nine", "entered text " + entered.Text);
+
+    check(Services.Cloud.IsEnabled, "cloud enabled");
+    check(Services.Cloud.BeginBatch(), "begin batch");
+    check(Services.Cloud.Write("league.sav", Bytes.FromStr("season 1972")), "cloud write");
+    check(Services.Cloud.EndBatch(), "end batch");
+    check(Services.Cloud.Exists("league.sav") && Services.Cloud.Size("league.sav") == 11, "cloud size");
+    var read = Services.Cloud.Read("league.sav");
+    check(read.IsOk, "cloud read");
+    if read.IsOk {
+        var data = read.Unwrap() as Bytes;
+        check(data.ToStr() == "season 1972", "cloud contents");
+    }
+    check(Services.Cloud.Files().Count == 1, "cloud file list");
+    check(Services.Cloud.Delete("league.sav") && !Services.Cloud.Exists("league.sav"), "cloud delete");
+    check(Services.Cloud.Read("league.sav").IsErr, "deleted file read must fail");
 }
 
 func runMissing() {
@@ -120,6 +230,8 @@ func runAvailable() {
     check(request.Succeeded, "request must succeed");
     check(request.Value == 42, "player count must be 42, got " + Fmt.Int(request.Value));
     check(request.ResultCode == 1, "result code must be 1");
+
+    runFeatures();
 
     Services.Platform.Shutdown();
     check(Services.Platform.Status == Services.Status.NotStarted, "Shutdown must reset Status");

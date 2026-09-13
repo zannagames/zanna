@@ -1,5 +1,5 @@
 // bytes_demo.zia - Comprehensive API audit for Zanna.Collections.Bytes
-// Tests: New, Get, Set, Len, Fill, Find, FindOption, Clone, Slice, Copy,
+// Tests: New, Get, Set, Len, Fill, Find, Clone, Slice, Copy,
 //        ToHex, FromHex, ToBase64, FromBase64, ToStr, FromStr
 
 module BytesDemo;
@@ -66,16 +66,13 @@ func start() {
 
     // --- Find ---
     Say("--- Find ---");
-    SayInt(hello.Find(108)); // 2 (first 'l')
-    SayInt(hello.Find(111)); // 4 ('o')
-    SayInt(hello.Find(99));  // -1 (not found)
-
-    // --- FindOption ---
-    Say("--- FindOption ---");
-    var found = hello.FindOption(108);
+    SayInt(hello.Find(108).UnwrapOrI64(-1)); // 2 (first 'l')
+    SayInt(hello.Find(111).UnwrapOrI64(-1)); // 4 ('o')
+    SayInt(hello.Find(99).UnwrapOrI64(-1));  // -1 (not found)
+    var found = hello.Find(108);
     SayBool(found.IsSome);
     SayInt(found.UnwrapI64()); // 2
-    SayBool(hello.FindOption(99).IsNone);
+    SayBool(hello.Find(99).IsNone);
 
     // --- Clone ---
     Say("--- Clone ---");

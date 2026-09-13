@@ -45,7 +45,7 @@ pos = Zanna.Graphics3D.SceneNode.get_Position(node)
 PRINT "Template child Y = "; Zanna.Math.Vec3.get_Y(pos)
 
 inst = Zanna.Graphics3D.SceneAsset.Instantiate(model)
-nodeOption = Zanna.Graphics3D.SceneNode.FindOption(inst, "child")
+nodeOption = Zanna.Graphics3D.SceneNode.Find(inst, "child")
 node = Zanna.Option.Unwrap(nodeOption)
 Zanna.Graphics3D.SceneNode.SetPosition(node, 9.0, 9.0, 9.0)
 pos = Zanna.Graphics3D.SceneNode.get_Position(node)

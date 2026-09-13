@@ -951,6 +951,12 @@ class Lowerer {
     /// @brief Lower a procedure or GOSUB RETURN statement.
     /// @param stmt RETURN statement node.
     void lowerReturn(const ReturnStmt &stmt);
+    /// @brief Return a value mid-body with exit-block cleanup, handing STRING and
+    ///        object results to the caller owned.
+    /// @param value Result already converted to the function's return type.
+    /// @param retKind IL kind of the enclosing function's return type.
+    /// @param ownsReference Whether @p value already holds a reference for the caller.
+    void emitValueReturn(Value value, Type::Kind retKind, bool ownsReference);
     /// @brief Normalize a runtime channel operand to `i32`.
     /// @param channel Lowered channel value.
     /// @param loc Source location for coercion and narrowing.
@@ -1382,6 +1388,14 @@ class Lowerer {
     /// @param v Object handle.
     /// @param className Optional class name used for destructor lookup.
     void deferReleaseObj(Value v, const std::string &className = {});
+    /// @brief Queue the release a runtime call result needs under its declared ownership.
+    /// @details A string result is released unless its runtime.def row declares it
+    ///          borrowed; an object result is released only when the row declares it
+    ///          owned (ADR 0314).
+    /// @param v Result of the runtime call.
+    /// @param ty IL type of @p v.
+    /// @param callee Runtime name or alias that produced @p v.
+    void deferReleaseRuntimeResult(Value v, Type ty, const std::string &callee);
 
     /// @brief Emit the generic trap path.
     void emitTrap();

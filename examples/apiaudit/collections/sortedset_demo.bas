@@ -1,6 +1,6 @@
 ' sortedset_demo.bas - Comprehensive API audit for Zanna.Collections.SortedSet
-' Tests: New, Put, Drop, Has, First, Last, Floor, Ceil, Lower, Higher,
-'        At, IndexOf, Items, Range, Take, Skip, Merge, Common, Diff,
+' Tests: New, Add, Remove, Has, First, Last, Floor, Ceiling, Lower, Higher,
+'        At, IndexOf, ToSeq, Range, Take, Skip, Union, Intersect, Difference,
 '        IsSubset, Len, IsEmpty, Clear
 
 PRINT "=== SortedSet API Audit ==="
@@ -12,14 +12,14 @@ ss = Zanna.Collections.SortedSet.New()
 PRINT ss.Count       ' 0
 PRINT ss.IsEmpty   ' 1
 
-' --- Put ---
-PRINT "--- Put ---"
-PRINT ss.Put("cherry")     ' 1 (new)
-PRINT ss.Put("apple")      ' 1 (new)
-PRINT ss.Put("banana")     ' 1 (new)
-PRINT ss.Put("date")       ' 1 (new)
-PRINT ss.Put("elderberry") ' 1 (new)
-PRINT ss.Put("apple")      ' 0 (duplicate)
+' --- Add ---
+PRINT "--- Add ---"
+PRINT ss.Add("cherry")     ' 1 (new)
+PRINT ss.Add("apple")      ' 1 (new)
+PRINT ss.Add("banana")     ' 1 (new)
+PRINT ss.Add("date")       ' 1 (new)
+PRINT ss.Add("elderberry") ' 1 (new)
+PRINT ss.Add("apple")      ' 0 (duplicate)
 PRINT ss.Count               ' 5
 PRINT ss.IsEmpty           ' 0
 
@@ -53,10 +53,10 @@ PRINT "--- Floor ---"
 PRINT ss.Floor("cherry")  ' cherry
 PRINT ss.Floor("c")       ' banana
 
-' --- Ceil (smallest element >= key) ---
-PRINT "--- Ceil ---"
-PRINT ss.Ceil("cherry")   ' cherry
-PRINT ss.Ceil("c")        ' cherry
+' --- Ceiling (smallest element >= key) ---
+PRINT "--- Ceiling ---"
+PRINT ss.Ceiling("cherry")   ' cherry
+PRINT ss.Ceiling("c")        ' cherry
 
 ' --- Lower (greatest element < key) ---
 PRINT "--- Lower ---"
@@ -66,10 +66,10 @@ PRINT ss.Lower("cherry")  ' banana
 PRINT "--- Higher ---"
 PRINT ss.Higher("cherry") ' date
 
-' --- Items ---
-PRINT "--- Items ---"
+' --- ToSeq ---
+PRINT "--- ToSeq ---"
 DIM items AS OBJECT
-items = ss.Items()
+items = ss.ToSeq()
 PRINT items.Count  ' 5
 
 ' --- Range ---
@@ -90,20 +90,20 @@ DIM skipped AS OBJECT
 skipped = ss.Skip(2)
 PRINT skipped.Count  ' 3
 
-' --- Drop ---
-PRINT "--- Drop ---"
-PRINT ss.Drop("banana")   ' 1
+' --- Remove ---
+PRINT "--- Remove ---"
+PRINT ss.Remove("banana")   ' 1
 PRINT ss.Has("banana")    ' 0
 PRINT ss.Count              ' 4
-PRINT ss.Drop("banana")   ' 0
+PRINT ss.Remove("banana")   ' 0
 
-' --- Merge ---
-PRINT "--- Merge ---"
+' --- Union ---
+PRINT "--- Union ---"
 DIM ss2 AS OBJECT
 ss2 = Zanna.Collections.SortedSet.New()
-ss2.Put("apple")
-ss2.Put("fig")
-ss2.Put("grape")
+ss2.Add("apple")
+ss2.Add("fig")
+ss2.Add("grape")
 DIM merged AS OBJECT
 merged = ss.Union(ss2)
 PRINT merged.Count  ' 6
@@ -114,18 +114,18 @@ DIM common AS OBJECT
 common = ss.Intersect(ss2)
 PRINT common.Count  ' 1
 
-' --- Diff ---
-PRINT "--- Diff ---"
+' --- Difference ---
+PRINT "--- Difference ---"
 DIM diff AS OBJECT
-diff = ss.Diff(ss2)
+diff = ss.Difference(ss2)
 PRINT diff.Count  ' 3
 
 ' --- IsSubset ---
 PRINT "--- IsSubset ---"
 DIM sub1 AS OBJECT
 sub1 = Zanna.Collections.SortedSet.New()
-sub1.Put("apple")
-sub1.Put("cherry")
+sub1.Add("apple")
+sub1.Add("cherry")
 PRINT sub1.IsSubset(ss)  ' 1
 
 ' --- Clear ---

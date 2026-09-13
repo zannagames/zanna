@@ -1,7 +1,7 @@
 // =============================================================================
 // API Audit: Zanna.Data.Yaml - YAML Processing
 // =============================================================================
-// Tests: ParseResult, Parse, Error, IsValid, Format, FormatIndent, TypeOf
+// Tests: ParseResult, Parse, IsValid, Format, FormatIndent, TypeOf
 // =============================================================================
 
 module YamlDemo;
@@ -31,13 +31,12 @@ func start() {
     SayBool(badYaml.IsErr);
     Say(badYaml.UnwrapErrStr());
 
-    // --- Parse / Error compatibility ---
-    Say("--- Parse / Error compatibility ---");
+    // --- Parse ---
+    Say("--- Parse ---");
     var legacyDoc = Yaml.Parse("name: Bob\n");
     Say(Yaml.TypeOf(legacyDoc));
     var legacyBad = Yaml.Parse("name: [unterminated\n");
     SayBool(legacyBad == null);
-    Say(Yaml.Error());
 
     // --- TypeOf ---
     Say("--- TypeOf ---");

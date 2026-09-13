@@ -6,6 +6,138 @@
 
 ## Classes
 
+<a id="zanna-game-entity"></a>
+### `Zanna.Game.Entity`
+
+Provides a lightweight 2D game object with built-in tile physics.
+
+Create `Zanna.Game.Entity` values through its registered constructor (x, y, width, height) and
+use the returned object with the instance members below. Its public surface exposes properties
+such as `X`, `Y`, `VelocityX`, `Health` and operations including `ApplyGravity`,
+`MoveAndCollide`, `UpdatePhysics`, `Overlaps`.
+
+Constructor: `Zanna.Game.Entity.New`
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-game-entity-x"></a>`X` | `i64` | read/write |
+| <a id="zanna-game-entity-y"></a>`Y` | `i64` | read/write |
+| <a id="zanna-game-entity-velocityx"></a>`VelocityX` | `i64` | read/write |
+| <a id="zanna-game-entity-velocityy"></a>`VelocityY` | `i64` | read/write |
+| <a id="zanna-game-entity-width"></a>`Width` | `i64` | read-only |
+| <a id="zanna-game-entity-height"></a>`Height` | `i64` | read-only |
+| <a id="zanna-game-entity-dir"></a>`Dir` | `i64` | read/write |
+| <a id="zanna-game-entity-health"></a>`Health` | `i64` | read/write |
+| <a id="zanna-game-entity-maxhealth"></a>`MaxHealth` | `i64` | read/write |
+| <a id="zanna-game-entity-type"></a>`Type` | `i64` | read/write |
+| <a id="zanna-game-entity-active"></a>`Active` | `i1` | read/write |
+| <a id="zanna-game-entity-onground"></a>`OnGround` | `i1` | read-only |
+| <a id="zanna-game-entity-hitleft"></a>`HitLeft` | `i1` | read-only |
+| <a id="zanna-game-entity-hitright"></a>`HitRight` | `i1` | read-only |
+| <a id="zanna-game-entity-hitceiling"></a>`HitCeiling` | `i1` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-game-entity-applygravity"></a>`ApplyGravity` | `void(i64,i64,i64)` | `Zanna.Game.Entity.ApplyGravity` |
+| <a id="zanna-game-entity-moveandcollide"></a>`MoveAndCollide` | `void(obj,i64)` | `Zanna.Game.Entity.MoveAndCollide` |
+| <a id="zanna-game-entity-updatephysics"></a>`UpdatePhysics` | `void(obj,i64,i64,i64)` | `Zanna.Game.Entity.UpdatePhysics` |
+| <a id="zanna-game-entity-atedge"></a>`AtEdge` | `i1(obj)` | `Zanna.Game.Entity.AtEdge` |
+| <a id="zanna-game-entity-patrolreverse"></a>`PatrolReverse` | `void(i64)` | `Zanna.Game.Entity.PatrolReverse` |
+| <a id="zanna-game-entity-overlaps"></a>`Overlaps` | `i1(obj)` | `Zanna.Game.Entity.Overlaps` |
+| <a id="zanna-game-entity-new"></a>`New` | `obj<Zanna.Game.Entity>(i64,i64,i64,i64)` | `Zanna.Game.Entity.New` |
+
+<a id="zanna-game-behavior"></a>
+### `Zanna.Game.Behavior`
+
+Provides composable AI presets for `Zanna.Game.Entity` objects.
+
+Create `Zanna.Game.Behavior` values through its registered constructor, add presets, and call
+`Update` each frame with the entity it drives. Its public surface exposes properties such as
+`ShootReady`, `AnimFrame` and operations including `AddPatrol`, `AddChase`, `AddGravity`,
+`Update`.
+
+Constructor: `Zanna.Game.Behavior.New`
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-game-behavior-shootready"></a>`ShootReady` | `i1` | read-only |
+| <a id="zanna-game-behavior-animframe"></a>`AnimFrame` | `i64` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-game-behavior-addpatrol"></a>`AddPatrol` | `void(i64)` | `Zanna.Game.Behavior.AddPatrol` |
+| <a id="zanna-game-behavior-addchase"></a>`AddChase` | `void(i64,i64)` | `Zanna.Game.Behavior.AddChase` |
+| <a id="zanna-game-behavior-addgravity"></a>`AddGravity` | `void(i64,i64)` | `Zanna.Game.Behavior.AddGravity` |
+| <a id="zanna-game-behavior-addedgereverse"></a>`AddEdgeReverse` | `void()` | `Zanna.Game.Behavior.AddEdgeReverse` |
+| <a id="zanna-game-behavior-addwallreverse"></a>`AddWallReverse` | `void()` | `Zanna.Game.Behavior.AddWallReverse` |
+| <a id="zanna-game-behavior-addshoot"></a>`AddShoot` | `void(i64)` | `Zanna.Game.Behavior.AddShoot` |
+| <a id="zanna-game-behavior-addsinefloat"></a>`AddSineFloat` | `void(i64,i64)` | `Zanna.Game.Behavior.AddSineFloat` |
+| <a id="zanna-game-behavior-addanimloop"></a>`AddAnimLoop` | `void(i64,i64)` | `Zanna.Game.Behavior.AddAnimLoop` |
+| <a id="zanna-game-behavior-update"></a>`Update` | `void(obj,obj,i64,i64,i64)` | `Zanna.Game.Behavior.Update` |
+| <a id="zanna-game-behavior-new"></a>`New` | `obj<Zanna.Game.Behavior>()` | `Zanna.Game.Behavior.New` |
+
+<a id="zanna-game-scenemanager"></a>
+### `Zanna.Game.SceneManager`
+
+Provides multi-scene management with timed transitions.
+
+Create `Zanna.Game.SceneManager` values through its registered constructor, register scenes by
+name, and call `Update` each frame. Its public surface exposes properties such as `Current`,
+`Previous`, `JustEntered`, `TransProgress` and operations including `Add`, `Switch`,
+`SwitchTransition`, `IsScene`.
+
+Constructor: `Zanna.Game.SceneManager.New`
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-game-scenemanager-current"></a>`Current` | `str` | read-only |
+| <a id="zanna-game-scenemanager-previous"></a>`Previous` | `str` | read-only |
+| <a id="zanna-game-scenemanager-justentered"></a>`JustEntered` | `i1` | read-only |
+| <a id="zanna-game-scenemanager-justexited"></a>`JustExited` | `i1` | read-only |
+| <a id="zanna-game-scenemanager-transitioning"></a>`Transitioning` | `i1` | read-only |
+| <a id="zanna-game-scenemanager-transprogress"></a>`TransProgress` | `f64` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-game-scenemanager-add"></a>`Add` | `void(str)` | `Zanna.Game.SceneManager.Add` |
+| <a id="zanna-game-scenemanager-switch"></a>`Switch` | `void(str)` | `Zanna.Game.SceneManager.Switch` |
+| <a id="zanna-game-scenemanager-switchtransition"></a>`SwitchTransition` | `void(str,i64)` | `Zanna.Game.SceneManager.SwitchTransition` |
+| <a id="zanna-game-scenemanager-update"></a>`Update` | `void(i64)` | `Zanna.Game.SceneManager.Update` |
+| <a id="zanna-game-scenemanager-isscene"></a>`IsScene` | `i1(str)` | `Zanna.Game.SceneManager.IsScene` |
+| <a id="zanna-game-scenemanager-new"></a>`New` | `obj<Zanna.Game.SceneManager>()` | `Zanna.Game.SceneManager.New` |
+
+<a id="zanna-game-config"></a>
+### `Zanna.Game.Config`
+
+Provides a typed JSON configuration reader with dotted key paths.
+
+Load `Zanna.Game.Config` values with `Load` or `FromString` and read settings through the
+instance members below. Its operations include `GetInt`, `GetStr`, `GetBool`, `Has`; every
+getter takes a default returned when the path is missing.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-game-config-load"></a>`Load` | `obj<Zanna.Game.Config>(str)` | `Zanna.Game.Config.Load` |
+| <a id="zanna-game-config-fromstring"></a>`FromString` | `obj<Zanna.Game.Config>(str)` | `Zanna.Game.Config.FromString` |
+| <a id="zanna-game-config-getint"></a>`GetInt` | `i64(str,i64)` | `Zanna.Game.Config.GetInt` |
+| <a id="zanna-game-config-getstr"></a>`GetStr` | `str(str,str)` | `Zanna.Game.Config.GetStr` |
+| <a id="zanna-game-config-getbool"></a>`GetBool` | `i1(str,i1)` | `Zanna.Game.Config.GetBool` |
+| <a id="zanna-game-config-has"></a>`Has` | `i1(str)` | `Zanna.Game.Config.Has` |
+
 <a id="zanna-game-grid2d"></a>
 ### `Zanna.Game.Grid2D`
 
@@ -38,7 +170,7 @@ Constructor: `Zanna.Game.Grid2D.New`
 | <a id="zanna-game-grid2d-copyfrom"></a>`CopyFrom` | `i1(obj)` | `Zanna.Game.Grid2D.CopyFrom` |
 | <a id="zanna-game-grid2d-count"></a>`Count` | `i64(i64)` | `Zanna.Game.Grid2D.Count` |
 | <a id="zanna-game-grid2d-replace"></a>`Replace` | `i64(i64,i64)` | `Zanna.Game.Grid2D.Replace` |
-| <a id="zanna-game-grid2d-new"></a>`New` | `obj(i64,i64,i64)` | `Zanna.Game.Grid2D.New` |
+| <a id="zanna-game-grid2d-new"></a>`New` | `obj<Zanna.Game.Grid2D>(i64,i64,i64)` | `Zanna.Game.Grid2D.New` |
 | <a id="zanna-game-grid2d-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.Grid2D.Destroy` |
 
 <a id="zanna-game-timer"></a>
@@ -80,7 +212,7 @@ Constructor: `Zanna.Game.Timer.New`
 | <a id="zanna-game-timer-startms"></a>`StartMs` | `void(i64)` | `Zanna.Game.Timer.StartMs` |
 | <a id="zanna-game-timer-startrepeatingms"></a>`StartRepeatingMs` | `void(i64)` | `Zanna.Game.Timer.StartRepeatingMs` |
 | <a id="zanna-game-timer-updatems"></a>`UpdateMs` | `i1(i64)` | `Zanna.Game.Timer.UpdateMs` |
-| <a id="zanna-game-timer-new"></a>`New` | `obj()` | `Zanna.Game.Timer.New` |
+| <a id="zanna-game-timer-new"></a>`New` | `obj<Zanna.Game.Timer>()` | `Zanna.Game.Timer.New` |
 | <a id="zanna-game-timer-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.Timer.Destroy` |
 
 <a id="zanna-game-statemachine"></a>
@@ -117,7 +249,7 @@ Constructor: `Zanna.Game.StateMachine.New`
 | <a id="zanna-game-statemachine-clearflags"></a>`ClearFlags` | `void()` | `Zanna.Game.StateMachine.ClearFlags` |
 | <a id="zanna-game-statemachine-update"></a>`Update` | `void()` | `Zanna.Game.StateMachine.Update` |
 | <a id="zanna-game-statemachine-hasstate"></a>`HasState` | `i1(i64)` | `Zanna.Game.StateMachine.HasState` |
-| <a id="zanna-game-statemachine-new"></a>`New` | `obj()` | `Zanna.Game.StateMachine.New` |
+| <a id="zanna-game-statemachine-new"></a>`New` | `obj<Zanna.Game.StateMachine>()` | `Zanna.Game.StateMachine.New` |
 | <a id="zanna-game-statemachine-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.StateMachine.Destroy` |
 
 <a id="zanna-game-animstatemachine"></a>
@@ -144,7 +276,7 @@ Constructor: `Zanna.Game.AnimStateMachine.New`
 | <a id="zanna-game-animstatemachine-currentframe"></a>`CurrentFrame` | `i64` | read-only |
 | <a id="zanna-game-animstatemachine-isanimfinished"></a>`IsAnimFinished` | `i1` | read-only |
 | <a id="zanna-game-animstatemachine-progress"></a>`Progress` | `i64` | read-only |
-| <a id="zanna-game-animstatemachine-statename"></a>`StateName` | `obj` | read-only |
+| <a id="zanna-game-animstatemachine-statename"></a>`StateName` | `str` | read-only |
 
 #### Methods
 
@@ -160,7 +292,7 @@ Constructor: `Zanna.Game.AnimStateMachine.New`
 | <a id="zanna-game-animstatemachine-play"></a>`Play` | `void(str)` | `Zanna.Game.AnimStateMachine.Play` |
 | <a id="zanna-game-animstatemachine-update"></a>`Update` | `void()` | `Zanna.Game.AnimStateMachine.Update` |
 | <a id="zanna-game-animstatemachine-clearflags"></a>`ClearFlags` | `void()` | `Zanna.Game.AnimStateMachine.ClearFlags` |
-| <a id="zanna-game-animstatemachine-new"></a>`New` | `obj()` | `Zanna.Game.AnimStateMachine.New` |
+| <a id="zanna-game-animstatemachine-new"></a>`New` | `obj<Zanna.Game.AnimStateMachine>()` | `Zanna.Game.AnimStateMachine.New` |
 
 <a id="zanna-game-animationeventbatch"></a>
 ### `Zanna.Game.AnimationEventBatch`
@@ -223,7 +355,7 @@ Constructor: `Zanna.Game.AnimTimeline.New`
 | <a id="zanna-game-animtimeline-trackpayloada"></a>`TrackPayloadA` | `i64(i64)` | `Zanna.Game.AnimTimeline.TrackPayloadA` |
 | <a id="zanna-game-animtimeline-trackpayloadb"></a>`TrackPayloadB` | `i64(i64)` | `Zanna.Game.AnimTimeline.TrackPayloadB` |
 | <a id="zanna-game-animtimeline-trackpayloadc"></a>`TrackPayloadC` | `i64(i64)` | `Zanna.Game.AnimTimeline.TrackPayloadC` |
-| <a id="zanna-game-animtimeline-new"></a>`New` | `obj(i64)` | `Zanna.Game.AnimTimeline.New` |
+| <a id="zanna-game-animtimeline-new"></a>`New` | `obj<Zanna.Game.AnimTimeline>(i64)` | `Zanna.Game.AnimTimeline.New` |
 
 <a id="zanna-game-tween"></a>
 ### `Zanna.Game.Tween`
@@ -269,7 +401,7 @@ Constructor: `Zanna.Game.Tween.New`
 | <a id="zanna-game-tween-updatems"></a>`UpdateMs` | `i1(i64)` | `Zanna.Game.Tween.UpdateMs` |
 | <a id="zanna-game-tween-seekms"></a>`SeekMs` | `i1(i64)` | `Zanna.Game.Tween.SeekMs` |
 | <a id="zanna-game-tween-lerpintpermille"></a>`LerpIntPermille` | `i64(i64,i64,i64)` | `Zanna.Game.Tween.LerpIntPermille` |
-| <a id="zanna-game-tween-new"></a>`New` | `obj()` | `Zanna.Game.Tween.New` |
+| <a id="zanna-game-tween-new"></a>`New` | `obj<Zanna.Game.Tween>()` | `Zanna.Game.Tween.New` |
 | <a id="zanna-game-tween-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.Tween.Destroy` |
 
 <a id="zanna-game-buttongroup"></a>
@@ -306,7 +438,7 @@ Constructor: `Zanna.Game.ButtonGroup.New`
 | <a id="zanna-game-buttongroup-getat"></a>`GetAt` | `i64(i64)` | `Zanna.Game.ButtonGroup.GetAt` |
 | <a id="zanna-game-buttongroup-selectnext"></a>`SelectNext` | `i64()` | `Zanna.Game.ButtonGroup.SelectNext` |
 | <a id="zanna-game-buttongroup-selectprevious"></a>`SelectPrevious` | `i64()` | `Zanna.Game.ButtonGroup.SelectPrevious` |
-| <a id="zanna-game-buttongroup-new"></a>`New` | `obj()` | `Zanna.Game.ButtonGroup.New` |
+| <a id="zanna-game-buttongroup-new"></a>`New` | `obj<Zanna.Game.ButtonGroup>()` | `Zanna.Game.ButtonGroup.New` |
 | <a id="zanna-game-buttongroup-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.ButtonGroup.Destroy` |
 
 <a id="zanna-game-smoothvalue"></a>
@@ -341,7 +473,7 @@ Constructor: `Zanna.Game.SmoothValue.New`
 | <a id="zanna-game-smoothvalue-impulse"></a>`Impulse` | `void(f64)` | `Zanna.Game.SmoothValue.Impulse` |
 | <a id="zanna-game-smoothvalue-updatems"></a>`UpdateMs` | `void(i64)` | `Zanna.Game.SmoothValue.UpdateMs` |
 | <a id="zanna-game-smoothvalue-snaptotarget"></a>`SnapToTarget` | `void()` | `Zanna.Game.SmoothValue.SnapToTarget` |
-| <a id="zanna-game-smoothvalue-new"></a>`New` | `obj(f64,f64)` | `Zanna.Game.SmoothValue.New` |
+| <a id="zanna-game-smoothvalue-new"></a>`New` | `obj<Zanna.Game.SmoothValue>(f64,f64)` | `Zanna.Game.SmoothValue.New` |
 | <a id="zanna-game-smoothvalue-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.SmoothValue.Destroy` |
 
 <a id="zanna-game-particleemitter"></a>
@@ -455,7 +587,7 @@ Constructor: `Zanna.Game.SpriteAnimation.New`
 | <a id="zanna-game-spriteanimation-resume"></a>`Resume` | `void()` | `Zanna.Game.SpriteAnimation.Resume` |
 | <a id="zanna-game-spriteanimation-reset"></a>`Reset` | `void()` | `Zanna.Game.SpriteAnimation.Reset` |
 | <a id="zanna-game-spriteanimation-update"></a>`Update` | `i1()` | `Zanna.Game.SpriteAnimation.Update` |
-| <a id="zanna-game-spriteanimation-new"></a>`New` | `obj()` | `Zanna.Game.SpriteAnimation.New` |
+| <a id="zanna-game-spriteanimation-new"></a>`New` | `obj<Zanna.Game.SpriteAnimation>()` | `Zanna.Game.SpriteAnimation.New` |
 | <a id="zanna-game-spriteanimation-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.SpriteAnimation.Destroy` |
 
 <a id="zanna-game-collisionrect"></a>
@@ -498,7 +630,7 @@ Constructor: `Zanna.Game.CollisionRect.New`
 | <a id="zanna-game-collisionrect-overlapy"></a>`OverlapY` | `f64(obj)` | `Zanna.Game.CollisionRect.OverlapY` |
 | <a id="zanna-game-collisionrect-expand"></a>`Expand` | `void(f64)` | `Zanna.Game.CollisionRect.Expand` |
 | <a id="zanna-game-collisionrect-containsrect"></a>`ContainsRect` | `i1(obj)` | `Zanna.Game.CollisionRect.ContainsRect` |
-| <a id="zanna-game-collisionrect-new"></a>`New` | `obj(f64,f64,f64,f64)` | `Zanna.Game.CollisionRect.New` |
+| <a id="zanna-game-collisionrect-new"></a>`New` | `obj<Zanna.Game.CollisionRect>(f64,f64,f64,f64)` | `Zanna.Game.CollisionRect.New` |
 | <a id="zanna-game-collisionrect-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.CollisionRect.Destroy` |
 
 <a id="zanna-game-collision"></a>
@@ -574,14 +706,14 @@ Constructor: `Zanna.Game.Physics2D.World.New`
 | <a id="zanna-game-physics2d-world-add"></a>`Add` | `void(obj)` | `Zanna.Game.Physics2D.World.Add` |
 | <a id="zanna-game-physics2d-world-remove"></a>`Remove` | `void(obj)` | `Zanna.Game.Physics2D.World.Remove` |
 | <a id="zanna-game-physics2d-world-setgravity"></a>`SetGravity` | `void(f64,f64)` | `Zanna.Game.Physics2D.World.SetGravity` |
-| <a id="zanna-game-physics2d-world-contactbodya"></a>`ContactBodyA` | `obj(i64)` | `Zanna.Game.Physics2D.World.ContactBodyA` |
-| <a id="zanna-game-physics2d-world-contactbodyb"></a>`ContactBodyB` | `obj(i64)` | `Zanna.Game.Physics2D.World.ContactBodyB` |
+| <a id="zanna-game-physics2d-world-contactbodya"></a>`ContactBodyA` | `obj<Zanna.Game.Physics2D.Body>(i64)` | `Zanna.Game.Physics2D.World.ContactBodyA` |
+| <a id="zanna-game-physics2d-world-contactbodyb"></a>`ContactBodyB` | `obj<Zanna.Game.Physics2D.Body>(i64)` | `Zanna.Game.Physics2D.World.ContactBodyB` |
 | <a id="zanna-game-physics2d-world-contactnx"></a>`ContactNX` | `f64(i64)` | `Zanna.Game.Physics2D.World.ContactNX` |
 | <a id="zanna-game-physics2d-world-contactny"></a>`ContactNY` | `f64(i64)` | `Zanna.Game.Physics2D.World.ContactNY` |
 | <a id="zanna-game-physics2d-world-contactdepth"></a>`ContactDepth` | `f64(i64)` | `Zanna.Game.Physics2D.World.ContactDepth` |
 | <a id="zanna-game-physics2d-world-addjoint"></a>`AddJoint` | `void(obj)` | `Zanna.Game.Physics2D.World.AddJoint` |
 | <a id="zanna-game-physics2d-world-removejoint"></a>`RemoveJoint` | `void(obj)` | `Zanna.Game.Physics2D.World.RemoveJoint` |
-| <a id="zanna-game-physics2d-world-new"></a>`New` | `obj(f64,f64)` | `Zanna.Game.Physics2D.World.New` |
+| <a id="zanna-game-physics2d-world-new"></a>`New` | `obj<Zanna.Game.Physics2D.World>(f64,f64)` | `Zanna.Game.Physics2D.World.New` |
 
 <a id="zanna-game-physics2d-body"></a>
 ### `Zanna.Game.Physics2D.Body`
@@ -620,12 +752,12 @@ Constructor: `Zanna.Game.Physics2D.Body.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game-physics2d-body-newcircle"></a>`NewCircle` | `obj(f64,f64,f64,f64)` | `Zanna.Game.Physics2D.Body.NewCircle` |
+| <a id="zanna-game-physics2d-body-newcircle"></a>`NewCircle` | `obj<Zanna.Game.Physics2D.Body>(f64,f64,f64,f64)` | `Zanna.Game.Physics2D.Body.NewCircle` |
 | <a id="zanna-game-physics2d-body-setposition"></a>`SetPosition` | `void(f64,f64)` | `Zanna.Game.Physics2D.Body.SetPosition` |
 | <a id="zanna-game-physics2d-body-setvelocity"></a>`SetVelocity` | `void(f64,f64)` | `Zanna.Game.Physics2D.Body.SetVelocity` |
 | <a id="zanna-game-physics2d-body-applyforce"></a>`ApplyForce` | `void(f64,f64)` | `Zanna.Game.Physics2D.Body.ApplyForce` |
 | <a id="zanna-game-physics2d-body-applyimpulse"></a>`ApplyImpulse` | `void(f64,f64)` | `Zanna.Game.Physics2D.Body.ApplyImpulse` |
-| <a id="zanna-game-physics2d-body-new"></a>`New` | `obj(f64,f64,f64,f64,f64)` | `Zanna.Game.Physics2D.Body.New` |
+| <a id="zanna-game-physics2d-body-new"></a>`New` | `obj<Zanna.Game.Physics2D.Body>(f64,f64,f64,f64,f64)` | `Zanna.Game.Physics2D.Body.New` |
 
 <a id="zanna-game-physics2d-projectile2d"></a>
 ### `Zanna.Game.Physics2D.Projectile2D`
@@ -658,7 +790,7 @@ Constructor: `Zanna.Game.Physics2D.Projectile2D.New`
 | <a id="zanna-game-physics2d-projectile2d-vxat"></a>`VXAt` | `f64(f64)` | `Zanna.Game.Physics2D.Projectile2D.VXAt` |
 | <a id="zanna-game-physics2d-projectile2d-vyat"></a>`VYAt` | `f64(f64)` | `Zanna.Game.Physics2D.Projectile2D.VYAt` |
 | <a id="zanna-game-physics2d-projectile2d-timetoground"></a>`TimeToGround` | `f64()` | `Zanna.Game.Physics2D.Projectile2D.TimeToGround` |
-| <a id="zanna-game-physics2d-projectile2d-new"></a>`New` | `obj(f64,f64,f64,f64,f64,f64)` | `Zanna.Game.Physics2D.Projectile2D.New` |
+| <a id="zanna-game-physics2d-projectile2d-new"></a>`New` | `obj<Zanna.Game.Physics2D.Projectile2D>(f64,f64,f64,f64,f64,f64)` | `Zanna.Game.Physics2D.Projectile2D.New` |
 
 <a id="zanna-game-physics2d-distancejoint"></a>
 ### `Zanna.Game.Physics2D.DistanceJoint`
@@ -677,15 +809,15 @@ Constructor: `Zanna.Game.Physics2D.DistanceJoint.New`
 |---|---|---|
 | <a id="zanna-game-physics2d-distancejoint-length"></a>`Length` | `f64` | read/write |
 | <a id="zanna-game-physics2d-distancejoint-type"></a>`Type` | `i64` | read-only |
-| <a id="zanna-game-physics2d-distancejoint-bodya"></a>`BodyA` | `obj` | read-only |
-| <a id="zanna-game-physics2d-distancejoint-bodyb"></a>`BodyB` | `obj` | read-only |
+| <a id="zanna-game-physics2d-distancejoint-bodya"></a>`BodyA` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
+| <a id="zanna-game-physics2d-distancejoint-bodyb"></a>`BodyB` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
 | <a id="zanna-game-physics2d-distancejoint-isactive"></a>`IsActive` | `i1` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game-physics2d-distancejoint-new"></a>`New` | `obj(obj,obj,f64)` | `Zanna.Game.Physics2D.DistanceJoint.New` |
+| <a id="zanna-game-physics2d-distancejoint-new"></a>`New` | `obj<Zanna.Game.Physics2D.DistanceJoint>(obj,obj,f64)` | `Zanna.Game.Physics2D.DistanceJoint.New` |
 
 <a id="zanna-game-physics2d-springjoint"></a>
 ### `Zanna.Game.Physics2D.SpringJoint`
@@ -705,15 +837,15 @@ Constructor: `Zanna.Game.Physics2D.SpringJoint.New`
 | <a id="zanna-game-physics2d-springjoint-stiffness"></a>`Stiffness` | `f64` | read/write |
 | <a id="zanna-game-physics2d-springjoint-damping"></a>`Damping` | `f64` | read/write |
 | <a id="zanna-game-physics2d-springjoint-type"></a>`Type` | `i64` | read-only |
-| <a id="zanna-game-physics2d-springjoint-bodya"></a>`BodyA` | `obj` | read-only |
-| <a id="zanna-game-physics2d-springjoint-bodyb"></a>`BodyB` | `obj` | read-only |
+| <a id="zanna-game-physics2d-springjoint-bodya"></a>`BodyA` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
+| <a id="zanna-game-physics2d-springjoint-bodyb"></a>`BodyB` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
 | <a id="zanna-game-physics2d-springjoint-isactive"></a>`IsActive` | `i1` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game-physics2d-springjoint-new"></a>`New` | `obj(obj,obj,f64,f64,f64)` | `Zanna.Game.Physics2D.SpringJoint.New` |
+| <a id="zanna-game-physics2d-springjoint-new"></a>`New` | `obj<Zanna.Game.Physics2D.SpringJoint>(obj,obj,f64,f64,f64)` | `Zanna.Game.Physics2D.SpringJoint.New` |
 
 <a id="zanna-game-physics2d-hingejoint"></a>
 ### `Zanna.Game.Physics2D.HingeJoint`
@@ -732,15 +864,15 @@ Constructor: `Zanna.Game.Physics2D.HingeJoint.New`
 |---|---|---|
 | <a id="zanna-game-physics2d-hingejoint-angle"></a>`Angle` | `f64` | read-only |
 | <a id="zanna-game-physics2d-hingejoint-type"></a>`Type` | `i64` | read-only |
-| <a id="zanna-game-physics2d-hingejoint-bodya"></a>`BodyA` | `obj` | read-only |
-| <a id="zanna-game-physics2d-hingejoint-bodyb"></a>`BodyB` | `obj` | read-only |
+| <a id="zanna-game-physics2d-hingejoint-bodya"></a>`BodyA` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
+| <a id="zanna-game-physics2d-hingejoint-bodyb"></a>`BodyB` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
 | <a id="zanna-game-physics2d-hingejoint-isactive"></a>`IsActive` | `i1` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game-physics2d-hingejoint-new"></a>`New` | `obj(obj,obj,f64,f64)` | `Zanna.Game.Physics2D.HingeJoint.New` |
+| <a id="zanna-game-physics2d-hingejoint-new"></a>`New` | `obj<Zanna.Game.Physics2D.HingeJoint>(obj,obj,f64,f64)` | `Zanna.Game.Physics2D.HingeJoint.New` |
 
 <a id="zanna-game-physics2d-ropejoint"></a>
 ### `Zanna.Game.Physics2D.RopeJoint`
@@ -759,15 +891,15 @@ Constructor: `Zanna.Game.Physics2D.RopeJoint.New`
 |---|---|---|
 | <a id="zanna-game-physics2d-ropejoint-maxlength"></a>`MaxLength` | `f64` | read/write |
 | <a id="zanna-game-physics2d-ropejoint-type"></a>`Type` | `i64` | read-only |
-| <a id="zanna-game-physics2d-ropejoint-bodya"></a>`BodyA` | `obj` | read-only |
-| <a id="zanna-game-physics2d-ropejoint-bodyb"></a>`BodyB` | `obj` | read-only |
+| <a id="zanna-game-physics2d-ropejoint-bodya"></a>`BodyA` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
+| <a id="zanna-game-physics2d-ropejoint-bodyb"></a>`BodyB` | `obj<Zanna.Game.Physics2D.Body>` | read-only |
 | <a id="zanna-game-physics2d-ropejoint-isactive"></a>`IsActive` | `i1` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game-physics2d-ropejoint-new"></a>`New` | `obj(obj,obj,f64)` | `Zanna.Game.Physics2D.RopeJoint.New` |
+| <a id="zanna-game-physics2d-ropejoint-new"></a>`New` | `obj<Zanna.Game.Physics2D.RopeJoint>(obj,obj,f64)` | `Zanna.Game.Physics2D.RopeJoint.New` |
 
 <a id="zanna-game-objectpool"></a>
 ### `Zanna.Game.ObjectPool`
@@ -803,7 +935,7 @@ Constructor: `Zanna.Game.ObjectPool.New`
 | <a id="zanna-game-objectpool-nextactive"></a>`NextActive` | `i64(i64)` | `Zanna.Game.ObjectPool.NextActive` |
 | <a id="zanna-game-objectpool-setdata"></a>`SetData` | `i1(i64,i64)` | `Zanna.Game.ObjectPool.SetData` |
 | <a id="zanna-game-objectpool-getdata"></a>`GetData` | `i64(i64)` | `Zanna.Game.ObjectPool.GetData` |
-| <a id="zanna-game-objectpool-new"></a>`New` | `obj(i64)` | `Zanna.Game.ObjectPool.New` |
+| <a id="zanna-game-objectpool-new"></a>`New` | `obj<Zanna.Game.ObjectPool>(i64)` | `Zanna.Game.ObjectPool.New` |
 | <a id="zanna-game-objectpool-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.ObjectPool.Destroy` |
 
 <a id="zanna-game-screenfx"></a>
@@ -909,7 +1041,7 @@ Constructor: `Zanna.Game.Dialogue.New`
 | <a id="zanna-game-dialogue-setposition"></a>`SetPosition` | `void(i64,i64)` | `Zanna.Game.Dialogue.SetPosition` |
 | <a id="zanna-game-dialogue-setsize"></a>`SetSize` | `void(i64,i64)` | `Zanna.Game.Dialogue.SetSize` |
 | <a id="zanna-game-dialogue-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.Dialogue.Draw` |
-| <a id="zanna-game-dialogue-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Game.Dialogue.New` |
+| <a id="zanna-game-dialogue-new"></a>`New` | `obj<Zanna.Game.Dialogue>(i64,i64,i64,i64)` | `Zanna.Game.Dialogue.New` |
 
 <a id="zanna-game-lighting2d"></a>
 ### `Zanna.Game.Lighting2D`
@@ -980,7 +1112,7 @@ Constructor: `Zanna.Game.PlatformerController.New`
 | <a id="zanna-game-platformercontroller-setgravity"></a>`SetGravity` | `void(i64,i64)` | `Zanna.Game.PlatformerController.SetGravity` |
 | <a id="zanna-game-platformercontroller-setapexbonus"></a>`SetApexBonus` | `void(i64,i64)` | `Zanna.Game.PlatformerController.SetApexBonus` |
 | <a id="zanna-game-platformercontroller-update"></a>`Update` | `void(i64,i1,i1,i1,i1,i1,i1)` | `Zanna.Game.PlatformerController.Update` |
-| <a id="zanna-game-platformercontroller-new"></a>`New` | `obj()` | `Zanna.Game.PlatformerController.New` |
+| <a id="zanna-game-platformercontroller-new"></a>`New` | `obj<Zanna.Game.PlatformerController>()` | `Zanna.Game.PlatformerController.New` |
 | <a id="zanna-game-platformercontroller-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.PlatformerController.Destroy` |
 
 <a id="zanna-game-quests"></a>
@@ -1004,10 +1136,10 @@ Constructor: `Zanna.Game.Quests.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game-quests-addquest"></a>`AddQuest` | `obj(str,str)` | `Zanna.Game.Quests.AddQuest` |
-| <a id="zanna-game-quests-addstage"></a>`AddStage` | `obj(str,str,str)` | `Zanna.Game.Quests.AddStage` |
-| <a id="zanna-game-quests-addflag"></a>`AddFlag` | `obj(str,str,str,str)` | `Zanna.Game.Quests.AddFlag` |
-| <a id="zanna-game-quests-addcounter"></a>`AddCounter` | `obj(str,str,str,str,i64)` | `Zanna.Game.Quests.AddCounter` |
+| <a id="zanna-game-quests-addquest"></a>`AddQuest` | `obj<Zanna.Game.Quests>(str,str)` | `Zanna.Game.Quests.AddQuest` |
+| <a id="zanna-game-quests-addstage"></a>`AddStage` | `obj<Zanna.Game.Quests>(str,str,str)` | `Zanna.Game.Quests.AddStage` |
+| <a id="zanna-game-quests-addflag"></a>`AddFlag` | `obj<Zanna.Game.Quests>(str,str,str,str)` | `Zanna.Game.Quests.AddFlag` |
+| <a id="zanna-game-quests-addcounter"></a>`AddCounter` | `obj<Zanna.Game.Quests>(str,str,str,str,i64)` | `Zanna.Game.Quests.AddCounter` |
 | <a id="zanna-game-quests-activate"></a>`Activate` | `i1(str)` | `Zanna.Game.Quests.Activate` |
 | <a id="zanna-game-quests-fail"></a>`Fail` | `i1(str)` | `Zanna.Game.Quests.Fail` |
 | <a id="zanna-game-quests-setflag"></a>`SetFlag` | `i1(str,str)` | `Zanna.Game.Quests.SetFlag` |
@@ -1028,7 +1160,7 @@ Constructor: `Zanna.Game.Quests.New`
 | <a id="zanna-game-quests-justcompleted"></a>`JustCompleted` | `i1(str)` | `Zanna.Game.Quests.JustCompleted` |
 | <a id="zanna-game-quests-save"></a>`Save` | `i1(obj<Zanna.IO.SaveData>)` | `Zanna.Game.Quests.Save` |
 | <a id="zanna-game-quests-load"></a>`Load` | `i1(obj<Zanna.IO.SaveData>)` | `Zanna.Game.Quests.Load` |
-| <a id="zanna-game-quests-new"></a>`New` | `obj()` | `Zanna.Game.Quests.New` |
+| <a id="zanna-game-quests-new"></a>`New` | `obj<Zanna.Game.Quests>()` | `Zanna.Game.Quests.New` |
 
 <a id="zanna-game-queststate"></a>
 ### `Zanna.Game.QuestState`
@@ -1101,7 +1233,7 @@ Constructor: `Zanna.Game.AchievementTracker.New`
 | <a id="zanna-game-achievementtracker-setstat"></a>`SetStat` | `void(i64,i64)` | `Zanna.Game.AchievementTracker.SetStat` |
 | <a id="zanna-game-achievementtracker-update"></a>`Update` | `void(i64)` | `Zanna.Game.AchievementTracker.Update` |
 | <a id="zanna-game-achievementtracker-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.AchievementTracker.Draw` |
-| <a id="zanna-game-achievementtracker-new"></a>`New` | `obj(i64)` | `Zanna.Game.AchievementTracker.New` |
+| <a id="zanna-game-achievementtracker-new"></a>`New` | `obj<Zanna.Game.AchievementTracker>(i64)` | `Zanna.Game.AchievementTracker.New` |
 | <a id="zanna-game-achievementtracker-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.AchievementTracker.Destroy` |
 
 <a id="zanna-game-typewriter"></a>
@@ -1136,7 +1268,7 @@ Constructor: `Zanna.Game.Typewriter.New`
 | <a id="zanna-game-typewriter-update"></a>`Update` | `i1(i64)` | `Zanna.Game.Typewriter.Update` |
 | <a id="zanna-game-typewriter-skip"></a>`Skip` | `void()` | `Zanna.Game.Typewriter.Skip` |
 | <a id="zanna-game-typewriter-reset"></a>`Reset` | `void()` | `Zanna.Game.Typewriter.Reset` |
-| <a id="zanna-game-typewriter-new"></a>`New` | `obj()` | `Zanna.Game.Typewriter.New` |
+| <a id="zanna-game-typewriter-new"></a>`New` | `obj<Zanna.Game.Typewriter>()` | `Zanna.Game.Typewriter.New` |
 | <a id="zanna-game-typewriter-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.Typewriter.Destroy` |
 
 <a id="zanna-game-ui-hudlabel"></a>
@@ -1168,7 +1300,7 @@ Constructor: `Zanna.Game.UI.HudLabel.New`
 | <a id="zanna-game-ui-hudlabel-settext"></a>`SetText` | `void(str)` | `Zanna.Game.UI.HudLabel.SetText` |
 | <a id="zanna-game-ui-hudlabel-setposition"></a>`SetPosition` | `void(i64,i64)` | `Zanna.Game.UI.HudLabel.SetPosition` |
 | <a id="zanna-game-ui-hudlabel-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudLabel.Draw` |
-| <a id="zanna-game-ui-hudlabel-new"></a>`New` | `obj(i64,i64,str,i64)` | `Zanna.Game.UI.HudLabel.New` |
+| <a id="zanna-game-ui-hudlabel-new"></a>`New` | `obj<Zanna.Game.UI.HudLabel>(i64,i64,str,i64)` | `Zanna.Game.UI.HudLabel.New` |
 
 <a id="zanna-game-ui-hudbar"></a>
 ### `Zanna.Game.UI.HudBar`
@@ -1200,7 +1332,7 @@ Constructor: `Zanna.Game.UI.HudBar.New`
 | <a id="zanna-game-ui-hudbar-setsize"></a>`SetSize` | `void(i64,i64)` | `Zanna.Game.UI.HudBar.SetSize` |
 | <a id="zanna-game-ui-hudbar-setcolors"></a>`SetColors` | `void(i64,i64)` | `Zanna.Game.UI.HudBar.SetColors` |
 | <a id="zanna-game-ui-hudbar-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudBar.Draw` |
-| <a id="zanna-game-ui-hudbar-new"></a>`New` | `obj(i64,i64,i64,i64,i64,i64)` | `Zanna.Game.UI.HudBar.New` |
+| <a id="zanna-game-ui-hudbar-new"></a>`New` | `obj<Zanna.Game.UI.HudBar>(i64,i64,i64,i64,i64,i64)` | `Zanna.Game.UI.HudBar.New` |
 
 <a id="zanna-game-ui-hudpanel"></a>
 ### `Zanna.Game.UI.HudPanel`
@@ -1230,7 +1362,7 @@ Constructor: `Zanna.Game.UI.HudPanel.New`
 | <a id="zanna-game-ui-hudpanel-setcolor"></a>`SetColor` | `void(i64,i64)` | `Zanna.Game.UI.HudPanel.SetColor` |
 | <a id="zanna-game-ui-hudpanel-setborder"></a>`SetBorder` | `void(i64,i64)` | `Zanna.Game.UI.HudPanel.SetBorder` |
 | <a id="zanna-game-ui-hudpanel-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudPanel.Draw` |
-| <a id="zanna-game-ui-hudpanel-new"></a>`New` | `obj(i64,i64,i64,i64,i64,i64)` | `Zanna.Game.UI.HudPanel.New` |
+| <a id="zanna-game-ui-hudpanel-new"></a>`New` | `obj<Zanna.Game.UI.HudPanel>(i64,i64,i64,i64,i64,i64)` | `Zanna.Game.UI.HudPanel.New` |
 
 <a id="zanna-game-ui-hudnineslice"></a>
 ### `Zanna.Game.UI.HudNineSlice`
@@ -1254,7 +1386,7 @@ Constructor: `Zanna.Game.UI.HudNineSlice.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-game-ui-hudnineslice-draw"></a>`Draw` | `void(obj,i64,i64,i64,i64)` | `Zanna.Game.UI.HudNineSlice.Draw` |
-| <a id="zanna-game-ui-hudnineslice-new"></a>`New` | `obj(obj,i64,i64,i64,i64)` | `Zanna.Game.UI.HudNineSlice.New` |
+| <a id="zanna-game-ui-hudnineslice-new"></a>`New` | `obj<Zanna.Game.UI.HudNineSlice>(obj,i64,i64,i64,i64)` | `Zanna.Game.UI.HudNineSlice.New` |
 
 <a id="zanna-game-ui-hudmenulist"></a>
 ### `Zanna.Game.UI.HudMenuList`
@@ -1287,7 +1419,7 @@ Constructor: `Zanna.Game.UI.HudMenuList.New`
 | <a id="zanna-game-ui-hudmenulist-setcolors"></a>`SetColors` | `void(i64,i64,i64)` | `Zanna.Game.UI.HudMenuList.SetColors` |
 | <a id="zanna-game-ui-hudmenulist-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudMenuList.Draw` |
 | <a id="zanna-game-ui-hudmenulist-handleinput"></a>`HandleInput` | `i64(i1,i1,i1)` | `Zanna.Game.UI.HudMenuList.HandleInput` |
-| <a id="zanna-game-ui-hudmenulist-new"></a>`New` | `obj(i64,i64,i64)` | `Zanna.Game.UI.HudMenuList.New` |
+| <a id="zanna-game-ui-hudmenulist-new"></a>`New` | `obj<Zanna.Game.UI.HudMenuList>(i64,i64,i64)` | `Zanna.Game.UI.HudMenuList.New` |
 
 <a id="zanna-game-ui-hudtextinput"></a>
 ### `Zanna.Game.UI.HudTextInput`
@@ -1338,7 +1470,7 @@ Constructor: `Zanna.Game.UI.HudTextInput.New`
 | <a id="zanna-game-ui-hudtextinput-setpasswordmode"></a>`SetPasswordMode` | `void(i1)` | `Zanna.Game.UI.HudTextInput.SetPasswordMode` |
 | <a id="zanna-game-ui-hudtextinput-setplaceholder"></a>`SetPlaceholder` | `void(str)` | `Zanna.Game.UI.HudTextInput.SetPlaceholder` |
 | <a id="zanna-game-ui-hudtextinput-setmaxcodepoints"></a>`SetMaxCodepoints` | `void(i64)` | `Zanna.Game.UI.HudTextInput.SetMaxCodepoints` |
-| <a id="zanna-game-ui-hudtextinput-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Game.UI.HudTextInput.New` |
+| <a id="zanna-game-ui-hudtextinput-new"></a>`New` | `obj<Zanna.Game.UI.HudTextInput>(i64,i64,i64,i64)` | `Zanna.Game.UI.HudTextInput.New` |
 
 <a id="zanna-game-ui-hudtable"></a>
 ### `Zanna.Game.UI.HudTable`
@@ -1379,7 +1511,7 @@ Constructor: `Zanna.Game.UI.HudTable.New`
 | <a id="zanna-game-ui-hudtable-handlescroll"></a>`HandleScroll` | `void(i64)` | `Zanna.Game.UI.HudTable.HandleScroll` |
 | <a id="zanna-game-ui-hudtable-handlekey"></a>`HandleKey` | `void(i64)` | `Zanna.Game.UI.HudTable.HandleKey` |
 | <a id="zanna-game-ui-hudtable-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudTable.Draw` |
-| <a id="zanna-game-ui-hudtable-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Game.UI.HudTable.New` |
+| <a id="zanna-game-ui-hudtable-new"></a>`New` | `obj<Zanna.Game.UI.HudTable>(i64,i64,i64,i64)` | `Zanna.Game.UI.HudTable.New` |
 
 <a id="zanna-game-ui-hudtableclickresult"></a>
 ### `Zanna.Game.UI.HudTableClickResult`
@@ -1428,7 +1560,7 @@ Constructor: `Zanna.Game.UI.HudModal.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game-ui-hudmodal-newat"></a>`NewAt` | `obj(i64,i64,i64,i64)` | `Zanna.Game.UI.HudModal.NewAt` |
+| <a id="zanna-game-ui-hudmodal-newat"></a>`NewAt` | `obj<Zanna.Game.UI.HudModal>(i64,i64,i64,i64)` | `Zanna.Game.UI.HudModal.NewAt` |
 | <a id="zanna-game-ui-hudmodal-settitle"></a>`SetTitle` | `void(str)` | `Zanna.Game.UI.HudModal.SetTitle` |
 | <a id="zanna-game-ui-hudmodal-setcontent"></a>`SetContent` | `void(str)` | `Zanna.Game.UI.HudModal.SetContent` |
 | <a id="zanna-game-ui-hudmodal-addbutton"></a>`AddButton` | `i64(str,i64)` | `Zanna.Game.UI.HudModal.AddButton` |
@@ -1440,7 +1572,7 @@ Constructor: `Zanna.Game.UI.HudModal.New`
 | <a id="zanna-game-ui-hudmodal-handlekey"></a>`HandleKey` | `i64(i64,i1)` | `Zanna.Game.UI.HudModal.HandleKey` |
 | <a id="zanna-game-ui-hudmodal-handleclick"></a>`HandleClick` | `i64(i64,i64)` | `Zanna.Game.UI.HudModal.HandleClick` |
 | <a id="zanna-game-ui-hudmodal-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudModal.Draw` |
-| <a id="zanna-game-ui-hudmodal-new"></a>`New` | `obj(i64,i64)` | `Zanna.Game.UI.HudModal.New` |
+| <a id="zanna-game-ui-hudmodal-new"></a>`New` | `obj<Zanna.Game.UI.HudModal>(i64,i64)` | `Zanna.Game.UI.HudModal.New` |
 
 <a id="zanna-game-ui-hudslider"></a>
 ### `Zanna.Game.UI.HudSlider`
@@ -1470,7 +1602,7 @@ Constructor: `Zanna.Game.UI.HudSlider.New`
 | <a id="zanna-game-ui-hudslider-handlemousedrag"></a>`HandleMouseDrag` | `i1(i64)` | `Zanna.Game.UI.HudSlider.HandleMouseDrag` |
 | <a id="zanna-game-ui-hudslider-handlemouseup"></a>`HandleMouseUp` | `i1()` | `Zanna.Game.UI.HudSlider.HandleMouseUp` |
 | <a id="zanna-game-ui-hudslider-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudSlider.Draw` |
-| <a id="zanna-game-ui-hudslider-new"></a>`New` | `obj(i64,i64,i64,i64,i64,i64)` | `Zanna.Game.UI.HudSlider.New` |
+| <a id="zanna-game-ui-hudslider-new"></a>`New` | `obj<Zanna.Game.UI.HudSlider>(i64,i64,i64,i64,i64,i64)` | `Zanna.Game.UI.HudSlider.New` |
 
 <a id="zanna-game-ui-huddropdown"></a>
 ### `Zanna.Game.UI.HudDropdown`
@@ -1503,7 +1635,7 @@ Constructor: `Zanna.Game.UI.HudDropdown.New`
 | <a id="zanna-game-ui-huddropdown-handleclick"></a>`HandleClick` | `i1(i64,i64)` | `Zanna.Game.UI.HudDropdown.HandleClick` |
 | <a id="zanna-game-ui-huddropdown-handlekey"></a>`HandleKey` | `i1(i64)` | `Zanna.Game.UI.HudDropdown.HandleKey` |
 | <a id="zanna-game-ui-huddropdown-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudDropdown.Draw` |
-| <a id="zanna-game-ui-huddropdown-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Game.UI.HudDropdown.New` |
+| <a id="zanna-game-ui-huddropdown-new"></a>`New` | `obj<Zanna.Game.UI.HudDropdown>(i64,i64,i64,i64)` | `Zanna.Game.UI.HudDropdown.New` |
 
 <a id="zanna-game-ui-hudtooltip"></a>
 ### `Zanna.Game.UI.HudTooltip`
@@ -1524,7 +1656,7 @@ Constructor: `Zanna.Game.UI.HudTooltip.New`
 | <a id="zanna-game-ui-hudtooltip-sethoverdelayms"></a>`SetHoverDelayMs` | `void(i64)` | `Zanna.Game.UI.HudTooltip.SetHoverDelayMs` |
 | <a id="zanna-game-ui-hudtooltip-update"></a>`Update` | `void(i64,i64,i1,i64)` | `Zanna.Game.UI.HudTooltip.Update` |
 | <a id="zanna-game-ui-hudtooltip-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.UI.HudTooltip.Draw` |
-| <a id="zanna-game-ui-hudtooltip-new"></a>`New` | `obj()` | `Zanna.Game.UI.HudTooltip.New` |
+| <a id="zanna-game-ui-hudtooltip-new"></a>`New` | `obj<Zanna.Game.UI.HudTooltip>()` | `Zanna.Game.UI.HudTooltip.New` |
 
 <a id="zanna-game-ui-hudbutton"></a>
 ### `Zanna.Game.UI.HudButton`
@@ -1558,7 +1690,7 @@ Constructor: `Zanna.Game.UI.HudButton.New`
 | <a id="zanna-game-ui-hudbutton-settextcolors"></a>`SetTextColors` | `void(i64,i64)` | `Zanna.Game.UI.HudButton.SetTextColors` |
 | <a id="zanna-game-ui-hudbutton-setborder"></a>`SetBorder` | `void(i64,i64)` | `Zanna.Game.UI.HudButton.SetBorder` |
 | <a id="zanna-game-ui-hudbutton-draw"></a>`Draw` | `void(obj,i1)` | `Zanna.Game.UI.HudButton.Draw` |
-| <a id="zanna-game-ui-hudbutton-new"></a>`New` | `obj(i64,i64,i64,i64,str)` | `Zanna.Game.UI.HudButton.New` |
+| <a id="zanna-game-ui-hudbutton-new"></a>`New` | `obj<Zanna.Game.UI.HudButton>(i64,i64,i64,i64,str)` | `Zanna.Game.UI.HudButton.New` |
 
 <a id="zanna-game-pathresult"></a>
 ### `Zanna.Game.PathResult`
@@ -1611,7 +1743,7 @@ Constructor: `Zanna.Game.Pathfinder.New`
 | <a id="zanna-game-pathfinder-findpath"></a>`FindPath` | `obj<Zanna.Game.PathResult>(i64,i64,i64,i64)` | `Zanna.Game.Pathfinder.FindPath` |
 | <a id="zanna-game-pathfinder-findnearest"></a>`FindNearest` | `obj<Zanna.Game.PathResult>(i64,i64,i64)` | `Zanna.Game.Pathfinder.FindNearest` |
 | <a id="zanna-game-pathfinder-destroy"></a>`Destroy` | `void()` | `Zanna.Game.Pathfinder.Destroy` |
-| <a id="zanna-game-pathfinder-new"></a>`New` | `obj(i64,i64)` | `Zanna.Game.Pathfinder.New` |
+| <a id="zanna-game-pathfinder-new"></a>`New` | `obj<Zanna.Game.Pathfinder>(i64,i64)` | `Zanna.Game.Pathfinder.New` |
 | <a id="zanna-game-pathfinder-fromtilemap"></a>`FromTilemap` | `obj<Zanna.Game.Pathfinder>(obj)` | `Zanna.Game.Pathfinder.FromTilemap` |
 | <a id="zanna-game-pathfinder-fromgrid2d"></a>`FromGrid2D` | `obj<Zanna.Game.Pathfinder>(obj)` | `Zanna.Game.Pathfinder.FromGrid2D` |
 
@@ -1651,7 +1783,7 @@ Constructor: `Zanna.Game.PathFollower.New`
 | <a id="zanna-game-pathfollower-pause"></a>`Pause` | `void()` | `Zanna.Game.PathFollower.Pause` |
 | <a id="zanna-game-pathfollower-stop"></a>`Stop` | `void()` | `Zanna.Game.PathFollower.Stop` |
 | <a id="zanna-game-pathfollower-update"></a>`Update` | `void(i64)` | `Zanna.Game.PathFollower.Update` |
-| <a id="zanna-game-pathfollower-new"></a>`New` | `obj()` | `Zanna.Game.PathFollower.New` |
+| <a id="zanna-game-pathfollower-new"></a>`New` | `obj<Zanna.Game.PathFollower>()` | `Zanna.Game.PathFollower.New` |
 | <a id="zanna-game-pathfollower-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.PathFollower.Destroy` |
 
 <a id="zanna-game-queryresult"></a>
@@ -1676,7 +1808,7 @@ construct the class directly. Its public surface exposes properties such as `Cou
 |---|---|---|
 | <a id="zanna-game-queryresult-getid"></a>`GetId` | `i64(i64)` | `Zanna.Game.QueryResult.GetId` |
 | <a id="zanna-game-queryresult-contains"></a>`Contains` | `i1(i64)` | `Zanna.Game.QueryResult.Contains` |
-| <a id="zanna-game-queryresult-ids"></a>`Ids` | `obj()` | `Zanna.Game.QueryResult.Ids` |
+| <a id="zanna-game-queryresult-ids"></a>`Ids` | `seq<i64>()` | `Zanna.Game.QueryResult.Ids` |
 
 <a id="zanna-game-quadtreepairresult"></a>
 ### `Zanna.Game.QuadtreePairResult`
@@ -1729,7 +1861,7 @@ Constructor: `Zanna.Game.Quadtree.New`
 | <a id="zanna-game-quadtree-queryrect"></a>`QueryRect` | `obj<Zanna.Game.QueryResult>(i64,i64,i64,i64)` | `Zanna.Game.Quadtree.QueryRect` |
 | <a id="zanna-game-quadtree-querypoint"></a>`QueryPoint` | `obj<Zanna.Game.QueryResult>(i64,i64,i64)` | `Zanna.Game.Quadtree.QueryPoint` |
 | <a id="zanna-game-quadtree-querypairs"></a>`QueryPairs` | `obj<Zanna.Game.QuadtreePairResult>()` | `Zanna.Game.Quadtree.QueryPairs` |
-| <a id="zanna-game-quadtree-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Game.Quadtree.New` |
+| <a id="zanna-game-quadtree-new"></a>`New` | `obj<Zanna.Game.Quadtree>(i64,i64,i64,i64)` | `Zanna.Game.Quadtree.New` |
 | <a id="zanna-game-quadtree-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.Quadtree.Destroy` |
 
 <a id="zanna-game-debugoverlay"></a>
@@ -1762,14 +1894,14 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-debugoverlay-unwatch"></a>`Unwatch` | `i1(str)` | `Zanna.Game.DebugOverlay.Unwatch` |
 | <a id="zanna-game-debugoverlay-clear"></a>`Clear` | `void()` | `Zanna.Game.DebugOverlay.Clear` |
 | <a id="zanna-game-debugoverlay-draw"></a>`Draw` | `void(obj)` | `Zanna.Game.DebugOverlay.Draw` |
-| <a id="zanna-game-debugoverlay-new"></a>`New` | `obj()` | `Zanna.Game.DebugOverlay.New` |
+| <a id="zanna-game-debugoverlay-new"></a>`New` | `obj<Zanna.Game.DebugOverlay>()` | `Zanna.Game.DebugOverlay.New` |
 | <a id="zanna-game-debugoverlay-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.DebugOverlay.Destroy` |
 
 ## Functions
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Game.Grid2D.New` | `obj(i64,i64,i64)` | `rt_grid2d_new` |
+| `Zanna.Game.Grid2D.New` | `obj<Zanna.Game.Grid2D>(i64,i64,i64)` | `rt_grid2d_new` |
 | `Zanna.Game.Grid2D.Destroy` | `void(obj)` | `rt_grid2d_destroy` |
 | `Zanna.Game.Grid2D.Get` | `i64(obj,i64,i64)` | `rt_grid2d_get` |
 | `Zanna.Game.Grid2D.Set` | `void(obj,i64,i64,i64)` | `rt_grid2d_set` |
@@ -1783,7 +1915,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.Grid2D.CopyFrom` | `i1(obj,obj)` | `rt_grid2d_copy_from` |
 | `Zanna.Game.Grid2D.Count` | `i64(obj,i64)` | `rt_grid2d_count` |
 | `Zanna.Game.Grid2D.Replace` | `i64(obj,i64,i64)` | `rt_grid2d_replace` |
-| `Zanna.Game.Timer.New` | `obj()` | `rt_timer_new` |
+| `Zanna.Game.Timer.New` | `obj<Zanna.Game.Timer>()` | `rt_timer_new` |
 | `Zanna.Game.Timer.Destroy` | `void(obj)` | `rt_timer_destroy` |
 | `Zanna.Game.Timer.Start` | `void(obj,i64)` | `rt_timer_start` |
 | `Zanna.Game.Timer.StartRepeating` | `void(obj,i64)` | `rt_timer_start_repeating` |
@@ -1804,7 +1936,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.Timer.UpdateMs` | `i1(obj,i64)` | `rt_timer_update_ms` |
 | <a id="zanna-game-timer-get-elapsedms"></a>`Zanna.Game.Timer.get_ElapsedMs` | `i64(obj)` | `rt_timer_elapsed_ms` |
 | <a id="zanna-game-timer-get-remainingms"></a>`Zanna.Game.Timer.get_RemainingMs` | `i64(obj)` | `rt_timer_remaining_ms` |
-| `Zanna.Game.StateMachine.New` | `obj()` | `rt_statemachine_new` |
+| `Zanna.Game.StateMachine.New` | `obj<Zanna.Game.StateMachine>()` | `rt_statemachine_new` |
 | `Zanna.Game.StateMachine.Destroy` | `void(obj)` | `rt_statemachine_destroy` |
 | `Zanna.Game.StateMachine.AddState` | `i1(obj,i64)` | `rt_statemachine_add_state` |
 | `Zanna.Game.StateMachine.SetInitial` | `i1(obj,i64)` | `rt_statemachine_set_initial` |
@@ -1819,7 +1951,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.StateMachine.Update` | `void(obj)` | `rt_statemachine_update` |
 | `Zanna.Game.StateMachine.HasState` | `i1(obj,i64)` | `rt_statemachine_has_state` |
 | <a id="zanna-game-statemachine-get-statecount"></a>`Zanna.Game.StateMachine.get_StateCount` | `i64(obj)` | `rt_statemachine_state_count` |
-| `Zanna.Game.AnimStateMachine.New` | `obj()` | `rt_animstate_new` |
+| `Zanna.Game.AnimStateMachine.New` | `obj<Zanna.Game.AnimStateMachine>()` | `rt_animstate_new` |
 | `Zanna.Game.AnimStateMachine.AddState` | `void(obj,i64,i64,i64,i64,i1)` | `rt_animstate_add_state` |
 | `Zanna.Game.AnimStateMachine.SetInitial` | `i1(obj,i64)` | `rt_animstate_set_initial` |
 | `Zanna.Game.AnimStateMachine.Transition` | `i1(obj,i64)` | `rt_animstate_transition` |
@@ -1835,7 +1967,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-animstatemachine-get-progress"></a>`Zanna.Game.AnimStateMachine.get_Progress` | `i64(obj)` | `rt_animstate_progress` |
 | `Zanna.Game.AnimStateMachine.AddNamed` | `void(obj,str,i64,i64,i64,i1)` | `rt_animstate_add_named` |
 | `Zanna.Game.AnimStateMachine.Play` | `void(obj,str)` | `rt_animstate_play` |
-| <a id="zanna-game-animstatemachine-get-statename"></a>`Zanna.Game.AnimStateMachine.get_StateName` | `obj(obj)` | `rt_animstate_current_name` |
+| <a id="zanna-game-animstatemachine-get-statename"></a>`Zanna.Game.AnimStateMachine.get_StateName` | `str(obj)` | `rt_animstate_current_name` |
 | `Zanna.Game.AnimStateMachine.AddEvent` | `i1(obj,i64,i64,i64)` | `rt_animstate_add_event` |
 | `Zanna.Game.AnimStateMachine.ClearEvents` | `void(obj,i64)` | `rt_animstate_clear_events` |
 | `Zanna.Game.AnimStateMachine.PollEvents` | `obj<Zanna.Game.AnimationEventBatch>(obj)` | `rt_animstate_poll_events` |
@@ -1843,7 +1975,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.AnimationEventBatch.GetId` | `i64(obj,i64)` | `rt_animation_event_batch_get_id` |
 | `Zanna.Game.AnimationEventBatch.Contains` | `i1(obj,i64)` | `rt_animation_event_batch_contains` |
 | `Zanna.Game.AnimationEventBatch.Ids` | `obj<Zanna.Collections.Seq>(obj)` | `rt_animation_event_batch_ids` |
-| `Zanna.Game.AnimTimeline.New` | `obj(i64)` | `rt_animtimeline_new` |
+| `Zanna.Game.AnimTimeline.New` | `obj<Zanna.Game.AnimTimeline>(i64)` | `rt_animtimeline_new` |
 | `Zanna.Game.AnimTimeline.AddAnimTrack` | `i64(obj,str,i64,i64,i64)` | `rt_animtimeline_add_anim_track` |
 | `Zanna.Game.AnimTimeline.AddTweenTrack` | `i64(obj,str,i64,i64,i64,i64)` | `rt_animtimeline_add_tween_track` |
 | `Zanna.Game.AnimTimeline.AddMarker` | `i64(obj,i64,i64)` | `rt_animtimeline_add_marker` |
@@ -1861,7 +1993,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.AnimTimeline.TrackPayloadA` | `i64(obj,i64)` | `rt_animtimeline_track_payload_a` |
 | `Zanna.Game.AnimTimeline.TrackPayloadB` | `i64(obj,i64)` | `rt_animtimeline_track_payload_b` |
 | `Zanna.Game.AnimTimeline.TrackPayloadC` | `i64(obj,i64)` | `rt_animtimeline_track_payload_c` |
-| `Zanna.Game.Tween.New` | `obj()` | `rt_tween_new` |
+| `Zanna.Game.Tween.New` | `obj<Zanna.Game.Tween>()` | `rt_tween_new` |
 | `Zanna.Game.Tween.Destroy` | `void(obj)` | `rt_tween_destroy` |
 | `Zanna.Game.Tween.Start` | `void(obj,f64,f64,i64,i64)` | `rt_tween_start` |
 | `Zanna.Game.Tween.StartI64` | `void(obj,i64,i64,i64,i64)` | `rt_tween_start_i64` |
@@ -1888,7 +2020,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-tween-get-ispaused"></a>`Zanna.Game.Tween.get_IsPaused` | `i1(obj)` | `rt_tween_is_paused` |
 | `Zanna.Game.Tween.LerpI64` | `i64(i64,i64,f64)` | `rt_tween_lerp_i64` |
 | `Zanna.Game.Tween.Ease` | `f64(f64,i64)` | `rt_tween_ease` |
-| `Zanna.Game.ButtonGroup.New` | `obj()` | `rt_buttongroup_new` |
+| `Zanna.Game.ButtonGroup.New` | `obj<Zanna.Game.ButtonGroup>()` | `rt_buttongroup_new` |
 | `Zanna.Game.ButtonGroup.Destroy` | `void(obj)` | `rt_buttongroup_destroy` |
 | `Zanna.Game.ButtonGroup.Add` | `i1(obj,i64)` | `rt_buttongroup_add` |
 | `Zanna.Game.ButtonGroup.Remove` | `i1(obj,i64)` | `rt_buttongroup_remove` |
@@ -1904,7 +2036,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.ButtonGroup.GetAt` | `i64(obj,i64)` | `rt_buttongroup_get_at` |
 | `Zanna.Game.ButtonGroup.SelectNext` | `i64(obj)` | `rt_buttongroup_select_next` |
 | `Zanna.Game.ButtonGroup.SelectPrevious` | `i64(obj)` | `rt_buttongroup_select_prev` |
-| `Zanna.Game.SmoothValue.New` | `obj(f64,f64)` | `rt_smoothvalue_new` |
+| `Zanna.Game.SmoothValue.New` | `obj<Zanna.Game.SmoothValue>(f64,f64)` | `rt_smoothvalue_new` |
 | `Zanna.Game.SmoothValue.Destroy` | `void(obj)` | `rt_smoothvalue_destroy` |
 | <a id="zanna-game-smoothvalue-get-value"></a>`Zanna.Game.SmoothValue.get_Value` | `f64(obj)` | `rt_smoothvalue_get` |
 | <a id="zanna-game-smoothvalue-get-valuei64"></a>`Zanna.Game.SmoothValue.get_ValueI64` | `i64(obj)` | `rt_smoothvalue_get_i64` |
@@ -1954,7 +2086,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-particlesnapshot-get-y"></a>`Zanna.Game.ParticleSnapshot.get_Y` | `f64(obj)` | `rt_particle_snapshot_y` |
 | <a id="zanna-game-particlesnapshot-get-size"></a>`Zanna.Game.ParticleSnapshot.get_Size` | `f64(obj)` | `rt_particle_snapshot_size` |
 | <a id="zanna-game-particlesnapshot-get-color"></a>`Zanna.Game.ParticleSnapshot.get_Color` | `i64(obj)` | `rt_particle_snapshot_color` |
-| `Zanna.Game.SpriteAnimation.New` | `obj()` | `rt_spriteanim_new` |
+| `Zanna.Game.SpriteAnimation.New` | `obj<Zanna.Game.SpriteAnimation>()` | `rt_spriteanim_new` |
 | `Zanna.Game.SpriteAnimation.Destroy` | `void(obj)` | `rt_spriteanim_destroy` |
 | `Zanna.Game.SpriteAnimation.Setup` | `void(obj,i64,i64,i64)` | `rt_spriteanim_setup` |
 | <a id="zanna-game-spriteanimation-set-loop"></a>`Zanna.Game.SpriteAnimation.set_Loop` | `void(obj,i1)` | `rt_spriteanim_set_loop` |
@@ -1979,7 +2111,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-spriteanimation-set-speed"></a>`Zanna.Game.SpriteAnimation.set_Speed` | `void(obj,f64)` | `rt_spriteanim_set_speed` |
 | <a id="zanna-game-spriteanimation-get-speed"></a>`Zanna.Game.SpriteAnimation.get_Speed` | `f64(obj)` | `rt_spriteanim_speed` |
 | <a id="zanna-game-spriteanimation-get-framechanged"></a>`Zanna.Game.SpriteAnimation.get_FrameChanged` | `i1(obj)` | `rt_spriteanim_frame_changed` |
-| `Zanna.Game.CollisionRect.New` | `obj(f64,f64,f64,f64)` | `rt_collision_rect_new` |
+| `Zanna.Game.CollisionRect.New` | `obj<Zanna.Game.CollisionRect>(f64,f64,f64,f64)` | `rt_collision_rect_new` |
 | `Zanna.Game.CollisionRect.Destroy` | `void(obj)` | `rt_collision_rect_destroy` |
 | <a id="zanna-game-collisionrect-get-x"></a>`Zanna.Game.CollisionRect.get_X` | `f64(obj)` | `rt_collision_rect_x` |
 | <a id="zanna-game-collisionrect-get-y"></a>`Zanna.Game.CollisionRect.get_Y` | `f64(obj)` | `rt_collision_rect_y` |
@@ -2015,7 +2147,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.WorldToScreenProjection.PerspectiveScale` | `f64(f64,f64,f64,f64,f64)` | `rt_world_projection_perspective_scale` |
 | `Zanna.Game.WorldToScreenProjection.PerspectiveX` | `f64(f64,f64,f64,f64)` | `rt_world_projection_perspective_x` |
 | `Zanna.Game.WorldToScreenProjection.PerspectiveY` | `f64(f64,f64,f64,f64,i1)` | `rt_world_projection_perspective_y` |
-| `Zanna.Game.Physics2D.World.New` | `obj(f64,f64)` | `rt_physics2d_world_new` |
+| `Zanna.Game.Physics2D.World.New` | `obj<Zanna.Game.Physics2D.World>(f64,f64)` | `rt_physics2d_world_new` |
 | `Zanna.Game.Physics2D.World.Step` | `void(obj,f64)` | `rt_physics2d_world_step` |
 | `Zanna.Game.Physics2D.World.Add` | `void(obj,obj)` | `rt_physics2d_world_add` |
 | `Zanna.Game.Physics2D.World.Remove` | `void(obj,obj)` | `rt_physics2d_world_remove` |
@@ -2023,13 +2155,13 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.Physics2D.World.SetGravity` | `void(obj,f64,f64)` | `rt_physics2d_world_set_gravity` |
 | <a id="zanna-game-physics2d-world-get-contactcount"></a>`Zanna.Game.Physics2D.World.get_ContactCount` | `i64(obj)` | `rt_physics2d_world_contact_count` |
 | <a id="zanna-game-physics2d-world-get-contactoverflowed"></a>`Zanna.Game.Physics2D.World.get_ContactOverflowed` | `i1(obj)` | `rt_physics2d_world_contact_overflowed` |
-| `Zanna.Game.Physics2D.World.ContactBodyA` | `obj(obj,i64)` | `rt_physics2d_world_contact_body_a` |
-| `Zanna.Game.Physics2D.World.ContactBodyB` | `obj(obj,i64)` | `rt_physics2d_world_contact_body_b` |
+| `Zanna.Game.Physics2D.World.ContactBodyA` | `obj<Zanna.Game.Physics2D.Body>(obj,i64)` | `rt_physics2d_world_contact_body_a` |
+| `Zanna.Game.Physics2D.World.ContactBodyB` | `obj<Zanna.Game.Physics2D.Body>(obj,i64)` | `rt_physics2d_world_contact_body_b` |
 | `Zanna.Game.Physics2D.World.ContactNX` | `f64(obj,i64)` | `rt_physics2d_world_contact_nx` |
 | `Zanna.Game.Physics2D.World.ContactNY` | `f64(obj,i64)` | `rt_physics2d_world_contact_ny` |
 | `Zanna.Game.Physics2D.World.ContactDepth` | `f64(obj,i64)` | `rt_physics2d_world_contact_depth` |
-| `Zanna.Game.Physics2D.Body.New` | `obj(f64,f64,f64,f64,f64)` | `rt_physics2d_body_new` |
-| `Zanna.Game.Physics2D.Body.NewCircle` | `obj(f64,f64,f64,f64)` | `rt_physics2d_circle_body_new` |
+| `Zanna.Game.Physics2D.Body.New` | `obj<Zanna.Game.Physics2D.Body>(f64,f64,f64,f64,f64)` | `rt_physics2d_body_new` |
+| `Zanna.Game.Physics2D.Body.NewCircle` | `obj<Zanna.Game.Physics2D.Body>(f64,f64,f64,f64)` | `rt_physics2d_circle_body_new` |
 | <a id="zanna-game-physics2d-body-get-x"></a>`Zanna.Game.Physics2D.Body.get_X` | `f64(obj)` | `rt_physics2d_body_x` |
 | <a id="zanna-game-physics2d-body-get-y"></a>`Zanna.Game.Physics2D.Body.get_Y` | `f64(obj)` | `rt_physics2d_body_y` |
 | <a id="zanna-game-physics2d-body-get-prevx"></a>`Zanna.Game.Physics2D.Body.get_PrevX` | `f64(obj)` | `rt_physics2d_body_prev_x` |
@@ -2052,7 +2184,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-physics2d-body-set-collisionlayer"></a>`Zanna.Game.Physics2D.Body.set_CollisionLayer` | `void(obj,i64)` | `rt_physics2d_body_set_collision_layer` |
 | <a id="zanna-game-physics2d-body-get-collisionmask"></a>`Zanna.Game.Physics2D.Body.get_CollisionMask` | `i64(obj)` | `rt_physics2d_body_collision_mask` |
 | <a id="zanna-game-physics2d-body-set-collisionmask"></a>`Zanna.Game.Physics2D.Body.set_CollisionMask` | `void(obj,i64)` | `rt_physics2d_body_set_collision_mask` |
-| `Zanna.Game.Physics2D.Projectile2D.New` | `obj(f64,f64,f64,f64,f64,f64)` | `rt_projectile2d_new` |
+| `Zanna.Game.Physics2D.Projectile2D.New` | `obj<Zanna.Game.Physics2D.Projectile2D>(f64,f64,f64,f64,f64,f64)` | `rt_projectile2d_new` |
 | `Zanna.Game.Physics2D.Projectile2D.SetDrag` | `void(obj,f64)` | `rt_projectile2d_set_drag` |
 | `Zanna.Game.Physics2D.Projectile2D.SetGroundY` | `void(obj,f64)` | `rt_projectile2d_set_ground_y` |
 | `Zanna.Game.Physics2D.Projectile2D.Reset` | `void(obj)` | `rt_projectile2d_reset` |
@@ -2066,27 +2198,27 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.Physics2D.Projectile2D.TimeToGround` | `f64(obj)` | `rt_projectile2d_time_to_ground` |
 | <a id="zanna-game-physics2d-body-get-radius"></a>`Zanna.Game.Physics2D.Body.get_Radius` | `f64(obj)` | `rt_physics2d_body_radius` |
 | <a id="zanna-game-physics2d-body-get-iscircle"></a>`Zanna.Game.Physics2D.Body.get_IsCircle` | `i1(obj)` | `rt_physics2d_body_is_circle` |
-| `Zanna.Game.Physics2D.DistanceJoint.New` | `obj(obj,obj,f64)` | `rt_physics2d_distance_joint_new` |
+| `Zanna.Game.Physics2D.DistanceJoint.New` | `obj<Zanna.Game.Physics2D.DistanceJoint>(obj,obj,f64)` | `rt_physics2d_distance_joint_new` |
 | <a id="zanna-game-physics2d-distancejoint-get-length"></a>`Zanna.Game.Physics2D.DistanceJoint.get_Length` | `f64(obj)` | `rt_physics2d_distance_joint_get_length` |
 | <a id="zanna-game-physics2d-distancejoint-set-length"></a>`Zanna.Game.Physics2D.DistanceJoint.set_Length` | `void(obj,f64)` | `rt_physics2d_distance_joint_set_length` |
-| `Zanna.Game.Physics2D.SpringJoint.New` | `obj(obj,obj,f64,f64,f64)` | `rt_physics2d_spring_joint_new` |
+| `Zanna.Game.Physics2D.SpringJoint.New` | `obj<Zanna.Game.Physics2D.SpringJoint>(obj,obj,f64,f64,f64)` | `rt_physics2d_spring_joint_new` |
 | <a id="zanna-game-physics2d-springjoint-get-stiffness"></a>`Zanna.Game.Physics2D.SpringJoint.get_Stiffness` | `f64(obj)` | `rt_physics2d_spring_joint_get_stiffness` |
 | <a id="zanna-game-physics2d-springjoint-set-stiffness"></a>`Zanna.Game.Physics2D.SpringJoint.set_Stiffness` | `void(obj,f64)` | `rt_physics2d_spring_joint_set_stiffness` |
 | <a id="zanna-game-physics2d-springjoint-get-damping"></a>`Zanna.Game.Physics2D.SpringJoint.get_Damping` | `f64(obj)` | `rt_physics2d_spring_joint_get_damping` |
 | <a id="zanna-game-physics2d-springjoint-set-damping"></a>`Zanna.Game.Physics2D.SpringJoint.set_Damping` | `void(obj,f64)` | `rt_physics2d_spring_joint_set_damping` |
-| `Zanna.Game.Physics2D.HingeJoint.New` | `obj(obj,obj,f64,f64)` | `rt_physics2d_hinge_joint_new` |
+| `Zanna.Game.Physics2D.HingeJoint.New` | `obj<Zanna.Game.Physics2D.HingeJoint>(obj,obj,f64,f64)` | `rt_physics2d_hinge_joint_new` |
 | <a id="zanna-game-physics2d-hingejoint-get-angle"></a>`Zanna.Game.Physics2D.HingeJoint.get_Angle` | `f64(obj)` | `rt_physics2d_hinge_joint_get_angle` |
-| `Zanna.Game.Physics2D.RopeJoint.New` | `obj(obj,obj,f64)` | `rt_physics2d_rope_joint_new` |
+| `Zanna.Game.Physics2D.RopeJoint.New` | `obj<Zanna.Game.Physics2D.RopeJoint>(obj,obj,f64)` | `rt_physics2d_rope_joint_new` |
 | <a id="zanna-game-physics2d-ropejoint-get-maxlength"></a>`Zanna.Game.Physics2D.RopeJoint.get_MaxLength` | `f64(obj)` | `rt_physics2d_rope_joint_get_max_length` |
 | <a id="zanna-game-physics2d-ropejoint-set-maxlength"></a>`Zanna.Game.Physics2D.RopeJoint.set_MaxLength` | `void(obj,f64)` | `rt_physics2d_rope_joint_set_max_length` |
-| <a id="zanna-game-physics2d-joint-get-bodya"></a>`Zanna.Game.Physics2D.Joint.get_BodyA` | `obj(obj)` | `rt_physics2d_joint_get_body_a` |
-| <a id="zanna-game-physics2d-joint-get-bodyb"></a>`Zanna.Game.Physics2D.Joint.get_BodyB` | `obj(obj)` | `rt_physics2d_joint_get_body_b` |
+| <a id="zanna-game-physics2d-joint-get-bodya"></a>`Zanna.Game.Physics2D.Joint.get_BodyA` | `obj<Zanna.Game.Physics2D.Body>(obj)` | `rt_physics2d_joint_get_body_a` |
+| <a id="zanna-game-physics2d-joint-get-bodyb"></a>`Zanna.Game.Physics2D.Joint.get_BodyB` | `obj<Zanna.Game.Physics2D.Body>(obj)` | `rt_physics2d_joint_get_body_b` |
 | <a id="zanna-game-physics2d-joint-get-type"></a>`Zanna.Game.Physics2D.Joint.get_Type` | `i64(obj)` | `rt_physics2d_joint_get_type` |
 | <a id="zanna-game-physics2d-joint-get-isactive"></a>`Zanna.Game.Physics2D.Joint.get_IsActive` | `i1(obj)` | `rt_physics2d_joint_is_active` |
 | `Zanna.Game.Physics2D.World.AddJoint` | `void(obj,obj)` | `rt_physics2d_world_add_joint` |
 | `Zanna.Game.Physics2D.World.RemoveJoint` | `void(obj,obj)` | `rt_physics2d_world_remove_joint` |
 | <a id="zanna-game-physics2d-world-get-jointcount"></a>`Zanna.Game.Physics2D.World.get_JointCount` | `i64(obj)` | `rt_physics2d_world_joint_count` |
-| `Zanna.Game.ObjectPool.New` | `obj(i64)` | `rt_objpool_new` |
+| `Zanna.Game.ObjectPool.New` | `obj<Zanna.Game.ObjectPool>(i64)` | `rt_objpool_new` |
 | `Zanna.Game.ObjectPool.Destroy` | `void(obj)` | `rt_objpool_destroy` |
 | `Zanna.Game.ObjectPool.Acquire` | `i64(obj)` | `rt_objpool_acquire` |
 | `Zanna.Game.ObjectPool.Release` | `i1(obj,i64)` | `rt_objpool_release` |
@@ -2139,7 +2271,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-screenfx-get-isfinished"></a>`Zanna.Game.ScreenFX.get_IsFinished` | `i1(obj)` | `rt_screenfx_is_finished` |
 | <a id="zanna-game-screenfx-get-transitionprogress"></a>`Zanna.Game.ScreenFX.get_TransitionProgress` | `i64(obj)` | `rt_screenfx_get_transition_progress` |
 | `Zanna.Game.ScreenFX.Draw` | `void(obj,obj,i64,i64)` | `rt_screenfx_draw` |
-| `Zanna.Game.UI.HudLabel.New` | `obj(i64,i64,str,i64)` | `rt_uilabel_new` |
+| `Zanna.Game.UI.HudLabel.New` | `obj<Zanna.Game.UI.HudLabel>(i64,i64,str,i64)` | `rt_uilabel_new` |
 | `Zanna.Game.UI.HudLabel.SetText` | `void(obj,str)` | `rt_uilabel_set_text` |
 | `Zanna.Game.UI.HudLabel.SetPosition` | `void(obj,i64,i64)` | `rt_uilabel_set_pos` |
 | <a id="zanna-game-ui-hudlabel-set-color"></a>`Zanna.Game.UI.HudLabel.set_Color` | `void(obj,i64)` | `rt_uilabel_set_color` |
@@ -2149,7 +2281,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.UI.HudLabel.Draw` | `void(obj,obj)` | `rt_uilabel_draw` |
 | <a id="zanna-game-ui-hudlabel-get-x"></a>`Zanna.Game.UI.HudLabel.get_X` | `i64(obj)` | `rt_uilabel_get_x` |
 | <a id="zanna-game-ui-hudlabel-get-y"></a>`Zanna.Game.UI.HudLabel.get_Y` | `i64(obj)` | `rt_uilabel_get_y` |
-| `Zanna.Game.UI.HudBar.New` | `obj(i64,i64,i64,i64,i64,i64)` | `rt_uibar_new` |
+| `Zanna.Game.UI.HudBar.New` | `obj<Zanna.Game.UI.HudBar>(i64,i64,i64,i64,i64,i64)` | `rt_uibar_new` |
 | `Zanna.Game.UI.HudBar.SetValue` | `void(obj,i64,i64)` | `rt_uibar_set_value` |
 | `Zanna.Game.UI.HudBar.SetPosition` | `void(obj,i64,i64)` | `rt_uibar_set_pos` |
 | `Zanna.Game.UI.HudBar.SetSize` | `void(obj,i64,i64)` | `rt_uibar_set_size` |
@@ -2160,7 +2292,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.UI.HudBar.Draw` | `void(obj,obj)` | `rt_uibar_draw` |
 | <a id="zanna-game-ui-hudbar-get-value"></a>`Zanna.Game.UI.HudBar.get_Value` | `i64(obj)` | `rt_uibar_get_value` |
 | <a id="zanna-game-ui-hudbar-get-max"></a>`Zanna.Game.UI.HudBar.get_Max` | `i64(obj)` | `rt_uibar_get_max` |
-| `Zanna.Game.UI.HudPanel.New` | `obj(i64,i64,i64,i64,i64,i64)` | `rt_uipanel_new` |
+| `Zanna.Game.UI.HudPanel.New` | `obj<Zanna.Game.UI.HudPanel>(i64,i64,i64,i64,i64,i64)` | `rt_uipanel_new` |
 | `Zanna.Game.UI.HudPanel.SetPosition` | `void(obj,i64,i64)` | `rt_uipanel_set_pos` |
 | `Zanna.Game.UI.HudPanel.SetSize` | `void(obj,i64,i64)` | `rt_uipanel_set_size` |
 | `Zanna.Game.UI.HudPanel.SetColor` | `void(obj,i64,i64)` | `rt_uipanel_set_color` |
@@ -2168,10 +2300,10 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-ui-hudpanel-set-cornerradius"></a>`Zanna.Game.UI.HudPanel.set_CornerRadius` | `void(obj,i64)` | `rt_uipanel_set_corner_radius` |
 | <a id="zanna-game-ui-hudpanel-set-visible"></a>`Zanna.Game.UI.HudPanel.set_Visible` | `void(obj,i1)` | `rt_uipanel_set_visible` |
 | `Zanna.Game.UI.HudPanel.Draw` | `void(obj,obj)` | `rt_uipanel_draw` |
-| `Zanna.Game.UI.HudNineSlice.New` | `obj(obj,i64,i64,i64,i64)` | `rt_uinineslice_new` |
+| `Zanna.Game.UI.HudNineSlice.New` | `obj<Zanna.Game.UI.HudNineSlice>(obj,i64,i64,i64,i64)` | `rt_uinineslice_new` |
 | `Zanna.Game.UI.HudNineSlice.Draw` | `void(obj,obj,i64,i64,i64,i64)` | `rt_uinineslice_draw` |
 | <a id="zanna-game-ui-hudnineslice-set-tint"></a>`Zanna.Game.UI.HudNineSlice.set_Tint` | `void(obj,i64)` | `rt_uinineslice_set_tint` |
-| `Zanna.Game.UI.HudMenuList.New` | `obj(i64,i64,i64)` | `rt_uimenulist_new` |
+| `Zanna.Game.UI.HudMenuList.New` | `obj<Zanna.Game.UI.HudMenuList>(i64,i64,i64)` | `rt_uimenulist_new` |
 | `Zanna.Game.UI.HudMenuList.AddItem` | `void(obj,str)` | `rt_uimenulist_add_item` |
 | `Zanna.Game.UI.HudMenuList.Clear` | `void(obj)` | `rt_uimenulist_clear` |
 | <a id="zanna-game-ui-hudmenulist-get-selected"></a>`Zanna.Game.UI.HudMenuList.get_Selected` | `i64(obj)` | `rt_uimenulist_get_selected` |
@@ -2183,7 +2315,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-ui-hudmenulist-set-visible"></a>`Zanna.Game.UI.HudMenuList.set_Visible` | `void(obj,i1)` | `rt_uimenulist_set_visible` |
 | <a id="zanna-game-ui-hudmenulist-get-count"></a>`Zanna.Game.UI.HudMenuList.get_Count` | `i64(obj)` | `rt_uimenulist_get_count` |
 | `Zanna.Game.UI.HudMenuList.Draw` | `void(obj,obj)` | `rt_uimenulist_draw` |
-| `Zanna.Game.UI.HudTextInput.New` | `obj(i64,i64,i64,i64)` | `rt_uitextinput_new` |
+| `Zanna.Game.UI.HudTextInput.New` | `obj<Zanna.Game.UI.HudTextInput>(i64,i64,i64,i64)` | `rt_uitextinput_new` |
 | <a id="zanna-game-ui-hudtextinput-set-text"></a>`Zanna.Game.UI.HudTextInput.set_Text` | `void(obj,str)` | `rt_uitextinput_set_text` |
 | <a id="zanna-game-ui-hudtextinput-get-text"></a>`Zanna.Game.UI.HudTextInput.get_Text` | `str(obj)` | `rt_uitextinput_get_text` |
 | `Zanna.Game.UI.HudTextInput.TextLength` | `i64(obj)` | `rt_uitextinput_text_length` |
@@ -2218,7 +2350,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.UI.HudTextInput.SetPasswordMode` | `void(obj,i1)` | `rt_uitextinput_set_password_mode` |
 | `Zanna.Game.UI.HudTextInput.SetPlaceholder` | `void(obj,str)` | `rt_uitextinput_set_placeholder` |
 | `Zanna.Game.UI.HudTextInput.SetMaxCodepoints` | `void(obj,i64)` | `rt_uitextinput_set_max_codepoints` |
-| `Zanna.Game.UI.HudTable.New` | `obj(i64,i64,i64,i64)` | `rt_uitable_new` |
+| `Zanna.Game.UI.HudTable.New` | `obj<Zanna.Game.UI.HudTable>(i64,i64,i64,i64)` | `rt_uitable_new` |
 | `Zanna.Game.UI.HudTable.AddColumn` | `i64(obj,str,i64,i64)` | `rt_uitable_add_column` |
 | `Zanna.Game.UI.HudTable.SetColumnSortable` | `void(obj,i64,i1,i1)` | `rt_uitable_set_column_sortable` |
 | <a id="zanna-game-ui-hudtable-get-columncount"></a>`Zanna.Game.UI.HudTable.get_ColumnCount` | `i64(obj)` | `rt_uitable_column_count` |
@@ -2245,8 +2377,8 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-ui-hudtableclickresult-get-isheader"></a>`Zanna.Game.UI.HudTableClickResult.get_IsHeader` | `i1(obj)` | `rt_table_click_result_is_header` |
 | `Zanna.Game.UI.HudTableClickResult.RowOption` | `obj<Zanna.Option>(obj)` | `rt_table_click_result_row_option` |
 | `Zanna.Game.UI.HudTableClickResult.ColumnOption` | `obj<Zanna.Option>(obj)` | `rt_table_click_result_column_option` |
-| `Zanna.Game.UI.HudModal.New` | `obj(i64,i64)` | `rt_uimodal_new` |
-| `Zanna.Game.UI.HudModal.NewAt` | `obj(i64,i64,i64,i64)` | `rt_uimodal_new_at` |
+| `Zanna.Game.UI.HudModal.New` | `obj<Zanna.Game.UI.HudModal>(i64,i64)` | `rt_uimodal_new` |
+| `Zanna.Game.UI.HudModal.NewAt` | `obj<Zanna.Game.UI.HudModal>(i64,i64,i64,i64)` | `rt_uimodal_new_at` |
 | `Zanna.Game.UI.HudModal.SetTitle` | `void(obj,str)` | `rt_uimodal_set_title` |
 | `Zanna.Game.UI.HudModal.SetContent` | `void(obj,str)` | `rt_uimodal_set_content` |
 | `Zanna.Game.UI.HudModal.AddButton` | `i64(obj,str,i64)` | `rt_uimodal_add_button` |
@@ -2260,7 +2392,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.UI.HudModal.HandleKey` | `i64(obj,i64,i1)` | `rt_uimodal_handle_key` |
 | `Zanna.Game.UI.HudModal.HandleClick` | `i64(obj,i64,i64)` | `rt_uimodal_handle_click` |
 | `Zanna.Game.UI.HudModal.Draw` | `void(obj,obj)` | `rt_uimodal_draw` |
-| `Zanna.Game.UI.HudSlider.New` | `obj(i64,i64,i64,i64,i64,i64)` | `rt_uislider_new` |
+| `Zanna.Game.UI.HudSlider.New` | `obj<Zanna.Game.UI.HudSlider>(i64,i64,i64,i64,i64,i64)` | `rt_uislider_new` |
 | <a id="zanna-game-ui-hudslider-set-value"></a>`Zanna.Game.UI.HudSlider.set_Value` | `void(obj,i64)` | `rt_uislider_set_value` |
 | <a id="zanna-game-ui-hudslider-get-value"></a>`Zanna.Game.UI.HudSlider.get_Value` | `i64(obj)` | `rt_uislider_get_value` |
 | `Zanna.Game.UI.HudSlider.SetStep` | `void(obj,i64)` | `rt_uislider_set_step` |
@@ -2270,7 +2402,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.UI.HudSlider.HandleMouseDrag` | `i1(obj,i64)` | `rt_uislider_handle_mouse_drag` |
 | `Zanna.Game.UI.HudSlider.HandleMouseUp` | `i1(obj)` | `rt_uislider_handle_mouse_up` |
 | `Zanna.Game.UI.HudSlider.Draw` | `void(obj,obj)` | `rt_uislider_draw` |
-| `Zanna.Game.UI.HudDropdown.New` | `obj(i64,i64,i64,i64)` | `rt_uidropdown_new` |
+| `Zanna.Game.UI.HudDropdown.New` | `obj<Zanna.Game.UI.HudDropdown>(i64,i64,i64,i64)` | `rt_uidropdown_new` |
 | `Zanna.Game.UI.HudDropdown.AddOption` | `void(obj,str)` | `rt_uidropdown_add_option` |
 | `Zanna.Game.UI.HudDropdown.ClearOptions` | `void(obj)` | `rt_uidropdown_clear_options` |
 | <a id="zanna-game-ui-huddropdown-get-selected"></a>`Zanna.Game.UI.HudDropdown.get_Selected` | `i64(obj)` | `rt_uidropdown_get_selected` |
@@ -2282,12 +2414,12 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.UI.HudDropdown.HandleClick` | `i1(obj,i64,i64)` | `rt_uidropdown_handle_click` |
 | `Zanna.Game.UI.HudDropdown.HandleKey` | `i1(obj,i64)` | `rt_uidropdown_handle_key` |
 | `Zanna.Game.UI.HudDropdown.Draw` | `void(obj,obj)` | `rt_uidropdown_draw` |
-| `Zanna.Game.UI.HudTooltip.New` | `obj()` | `rt_uitooltip_new` |
+| `Zanna.Game.UI.HudTooltip.New` | `obj<Zanna.Game.UI.HudTooltip>()` | `rt_uitooltip_new` |
 | `Zanna.Game.UI.HudTooltip.SetText` | `void(obj,str)` | `rt_uitooltip_set_text` |
 | `Zanna.Game.UI.HudTooltip.SetHoverDelayMs` | `void(obj,i64)` | `rt_uitooltip_set_hover_delay_ms` |
 | `Zanna.Game.UI.HudTooltip.Update` | `void(obj,i64,i64,i1,i64)` | `rt_uitooltip_update` |
 | `Zanna.Game.UI.HudTooltip.Draw` | `void(obj,obj)` | `rt_uitooltip_draw` |
-| `Zanna.Game.Dialogue.New` | `obj(i64,i64,i64,i64)` | `rt_dialogue_new` |
+| `Zanna.Game.Dialogue.New` | `obj<Zanna.Game.Dialogue>(i64,i64,i64,i64)` | `rt_dialogue_new` |
 | <a id="zanna-game-dialogue-set-speed"></a>`Zanna.Game.Dialogue.set_Speed` | `void(obj,i64)` | `rt_dialogue_set_speed` |
 | <a id="zanna-game-dialogue-set-font"></a>`Zanna.Game.Dialogue.set_Font` | `void(obj,obj)` | `rt_dialogue_set_font` |
 | <a id="zanna-game-dialogue-set-textcolor"></a>`Zanna.Game.Dialogue.set_TextColor` | `void(obj,i64)` | `rt_dialogue_set_text_color` |
@@ -2326,7 +2458,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.Lighting2D.Draw` | `void(obj,obj,i64,i64,i64,i64)` | `rt_lighting2d_draw` |
 | <a id="zanna-game-lighting2d-get-lightcount"></a>`Zanna.Game.Lighting2D.get_LightCount` | `i64(obj)` | `rt_lighting2d_get_light_count` |
 | <a id="zanna-game-lighting2d-get-playerradius"></a>`Zanna.Game.Lighting2D.get_PlayerRadius` | `i64(obj)` | `rt_lighting2d_get_player_radius` |
-| `Zanna.Game.PlatformerController.New` | `obj()` | `rt_platformer_ctrl_new` |
+| `Zanna.Game.PlatformerController.New` | `obj<Zanna.Game.PlatformerController>()` | `rt_platformer_ctrl_new` |
 | `Zanna.Game.PlatformerController.Destroy` | `void(obj)` | `rt_platformer_ctrl_destroy` |
 | `Zanna.Game.PlatformerController.SetJumpBuffer` | `void(obj,i64)` | `rt_platformer_ctrl_set_jump_buffer` |
 | `Zanna.Game.PlatformerController.SetCoyoteTime` | `void(obj,i64)` | `rt_platformer_ctrl_set_coyote_time` |
@@ -2344,7 +2476,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-platformercontroller-get-ismoving"></a>`Zanna.Game.PlatformerController.get_IsMoving` | `i1(obj)` | `rt_platformer_ctrl_is_moving` |
 | <a id="zanna-game-platformercontroller-set-velocityx"></a>`Zanna.Game.PlatformerController.set_VelocityX` | `void(obj,i64)` | `rt_platformer_ctrl_set_vx` |
 | <a id="zanna-game-platformercontroller-set-velocityy"></a>`Zanna.Game.PlatformerController.set_VelocityY` | `void(obj,i64)` | `rt_platformer_ctrl_set_vy` |
-| <a id="zanna-game-entity-new"></a>`Zanna.Game.Entity.New` | `obj(i64,i64,i64,i64)` | `rt_entity_new` |
+| `Zanna.Game.Entity.New` | `obj<Zanna.Game.Entity>(i64,i64,i64,i64)` | `rt_entity_new` |
 | <a id="zanna-game-entity-get-x"></a>`Zanna.Game.Entity.get_X` | `i64(obj)` | `rt_entity_get_x` |
 | <a id="zanna-game-entity-get-y"></a>`Zanna.Game.Entity.get_Y` | `i64(obj)` | `rt_entity_get_y` |
 | <a id="zanna-game-entity-set-x"></a>`Zanna.Game.Entity.set_X` | `void(obj,i64)` | `rt_entity_set_x` |
@@ -2369,25 +2501,25 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-entity-get-hitleft"></a>`Zanna.Game.Entity.get_HitLeft` | `i1(obj)` | `rt_entity_hit_left` |
 | <a id="zanna-game-entity-get-hitright"></a>`Zanna.Game.Entity.get_HitRight` | `i1(obj)` | `rt_entity_hit_right` |
 | <a id="zanna-game-entity-get-hitceiling"></a>`Zanna.Game.Entity.get_HitCeiling` | `i1(obj)` | `rt_entity_hit_ceiling` |
-| <a id="zanna-game-entity-applygravity"></a>`Zanna.Game.Entity.ApplyGravity` | `void(obj,i64,i64,i64)` | `rt_entity_apply_gravity` |
-| <a id="zanna-game-entity-moveandcollide"></a>`Zanna.Game.Entity.MoveAndCollide` | `void(obj,obj,i64)` | `rt_entity_move_and_collide` |
-| <a id="zanna-game-entity-updatephysics"></a>`Zanna.Game.Entity.UpdatePhysics` | `void(obj,obj,i64,i64,i64)` | `rt_entity_update_physics` |
-| <a id="zanna-game-entity-atedge"></a>`Zanna.Game.Entity.AtEdge` | `i1(obj,obj)` | `rt_entity_at_edge` |
-| <a id="zanna-game-entity-patrolreverse"></a>`Zanna.Game.Entity.PatrolReverse` | `void(obj,i64)` | `rt_entity_patrol_reverse` |
-| <a id="zanna-game-entity-overlaps"></a>`Zanna.Game.Entity.Overlaps` | `i1(obj,obj)` | `rt_entity_overlaps` |
-| <a id="zanna-game-behavior-new"></a>`Zanna.Game.Behavior.New` | `obj()` | `rt_behavior_new` |
-| <a id="zanna-game-behavior-addpatrol"></a>`Zanna.Game.Behavior.AddPatrol` | `void(obj,i64)` | `rt_behavior_add_patrol` |
-| <a id="zanna-game-behavior-addchase"></a>`Zanna.Game.Behavior.AddChase` | `void(obj,i64,i64)` | `rt_behavior_add_chase` |
-| <a id="zanna-game-behavior-addgravity"></a>`Zanna.Game.Behavior.AddGravity` | `void(obj,i64,i64)` | `rt_behavior_add_gravity` |
-| <a id="zanna-game-behavior-addedgereverse"></a>`Zanna.Game.Behavior.AddEdgeReverse` | `void(obj)` | `rt_behavior_add_edge_reverse` |
-| <a id="zanna-game-behavior-addwallreverse"></a>`Zanna.Game.Behavior.AddWallReverse` | `void(obj)` | `rt_behavior_add_wall_reverse` |
-| <a id="zanna-game-behavior-addshoot"></a>`Zanna.Game.Behavior.AddShoot` | `void(obj,i64)` | `rt_behavior_add_shoot` |
-| <a id="zanna-game-behavior-addsinefloat"></a>`Zanna.Game.Behavior.AddSineFloat` | `void(obj,i64,i64)` | `rt_behavior_add_sine_float` |
-| <a id="zanna-game-behavior-addanimloop"></a>`Zanna.Game.Behavior.AddAnimLoop` | `void(obj,i64,i64)` | `rt_behavior_add_anim_loop` |
-| <a id="zanna-game-behavior-update"></a>`Zanna.Game.Behavior.Update` | `void(obj,obj,obj,i64,i64,i64)` | `rt_behavior_update` |
+| `Zanna.Game.Entity.ApplyGravity` | `void(obj,i64,i64,i64)` | `rt_entity_apply_gravity` |
+| `Zanna.Game.Entity.MoveAndCollide` | `void(obj,obj,i64)` | `rt_entity_move_and_collide` |
+| `Zanna.Game.Entity.UpdatePhysics` | `void(obj,obj,i64,i64,i64)` | `rt_entity_update_physics` |
+| `Zanna.Game.Entity.AtEdge` | `i1(obj,obj)` | `rt_entity_at_edge` |
+| `Zanna.Game.Entity.PatrolReverse` | `void(obj,i64)` | `rt_entity_patrol_reverse` |
+| `Zanna.Game.Entity.Overlaps` | `i1(obj,obj)` | `rt_entity_overlaps` |
+| `Zanna.Game.Behavior.New` | `obj<Zanna.Game.Behavior>()` | `rt_behavior_new` |
+| `Zanna.Game.Behavior.AddPatrol` | `void(obj,i64)` | `rt_behavior_add_patrol` |
+| `Zanna.Game.Behavior.AddChase` | `void(obj,i64,i64)` | `rt_behavior_add_chase` |
+| `Zanna.Game.Behavior.AddGravity` | `void(obj,i64,i64)` | `rt_behavior_add_gravity` |
+| `Zanna.Game.Behavior.AddEdgeReverse` | `void(obj)` | `rt_behavior_add_edge_reverse` |
+| `Zanna.Game.Behavior.AddWallReverse` | `void(obj)` | `rt_behavior_add_wall_reverse` |
+| `Zanna.Game.Behavior.AddShoot` | `void(obj,i64)` | `rt_behavior_add_shoot` |
+| `Zanna.Game.Behavior.AddSineFloat` | `void(obj,i64,i64)` | `rt_behavior_add_sine_float` |
+| `Zanna.Game.Behavior.AddAnimLoop` | `void(obj,i64,i64)` | `rt_behavior_add_anim_loop` |
+| `Zanna.Game.Behavior.Update` | `void(obj,obj,obj,i64,i64,i64)` | `rt_behavior_update` |
 | <a id="zanna-game-behavior-get-shootready"></a>`Zanna.Game.Behavior.get_ShootReady` | `i1(obj)` | `rt_behavior_shoot_ready` |
 | <a id="zanna-game-behavior-get-animframe"></a>`Zanna.Game.Behavior.get_AnimFrame` | `i64(obj)` | `rt_behavior_anim_frame` |
-| `Zanna.Game.UI.HudButton.New` | `obj(i64,i64,i64,i64,str)` | `rt_gamebutton_new` |
+| `Zanna.Game.UI.HudButton.New` | `obj<Zanna.Game.UI.HudButton>(i64,i64,i64,i64,str)` | `rt_gamebutton_new` |
 | `Zanna.Game.UI.HudButton.SetText` | `void(obj,str)` | `rt_gamebutton_set_text` |
 | `Zanna.Game.UI.HudButton.SetColors` | `void(obj,i64,i64)` | `rt_gamebutton_set_colors` |
 | `Zanna.Game.UI.HudButton.SetTextColors` | `void(obj,i64,i64)` | `rt_gamebutton_set_text_colors` |
@@ -2408,25 +2540,25 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-raycast-haslineofsight"></a>`Zanna.Game.Raycast.HasLineOfSight` | `i1(obj,i64,i64,i64,i64)` | `rt_has_line_of_sight` |
 | `Zanna.Game.Collision.LineRect` | `i1(f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_collision_line_rect` |
 | `Zanna.Game.Collision.LineCircle` | `i1(f64,f64,f64,f64,f64,f64,f64)` | `rt_collision_line_circle` |
-| <a id="zanna-game-scenemanager-new"></a>`Zanna.Game.SceneManager.New` | `obj()` | `rt_scenemanager_new` |
-| <a id="zanna-game-scenemanager-add"></a>`Zanna.Game.SceneManager.Add` | `void(obj,str)` | `rt_scenemanager_add` |
-| <a id="zanna-game-scenemanager-switch"></a>`Zanna.Game.SceneManager.Switch` | `void(obj,str)` | `rt_scenemanager_switch` |
-| <a id="zanna-game-scenemanager-switchtransition"></a>`Zanna.Game.SceneManager.SwitchTransition` | `void(obj,str,i64)` | `rt_scenemanager_switch_transition` |
-| <a id="zanna-game-scenemanager-update"></a>`Zanna.Game.SceneManager.Update` | `void(obj,i64)` | `rt_scenemanager_update` |
+| `Zanna.Game.SceneManager.New` | `obj<Zanna.Game.SceneManager>()` | `rt_scenemanager_new` |
+| `Zanna.Game.SceneManager.Add` | `void(obj,str)` | `rt_scenemanager_add` |
+| `Zanna.Game.SceneManager.Switch` | `void(obj,str)` | `rt_scenemanager_switch` |
+| `Zanna.Game.SceneManager.SwitchTransition` | `void(obj,str,i64)` | `rt_scenemanager_switch_transition` |
+| `Zanna.Game.SceneManager.Update` | `void(obj,i64)` | `rt_scenemanager_update` |
 | <a id="zanna-game-scenemanager-get-current"></a>`Zanna.Game.SceneManager.get_Current` | `str(obj)` | `rt_scenemanager_current` |
 | <a id="zanna-game-scenemanager-get-previous"></a>`Zanna.Game.SceneManager.get_Previous` | `str(obj)` | `rt_scenemanager_previous` |
-| <a id="zanna-game-scenemanager-isscene"></a>`Zanna.Game.SceneManager.IsScene` | `i1(obj,str)` | `rt_scenemanager_is_scene` |
+| `Zanna.Game.SceneManager.IsScene` | `i1(obj,str)` | `rt_scenemanager_is_scene` |
 | <a id="zanna-game-scenemanager-get-justentered"></a>`Zanna.Game.SceneManager.get_JustEntered` | `i1(obj)` | `rt_scenemanager_just_entered` |
 | <a id="zanna-game-scenemanager-get-justexited"></a>`Zanna.Game.SceneManager.get_JustExited` | `i1(obj)` | `rt_scenemanager_just_exited` |
 | <a id="zanna-game-scenemanager-get-transitioning"></a>`Zanna.Game.SceneManager.get_Transitioning` | `i1(obj)` | `rt_scenemanager_is_transitioning` |
 | <a id="zanna-game-scenemanager-get-transprogress"></a>`Zanna.Game.SceneManager.get_TransProgress` | `f64(obj)` | `rt_scenemanager_transition_progress` |
-| <a id="zanna-game-config-load"></a>`Zanna.Game.Config.Load` | `obj(str)` | `rt_config_load` |
-| <a id="zanna-game-config-fromstring"></a>`Zanna.Game.Config.FromString` | `obj(str)` | `rt_config_from_string` |
-| <a id="zanna-game-config-getint"></a>`Zanna.Game.Config.GetInt` | `i64(obj,str,i64)` | `rt_config_get_int` |
-| <a id="zanna-game-config-getstr"></a>`Zanna.Game.Config.GetStr` | `str(obj,str,str)` | `rt_config_get_str` |
-| <a id="zanna-game-config-getbool"></a>`Zanna.Game.Config.GetBool` | `i1(obj,str,i1)` | `rt_config_get_bool` |
-| <a id="zanna-game-config-has"></a>`Zanna.Game.Config.Has` | `i1(obj,str)` | `rt_config_has` |
-| `Zanna.Game.AchievementTracker.New` | `obj(i64)` | `rt_achievement_new` |
+| `Zanna.Game.Config.Load` | `obj<Zanna.Game.Config>(str)` | `rt_config_load` |
+| `Zanna.Game.Config.FromString` | `obj<Zanna.Game.Config>(str)` | `rt_config_from_string` |
+| `Zanna.Game.Config.GetInt` | `i64(obj,str,i64)` | `rt_config_get_int` |
+| `Zanna.Game.Config.GetStr` | `str(obj,str,str)` | `rt_config_get_str` |
+| `Zanna.Game.Config.GetBool` | `i1(obj,str,i1)` | `rt_config_get_bool` |
+| `Zanna.Game.Config.Has` | `i1(obj,str)` | `rt_config_has` |
+| `Zanna.Game.AchievementTracker.New` | `obj<Zanna.Game.AchievementTracker>(i64)` | `rt_achievement_new` |
 | `Zanna.Game.AchievementTracker.Destroy` | `void(obj)` | `rt_achievement_destroy` |
 | `Zanna.Game.AchievementTracker.Add` | `void(obj,i64,str,str)` | `rt_achievement_add` |
 | `Zanna.Game.AchievementTracker.Unlock` | `i1(obj,i64)` | `rt_achievement_unlock` |
@@ -2442,7 +2574,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.AchievementTracker.Draw` | `void(obj,obj)` | `rt_achievement_draw` |
 | <a id="zanna-game-achievementtracker-set-notifyduration"></a>`Zanna.Game.AchievementTracker.set_NotifyDuration` | `void(obj,i64)` | `rt_achievement_set_notify_duration` |
 | <a id="zanna-game-achievementtracker-get-hasnotification"></a>`Zanna.Game.AchievementTracker.get_HasNotification` | `i1(obj)` | `rt_achievement_has_notification` |
-| `Zanna.Game.Typewriter.New` | `obj()` | `rt_typewriter_new` |
+| `Zanna.Game.Typewriter.New` | `obj<Zanna.Game.Typewriter>()` | `rt_typewriter_new` |
 | `Zanna.Game.Typewriter.Destroy` | `void(obj)` | `rt_typewriter_destroy` |
 | `Zanna.Game.Typewriter.Say` | `void(obj,str,i64)` | `rt_typewriter_say` |
 | `Zanna.Game.Typewriter.Update` | `i1(obj,i64)` | `rt_typewriter_update` |
@@ -2455,7 +2587,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-typewriter-get-progress"></a>`Zanna.Game.Typewriter.get_Progress` | `i64(obj)` | `rt_typewriter_progress` |
 | <a id="zanna-game-typewriter-get-charcount"></a>`Zanna.Game.Typewriter.get_CharCount` | `i64(obj)` | `rt_typewriter_char_count` |
 | <a id="zanna-game-typewriter-get-totalchars"></a>`Zanna.Game.Typewriter.get_TotalChars` | `i64(obj)` | `rt_typewriter_total_chars` |
-| `Zanna.Game.Pathfinder.New` | `obj(i64,i64)` | `rt_pathfinder_new` |
+| `Zanna.Game.Pathfinder.New` | `obj<Zanna.Game.Pathfinder>(i64,i64)` | `rt_pathfinder_new` |
 | `Zanna.Game.Pathfinder.FromTilemap` | `obj<Zanna.Game.Pathfinder>(obj)` | `rt_pathfinder_from_tilemap` |
 | `Zanna.Game.Pathfinder.FromGrid2D` | `obj<Zanna.Game.Pathfinder>(obj)` | `rt_pathfinder_from_grid2d` |
 | `Zanna.Game.Pathfinder.Destroy` | `void(obj)` | `rt_pathfinder_destroy` |
@@ -2474,7 +2606,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-pathresult-get-cost"></a>`Zanna.Game.PathResult.get_Cost` | `i64(obj)` | `rt_path_result_cost` |
 | <a id="zanna-game-pathresult-get-stepcount"></a>`Zanna.Game.PathResult.get_StepCount` | `i64(obj)` | `rt_path_result_step_count` |
 | <a id="zanna-game-pathresult-get-path"></a>`Zanna.Game.PathResult.get_Path` | `obj<Zanna.Collections.List>(obj)` | `rt_path_result_path` |
-| `Zanna.Game.PathFollower.New` | `obj()` | `rt_pathfollow_new` |
+| `Zanna.Game.PathFollower.New` | `obj<Zanna.Game.PathFollower>()` | `rt_pathfollow_new` |
 | `Zanna.Game.PathFollower.Destroy` | `void(obj)` | `rt_pathfollow_destroy` |
 | `Zanna.Game.PathFollower.Clear` | `void(obj)` | `rt_pathfollow_clear` |
 | `Zanna.Game.PathFollower.AddPoint` | `i1(obj,i64,i64)` | `rt_pathfollow_add_point` |
@@ -2495,7 +2627,7 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-pathfollower-set-progress"></a>`Zanna.Game.PathFollower.set_Progress` | `void(obj,i64)` | `rt_pathfollow_set_progress` |
 | <a id="zanna-game-pathfollower-get-segment"></a>`Zanna.Game.PathFollower.get_Segment` | `i64(obj)` | `rt_pathfollow_get_segment` |
 | <a id="zanna-game-pathfollower-get-angle"></a>`Zanna.Game.PathFollower.get_Angle` | `i64(obj)` | `rt_pathfollow_get_angle` |
-| `Zanna.Game.Quadtree.New` | `obj(i64,i64,i64,i64)` | `rt_quadtree_new` |
+| `Zanna.Game.Quadtree.New` | `obj<Zanna.Game.Quadtree>(i64,i64,i64,i64)` | `rt_quadtree_new` |
 | `Zanna.Game.Quadtree.Destroy` | `void(obj)` | `rt_quadtree_destroy` |
 | `Zanna.Game.Quadtree.Clear` | `void(obj)` | `rt_quadtree_clear` |
 | `Zanna.Game.Quadtree.Insert` | `i1(obj,i64,i64,i64,i64,i64)` | `rt_quadtree_insert` |
@@ -2507,14 +2639,14 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.QueryResult.GetId` | `i64(obj,i64)` | `rt_game_query_result_get_id` |
 | `Zanna.Game.QueryResult.Contains` | `i1(obj,i64)` | `rt_game_query_result_contains` |
 | <a id="zanna-game-queryresult-get-truncated"></a>`Zanna.Game.QueryResult.get_Truncated` | `i1(obj)` | `rt_game_query_result_truncated` |
-| `Zanna.Game.QueryResult.Ids` | `obj(obj)` | `rt_game_query_result_ids` |
+| `Zanna.Game.QueryResult.Ids` | `seq<i64>(obj)` | `rt_game_query_result_ids` |
 | <a id="zanna-game-quadtree-get-itemcount"></a>`Zanna.Game.Quadtree.get_ItemCount` | `i64(obj)` | `rt_quadtree_item_count` |
 | `Zanna.Game.Quadtree.QueryPairs` | `obj<Zanna.Game.QuadtreePairResult>(obj)` | `rt_quadtree_query_pairs` |
 | <a id="zanna-game-quadtreepairresult-get-count"></a>`Zanna.Game.QuadtreePairResult.get_Count` | `i64(obj)` | `rt_quadtree_pair_result_count` |
 | `Zanna.Game.QuadtreePairResult.First` | `i64(obj,i64)` | `rt_quadtree_pair_result_first` |
 | `Zanna.Game.QuadtreePairResult.Second` | `i64(obj,i64)` | `rt_quadtree_pair_result_second` |
 | <a id="zanna-game-quadtreepairresult-get-truncated"></a>`Zanna.Game.QuadtreePairResult.get_Truncated` | `i1(obj)` | `rt_quadtree_pair_result_truncated` |
-| `Zanna.Game.DebugOverlay.New` | `obj()` | `rt_debugoverlay_new` |
+| `Zanna.Game.DebugOverlay.New` | `obj<Zanna.Game.DebugOverlay>()` | `rt_debugoverlay_new` |
 | `Zanna.Game.DebugOverlay.Destroy` | `void(obj)` | `rt_debugoverlay_destroy` |
 | `Zanna.Game.DebugOverlay.Enable` | `void(obj)` | `rt_debugoverlay_enable` |
 | `Zanna.Game.DebugOverlay.Disable` | `void(obj)` | `rt_debugoverlay_disable` |
@@ -2526,11 +2658,11 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.DebugOverlay.Clear` | `void(obj)` | `rt_debugoverlay_clear` |
 | <a id="zanna-game-debugoverlay-get-fps"></a>`Zanna.Game.DebugOverlay.get_Fps` | `i64(obj)` | `rt_debugoverlay_get_fps` |
 | `Zanna.Game.DebugOverlay.Draw` | `void(obj,obj)` | `rt_debugoverlay_draw` |
-| `Zanna.Game.Quests.New` | `obj()` | `rt_quests_new` |
-| `Zanna.Game.Quests.AddQuest` | `obj(obj,str,str)` | `rt_quests_add_quest` |
-| `Zanna.Game.Quests.AddStage` | `obj(obj,str,str,str)` | `rt_quests_add_stage` |
-| `Zanna.Game.Quests.AddFlag` | `obj(obj,str,str,str,str)` | `rt_quests_add_flag` |
-| `Zanna.Game.Quests.AddCounter` | `obj(obj,str,str,str,str,i64)` | `rt_quests_add_counter` |
+| `Zanna.Game.Quests.New` | `obj<Zanna.Game.Quests>()` | `rt_quests_new` |
+| `Zanna.Game.Quests.AddQuest` | `obj<Zanna.Game.Quests>(obj,str,str)` | `rt_quests_add_quest` |
+| `Zanna.Game.Quests.AddStage` | `obj<Zanna.Game.Quests>(obj,str,str,str)` | `rt_quests_add_stage` |
+| `Zanna.Game.Quests.AddFlag` | `obj<Zanna.Game.Quests>(obj,str,str,str,str)` | `rt_quests_add_flag` |
+| `Zanna.Game.Quests.AddCounter` | `obj<Zanna.Game.Quests>(obj,str,str,str,str,i64)` | `rt_quests_add_counter` |
 | `Zanna.Game.Quests.Activate` | `i1(obj,str)` | `rt_quests_activate` |
 | `Zanna.Game.Quests.Fail` | `i1(obj,str)` | `rt_quests_fail` |
 | `Zanna.Game.Quests.SetFlag` | `i1(obj,str,str)` | `rt_quests_set_flag` |

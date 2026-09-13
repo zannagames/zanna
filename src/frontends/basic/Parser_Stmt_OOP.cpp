@@ -285,12 +285,7 @@ void Parser::parseClassFieldSection(ClassDecl &declRef, std::optional<Access> &c
                 // BUG-OOP-039 fix: Parse qualified type names (e.g., Zanna.Text.StringBuilder)
                 typeName = peek().lexeme;
                 // Check if it's a primitive type first
-                std::string upper = typeName;
-                for (auto &ch : upper)
-                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-                if (upper == "INTEGER" || upper == "INT" || upper == "LONG" || upper == "DOUBLE" ||
-                    upper == "FLOAT" || upper == "SINGLE" || upper == "STRING" ||
-                    upper == "BOOLEAN") {
+                if (primitiveTypeFromName(typeName)) {
                     // It's a primitive - use parseTypeKeyword
                     fieldType = parseTypeKeyword();
                     typeName.clear(); // Not an object type
@@ -686,17 +681,7 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
                 } else if (at(TokenKind::Identifier)) {
                     // Check if it's a primitive type name before consuming
                     std::string identName = peek().lexeme;
-                    std::string upperName;
-                    upperName.reserve(identName.size());
-                    for (char ch : identName) {
-                        upperName.push_back(
-                            static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
-                    }
-
-                    bool isPrimitive =
-                        (upperName == "INTEGER" || upperName == "INT" || upperName == "LONG" ||
-                         upperName == "DOUBLE" || upperName == "FLOAT" || upperName == "SINGLE" ||
-                         upperName == "STRING");
+                    bool isPrimitive = primitiveTypeFromName(identName).has_value();
 
                     if (isPrimitive) {
                         method->ret = parseTypeKeyword();
@@ -804,7 +789,8 @@ StmtPtr Parser::parseTypeDecl() {
         // (Future ADR may define semantics for TYPE.)
         if (at(TokenKind::KeywordPublic) || at(TokenKind::KeywordPrivate)) {
             Token accessTok = consume();
-            emitError("B3012", accessTok.loc, "access modifiers are not valid in TYPE declarations");
+            emitError(
+                "B3012", accessTok.loc, "access modifiers are not valid in TYPE declarations");
             while (!at(TokenKind::EndOfLine) && !at(TokenKind::EndOfFile))
                 consume();
             if (at(TokenKind::EndOfLine))

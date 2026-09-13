@@ -24,6 +24,7 @@
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/SemanticAnalyzer.hpp"
 #include "frontends/basic/lower/AstVisitor.hpp"
+#include "frontends/basic/lower/Emitter.hpp"
 
 #include "zanna/il/Module.hpp"
 
@@ -618,10 +619,13 @@ void Lowerer::lowerCallStmt(const CallStmt &stmt) {
             }
             curLoc = ce->loc;
             const std::string &target = calleeResolved.empty() ? calleeKey : calleeResolved;
-            if (rtSig->retType.kind == il::core::Type::Kind::Void)
+            if (rtSig->retType.kind == il::core::Type::Kind::Void) {
                 emitCall(target, args);
-            else
-                (void)emitCallRet(rtSig->retType, target, args);
+            } else {
+                // The result is discarded; an owned one is still released (ADR 0314).
+                Value result = emitCallRet(rtSig->retType, target, args);
+                deferReleaseRuntimeResult(result, rtSig->retType, target);
+            }
             return;
         }
     }
@@ -630,11 +634,43 @@ void Lowerer::lowerCallStmt(const CallStmt &stmt) {
     lowerExpr(*stmt.call);
 }
 
+/// @brief Return a value from the middle of a FUNCTION or method body.
+/// @details RETURN leaves through the same cleanup as the procedure's exit block.
+///          A STRING or object result is handed to the caller owned: an owned
+///          temporary queued for release (a call or concatenation result) is
+///          unqueued, a NEW result keeps its creation reference, and any other
+///          value is retained. Then this statement's remaining temporaries and
+///          the procedure's object and array locals are released. Returning a
+///          local, a field, a parameter or a temporary therefore always yields
+///          exactly one reference.
+/// @param value Result already converted to the function's return type.
+/// @param retKind IL kind of the enclosing function's return type.
+/// @param ownsReference Whether @p value already holds a reference for the caller.
+void Lowerer::emitValueReturn(Value value, Type::Kind retKind, bool ownsReference) {
+    const bool counted = retKind == Type::Kind::Str || retKind == Type::Kind::Ptr;
+    if (counted && emitter().takeDeferredTemp(value))
+        ownsReference = true;
+    if (!ownsReference && retKind == Type::Kind::Str) {
+        requireStrRetainMaybe();
+        emitCall("rt_str_retain_maybe", {value});
+    } else if (!ownsReference && retKind == Type::Kind::Ptr) {
+        requestHelper(RuntimeFeature::ObjRetainMaybe);
+        emitCall("rt_obj_retain_maybe", {value});
+    }
+    releaseDeferredTemps();
+    const std::unordered_set<std::string> params(currentProcParamNames_.begin(),
+                                                 currentProcParamNames_.end());
+    releaseObjectLocals(params);
+    releaseArrayLocals(params);
+    emitRet(value);
+}
+
 /// @brief Lower a RETURN statement.
 /// @details Distinguishes between GOSUB returns—which route through
-///          @ref lowerGosubReturn—and normal procedure returns. When the
-///          statement includes a value it is lowered and emitted via @ref emitRet;
-///          otherwise a void return is generated.
+///          @ref lowerGosubReturn—and normal procedure returns. A value is
+///          converted to the FUNCTION's result type and returned through
+///          @ref emitValueReturn; a bare RETURN in a FUNCTION jumps to the exit
+///          block, and elsewhere a void return is generated.
 /// @param stmt RETURN statement node.
 void Lowerer::lowerReturn(const ReturnStmt &stmt) {
     if (stmt.isGosubReturn) {
@@ -643,34 +679,46 @@ void Lowerer::lowerReturn(const ReturnStmt &stmt) {
     }
 
     if (stmt.value) {
+        il::core::Function *fn = context().function();
+        const Type::Kind retKind = fn ? fn->retType.kind : Type::Kind::Void;
+        std::optional<RVal> v;
         // If the enclosing FUNCTION returns an object (ptr), be strict about
         // returning a pointer-typed value. This avoids accidental scalar
         // coercions and ensures RETURN of an object variable emits a ptr load.
-        il::core::Function *fn = context().function();
-        if (fn && fn->retType.kind == Type::Kind::Ptr) {
+        if (retKind == Type::Kind::Ptr) {
             if (auto *var = as<const VarExpr>(*stmt.value)) {
                 // Variable names are resolved by semantic analysis, so we can
                 // directly look up the properly-typed symbol.
                 if (auto storage = resolveVariableStorage(var->name, var->loc)) {
                     if (storage->slotInfo.isObject ||
                         storage->slotInfo.type.kind == Type::Kind::Ptr) {
-                        Value val = emitLoad(Type(Type::Kind::Ptr), storage->pointer);
-                        emitRet(val);
-                        return;
+                        v = RVal{emitLoad(Type(Type::Kind::Ptr), storage->pointer),
+                                 Type(Type::Kind::Ptr)};
                     }
                 }
             }
         }
 
-        RVal v = lowerExpr(*stmt.value);
-        // BUG-057: If the enclosing FUNCTION returns BOOLEAN (i1), ensure the
-        // returned value is coerced to i1 to satisfy the IL verifier.
-        if (il::core::Function *fn2 = context().function()) {
-            if (fn2->retType.kind == il::core::Type::Kind::I1) {
-                v = coerceToBool(std::move(v), stmt.loc);
+        if (!v) {
+            v = lowerExpr(*stmt.value);
+            // Numeric and boolean values convert to the FUNCTION's result type, exactly as an
+            // assignment to the function name does; semantic analysis rejects string/number
+            // mismatches (B4010).
+            switch (retKind) {
+                case il::core::Type::Kind::I1:
+                    v = coerceToBool(std::move(*v), stmt.loc);
+                    break;
+                case il::core::Type::Kind::I64:
+                    v = coerceToI64(std::move(*v), stmt.loc);
+                    break;
+                case il::core::Type::Kind::F64:
+                    v = coerceToF64(std::move(*v), stmt.loc);
+                    break;
+                default:
+                    break;
             }
         }
-        emitRet(v.value);
+        emitValueReturn(v->value, retKind, /*ownsReference=*/is<NewExpr>(*stmt.value));
     } else {
         // BUG-107: In FUNCTIONs, a bare RETURN should jump to the unified
         // epilogue so we return the implicit result (assignment to the

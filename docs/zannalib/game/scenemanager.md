@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-09-13
 ---
 
 # Zanna.Game.SceneManager
@@ -43,6 +43,6 @@ func start() {
     scenes.SwitchTransition("playing", 500);
     scenes.Update(500);
     Zanna.Terminal.SayBool(scenes.IsScene("playing"));
-    Zanna.Terminal.SayBool(scenes.get_JustEntered());
+    Zanna.Terminal.SayBool(scenes.JustEntered);
 }
 ```

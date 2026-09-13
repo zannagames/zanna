@@ -145,11 +145,11 @@ func start() {
     // --- Angle ---
     Say("--- Angle ---");
     Say("Angle(1,0):");
-    SayNum(Vec2.Angle(vx));
+    SayNum(Vec2.Heading(vx));
     Say("Angle(0,1):");
-    SayNum(Vec2.Angle(vy));
+    SayNum(Vec2.Heading(vy));
     Say("Angle(3,4):");
-    SayNum(Vec2.Angle(v1));
+    SayNum(Vec2.Heading(v1));
 
     // --- Rotate ---
     Say("--- Rotate ---");

@@ -94,7 +94,7 @@ func start() {
     SayInt(Compare("apple", "banana"));
     SayInt(Compare("banana", "apple"));
     SayInt(Compare("apple", "apple"));
-    SayInt(CmpNoCase("Hello", "hello"));
+    SayInt(CompareIgnoreCase("Hello", "hello"));
     SayBool(Equals("abc", "abc"));
     SayBool(Equals("abc", "xyz"));
 
@@ -137,7 +137,7 @@ func start() {
     Say(PascalCase("hello world"));
     Say(SnakeCase("helloWorld"));
     Say(KebabCase("helloWorld"));
-    Say(ScreamingSnake("helloWorld"));
+    Say(ScreamingSnakeCase("helloWorld"));
 
     // --- Levenshtein ---
     Say("--- Levenshtein ---");

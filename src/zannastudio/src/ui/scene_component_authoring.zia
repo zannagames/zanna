@@ -797,7 +797,7 @@ func OptionListed(options: List[String], value: String) -> Boolean {
 
 /// @brief Build one JSON string array from a drafted option list.
 func OptionsJsonArray(options: List[String]) -> Any {
-    var out = Json.Parse("[]");
+    var out = Json.Parse("[]") as Seq;
     var index = 0;
     while index < options.count() {
         Seq.Push(out, options.get(index));

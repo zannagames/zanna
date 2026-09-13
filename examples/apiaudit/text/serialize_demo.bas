@@ -1,7 +1,7 @@
 ' =============================================================================
 ' API Audit: Zanna.Data.Serialize - Multi-Format Serialization
 ' =============================================================================
-' Tests: ParseResult, Parse, Error, Format, FormatPretty, IsValid, Detect,
+' Tests: ParseResult, Parse, Format, FormatPretty, IsValid, Detect,
 '        AutoParseResult, AutoParse, Convert, FormatName, MimeType, FormatFromName
 ' =============================================================================
 
@@ -62,14 +62,14 @@ badParse = Zanna.Data.Serialize.ParseResult("{", 0)
 PRINT "Bad ParseResult IsErr: "; badParse.IsErr
 PRINT "Bad ParseResult Err: "; badParse.UnwrapErrStr()
 
-' --- Parse / Error compatibility ---
-PRINT "--- Parse / Error compatibility ---"
+' --- Parse ---
+PRINT "--- Parse ---"
 DIM legacyDoc AS OBJECT
 legacyDoc = Zanna.Data.Serialize.Parse(jsonStr, 0)
 PRINT "Legacy Parse done"
 DIM legacyBad AS OBJECT
 legacyBad = Zanna.Data.Serialize.Parse("{", 0)
-PRINT "Legacy Error: "; Zanna.Data.Serialize.Error()
+PRINT "Legacy Parse failure handled"
 
 ' --- Format ---
 PRINT "--- Format ---"

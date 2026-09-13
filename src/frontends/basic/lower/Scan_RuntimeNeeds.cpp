@@ -697,19 +697,22 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
     }
 
     /// @brief Map numeric categories to string conversion helper requirements.
-    ///
+    /// @details Integer ranks share the 64-bit integer formatter; lowering requests the
+    ///          helper it finally emits from the lowered value's type as well.
     /// @param type Numeric classification determined by TypeRules.
     /// @return Runtime helper that implements the corresponding conversion.
     static Lowerer::RuntimeFeature strFeatureForNumeric(TypeRules::NumericType type) {
         using Feature = Lowerer::RuntimeFeature;
-        static constexpr std::array<Feature, 4> kMap{
-            Feature::StrFromI16,
-            Feature::StrFromI32,
-            Feature::StrFromSingle,
-            Feature::StrFromDouble,
-        };
-        auto idx = static_cast<std::size_t>(type);
-        return idx < kMap.size() ? kMap[idx] : Feature::StrFromDouble;
+        switch (type) {
+            case TypeRules::NumericType::Integer:
+            case TypeRules::NumericType::Long:
+                return Feature::IntToStr;
+            case TypeRules::NumericType::Single:
+                return Feature::StrFromSingle;
+            case TypeRules::NumericType::Double:
+            default:
+                return Feature::StrFromDouble;
+        }
     }
 
     /// @brief Convert semantic analyzer type to AST type.

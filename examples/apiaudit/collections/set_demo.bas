@@ -40,7 +40,7 @@ PRINT s.Remove(b)  ' 0 (already removed)
 ' --- Items ---
 PRINT "--- Items ---"
 DIM items AS Zanna.Collections.Seq
-items = s.Items()
+items = s.ToSeq()
 PRINT items.Count    ' 2
 
 ' --- Merge (union) ---
@@ -69,7 +69,7 @@ PRINT common.Count   ' 2
 
 ' --- Diff ---
 PRINT "--- Diff ---"
-DIM diff AS OBJECT = s1.Diff(s2)
+DIM diff AS OBJECT = s1.Difference(s2)
 PRINT diff.Count     ' 1
 
 ' --- IsSubset ---

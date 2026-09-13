@@ -7,7 +7,8 @@
 //
 // File: src/tools/common/packaging/WindowsPackageBuilder.hpp
 // Purpose: Assemble a Windows self-extracting installer .exe from a compiled
-//          native binary and package assets.
+//          native binary and package assets, and expose the app-local DLL and
+//          nested signing policy that store depots share.
 //
 // Key invariants:
 //   - Output is a valid PE32+ executable with a stored ZIP bootstrap overlay.
@@ -72,6 +73,9 @@ struct WindowsBuildParams {
     std::string installerHostPath;    ///< Statically linked native installer host template.
     std::string installerCleanupPath; ///< Statically linked detached cleanup helper template.
     WindowsPeSigner peSigner;         ///< Optional nested PE signer applied before payload hashing.
+    /// Generated `.zpak` pack groups (trusted paths) installed beside the executable, where the
+    /// runtime mounts them at startup (ADR 0355).
+    std::vector<std::string> packFiles;
 };
 
 /// @brief Build a Windows self-extracting installer .exe.
@@ -99,6 +103,42 @@ void buildWindowsPackage(const WindowsBuildParams &params);
 /// @param data Complete candidate PE bytes.
 /// @return Lowercase imported DLL names, or an empty vector when unavailable.
 std::vector<std::string> importedDllNamesFromPe(const std::vector<uint8_t> &data);
+
+/// @brief A DLL that ships beside a Windows application executable.
+struct WindowsAppLocalDll {
+    std::string sourcePath;          ///< Resolved source file (UTF-8).
+    std::string installRelativePath; ///< Destination relative to the executable directory.
+};
+
+/// @brief Collect the non-system DLLs a Windows application directory must ship.
+/// @details Walks the executable's import table transitively, taking ordinary DLLs from beside
+///          the executable and numbered MSVC runtimes from @p compilerRuntimeDir, then appends
+///          every `windows-dll` entry. buildWindowsPackage and store depots share this list.
+/// @param executablePath PE32+ executable (UTF-8).
+/// @param projectRoot Trusted root that `windows-dll` paths resolve against (UTF-8).
+/// @param pkg Package configuration supplying `windows-dll` entries.
+/// @param compilerRuntimeDir Trusted MSVC runtime directory (UTF-8), or empty.
+/// @return Discovered DLLs in breadth-first import order, then manifest DLLs in manifest order.
+/// @throws std::runtime_error when an import has no adjacent DLL or a manifest DLL is missing.
+std::vector<WindowsAppLocalDll> collectWindowsAppLocalDlls(const std::string &executablePath,
+                                                           const std::string &projectRoot,
+                                                           const PackageConfig &pkg,
+                                                           const std::string &compilerRuntimeDir);
+
+/// @brief Sign one application PE under the installer payload policy.
+/// @details Returns @p data unchanged when @p signer is empty, when the name is not an `.exe` or
+///          `.dll`, when the bytes are not a PE image, or for Microsoft compiler runtime DLLs,
+///          which keep their original signatures.
+/// @param signer Optional Authenticode signer.
+/// @param logicalName Install-relative name used for diagnostics and the signing decision.
+/// @param data Unsigned file bytes.
+/// @param arch Required architecture of the signed image, `x64` or `arm64`.
+/// @return Signed or unchanged bytes.
+/// @throws std::runtime_error when signing fails or changes the image architecture.
+std::vector<uint8_t> signWindowsApplicationPe(const WindowsPeSigner &signer,
+                                              std::string_view logicalName,
+                                              const std::vector<uint8_t> &data,
+                                              const std::string &arch);
 
 /// @brief Parameters for building a Windows toolchain installer from a staged manifest.
 struct WindowsToolchainBuildParams {

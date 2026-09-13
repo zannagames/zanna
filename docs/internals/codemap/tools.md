@@ -114,7 +114,7 @@ BASIC language server (reuses lsp-common infrastructure).
 | `cmd_explain.cpp`       | Diagnostic-code catalog subcommand  |
 | `cmd_init.cpp`          | Init subcommand implementation      |
 | `cmd_install_package.cpp` | Toolchain installer packaging CLI |
-| `cmd_package.cpp`       | Package subcommand (ZAPS)           |
+| `cmd_package.cpp`       | Package subcommand (ZAPS, store depots) |
 | `cmd_repl.cpp`          | Interactive REPL subcommand         |
 | `cmd_run.cpp`           | Run/build/check subcommand implementation |
 | `cmd_run_il.cpp`        | IL execution subcommand             |
@@ -173,10 +173,16 @@ BASIC language server (reuses lsp-common infrastructure).
 |-------------------------------|----------------------------------------------------------|
 | `LinuxPackageBuilder.cpp`     | Linux `.deb`/`.rpm`/`.tar.gz` package builder impl       |
 | `LinuxPackageBuilder.hpp`     | Linux package builder                                    |
+| `MacOSEntitlements.cpp`       | XML entitlements plist reader/merger impl                |
+| `MacOSEntitlements.hpp`       | Merge store-required macOS entitlements before signing   |
 | `MacOSPackageBuilder.cpp`     | macOS `.pkg` package builder impl                        |
-| `MacOSPackageBuilder.hpp`     | macOS package builder                                    |
+| `MacOSPackageBuilder.hpp`     | macOS package builder; `.app` staging into directories   |
+| `NativeBinaryInspector.cpp`   | Mach-O/ELF/PE header inspection impl                     |
+| `NativeBinaryInspector.hpp`   | Binary format, kind, architectures, export-name search   |
+| `StoreDepotBuilder.cpp`       | Store depot staging, Steam profile, SteamPipe script impl |
+| `StoreDepotBuilder.hpp`       | Store depot targets (`steam-*`, ADR 0354) and profiles   |
 | `WindowsPackageBuilder.cpp`   | Windows installer/package builder impl                   |
-| `WindowsPackageBuilder.hpp`   | Windows installer/package builder                        |
+| `WindowsPackageBuilder.hpp`   | Windows installer builder; app-local DLL/signing policy  |
 | `PackageConfig.hpp`           | Package configuration types and options                  |
 | `ToolchainInstallManifest.cpp`| Toolchain install manifest model impl                    |
 | `ToolchainInstallManifest.hpp`| Install manifest (files, symlinks, associations)         |

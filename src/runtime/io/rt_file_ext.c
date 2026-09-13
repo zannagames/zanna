@@ -1779,8 +1779,10 @@ void rt_io_file_write_all_bytes(rt_string path, void *bytes) {
 /// Why:  Provide convenient line-based file input for Zanna.IO.File.ReadAllLines.
 /// How:  Reads the file and splits on LF, CR, and CRLF, stripping line terminators.
 /// @brief Read a file, split on LF/CR/CRLF, return a Seq of rt_strings (one per line, no
-/// trailing newline). Empty trailing lines are preserved (a file ending in `\n\n` yields a
-/// trailing empty string).
+/// trailing newline). Each terminator ends a line, so a terminator at the end of the file ends
+/// the last line instead of starting an empty one: `a\nb\n` and `a\nb` both yield two lines,
+/// matching what WriteAllLines writes. Empty lines are preserved (`one\n\n` yields `one` and
+/// an empty line).
 /// @details The returned sequence owns its string elements. Empty files produce an empty sequence.
 ///          Invalid paths, non-regular or oversized files, concurrent truncation, I/O failures,
 ///          and allocation failures trap.
@@ -1913,12 +1915,6 @@ void *rt_io_file_read_all_lines(rt_string path) {
                 i += 1;
         } else {
             ++i; // '\n'
-        }
-        if (i == off) {
-            line = rt_str_empty();
-            rt_seq_push(seq, (void *)line);
-            rt_string_unref((rt_string)line);
-            line = NULL;
         }
     }
 

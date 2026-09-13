@@ -51,7 +51,7 @@ DIM html AS STRING
 html = Zanna.Network.Http.Get(baseUrl)
 Zanna.Core.Diagnostics.Assert(html.Length > 0, "http.get")
 
-DIM htmlBytes AS Zanna.IO.BinaryBuffer
+DIM htmlBytes AS Zanna.Collections.Bytes
 htmlBytes = Zanna.Network.Http.GetBytes(baseUrl)
 Zanna.Core.Diagnostics.Assert(htmlBytes.Length > 0, "http.getbytes")
 
@@ -59,13 +59,10 @@ DIM postRes AS STRING
 postRes = Zanna.Network.Http.Post(baseUrl, "name=test")
 Zanna.Core.Diagnostics.Assert(postRes.Length > 0, "http.post")
 
-DIM payload AS Zanna.IO.BinaryBuffer
-payload = Zanna.IO.BinaryBuffer.NewCapacity(3)
-payload.WriteByte(97)
-payload.WriteByte(98)
-payload.WriteByte(99)
+DIM payload AS Zanna.Collections.Bytes
+payload = Zanna.Collections.Bytes.FromStr("abc")
 
-DIM postBytes AS Zanna.IO.BinaryBuffer
+DIM postBytes AS Zanna.Collections.Bytes
 postBytes = Zanna.Network.Http.PostBytes(baseUrl, payload)
 Zanna.Core.Diagnostics.Assert(postBytes.Length > 0, "http.postbytes")
 
@@ -95,7 +92,7 @@ DIM headType AS STRING
 headType = headRes.Header("content-type")
 Zanna.Core.Diagnostics.Assert(LEN(headType) > 0, "http.head.header")
 
-DIM headBody AS Zanna.IO.BinaryBuffer
+DIM headBody AS Zanna.Collections.Bytes
 headBody = headRes.Body()
 Zanna.Core.Diagnostics.Assert(headBody.Length >= 0, "http.head.body")
 DIM headBodyStr AS STRING
@@ -119,7 +116,7 @@ DIM resHeaders AS Zanna.Collections.Map
 resHeaders = res.Headers
 Zanna.Core.Diagnostics.Assert(resHeaders.Count > 0, "httpreq.headers")
 
-DIM resBody AS Zanna.IO.BinaryBuffer
+DIM resBody AS Zanna.Collections.Bytes
 resBody = res.Body()
 Zanna.Core.Diagnostics.Assert(resBody.Length > 0, "httpreq.body")
 
@@ -154,7 +151,7 @@ Zanna.Core.Diagnostics.AssertEqStr(url.GetQueryParam("foo"), "bar", "url.getpara
 url.SetQueryParam("new", "1")
 Zanna.Core.Diagnostics.Assert(url.HasQueryParam("new"), "url.setparam")
 url.RemoveQueryParam("x")
-Zanna.Core.Diagnostics.Assert(url.HasQueryParam("x") = 0, "url.delparam")
+Zanna.Core.Diagnostics.Assert(NOT url.HasQueryParam("x"), "url.delparam")
 
 DIM qmap AS Zanna.Collections.Map
 qmap = url.QueryMap()

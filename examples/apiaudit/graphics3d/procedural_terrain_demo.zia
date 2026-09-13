@@ -241,7 +241,7 @@ func start() {
 
     // ── Main Loop ──
     var frameCount = 0;
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (not Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
 
         // ESC to quit

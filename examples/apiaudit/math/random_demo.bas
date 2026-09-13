@@ -14,9 +14,9 @@ PRINT "Seeded with 42"
 
 ' --- Next ---
 PRINT "--- Next ---"
-PRINT "Random.Next() [0.0..1.0]: "; Zanna.Math.Random.Next()
-PRINT "Random.Next() [0.0..1.0]: "; Zanna.Math.Random.Next()
-PRINT "Random.Next() [0.0..1.0]: "; Zanna.Math.Random.Next()
+PRINT "Random.NextDouble() [0.0..1.0]: "; Zanna.Math.Random.NextDouble()
+PRINT "Random.NextDouble() [0.0..1.0]: "; Zanna.Math.Random.NextDouble()
+PRINT "Random.NextDouble() [0.0..1.0]: "; Zanna.Math.Random.NextDouble()
 
 ' --- NextInt ---
 PRINT "--- NextInt ---"
@@ -43,7 +43,6 @@ PRINT "--- Chance ---"
 PRINT "Random.Chance(1.0) [always true]: "; Zanna.Math.Random.Chance(1.0)
 PRINT "Random.Chance(0.0) [always false]: "; Zanna.Math.Random.Chance(0.0)
 PRINT "Random.Chance(0.5): "; Zanna.Math.Random.Chance(0.5)
-PRINT "Random.ChanceInt(0.5) [compat 0/1]: "; Zanna.Math.Random.ChanceInt(0.5)
 
 ' --- Gaussian ---
 PRINT "--- Gaussian ---"

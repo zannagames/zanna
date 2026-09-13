@@ -29,14 +29,14 @@ construct the class directly. Its public surface exposes properties such as `Hos
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-tcp-connect"></a>`Connect` | `obj(str,i64)` | `Zanna.Network.Tcp.Connect` |
-| <a id="zanna-network-tcp-connectfor"></a>`ConnectFor` | `obj(str,i64,i64)` | `Zanna.Network.Tcp.ConnectFor` |
+| <a id="zanna-network-tcp-connect"></a>`Connect` | `obj<Zanna.Network.Tcp>(str,i64)` | `Zanna.Network.Tcp.Connect` |
+| <a id="zanna-network-tcp-connectfor"></a>`ConnectFor` | `obj<Zanna.Network.Tcp>(str,i64,i64)` | `Zanna.Network.Tcp.ConnectFor` |
 | <a id="zanna-network-tcp-send"></a>`Send` | `i64(obj)` | `Zanna.Network.Tcp.Send` |
 | <a id="zanna-network-tcp-sendstr"></a>`SendStr` | `i64(str)` | `Zanna.Network.Tcp.SendStr` |
 | <a id="zanna-network-tcp-sendall"></a>`SendAll` | `void(obj)` | `Zanna.Network.Tcp.SendAll` |
-| <a id="zanna-network-tcp-recv"></a>`Recv` | `obj(i64)` | `Zanna.Network.Tcp.Recv` |
+| <a id="zanna-network-tcp-recv"></a>`Recv` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.Network.Tcp.Recv` |
 | <a id="zanna-network-tcp-recvstr"></a>`RecvStr` | `str(i64)` | `Zanna.Network.Tcp.RecvStr` |
-| <a id="zanna-network-tcp-recvexact"></a>`RecvExact` | `obj(i64)` | `Zanna.Network.Tcp.RecvExact` |
+| <a id="zanna-network-tcp-recvexact"></a>`RecvExact` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.Network.Tcp.RecvExact` |
 | <a id="zanna-network-tcp-recvline"></a>`RecvLine` | `str()` | `Zanna.Network.Tcp.RecvLine` |
 | <a id="zanna-network-tcp-setrecvtimeout"></a>`SetRecvTimeout` | `void(i64)` | `Zanna.Network.Tcp.SetRecvTimeout` |
 | <a id="zanna-network-tcp-setsendtimeout"></a>`SetSendTimeout` | `void(i64)` | `Zanna.Network.Tcp.SetSendTimeout` |
@@ -63,8 +63,8 @@ construct the class directly. Its public surface exposes properties such as `Por
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-tcpserver-listen"></a>`Listen` | `obj(i64)` | `Zanna.Network.TcpServer.Listen` |
-| <a id="zanna-network-tcpserver-listenat"></a>`ListenAt` | `obj(str,i64)` | `Zanna.Network.TcpServer.ListenAt` |
+| <a id="zanna-network-tcpserver-listen"></a>`Listen` | `obj<Zanna.Network.TcpServer>(i64)` | `Zanna.Network.TcpServer.Listen` |
+| <a id="zanna-network-tcpserver-listenat"></a>`ListenAt` | `obj<Zanna.Network.TcpServer>(str,i64)` | `Zanna.Network.TcpServer.ListenAt` |
 | <a id="zanna-network-tcpserver-accept"></a>`Accept` | `obj<Zanna.Network.Tcp>()` | `Zanna.Network.TcpServer.Accept` |
 | <a id="zanna-network-tcpserver-acceptfor"></a>`AcceptFor` | `obj<Zanna.Network.Tcp>(i64)` | `Zanna.Network.TcpServer.AcceptFor` |
 | <a id="zanna-network-tcpserver-close"></a>`Close` | `void()` | `Zanna.Network.TcpServer.Close` |
@@ -92,14 +92,14 @@ Constructor: `Zanna.Network.Udp.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-udp-new"></a>`New` | `obj()` | `Zanna.Network.Udp.New` |
-| <a id="zanna-network-udp-bind"></a>`Bind` | `obj(i64)` | `Zanna.Network.Udp.Bind` |
-| <a id="zanna-network-udp-bindat"></a>`BindAt` | `obj(str,i64)` | `Zanna.Network.Udp.BindAt` |
+| <a id="zanna-network-udp-new"></a>`New` | `obj<Zanna.Network.Udp>()` | `Zanna.Network.Udp.New` |
+| <a id="zanna-network-udp-bind"></a>`Bind` | `obj<Zanna.Network.Udp>(i64)` | `Zanna.Network.Udp.Bind` |
+| <a id="zanna-network-udp-bindat"></a>`BindAt` | `obj<Zanna.Network.Udp>(str,i64)` | `Zanna.Network.Udp.BindAt` |
 | <a id="zanna-network-udp-sendto"></a>`SendTo` | `i64(str,i64,obj)` | `Zanna.Network.Udp.SendTo` |
 | <a id="zanna-network-udp-sendtostr"></a>`SendToStr` | `i64(str,i64,str)` | `Zanna.Network.Udp.SendToStr` |
-| <a id="zanna-network-udp-recv"></a>`Recv` | `obj(i64)` | `Zanna.Network.Udp.Recv` |
-| <a id="zanna-network-udp-recvfrom"></a>`RecvFrom` | `obj(i64)` | `Zanna.Network.Udp.RecvFrom` |
-| <a id="zanna-network-udp-recvfor"></a>`RecvFor` | `obj(i64,i64)` | `Zanna.Network.Udp.RecvFor` |
+| <a id="zanna-network-udp-recv"></a>`Recv` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.Network.Udp.Recv` |
+| <a id="zanna-network-udp-recvfrom"></a>`RecvFrom` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.Network.Udp.RecvFrom` |
+| <a id="zanna-network-udp-recvfor"></a>`RecvFor` | `obj<Zanna.Collections.Bytes>(i64,i64)` | `Zanna.Network.Udp.RecvFor` |
 | <a id="zanna-network-udp-senderhost"></a>`SenderHost` | `str()` | `Zanna.Network.Udp.SenderHost` |
 | <a id="zanna-network-udp-senderport"></a>`SenderPort` | `i64()` | `Zanna.Network.Udp.SenderPort` |
 | <a id="zanna-network-udp-setbroadcast"></a>`SetBroadcast` | `void(i1)` | `Zanna.Network.Udp.SetBroadcast` |
@@ -147,11 +147,11 @@ Its public surface exposes operations including `Get`, `GetBytes`, `Post`, `Post
 | <a id="zanna-network-http-get"></a>`Get` | `str(str)` | `Zanna.Network.Http.Get` |
 | <a id="zanna-network-http-getbytes"></a>`GetBytes` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Network.Http.GetBytes` |
 | <a id="zanna-network-http-post"></a>`Post` | `str(str,str)` | `Zanna.Network.Http.Post` |
-| <a id="zanna-network-http-postbytes"></a>`PostBytes` | `obj(str,obj)` | `Zanna.Network.Http.PostBytes` |
+| <a id="zanna-network-http-postbytes"></a>`PostBytes` | `obj<Zanna.Collections.Bytes>(str,obj)` | `Zanna.Network.Http.PostBytes` |
 | <a id="zanna-network-http-put"></a>`Put` | `str(str,str)` | `Zanna.Network.Http.Put` |
-| <a id="zanna-network-http-putbytes"></a>`PutBytes` | `obj(str,obj)` | `Zanna.Network.Http.PutBytes` |
+| <a id="zanna-network-http-putbytes"></a>`PutBytes` | `obj<Zanna.Collections.Bytes>(str,obj)` | `Zanna.Network.Http.PutBytes` |
 | <a id="zanna-network-http-delete"></a>`Delete` | `str(str)` | `Zanna.Network.Http.Delete` |
-| <a id="zanna-network-http-deletebytes"></a>`DeleteBytes` | `obj(str)` | `Zanna.Network.Http.DeleteBytes` |
+| <a id="zanna-network-http-deletebytes"></a>`DeleteBytes` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Network.Http.DeleteBytes` |
 | <a id="zanna-network-http-download"></a>`Download` | `i1(str,str)` | `Zanna.Network.Http.Download` |
 | <a id="zanna-network-http-head"></a>`Head` | `obj<Zanna.Collections.Map>(str)` | `Zanna.Network.Http.Head` |
 | <a id="zanna-network-http-patch"></a>`Patch` | `str(str,str)` | `Zanna.Network.Http.Patch` |
@@ -172,16 +172,16 @@ Constructor: `Zanna.Network.HttpReq.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-httpreq-new"></a>`New` | `obj(str,str)` | `Zanna.Network.HttpReq.New` |
-| <a id="zanna-network-httpreq-setheader"></a>`SetHeader` | `obj(str,str)` | `Zanna.Network.HttpReq.SetHeader` |
-| <a id="zanna-network-httpreq-addheader"></a>`AddHeader` | `obj(str,str)` | `Zanna.Network.HttpReq.AddHeader` |
-| <a id="zanna-network-httpreq-setbody"></a>`SetBody` | `obj(obj)` | `Zanna.Network.HttpReq.SetBody` |
-| <a id="zanna-network-httpreq-setbodystr"></a>`SetBodyStr` | `obj(str)` | `Zanna.Network.HttpReq.SetBodyStr` |
-| <a id="zanna-network-httpreq-settimeout"></a>`SetTimeout` | `obj(i64)` | `Zanna.Network.HttpReq.SetTimeout` |
-| <a id="zanna-network-httpreq-setforcehttp1"></a>`SetForceHttp1` | `obj(i1)` | `Zanna.Network.HttpReq.SetForceHttp1` |
-| <a id="zanna-network-httpreq-settlsverify"></a>`SetTlsVerify` | `obj(i1)` | `Zanna.Network.HttpReq.SetTlsVerify` |
-| <a id="zanna-network-httpreq-allowinsecurecertificatesfortesting"></a>`AllowInsecureCertificatesForTesting` | `obj()` | `Zanna.Network.HttpReq.AllowInsecureCertificatesForTesting` |
-| <a id="zanna-network-httpreq-setkeepalive"></a>`SetKeepAlive` | `obj(i1)` | `Zanna.Network.HttpReq.SetKeepAlive` |
+| <a id="zanna-network-httpreq-new"></a>`New` | `obj<Zanna.Network.HttpReq>(str,str)` | `Zanna.Network.HttpReq.New` |
+| <a id="zanna-network-httpreq-setheader"></a>`SetHeader` | `obj<Zanna.Network.HttpReq>(str,str)` | `Zanna.Network.HttpReq.SetHeader` |
+| <a id="zanna-network-httpreq-addheader"></a>`AddHeader` | `obj<Zanna.Network.HttpReq>(str,str)` | `Zanna.Network.HttpReq.AddHeader` |
+| <a id="zanna-network-httpreq-setbody"></a>`SetBody` | `obj<Zanna.Network.HttpReq>(obj)` | `Zanna.Network.HttpReq.SetBody` |
+| <a id="zanna-network-httpreq-setbodystr"></a>`SetBodyStr` | `obj<Zanna.Network.HttpReq>(str)` | `Zanna.Network.HttpReq.SetBodyStr` |
+| <a id="zanna-network-httpreq-settimeout"></a>`SetTimeout` | `obj<Zanna.Network.HttpReq>(i64)` | `Zanna.Network.HttpReq.SetTimeout` |
+| <a id="zanna-network-httpreq-setforcehttp1"></a>`SetForceHttp1` | `obj<Zanna.Network.HttpReq>(i1)` | `Zanna.Network.HttpReq.SetForceHttp1` |
+| <a id="zanna-network-httpreq-settlsverify"></a>`SetTlsVerify` | `obj<Zanna.Network.HttpReq>(i1)` | `Zanna.Network.HttpReq.SetTlsVerify` |
+| <a id="zanna-network-httpreq-allowinsecurecertificatesfortesting"></a>`AllowInsecureCertificatesForTesting` | `obj<Zanna.Network.HttpReq>()` | `Zanna.Network.HttpReq.AllowInsecureCertificatesForTesting` |
+| <a id="zanna-network-httpreq-setkeepalive"></a>`SetKeepAlive` | `obj<Zanna.Network.HttpReq>(i1)` | `Zanna.Network.HttpReq.SetKeepAlive` |
 | <a id="zanna-network-httpreq-send"></a>`Send` | `obj<Zanna.Network.HttpRes>()` | `Zanna.Network.HttpReq.Send` |
 | <a id="zanna-network-httpreq-sendresult"></a>`SendResult` | `obj<Zanna.Result>()` | `Zanna.Network.HttpReq.SendResult` |
 
@@ -242,17 +242,17 @@ Constructor: `Zanna.Network.Url.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-url-parse"></a>`Parse` | `obj(str)` | `Zanna.Network.Url.Parse` |
-| <a id="zanna-network-url-new"></a>`New` | `obj()` | `Zanna.Network.Url.New` |
-| <a id="zanna-network-url-setqueryparam"></a>`SetQueryParam` | `obj(str,str)` | `Zanna.Network.Url.SetQueryParam` |
+| <a id="zanna-network-url-parse"></a>`Parse` | `obj<Zanna.Network.Url>(str)` | `Zanna.Network.Url.Parse` |
+| <a id="zanna-network-url-new"></a>`New` | `obj<Zanna.Network.Url>()` | `Zanna.Network.Url.New` |
+| <a id="zanna-network-url-setqueryparam"></a>`SetQueryParam` | `obj<Zanna.Network.Url>(str,str)` | `Zanna.Network.Url.SetQueryParam` |
 | <a id="zanna-network-url-getqueryparam"></a>`GetQueryParam` | `str(str)` | `Zanna.Network.Url.GetQueryParam` |
 | <a id="zanna-network-url-hasqueryparam"></a>`HasQueryParam` | `i1(str)` | `Zanna.Network.Url.HasQueryParam` |
-| <a id="zanna-network-url-removequeryparam"></a>`RemoveQueryParam` | `obj(str)` | `Zanna.Network.Url.RemoveQueryParam` |
-| <a id="zanna-network-url-querymap"></a>`QueryMap` | `obj()` | `Zanna.Network.Url.QueryMap` |
-| <a id="zanna-network-url-resolve"></a>`Resolve` | `obj(str)` | `Zanna.Network.Url.Resolve` |
-| <a id="zanna-network-url-clone"></a>`Clone` | `obj()` | `Zanna.Network.Url.Clone` |
+| <a id="zanna-network-url-removequeryparam"></a>`RemoveQueryParam` | `obj<Zanna.Network.Url>(str)` | `Zanna.Network.Url.RemoveQueryParam` |
+| <a id="zanna-network-url-querymap"></a>`QueryMap` | `obj<Zanna.Collections.Map>()` | `Zanna.Network.Url.QueryMap` |
+| <a id="zanna-network-url-resolve"></a>`Resolve` | `obj<Zanna.Network.Url>(str)` | `Zanna.Network.Url.Resolve` |
+| <a id="zanna-network-url-clone"></a>`Clone` | `obj<Zanna.Network.Url>()` | `Zanna.Network.Url.Clone` |
 | <a id="zanna-network-url-encodequery"></a>`EncodeQuery` | `str(obj)` | `Zanna.Network.Url.EncodeQuery` |
-| <a id="zanna-network-url-decodequery"></a>`DecodeQuery` | `obj(str)` | `Zanna.Network.Url.DecodeQuery` |
+| <a id="zanna-network-url-decodequery"></a>`DecodeQuery` | `obj<Zanna.Collections.Map>(str)` | `Zanna.Network.Url.DecodeQuery` |
 | <a id="zanna-network-url-isvalid"></a>`IsValid` | `i1(str)` | `Zanna.Network.Url.IsValid` |
 | <a id="zanna-network-url-isvalidabsolute"></a>`IsValidAbsolute` | `i1(str)` | `Zanna.Network.Url.IsValidAbsolute` |
 
@@ -280,17 +280,17 @@ construct the class directly. Its public surface exposes properties such as `Url
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-websocket-connect"></a>`Connect` | `obj(str)` | `Zanna.Network.WebSocket.Connect` |
-| <a id="zanna-network-websocket-connectfor"></a>`ConnectFor` | `obj(str,i64)` | `Zanna.Network.WebSocket.ConnectFor` |
-| <a id="zanna-network-websocket-connectprotocol"></a>`ConnectProtocol` | `obj(str,str)` | `Zanna.Network.WebSocket.ConnectProtocol` |
-| <a id="zanna-network-websocket-connectforprotocol"></a>`ConnectForProtocol` | `obj(str,i64,str)` | `Zanna.Network.WebSocket.ConnectForProtocol` |
+| <a id="zanna-network-websocket-connect"></a>`Connect` | `obj<Zanna.Network.WebSocket>(str)` | `Zanna.Network.WebSocket.Connect` |
+| <a id="zanna-network-websocket-connectfor"></a>`ConnectFor` | `obj<Zanna.Network.WebSocket>(str,i64)` | `Zanna.Network.WebSocket.ConnectFor` |
+| <a id="zanna-network-websocket-connectprotocol"></a>`ConnectProtocol` | `obj<Zanna.Network.WebSocket>(str,str)` | `Zanna.Network.WebSocket.ConnectProtocol` |
+| <a id="zanna-network-websocket-connectforprotocol"></a>`ConnectForProtocol` | `obj<Zanna.Network.WebSocket>(str,i64,str)` | `Zanna.Network.WebSocket.ConnectForProtocol` |
 | <a id="zanna-network-websocket-send"></a>`Send` | `void(str)` | `Zanna.Network.WebSocket.Send` |
 | <a id="zanna-network-websocket-sendbytes"></a>`SendBytes` | `void(obj)` | `Zanna.Network.WebSocket.SendBytes` |
 | <a id="zanna-network-websocket-ping"></a>`Ping` | `void()` | `Zanna.Network.WebSocket.Ping` |
 | <a id="zanna-network-websocket-recv"></a>`Recv` | `str()` | `Zanna.Network.WebSocket.Recv` |
 | <a id="zanna-network-websocket-recvfor"></a>`RecvFor` | `str(i64)` | `Zanna.Network.WebSocket.RecvFor` |
-| <a id="zanna-network-websocket-recvbytes"></a>`RecvBytes` | `obj()` | `Zanna.Network.WebSocket.RecvBytes` |
-| <a id="zanna-network-websocket-recvbytesfor"></a>`RecvBytesFor` | `obj(i64)` | `Zanna.Network.WebSocket.RecvBytesFor` |
+| <a id="zanna-network-websocket-recvbytes"></a>`RecvBytes` | `obj<Zanna.Collections.Bytes>()` | `Zanna.Network.WebSocket.RecvBytes` |
+| <a id="zanna-network-websocket-recvbytesfor"></a>`RecvBytesFor` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.Network.WebSocket.RecvBytesFor` |
 | <a id="zanna-network-websocket-close"></a>`Close` | `void()` | `Zanna.Network.WebSocket.Close` |
 | <a id="zanna-network-websocket-closewith"></a>`CloseWith` | `void(i64,str)` | `Zanna.Network.WebSocket.CloseWith` |
 
@@ -320,10 +320,10 @@ Constructor: `Zanna.Network.RetryPolicy.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-retrypolicy-exponential"></a>`Exponential` | `obj(i64,i64,i64)` | `Zanna.Network.RetryPolicy.Exponential` |
+| <a id="zanna-network-retrypolicy-exponential"></a>`Exponential` | `obj<Zanna.Network.RetryPolicy>(i64,i64,i64)` | `Zanna.Network.RetryPolicy.Exponential` |
 | <a id="zanna-network-retrypolicy-nextdelay"></a>`NextDelay` | `i64()` | `Zanna.Network.RetryPolicy.NextDelay` |
 | <a id="zanna-network-retrypolicy-reset"></a>`Reset` | `void()` | `Zanna.Network.RetryPolicy.Reset` |
-| <a id="zanna-network-retrypolicy-new"></a>`New` | `obj(i64,i64)` | `Zanna.Network.RetryPolicy.New` |
+| <a id="zanna-network-retrypolicy-new"></a>`New` | `obj<Zanna.Network.RetryPolicy>(i64,i64)` | `Zanna.Network.RetryPolicy.New` |
 
 <a id="zanna-network-restclient"></a>
 ### `Zanna.Network.RestClient`
@@ -348,7 +348,7 @@ Constructor: `Zanna.Network.RestClient.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-restclient-new"></a>`New` | `obj(str)` | `Zanna.Network.RestClient.New` |
+| <a id="zanna-network-restclient-new"></a>`New` | `obj<Zanna.Network.RestClient>(str)` | `Zanna.Network.RestClient.New` |
 | <a id="zanna-network-restclient-setheader"></a>`SetHeader` | `void(str,str)` | `Zanna.Network.RestClient.SetHeader` |
 | <a id="zanna-network-restclient-removeheader"></a>`RemoveHeader` | `void(str)` | `Zanna.Network.RestClient.RemoveHeader` |
 | <a id="zanna-network-restclient-setauthbearer"></a>`SetAuthBearer` | `void(str)` | `Zanna.Network.RestClient.SetAuthBearer` |
@@ -356,17 +356,17 @@ Constructor: `Zanna.Network.RestClient.New`
 | <a id="zanna-network-restclient-clearauth"></a>`ClearAuth` | `void()` | `Zanna.Network.RestClient.ClearAuth` |
 | <a id="zanna-network-restclient-settimeout"></a>`SetTimeout` | `void(i64)` | `Zanna.Network.RestClient.SetTimeout` |
 | <a id="zanna-network-restclient-setpoolsize"></a>`SetPoolSize` | `void(i64)` | `Zanna.Network.RestClient.SetPoolSize` |
-| <a id="zanna-network-restclient-get"></a>`Get` | `obj(str)` | `Zanna.Network.RestClient.Get` |
+| <a id="zanna-network-restclient-get"></a>`Get` | `obj<Zanna.Network.HttpRes>(str)` | `Zanna.Network.RestClient.Get` |
 | <a id="zanna-network-restclient-getresult"></a>`GetResult` | `obj<Zanna.Result>(str)` | `Zanna.Network.RestClient.GetResult` |
-| <a id="zanna-network-restclient-post"></a>`Post` | `obj(str,str)` | `Zanna.Network.RestClient.Post` |
+| <a id="zanna-network-restclient-post"></a>`Post` | `obj<Zanna.Network.HttpRes>(str,str)` | `Zanna.Network.RestClient.Post` |
 | <a id="zanna-network-restclient-postresult"></a>`PostResult` | `obj<Zanna.Result>(str,str)` | `Zanna.Network.RestClient.PostResult` |
-| <a id="zanna-network-restclient-put"></a>`Put` | `obj(str,str)` | `Zanna.Network.RestClient.Put` |
+| <a id="zanna-network-restclient-put"></a>`Put` | `obj<Zanna.Network.HttpRes>(str,str)` | `Zanna.Network.RestClient.Put` |
 | <a id="zanna-network-restclient-putresult"></a>`PutResult` | `obj<Zanna.Result>(str,str)` | `Zanna.Network.RestClient.PutResult` |
-| <a id="zanna-network-restclient-patch"></a>`Patch` | `obj(str,str)` | `Zanna.Network.RestClient.Patch` |
+| <a id="zanna-network-restclient-patch"></a>`Patch` | `obj<Zanna.Network.HttpRes>(str,str)` | `Zanna.Network.RestClient.Patch` |
 | <a id="zanna-network-restclient-patchresult"></a>`PatchResult` | `obj<Zanna.Result>(str,str)` | `Zanna.Network.RestClient.PatchResult` |
-| <a id="zanna-network-restclient-delete"></a>`Delete` | `obj(str)` | `Zanna.Network.RestClient.Delete` |
+| <a id="zanna-network-restclient-delete"></a>`Delete` | `obj<Zanna.Network.HttpRes>(str)` | `Zanna.Network.RestClient.Delete` |
 | <a id="zanna-network-restclient-deleteresult"></a>`DeleteResult` | `obj<Zanna.Result>(str)` | `Zanna.Network.RestClient.DeleteResult` |
-| <a id="zanna-network-restclient-head"></a>`Head` | `obj(str)` | `Zanna.Network.RestClient.Head` |
+| <a id="zanna-network-restclient-head"></a>`Head` | `obj<Zanna.Network.HttpRes>(str)` | `Zanna.Network.RestClient.Head` |
 | <a id="zanna-network-restclient-headresult"></a>`HeadResult` | `obj<Zanna.Result>(str)` | `Zanna.Network.RestClient.HeadResult` |
 | <a id="zanna-network-restclient-getjson"></a>`GetJson` | `obj(str)` | `Zanna.Network.RestClient.GetJson` |
 | <a id="zanna-network-restclient-postjson"></a>`PostJson` | `obj(str,obj)` | `Zanna.Network.RestClient.PostJson` |
@@ -400,7 +400,7 @@ Constructor: `Zanna.Network.RateLimiter.New`
 | <a id="zanna-network-ratelimiter-tryacquire"></a>`TryAcquire` | `i1()` | `Zanna.Network.RateLimiter.TryAcquire` |
 | `TryAcquire` | `i1(i64)` | `Zanna.Network.RateLimiter.TryAcquireMany` |
 | <a id="zanna-network-ratelimiter-reset"></a>`Reset` | `void()` | `Zanna.Network.RateLimiter.Reset` |
-| <a id="zanna-network-ratelimiter-new"></a>`New` | `obj(i64,f64)` | `Zanna.Network.RateLimiter.New` |
+| <a id="zanna-network-ratelimiter-new"></a>`New` | `obj<Zanna.Network.RateLimiter>(i64,f64)` | `Zanna.Network.RateLimiter.New` |
 
 <a id="zanna-network-httprouter"></a>
 ### `Zanna.Network.HttpRouter`
@@ -429,7 +429,7 @@ Constructor: `Zanna.Network.HttpRouter.New`
 | <a id="zanna-network-httprouter-put"></a>`Put` | `obj<Zanna.Network.HttpRouter>(str)` | `Zanna.Network.HttpRouter.Put` |
 | <a id="zanna-network-httprouter-delete"></a>`Delete` | `obj<Zanna.Network.HttpRouter>(str)` | `Zanna.Network.HttpRouter.Delete` |
 | <a id="zanna-network-httprouter-match"></a>`Match` | `obj<Zanna.Network.RouteMatch>(str,str)` | `Zanna.Network.HttpRouter.Match` |
-| <a id="zanna-network-httprouter-new"></a>`New` | `obj()` | `Zanna.Network.HttpRouter.New` |
+| <a id="zanna-network-httprouter-new"></a>`New` | `obj<Zanna.Network.HttpRouter>()` | `Zanna.Network.HttpRouter.New` |
 
 <a id="zanna-network-routematch"></a>
 ### `Zanna.Network.RouteMatch`
@@ -482,7 +482,7 @@ Constructor: `Zanna.Network.HttpServer.New`
 | <a id="zanna-network-httpserver-bindhandler"></a>`BindHandler` | `void(str,obj)` | `Zanna.Network.HttpServer.BindHandler` |
 | <a id="zanna-network-httpserver-start"></a>`Start` | `void()` | `Zanna.Network.HttpServer.Start` |
 | <a id="zanna-network-httpserver-stop"></a>`Stop` | `void()` | `Zanna.Network.HttpServer.Stop` |
-| <a id="zanna-network-httpserver-new"></a>`New` | `obj(i64)` | `Zanna.Network.HttpServer.New` |
+| <a id="zanna-network-httpserver-new"></a>`New` | `obj<Zanna.Network.HttpServer>(i64)` | `Zanna.Network.HttpServer.New` |
 
 <a id="zanna-network-httpsserver"></a>
 ### `Zanna.Network.HttpsServer`
@@ -513,7 +513,7 @@ Constructor: `Zanna.Network.HttpsServer.New`
 | <a id="zanna-network-httpsserver-bindhandler"></a>`BindHandler` | `void(str,obj)` | `Zanna.Network.HttpsServer.BindHandler` |
 | <a id="zanna-network-httpsserver-start"></a>`Start` | `void()` | `Zanna.Network.HttpsServer.Start` |
 | <a id="zanna-network-httpsserver-stop"></a>`Stop` | `void()` | `Zanna.Network.HttpsServer.Stop` |
-| <a id="zanna-network-httpsserver-new"></a>`New` | `obj(i64,str,str)` | `Zanna.Network.HttpsServer.New` |
+| <a id="zanna-network-httpsserver-new"></a>`New` | `obj<Zanna.Network.HttpsServer>(i64,str,str)` | `Zanna.Network.HttpsServer.New` |
 
 <a id="zanna-network-serverreq"></a>
 ### `Zanna.Network.ServerReq`
@@ -553,8 +553,8 @@ construct the class directly. Its public surface exposes operations including `S
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-serverres-status"></a>`Status` | `obj(i64)` | `Zanna.Network.ServerRes.Status` |
-| <a id="zanna-network-serverres-header"></a>`Header` | `obj(str,str)` | `Zanna.Network.ServerRes.Header` |
+| <a id="zanna-network-serverres-status"></a>`Status` | `obj<Zanna.Network.ServerRes>(i64)` | `Zanna.Network.ServerRes.Status` |
+| <a id="zanna-network-serverres-header"></a>`Header` | `obj<Zanna.Network.ServerRes>(str,str)` | `Zanna.Network.ServerRes.Header` |
 | <a id="zanna-network-serverres-send"></a>`Send` | `void(str)` | `Zanna.Network.ServerRes.Send` |
 | <a id="zanna-network-serverres-json"></a>`Json` | `void(str)` | `Zanna.Network.ServerRes.Json` |
 
@@ -583,7 +583,7 @@ Constructor: `Zanna.Network.ConnectionPool.New`
 | <a id="zanna-network-connectionpool-acquire"></a>`Acquire` | `obj<Zanna.Network.Tcp>(str,i64)` | `Zanna.Network.ConnectionPool.Acquire` |
 | <a id="zanna-network-connectionpool-release"></a>`Release` | `void(obj)` | `Zanna.Network.ConnectionPool.Release` |
 | <a id="zanna-network-connectionpool-clear"></a>`Clear` | `void()` | `Zanna.Network.ConnectionPool.Clear` |
-| <a id="zanna-network-connectionpool-new"></a>`New` | `obj(i64)` | `Zanna.Network.ConnectionPool.New` |
+| <a id="zanna-network-connectionpool-new"></a>`New` | `obj<Zanna.Network.ConnectionPool>(i64)` | `Zanna.Network.ConnectionPool.New` |
 
 <a id="zanna-network-multipart"></a>
 ### `Zanna.Network.Multipart`
@@ -607,8 +607,8 @@ Constructor: `Zanna.Network.Multipart.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-network-multipart-addfield"></a>`AddField` | `obj(str,str)` | `Zanna.Network.Multipart.AddField` |
-| <a id="zanna-network-multipart-addfile"></a>`AddFile` | `obj(str,str,obj)` | `Zanna.Network.Multipart.AddFile` |
+| <a id="zanna-network-multipart-addfield"></a>`AddField` | `obj<Zanna.Network.Multipart>(str,str)` | `Zanna.Network.Multipart.AddField` |
+| <a id="zanna-network-multipart-addfile"></a>`AddFile` | `obj<Zanna.Network.Multipart>(str,str,obj)` | `Zanna.Network.Multipart.AddFile` |
 | <a id="zanna-network-multipart-build"></a>`Build` | `obj<Zanna.Collections.Bytes>()` | `Zanna.Network.Multipart.Build` |
 | <a id="zanna-network-multipart-parse"></a>`Parse` | `obj<Zanna.Network.Multipart>(str,obj)` | `Zanna.Network.Multipart.Parse` |
 | <a id="zanna-network-multipart-parseresult"></a>`ParseResult` | `obj<Zanna.Result>(str,obj)` | `Zanna.Network.Multipart.ParseResult` |
@@ -616,7 +616,7 @@ Constructor: `Zanna.Network.Multipart.New`
 | <a id="zanna-network-multipart-hasfile"></a>`HasFile` | `i1(str)` | `Zanna.Network.Multipart.HasFile` |
 | <a id="zanna-network-multipart-getfield"></a>`GetField` | `str(str)` | `Zanna.Network.Multipart.GetField` |
 | <a id="zanna-network-multipart-getfile"></a>`GetFile` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Network.Multipart.GetFile` |
-| <a id="zanna-network-multipart-new"></a>`New` | `obj()` | `Zanna.Network.Multipart.New` |
+| <a id="zanna-network-multipart-new"></a>`New` | `obj<Zanna.Network.Multipart>()` | `Zanna.Network.Multipart.New` |
 
 <a id="zanna-network-netutils"></a>
 ### `Zanna.Network.NetUtils`
@@ -667,7 +667,7 @@ Constructor: `Zanna.Network.WsServer.New`
 | <a id="zanna-network-wsserver-setsubprotocol"></a>`SetSubprotocol` | `void(str)` | `Zanna.Network.WsServer.SetSubprotocol` |
 | <a id="zanna-network-wsserver-broadcast"></a>`Broadcast` | `void(str)` | `Zanna.Network.WsServer.Broadcast` |
 | <a id="zanna-network-wsserver-broadcastbytes"></a>`BroadcastBytes` | `void(obj)` | `Zanna.Network.WsServer.BroadcastBytes` |
-| <a id="zanna-network-wsserver-new"></a>`New` | `obj(i64)` | `Zanna.Network.WsServer.New` |
+| <a id="zanna-network-wsserver-new"></a>`New` | `obj<Zanna.Network.WsServer>(i64)` | `Zanna.Network.WsServer.New` |
 
 <a id="zanna-network-wssserver"></a>
 ### `Zanna.Network.WssServer`
@@ -699,7 +699,7 @@ Constructor: `Zanna.Network.WssServer.New`
 | <a id="zanna-network-wssserver-setsubprotocol"></a>`SetSubprotocol` | `void(str)` | `Zanna.Network.WssServer.SetSubprotocol` |
 | <a id="zanna-network-wssserver-broadcast"></a>`Broadcast` | `void(str)` | `Zanna.Network.WssServer.Broadcast` |
 | <a id="zanna-network-wssserver-broadcastbytes"></a>`BroadcastBytes` | `void(obj)` | `Zanna.Network.WssServer.BroadcastBytes` |
-| <a id="zanna-network-wssserver-new"></a>`New` | `obj(i64,str,str)` | `Zanna.Network.WssServer.New` |
+| <a id="zanna-network-wssserver-new"></a>`New` | `obj<Zanna.Network.WssServer>(i64,str,str)` | `Zanna.Network.WssServer.New` |
 
 <a id="zanna-network-sseclient"></a>
 ### `Zanna.Network.SseClient`
@@ -726,7 +726,7 @@ construct the class directly. Its public surface exposes properties such as `IsO
 | <a id="zanna-network-sseclient-recvfor"></a>`RecvFor` | `str(i64)` | `Zanna.Network.SseClient.RecvFor` |
 | <a id="zanna-network-sseclient-recvforresult"></a>`RecvForResult` | `obj<Zanna.Result>(i64)` | `Zanna.Network.SseClient.RecvForResult` |
 | <a id="zanna-network-sseclient-close"></a>`Close` | `void()` | `Zanna.Network.SseClient.Close` |
-| <a id="zanna-network-sseclient-connect"></a>`Connect` | `obj(str)` | `Zanna.Network.SseClient.Connect` |
+| <a id="zanna-network-sseclient-connect"></a>`Connect` | `obj<Zanna.Network.SseClient>(str)` | `Zanna.Network.SseClient.Connect` |
 
 <a id="zanna-network-httpclient"></a>
 ### `Zanna.Network.HttpClient`
@@ -761,7 +761,7 @@ Constructor: `Zanna.Network.HttpClient.New`
 | <a id="zanna-network-httpclient-setcookie"></a>`SetCookie` | `void(str,str,str)` | `Zanna.Network.HttpClient.SetCookie` |
 | <a id="zanna-network-httpclient-deletecookie"></a>`DeleteCookie` | `void(str,str)` | `Zanna.Network.HttpClient.DeleteCookie` |
 | <a id="zanna-network-httpclient-getcookies"></a>`GetCookies` | `obj<Zanna.Collections.Map>(str)` | `Zanna.Network.HttpClient.GetCookies` |
-| <a id="zanna-network-httpclient-new"></a>`New` | `obj()` | `Zanna.Network.HttpClient.New` |
+| <a id="zanna-network-httpclient-new"></a>`New` | `obj<Zanna.Network.HttpClient>()` | `Zanna.Network.HttpClient.New` |
 
 <a id="zanna-network-smtpclient"></a>
 ### `Zanna.Network.SmtpClient`
@@ -783,7 +783,7 @@ Constructor: `Zanna.Network.SmtpClient.New`
 | <a id="zanna-network-smtpclient-sendresult"></a>`SendResult` | `obj<Zanna.Result>(str,str,str,str)` | `Zanna.Network.SmtpClient.SendResult` |
 | <a id="zanna-network-smtpclient-sendhtmlresult"></a>`SendHtmlResult` | `obj<Zanna.Result>(str,str,str,str)` | `Zanna.Network.SmtpClient.SendHtmlResult` |
 | <a id="zanna-network-smtpclient-close"></a>`Close` | `void()` | `Zanna.Network.SmtpClient.Close` |
-| <a id="zanna-network-smtpclient-new"></a>`New` | `obj(str,i64)` | `Zanna.Network.SmtpClient.New` |
+| <a id="zanna-network-smtpclient-new"></a>`New` | `obj<Zanna.Network.SmtpClient>(str,i64)` | `Zanna.Network.SmtpClient.New` |
 
 <a id="zanna-network-asyncsocket"></a>
 ### `Zanna.Network.AsyncSocket`
@@ -810,8 +810,8 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Network.RetryPolicy.New` | `obj(i64,i64)` | `rt_retry_new` |
-| `Zanna.Network.RetryPolicy.Exponential` | `obj(i64,i64,i64)` | `rt_retry_exponential` |
+| `Zanna.Network.RetryPolicy.New` | `obj<Zanna.Network.RetryPolicy>(i64,i64)` | `rt_retry_new` |
+| `Zanna.Network.RetryPolicy.Exponential` | `obj<Zanna.Network.RetryPolicy>(i64,i64,i64)` | `rt_retry_exponential` |
 | <a id="zanna-network-retrypolicy-get-canretry"></a>`Zanna.Network.RetryPolicy.get_CanRetry` | `i1(obj)` | `rt_retry_can_retry` |
 | `Zanna.Network.RetryPolicy.NextDelay` | `i64(obj)` | `rt_retry_next_delay` |
 | <a id="zanna-network-retrypolicy-get-attempt"></a>`Zanna.Network.RetryPolicy.get_Attempt` | `i64(obj)` | `rt_retry_get_attempt` |
@@ -819,14 +819,14 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.RetryPolicy.Reset` | `void(obj)` | `rt_retry_reset` |
 | <a id="zanna-network-retrypolicy-get-totalattempts"></a>`Zanna.Network.RetryPolicy.get_TotalAttempts` | `i64(obj)` | `rt_retry_get_total_attempts` |
 | <a id="zanna-network-retrypolicy-get-isexhausted"></a>`Zanna.Network.RetryPolicy.get_IsExhausted` | `i1(obj)` | `rt_retry_is_exhausted` |
-| `Zanna.Network.RateLimiter.New` | `obj(i64,f64)` | `rt_ratelimit_new` |
+| `Zanna.Network.RateLimiter.New` | `obj<Zanna.Network.RateLimiter>(i64,f64)` | `rt_ratelimit_new` |
 | `Zanna.Network.RateLimiter.TryAcquire` | `i1(obj)` | `rt_ratelimit_try_acquire` |
 | <a id="zanna-network-ratelimiter-tryacquiremany"></a>`Zanna.Network.RateLimiter.TryAcquireMany` | `i1(obj,i64)` | `rt_ratelimit_try_acquire_n` |
 | <a id="zanna-network-ratelimiter-get-available"></a>`Zanna.Network.RateLimiter.get_Available` | `i64(obj)` | `rt_ratelimit_available` |
 | `Zanna.Network.RateLimiter.Reset` | `void(obj)` | `rt_ratelimit_reset` |
 | <a id="zanna-network-ratelimiter-get-max"></a>`Zanna.Network.RateLimiter.get_Max` | `i64(obj)` | `rt_ratelimit_get_max` |
 | <a id="zanna-network-ratelimiter-get-rate"></a>`Zanna.Network.RateLimiter.get_Rate` | `f64(obj)` | `rt_ratelimit_get_rate` |
-| `Zanna.Network.HttpRouter.New` | `obj()` | `rt_http_router_new` |
+| `Zanna.Network.HttpRouter.New` | `obj<Zanna.Network.HttpRouter>()` | `rt_http_router_new` |
 | `Zanna.Network.HttpRouter.Add` | `obj<Zanna.Network.HttpRouter>(obj,str,str)` | `rt_http_router_add` |
 | `Zanna.Network.HttpRouter.Get` | `obj<Zanna.Network.HttpRouter>(obj,str)` | `rt_http_router_get` |
 | `Zanna.Network.HttpRouter.Post` | `obj<Zanna.Network.HttpRouter>(obj,str)` | `rt_http_router_post` |
@@ -837,7 +837,7 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.RouteMatch.Param` | `str(obj,str)` | `rt_route_match_param` |
 | <a id="zanna-network-routematch-get-index"></a>`Zanna.Network.RouteMatch.get_Index` | `i64(obj)` | `rt_route_match_index` |
 | <a id="zanna-network-routematch-get-pattern"></a>`Zanna.Network.RouteMatch.get_Pattern` | `str(obj)` | `rt_route_match_pattern` |
-| `Zanna.Network.HttpServer.New` | `obj(i64)` | `rt_http_server_new` |
+| `Zanna.Network.HttpServer.New` | `obj<Zanna.Network.HttpServer>(i64)` | `rt_http_server_new` |
 | `Zanna.Network.HttpServer.Get` | `void(obj,str,str)` | `rt_http_server_get` |
 | `Zanna.Network.HttpServer.Post` | `void(obj,str,str)` | `rt_http_server_post` |
 | `Zanna.Network.HttpServer.Put` | `void(obj,str,str)` | `rt_http_server_put` |
@@ -853,11 +853,11 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.ServerReq.Header` | `str(obj,str)` | `rt_server_req_header` |
 | `Zanna.Network.ServerReq.Param` | `str(obj,str)` | `rt_server_req_param` |
 | `Zanna.Network.ServerReq.Query` | `str(obj,str)` | `rt_server_req_query` |
-| `Zanna.Network.ServerRes.Status` | `obj(obj,i64)` | `rt_server_res_status` |
-| `Zanna.Network.ServerRes.Header` | `obj(obj,str,str)` | `rt_server_res_header` |
+| `Zanna.Network.ServerRes.Status` | `obj<Zanna.Network.ServerRes>(obj,i64)` | `rt_server_res_status` |
+| `Zanna.Network.ServerRes.Header` | `obj<Zanna.Network.ServerRes>(obj,str,str)` | `rt_server_res_header` |
 | `Zanna.Network.ServerRes.Send` | `void(obj,str)` | `rt_server_res_send` |
 | `Zanna.Network.ServerRes.Json` | `void(obj,str)` | `rt_server_res_json` |
-| `Zanna.Network.HttpsServer.New` | `obj(i64,str,str)` | `rt_https_server_new` |
+| `Zanna.Network.HttpsServer.New` | `obj<Zanna.Network.HttpsServer>(i64,str,str)` | `rt_https_server_new` |
 | `Zanna.Network.HttpsServer.Get` | `void(obj,str,str)` | `rt_https_server_get` |
 | `Zanna.Network.HttpsServer.Post` | `void(obj,str,str)` | `rt_https_server_post` |
 | `Zanna.Network.HttpsServer.Put` | `void(obj,str,str)` | `rt_https_server_put` |
@@ -867,15 +867,15 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.HttpsServer.Stop` | `void(obj)` | `rt_https_server_stop` |
 | <a id="zanna-network-httpsserver-get-port"></a>`Zanna.Network.HttpsServer.get_Port` | `i64(obj)` | `rt_https_server_port` |
 | <a id="zanna-network-httpsserver-get-isrunning"></a>`Zanna.Network.HttpsServer.get_IsRunning` | `i1(obj)` | `rt_https_server_is_running` |
-| `Zanna.Network.ConnectionPool.New` | `obj(i64)` | `rt_connpool_new` |
+| `Zanna.Network.ConnectionPool.New` | `obj<Zanna.Network.ConnectionPool>(i64)` | `rt_connpool_new` |
 | `Zanna.Network.ConnectionPool.Acquire` | `obj<Zanna.Network.Tcp>(obj,str,i64)` | `rt_connpool_acquire` |
 | `Zanna.Network.ConnectionPool.Release` | `void(obj,obj)` | `rt_connpool_release` |
 | `Zanna.Network.ConnectionPool.Clear` | `void(obj)` | `rt_connpool_clear` |
 | <a id="zanna-network-connectionpool-get-size"></a>`Zanna.Network.ConnectionPool.get_Size` | `i64(obj)` | `rt_connpool_size` |
 | <a id="zanna-network-connectionpool-get-available"></a>`Zanna.Network.ConnectionPool.get_Available` | `i64(obj)` | `rt_connpool_available` |
-| `Zanna.Network.Multipart.New` | `obj()` | `rt_multipart_new` |
-| `Zanna.Network.Multipart.AddField` | `obj(obj,str,str)` | `rt_multipart_add_field` |
-| `Zanna.Network.Multipart.AddFile` | `obj(obj,str,str,obj)` | `rt_multipart_add_file` |
+| `Zanna.Network.Multipart.New` | `obj<Zanna.Network.Multipart>()` | `rt_multipart_new` |
+| `Zanna.Network.Multipart.AddField` | `obj<Zanna.Network.Multipart>(obj,str,str)` | `rt_multipart_add_field` |
+| `Zanna.Network.Multipart.AddFile` | `obj<Zanna.Network.Multipart>(obj,str,str,obj)` | `rt_multipart_add_file` |
 | <a id="zanna-network-multipart-get-contenttype"></a>`Zanna.Network.Multipart.get_ContentType` | `str(obj)` | `rt_multipart_content_type` |
 | `Zanna.Network.Multipart.Build` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_multipart_build` |
 | <a id="zanna-network-multipart-get-count"></a>`Zanna.Network.Multipart.get_Count` | `i64(obj)` | `rt_multipart_count` |
@@ -890,7 +890,7 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.NetUtils.MatchCidr` | `i1(str,str)` | `rt_netutils_match_cidr` |
 | `Zanna.Network.NetUtils.IsPrivateIp` | `i1(str)` | `rt_netutils_is_private_ip` |
 | `Zanna.Network.NetUtils.LocalIpv4` | `str()` | `rt_netutils_local_ipv4` |
-| `Zanna.Network.WsServer.New` | `obj(i64)` | `rt_ws_server_new` |
+| `Zanna.Network.WsServer.New` | `obj<Zanna.Network.WsServer>(i64)` | `rt_ws_server_new` |
 | `Zanna.Network.WsServer.Start` | `void(obj)` | `rt_ws_server_start` |
 | `Zanna.Network.WsServer.Stop` | `void(obj)` | `rt_ws_server_stop` |
 | `Zanna.Network.WsServer.SetSubprotocol` | `void(obj,str)` | `rt_ws_server_set_subprotocol` |
@@ -900,7 +900,7 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | <a id="zanna-network-wsserver-get-subprotocol"></a>`Zanna.Network.WsServer.get_Subprotocol` | `str(obj)` | `rt_ws_server_subprotocol` |
 | <a id="zanna-network-wsserver-get-port"></a>`Zanna.Network.WsServer.get_Port` | `i64(obj)` | `rt_ws_server_port` |
 | <a id="zanna-network-wsserver-get-isrunning"></a>`Zanna.Network.WsServer.get_IsRunning` | `i1(obj)` | `rt_ws_server_is_running` |
-| `Zanna.Network.WssServer.New` | `obj(i64,str,str)` | `rt_wss_server_new` |
+| `Zanna.Network.WssServer.New` | `obj<Zanna.Network.WssServer>(i64,str,str)` | `rt_wss_server_new` |
 | `Zanna.Network.WssServer.Start` | `void(obj)` | `rt_wss_server_start` |
 | `Zanna.Network.WssServer.Stop` | `void(obj)` | `rt_wss_server_stop` |
 | `Zanna.Network.WssServer.SetSubprotocol` | `void(obj,str)` | `rt_wss_server_set_subprotocol` |
@@ -910,7 +910,7 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | <a id="zanna-network-wssserver-get-subprotocol"></a>`Zanna.Network.WssServer.get_Subprotocol` | `str(obj)` | `rt_wss_server_subprotocol` |
 | <a id="zanna-network-wssserver-get-port"></a>`Zanna.Network.WssServer.get_Port` | `i64(obj)` | `rt_wss_server_port` |
 | <a id="zanna-network-wssserver-get-isrunning"></a>`Zanna.Network.WssServer.get_IsRunning` | `i1(obj)` | `rt_wss_server_is_running` |
-| `Zanna.Network.SseClient.Connect` | `obj(str)` | `rt_sse_connect` |
+| `Zanna.Network.SseClient.Connect` | `obj<Zanna.Network.SseClient>(str)` | `rt_sse_connect` |
 | `Zanna.Network.SseClient.Recv` | `str(obj)` | `rt_sse_recv` |
 | `Zanna.Network.SseClient.RecvFor` | `str(obj,i64)` | `rt_sse_recv_for` |
 | `Zanna.Network.SseClient.RecvForResult` | `obj<Zanna.Result>(obj,i64)` | `rt_sse_recv_for_result` |
@@ -918,7 +918,7 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.SseClient.Close` | `void(obj)` | `rt_sse_close` |
 | <a id="zanna-network-sseclient-get-lasteventtype"></a>`Zanna.Network.SseClient.get_LastEventType` | `str(obj)` | `rt_sse_last_event_type` |
 | <a id="zanna-network-sseclient-get-lasteventid"></a>`Zanna.Network.SseClient.get_LastEventId` | `str(obj)` | `rt_sse_last_event_id` |
-| `Zanna.Network.HttpClient.New` | `obj()` | `rt_http_client_new` |
+| `Zanna.Network.HttpClient.New` | `obj<Zanna.Network.HttpClient>()` | `rt_http_client_new` |
 | `Zanna.Network.HttpClient.Get` | `obj<Zanna.Network.HttpRes>(obj,str)` | `rt_http_client_get` |
 | `Zanna.Network.HttpClient.Post` | `obj<Zanna.Network.HttpRes>(obj,str,str)` | `rt_http_client_post` |
 | `Zanna.Network.HttpClient.Put` | `obj<Zanna.Network.HttpRes>(obj,str,str)` | `rt_http_client_put` |
@@ -934,7 +934,7 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.HttpClient.SetCookie` | `void(obj,str,str,str)` | `rt_http_client_set_cookie` |
 | `Zanna.Network.HttpClient.DeleteCookie` | `void(obj,str,str)` | `rt_http_client_delete_cookie` |
 | `Zanna.Network.HttpClient.GetCookies` | `obj<Zanna.Collections.Map>(obj,str)` | `rt_http_client_get_cookies` |
-| `Zanna.Network.SmtpClient.New` | `obj(str,i64)` | `rt_smtp_new` |
+| `Zanna.Network.SmtpClient.New` | `obj<Zanna.Network.SmtpClient>(str,i64)` | `rt_smtp_new` |
 | `Zanna.Network.SmtpClient.SetAuth` | `void(obj,str,str)` | `rt_smtp_set_auth` |
 | `Zanna.Network.SmtpClient.SetTls` | `void(obj,i1)` | `rt_smtp_set_tls` |
 | `Zanna.Network.SmtpClient.SendResult` | `obj<Zanna.Result>(obj,str,str,str,str)` | `rt_smtp_send_result` |
@@ -947,8 +947,8 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.AsyncSocket.RecvAsync` | `obj<Zanna.Threads.Future>(obj,i64)` | `rt_async_recv` |
 | `Zanna.Network.AsyncSocket.HttpGetAsync` | `obj<Zanna.Threads.Future>(str)` | `rt_async_http_get` |
 | `Zanna.Network.AsyncSocket.HttpPostAsync` | `obj<Zanna.Threads.Future>(str,str)` | `rt_async_http_post` |
-| `Zanna.Network.Tcp.Connect` | `obj(str,i64)` | `rt_tcp_connect` |
-| `Zanna.Network.Tcp.ConnectFor` | `obj(str,i64,i64)` | `rt_tcp_connect_for` |
+| `Zanna.Network.Tcp.Connect` | `obj<Zanna.Network.Tcp>(str,i64)` | `rt_tcp_connect` |
+| `Zanna.Network.Tcp.ConnectFor` | `obj<Zanna.Network.Tcp>(str,i64,i64)` | `rt_tcp_connect_for` |
 | <a id="zanna-network-tcp-get-host"></a>`Zanna.Network.Tcp.get_Host` | `str(obj)` | `rt_tcp_host` |
 | <a id="zanna-network-tcp-get-port"></a>`Zanna.Network.Tcp.get_Port` | `i64(obj)` | `rt_tcp_port` |
 | <a id="zanna-network-tcp-get-localport"></a>`Zanna.Network.Tcp.get_LocalPort` | `i64(obj)` | `rt_tcp_local_port` |
@@ -957,32 +957,32 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.Tcp.Send` | `i64(obj,obj)` | `rt_tcp_send` |
 | `Zanna.Network.Tcp.SendStr` | `i64(obj,str)` | `rt_tcp_send_str` |
 | `Zanna.Network.Tcp.SendAll` | `void(obj,obj)` | `rt_tcp_send_all` |
-| `Zanna.Network.Tcp.Recv` | `obj(obj,i64)` | `rt_tcp_recv` |
+| `Zanna.Network.Tcp.Recv` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_tcp_recv` |
 | `Zanna.Network.Tcp.RecvStr` | `str(obj,i64)` | `rt_tcp_recv_str` |
-| `Zanna.Network.Tcp.RecvExact` | `obj(obj,i64)` | `rt_tcp_recv_exact` |
+| `Zanna.Network.Tcp.RecvExact` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_tcp_recv_exact` |
 | `Zanna.Network.Tcp.RecvLine` | `str(obj)` | `rt_tcp_recv_line` |
 | `Zanna.Network.Tcp.SetRecvTimeout` | `void(obj,i64)` | `rt_tcp_set_recv_timeout` |
 | `Zanna.Network.Tcp.SetSendTimeout` | `void(obj,i64)` | `rt_tcp_set_send_timeout` |
 | `Zanna.Network.Tcp.Close` | `void(obj)` | `rt_tcp_close` |
-| `Zanna.Network.TcpServer.Listen` | `obj(i64)` | `rt_tcp_server_listen` |
-| `Zanna.Network.TcpServer.ListenAt` | `obj(str,i64)` | `rt_tcp_server_listen_at` |
+| `Zanna.Network.TcpServer.Listen` | `obj<Zanna.Network.TcpServer>(i64)` | `rt_tcp_server_listen` |
+| `Zanna.Network.TcpServer.ListenAt` | `obj<Zanna.Network.TcpServer>(str,i64)` | `rt_tcp_server_listen_at` |
 | <a id="zanna-network-tcpserver-get-port"></a>`Zanna.Network.TcpServer.get_Port` | `i64(obj)` | `rt_tcp_server_port` |
 | <a id="zanna-network-tcpserver-get-address"></a>`Zanna.Network.TcpServer.get_Address` | `str(obj)` | `rt_tcp_server_address` |
 | <a id="zanna-network-tcpserver-get-islistening"></a>`Zanna.Network.TcpServer.get_IsListening` | `i1(obj)` | `rt_tcp_server_is_listening` |
 | `Zanna.Network.TcpServer.Accept` | `obj<Zanna.Network.Tcp>(obj)` | `rt_tcp_server_accept` |
 | `Zanna.Network.TcpServer.AcceptFor` | `obj<Zanna.Network.Tcp>(obj,i64)` | `rt_tcp_server_accept_for` |
 | `Zanna.Network.TcpServer.Close` | `void(obj)` | `rt_tcp_server_close` |
-| `Zanna.Network.Udp.New` | `obj()` | `rt_udp_new` |
-| `Zanna.Network.Udp.Bind` | `obj(i64)` | `rt_udp_bind` |
-| `Zanna.Network.Udp.BindAt` | `obj(str,i64)` | `rt_udp_bind_at` |
+| `Zanna.Network.Udp.New` | `obj<Zanna.Network.Udp>()` | `rt_udp_new` |
+| `Zanna.Network.Udp.Bind` | `obj<Zanna.Network.Udp>(i64)` | `rt_udp_bind` |
+| `Zanna.Network.Udp.BindAt` | `obj<Zanna.Network.Udp>(str,i64)` | `rt_udp_bind_at` |
 | <a id="zanna-network-udp-get-port"></a>`Zanna.Network.Udp.get_Port` | `i64(obj)` | `rt_udp_port` |
 | <a id="zanna-network-udp-get-address"></a>`Zanna.Network.Udp.get_Address` | `str(obj)` | `rt_udp_address` |
 | <a id="zanna-network-udp-get-isbound"></a>`Zanna.Network.Udp.get_IsBound` | `i1(obj)` | `rt_udp_is_bound` |
 | `Zanna.Network.Udp.SendTo` | `i64(obj,str,i64,obj)` | `rt_udp_send_to` |
 | `Zanna.Network.Udp.SendToStr` | `i64(obj,str,i64,str)` | `rt_udp_send_to_str` |
-| `Zanna.Network.Udp.Recv` | `obj(obj,i64)` | `rt_udp_recv` |
-| `Zanna.Network.Udp.RecvFrom` | `obj(obj,i64)` | `rt_udp_recv_from` |
-| `Zanna.Network.Udp.RecvFor` | `obj(obj,i64,i64)` | `rt_udp_recv_for` |
+| `Zanna.Network.Udp.Recv` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_udp_recv` |
+| `Zanna.Network.Udp.RecvFrom` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_udp_recv_from` |
+| `Zanna.Network.Udp.RecvFor` | `obj<Zanna.Collections.Bytes>(obj,i64,i64)` | `rt_udp_recv_for` |
 | `Zanna.Network.Udp.SenderHost` | `str(obj)` | `rt_udp_sender_host` |
 | `Zanna.Network.Udp.SenderPort` | `i64(obj)` | `rt_udp_sender_port` |
 | `Zanna.Network.Udp.SetBroadcast` | `void(obj,i1)` | `rt_udp_set_broadcast` |
@@ -1003,25 +1003,25 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.Http.Get` | `str(str)` | `rt_http_get` |
 | `Zanna.Network.Http.GetBytes` | `obj<Zanna.Collections.Bytes>(str)` | `rt_http_get_bytes` |
 | `Zanna.Network.Http.Post` | `str(str,str)` | `rt_http_post` |
-| `Zanna.Network.Http.PostBytes` | `obj(str,obj)` | `rt_http_post_bytes` |
+| `Zanna.Network.Http.PostBytes` | `obj<Zanna.Collections.Bytes>(str,obj)` | `rt_http_post_bytes` |
 | `Zanna.Network.Http.Download` | `i1(str,str)` | `rt_http_download` |
 | `Zanna.Network.Http.Head` | `obj<Zanna.Collections.Map>(str)` | `rt_http_head` |
 | `Zanna.Network.Http.Patch` | `str(str,str)` | `rt_http_patch` |
 | `Zanna.Network.Http.Options` | `str(str)` | `rt_http_options` |
 | `Zanna.Network.Http.Put` | `str(str,str)` | `rt_http_put` |
-| `Zanna.Network.Http.PutBytes` | `obj(str,obj)` | `rt_http_put_bytes` |
+| `Zanna.Network.Http.PutBytes` | `obj<Zanna.Collections.Bytes>(str,obj)` | `rt_http_put_bytes` |
 | `Zanna.Network.Http.Delete` | `str(str)` | `rt_http_delete` |
-| `Zanna.Network.Http.DeleteBytes` | `obj(str)` | `rt_http_delete_bytes` |
-| `Zanna.Network.HttpReq.New` | `obj(str,str)` | `rt_http_req_new` |
-| `Zanna.Network.HttpReq.SetHeader` | `obj(obj,str,str)` | `rt_http_req_set_header` |
-| `Zanna.Network.HttpReq.AddHeader` | `obj(obj,str,str)` | `rt_http_req_add_header` |
-| `Zanna.Network.HttpReq.SetBody` | `obj(obj,obj)` | `rt_http_req_set_body` |
-| `Zanna.Network.HttpReq.SetBodyStr` | `obj(obj,str)` | `rt_http_req_set_body_str` |
-| `Zanna.Network.HttpReq.SetTimeout` | `obj(obj,i64)` | `rt_http_req_set_timeout` |
-| `Zanna.Network.HttpReq.SetForceHttp1` | `obj(obj,i1)` | `rt_http_req_set_force_http1` |
-| `Zanna.Network.HttpReq.SetTlsVerify` | `obj(obj,i1)` | `rt_http_req_set_tls_verify` |
-| `Zanna.Network.HttpReq.AllowInsecureCertificatesForTesting` | `obj(obj)` | `rt_http_req_allow_insecure_certificates_for_testing` |
-| `Zanna.Network.HttpReq.SetKeepAlive` | `obj(obj,i1)` | `rt_http_req_set_keep_alive` |
+| `Zanna.Network.Http.DeleteBytes` | `obj<Zanna.Collections.Bytes>(str)` | `rt_http_delete_bytes` |
+| `Zanna.Network.HttpReq.New` | `obj<Zanna.Network.HttpReq>(str,str)` | `rt_http_req_new` |
+| `Zanna.Network.HttpReq.SetHeader` | `obj<Zanna.Network.HttpReq>(obj,str,str)` | `rt_http_req_set_header` |
+| `Zanna.Network.HttpReq.AddHeader` | `obj<Zanna.Network.HttpReq>(obj,str,str)` | `rt_http_req_add_header` |
+| `Zanna.Network.HttpReq.SetBody` | `obj<Zanna.Network.HttpReq>(obj,obj)` | `rt_http_req_set_body` |
+| `Zanna.Network.HttpReq.SetBodyStr` | `obj<Zanna.Network.HttpReq>(obj,str)` | `rt_http_req_set_body_str` |
+| `Zanna.Network.HttpReq.SetTimeout` | `obj<Zanna.Network.HttpReq>(obj,i64)` | `rt_http_req_set_timeout` |
+| `Zanna.Network.HttpReq.SetForceHttp1` | `obj<Zanna.Network.HttpReq>(obj,i1)` | `rt_http_req_set_force_http1` |
+| `Zanna.Network.HttpReq.SetTlsVerify` | `obj<Zanna.Network.HttpReq>(obj,i1)` | `rt_http_req_set_tls_verify` |
+| `Zanna.Network.HttpReq.AllowInsecureCertificatesForTesting` | `obj<Zanna.Network.HttpReq>(obj)` | `rt_http_req_allow_insecure_certificates_for_testing` |
+| `Zanna.Network.HttpReq.SetKeepAlive` | `obj<Zanna.Network.HttpReq>(obj,i1)` | `rt_http_req_set_keep_alive` |
 | `Zanna.Network.HttpReq.Send` | `obj<Zanna.Network.HttpRes>(obj)` | `rt_http_req_send` |
 | `Zanna.Network.HttpReq.SendResult` | `obj<Zanna.Result>(obj)` | `rt_http_req_send_result` |
 | <a id="zanna-network-httpres-get-status"></a>`Zanna.Network.HttpRes.get_Status` | `i64(obj)` | `rt_http_res_status` |
@@ -1031,8 +1031,8 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.HttpRes.BodyStr` | `str(obj)` | `rt_http_res_body_str` |
 | `Zanna.Network.HttpRes.Header` | `str(obj,str)` | `rt_http_res_header` |
 | `Zanna.Network.HttpRes.IsOk` | `i1(obj)` | `rt_http_res_is_ok` |
-| `Zanna.Network.Url.Parse` | `obj(str)` | `rt_url_parse` |
-| `Zanna.Network.Url.New` | `obj()` | `rt_url_new` |
+| `Zanna.Network.Url.Parse` | `obj<Zanna.Network.Url>(str)` | `rt_url_parse` |
+| `Zanna.Network.Url.New` | `obj<Zanna.Network.Url>()` | `rt_url_new` |
 | <a id="zanna-network-url-get-scheme"></a>`Zanna.Network.Url.get_Scheme` | `str(obj)` | `rt_url_scheme` |
 | <a id="zanna-network-url-set-scheme"></a>`Zanna.Network.Url.set_Scheme` | `void(obj,str)` | `rt_url_set_scheme` |
 | <a id="zanna-network-url-get-host"></a>`Zanna.Network.Url.get_Host` | `str(obj)` | `rt_url_host` |
@@ -1052,21 +1052,21 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | <a id="zanna-network-url-get-authority"></a>`Zanna.Network.Url.get_Authority` | `str(obj)` | `rt_url_authority` |
 | <a id="zanna-network-url-get-hostport"></a>`Zanna.Network.Url.get_HostPort` | `str(obj)` | `rt_url_host_port` |
 | <a id="zanna-network-url-get-full"></a>`Zanna.Network.Url.get_Full` | `str(obj)` | `rt_url_full` |
-| `Zanna.Network.Url.SetQueryParam` | `obj(obj,str,str)` | `rt_url_set_query_param` |
+| `Zanna.Network.Url.SetQueryParam` | `obj<Zanna.Network.Url>(obj,str,str)` | `rt_url_set_query_param` |
 | `Zanna.Network.Url.GetQueryParam` | `str(obj,str)` | `rt_url_get_query_param` |
 | `Zanna.Network.Url.HasQueryParam` | `i1(obj,str)` | `rt_url_has_query_param` |
-| `Zanna.Network.Url.RemoveQueryParam` | `obj(obj,str)` | `rt_url_del_query_param` |
-| `Zanna.Network.Url.QueryMap` | `obj(obj)` | `rt_url_query_map` |
-| `Zanna.Network.Url.Resolve` | `obj(obj,str)` | `rt_url_resolve` |
-| `Zanna.Network.Url.Clone` | `obj(obj)` | `rt_url_clone` |
+| `Zanna.Network.Url.RemoveQueryParam` | `obj<Zanna.Network.Url>(obj,str)` | `rt_url_del_query_param` |
+| `Zanna.Network.Url.QueryMap` | `obj<Zanna.Collections.Map>(obj)` | `rt_url_query_map` |
+| `Zanna.Network.Url.Resolve` | `obj<Zanna.Network.Url>(obj,str)` | `rt_url_resolve` |
+| `Zanna.Network.Url.Clone` | `obj<Zanna.Network.Url>(obj)` | `rt_url_clone` |
 | `Zanna.Network.Url.EncodeQuery` | `str(obj)` | `rt_url_encode_query` |
-| `Zanna.Network.Url.DecodeQuery` | `obj(str)` | `rt_url_decode_query` |
+| `Zanna.Network.Url.DecodeQuery` | `obj<Zanna.Collections.Map>(str)` | `rt_url_decode_query` |
 | `Zanna.Network.Url.IsValid` | `i1(str)` | `rt_url_is_valid` |
 | `Zanna.Network.Url.IsValidAbsolute` | `i1(str)` | `rt_url_is_valid_absolute` |
-| `Zanna.Network.WebSocket.Connect` | `obj(str)` | `rt_ws_connect` |
-| `Zanna.Network.WebSocket.ConnectFor` | `obj(str,i64)` | `rt_ws_connect_for` |
-| `Zanna.Network.WebSocket.ConnectProtocol` | `obj(str,str)` | `rt_ws_connect_protocol` |
-| `Zanna.Network.WebSocket.ConnectForProtocol` | `obj(str,i64,str)` | `rt_ws_connect_for_protocol` |
+| `Zanna.Network.WebSocket.Connect` | `obj<Zanna.Network.WebSocket>(str)` | `rt_ws_connect` |
+| `Zanna.Network.WebSocket.ConnectFor` | `obj<Zanna.Network.WebSocket>(str,i64)` | `rt_ws_connect_for` |
+| `Zanna.Network.WebSocket.ConnectProtocol` | `obj<Zanna.Network.WebSocket>(str,str)` | `rt_ws_connect_protocol` |
+| `Zanna.Network.WebSocket.ConnectForProtocol` | `obj<Zanna.Network.WebSocket>(str,i64,str)` | `rt_ws_connect_for_protocol` |
 | <a id="zanna-network-websocket-get-url"></a>`Zanna.Network.WebSocket.get_Url` | `str(obj)` | `rt_ws_url` |
 | <a id="zanna-network-websocket-get-isopen"></a>`Zanna.Network.WebSocket.get_IsOpen` | `i1(obj)` | `rt_ws_is_open` |
 | <a id="zanna-network-websocket-get-closecode"></a>`Zanna.Network.WebSocket.get_CloseCode` | `i64(obj)` | `rt_ws_close_code` |
@@ -1077,11 +1077,11 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | `Zanna.Network.WebSocket.Ping` | `void(obj)` | `rt_ws_ping` |
 | `Zanna.Network.WebSocket.Recv` | `str(obj)` | `rt_ws_recv` |
 | `Zanna.Network.WebSocket.RecvFor` | `str(obj,i64)` | `rt_ws_recv_for` |
-| `Zanna.Network.WebSocket.RecvBytes` | `obj(obj)` | `rt_ws_recv_bytes` |
-| `Zanna.Network.WebSocket.RecvBytesFor` | `obj(obj,i64)` | `rt_ws_recv_bytes_for` |
+| `Zanna.Network.WebSocket.RecvBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_ws_recv_bytes` |
+| `Zanna.Network.WebSocket.RecvBytesFor` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_ws_recv_bytes_for` |
 | `Zanna.Network.WebSocket.Close` | `void(obj)` | `rt_ws_close` |
 | `Zanna.Network.WebSocket.CloseWith` | `void(obj,i64,str)` | `rt_ws_close_with` |
-| `Zanna.Network.RestClient.New` | `obj(str)` | `rt_restclient_new` |
+| `Zanna.Network.RestClient.New` | `obj<Zanna.Network.RestClient>(str)` | `rt_restclient_new` |
 | <a id="zanna-network-restclient-get-baseurl"></a>`Zanna.Network.RestClient.get_BaseUrl` | `str(obj)` | `rt_restclient_base_url` |
 | `Zanna.Network.RestClient.SetHeader` | `void(obj,str,str)` | `rt_restclient_set_header` |
 | `Zanna.Network.RestClient.RemoveHeader` | `void(obj,str)` | `rt_restclient_del_header` |
@@ -1092,17 +1092,17 @@ Its public surface exposes operations including `ConnectAsync`, `ConnectForAsync
 | <a id="zanna-network-restclient-get-keepalive"></a>`Zanna.Network.RestClient.get_KeepAlive` | `i1(obj)` | `rt_restclient_get_keep_alive` |
 | <a id="zanna-network-restclient-set-keepalive"></a>`Zanna.Network.RestClient.set_KeepAlive` | `void(obj,i1)` | `rt_restclient_set_keep_alive` |
 | `Zanna.Network.RestClient.SetPoolSize` | `void(obj,i64)` | `rt_restclient_set_pool_size` |
-| `Zanna.Network.RestClient.Get` | `obj(obj,str)` | `rt_restclient_get` |
+| `Zanna.Network.RestClient.Get` | `obj<Zanna.Network.HttpRes>(obj,str)` | `rt_restclient_get` |
 | `Zanna.Network.RestClient.GetResult` | `obj<Zanna.Result>(obj,str)` | `rt_restclient_get_result` |
-| `Zanna.Network.RestClient.Post` | `obj(obj,str,str)` | `rt_restclient_post` |
+| `Zanna.Network.RestClient.Post` | `obj<Zanna.Network.HttpRes>(obj,str,str)` | `rt_restclient_post` |
 | `Zanna.Network.RestClient.PostResult` | `obj<Zanna.Result>(obj,str,str)` | `rt_restclient_post_result` |
-| `Zanna.Network.RestClient.Put` | `obj(obj,str,str)` | `rt_restclient_put` |
+| `Zanna.Network.RestClient.Put` | `obj<Zanna.Network.HttpRes>(obj,str,str)` | `rt_restclient_put` |
 | `Zanna.Network.RestClient.PutResult` | `obj<Zanna.Result>(obj,str,str)` | `rt_restclient_put_result` |
-| `Zanna.Network.RestClient.Patch` | `obj(obj,str,str)` | `rt_restclient_patch` |
+| `Zanna.Network.RestClient.Patch` | `obj<Zanna.Network.HttpRes>(obj,str,str)` | `rt_restclient_patch` |
 | `Zanna.Network.RestClient.PatchResult` | `obj<Zanna.Result>(obj,str,str)` | `rt_restclient_patch_result` |
-| `Zanna.Network.RestClient.Delete` | `obj(obj,str)` | `rt_restclient_delete` |
+| `Zanna.Network.RestClient.Delete` | `obj<Zanna.Network.HttpRes>(obj,str)` | `rt_restclient_delete` |
 | `Zanna.Network.RestClient.DeleteResult` | `obj<Zanna.Result>(obj,str)` | `rt_restclient_delete_result` |
-| `Zanna.Network.RestClient.Head` | `obj(obj,str)` | `rt_restclient_head` |
+| `Zanna.Network.RestClient.Head` | `obj<Zanna.Network.HttpRes>(obj,str)` | `rt_restclient_head` |
 | `Zanna.Network.RestClient.HeadResult` | `obj<Zanna.Result>(obj,str)` | `rt_restclient_head_result` |
 | `Zanna.Network.RestClient.GetJson` | `obj(obj,str)` | `rt_restclient_get_json` |
 | `Zanna.Network.RestClient.PostJson` | `obj(obj,str,obj)` | `rt_restclient_post_json` |

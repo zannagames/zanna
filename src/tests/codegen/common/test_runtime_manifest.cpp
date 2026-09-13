@@ -45,6 +45,14 @@ TEST(RuntimeManifest, PlatformServicesSymbolsSelectServicesArchive) {
         "rt_services_steam_get_steam_id",
         "Zanna.Services.Platform.Init",
         "Zanna.Services.Steam.get_SteamId",
+        // Player features (ADR 0353) live in the same archive.
+        "rt_services_achievements_unlock",
+        "rt_services_leaderboards_download",
+        "rt_services_request_entry_user_name",
+        "rt_services_on_screen_keyboard_request_text",
+        "rt_services_cloud_read",
+        "Zanna.Services.Stats.Store",
+        "Zanna.Services.Overlay.OpenStore",
     };
     for (const auto symbol : symbols) {
         const auto component = componentForRuntimeSymbol(symbol);

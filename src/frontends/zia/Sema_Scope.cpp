@@ -440,6 +440,60 @@ bool Sema::tryExtractNullCheck(Expr *cond,
     return false;
 }
 
+/// @brief Collect the optional values a condition proves non-null on one outcome.
+/// @details A single null comparison contributes its operand when the comparison's outcome
+///          implies non-null. A conjunction that holds, or a disjunction that fails, proves
+///          everything each operand proves on that same outcome; logical negation swaps the
+///          outcome. Operands without an Optional type contribute nothing.
+/// @param cond Condition expression.
+/// @param whenTrue Outcome of @p cond on the path being analyzed.
+/// @param facts Receives each narrowing key and the inner type it narrows to.
+void Sema::collectNonNullFacts(Expr *cond,
+                               bool whenTrue,
+                               std::vector<std::pair<std::string, TypeRef>> &facts) {
+    if (!cond)
+        return;
+    if (cond->kind == ExprKind::Unary) {
+        auto *unary = static_cast<UnaryExpr *>(cond);
+        if (unary->op == UnaryOp::Not)
+            collectNonNullFacts(unary->operand.get(), !whenTrue, facts);
+        return;
+    }
+    if (cond->kind == ExprKind::Binary) {
+        auto *binary = static_cast<BinaryExpr *>(cond);
+        if ((binary->op == BinaryOp::And && whenTrue) ||
+            (binary->op == BinaryOp::Or && !whenTrue)) {
+            collectNonNullFacts(binary->left.get(), whenTrue, facts);
+            collectNonNullFacts(binary->right.get(), whenTrue, facts);
+            return;
+        }
+    }
+
+    std::string varName;
+    bool isNotNull = false;
+    TypeRef checkedType = nullptr;
+    if (!tryExtractNullCheck(cond, varName, isNotNull, &checkedType) || isNotNull != whenTrue)
+        return;
+    TypeRef varType = checkedType ? checkedType : lookupVarType(varName);
+    if (varType && varType->kind == TypeKindSem::Optional && varType->innerType())
+        facts.emplace_back(varName, varType->innerType());
+}
+
+/// @brief Open one narrowing scope holding every fact a condition proves on a path.
+/// @param cond Condition expression.
+/// @param whenTrue Outcome of @p cond on the path being analyzed.
+/// @return True when a scope was opened; the caller must pop it after the path.
+bool Sema::pushConditionNarrowing(Expr *cond, bool whenTrue) {
+    std::vector<std::pair<std::string, TypeRef>> facts;
+    collectNonNullFacts(cond, whenTrue, facts);
+    if (facts.empty())
+        return false;
+    pushNarrowingScope();
+    for (const auto &[name, type] : facts)
+        narrowType(name, type);
+    return true;
+}
+
 /// @brief Build a stable flow-narrowing key for an expression.
 /// @param expr Identifier, `self`, dotted field chain, or literal-index chain.
 /// @return Reconstructable access path, or an empty string for unsupported expressions/indexes.

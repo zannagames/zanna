@@ -78,7 +78,7 @@ func start() {
         while (i < decals.count) {
             var decal = decals.get(i);
             Decal3D.Update(decal, 0.016);
-            if (Decal3D.get_IsExpired(decal) == 0) {
+            if (not Decal3D.get_IsExpired(decal)) {
                 Canvas3D.DrawDecal(canvas, decal);
             }
             i = i + 1;

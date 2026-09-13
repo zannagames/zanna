@@ -916,11 +916,27 @@ static void test_read_all_lines() {
     create_test_file_bin(file_path, trailing, sizeof(trailing) - 1);
     path = rt_const_cstr(file_path);
     lines = rt_io_file_read_all_lines(path);
-    test_result("trailing empty lines preserved", rt_seq_len(lines) == 3);
+    // The final terminator ends the empty second line; it does not start a third.
+    test_result("trailing empty line preserved", rt_seq_len(lines) == 2);
     test_result("trailing line0", rt_str_eq((rt_string)rt_seq_get(lines, 0), rt_const_cstr("one")));
     test_result("trailing line1 empty", rt_str_len((rt_string)rt_seq_get(lines, 1)) == 0);
-    test_result("trailing line2 empty", rt_str_len((rt_string)rt_seq_get(lines, 2)) == 0);
 
+    remove_file(file_path);
+
+    snprintf(file_path, sizeof(file_path), "%s_read_all_lines_terminated.txt", base);
+    static const char terminated[] = "L1\r\nL2\n";
+    create_test_file_bin(file_path, terminated, sizeof(terminated) - 1);
+    path = rt_const_cstr(file_path);
+    lines = rt_io_file_read_all_lines(path);
+    test_result("terminated last line adds no empty line", rt_seq_len(lines) == 2);
+    test_result("terminated line1",
+                rt_str_eq((rt_string)rt_seq_get(lines, 1), rt_const_cstr("L2")));
+    remove_file(file_path);
+
+    static const char only_newline[] = "\n";
+    create_test_file_bin(file_path, only_newline, sizeof(only_newline) - 1);
+    lines = rt_io_file_read_all_lines(path);
+    test_result("single newline is one empty line", rt_seq_len(lines) == 1);
     remove_file(file_path);
 
     printf("\n");

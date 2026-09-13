@@ -140,6 +140,7 @@ construct the class directly. Its public surface exposes properties such as `Vol
 | <a id="zanna-audio-music-destroy"></a>`Destroy` | `void()` | `Zanna.Audio.Music.Destroy` |
 | <a id="zanna-audio-music-crossfadeto"></a>`CrossfadeTo` | `void(obj<Zanna.Audio.Music>,i64)` | `Zanna.Audio.Music.CrossfadeTo` |
 | <a id="zanna-audio-music-load"></a>`Load` | `obj<Zanna.Audio.Music>(str)` | `Zanna.Audio.Music.Load` |
+| <a id="zanna-audio-music-loadasset"></a>`LoadAsset` | `obj<Zanna.Audio.Music>(str)` | `Zanna.Audio.Music.LoadAsset` |
 
 <a id="zanna-audio-playlist"></a>
 ### `Zanna.Audio.Playlist`
@@ -181,7 +182,7 @@ Constructor: `Zanna.Audio.Playlist.New`
 | <a id="zanna-audio-playlist-previous"></a>`Previous` | `void()` | `Zanna.Audio.Playlist.Previous` |
 | <a id="zanna-audio-playlist-jump"></a>`Jump` | `void(i64)` | `Zanna.Audio.Playlist.Jump` |
 | <a id="zanna-audio-playlist-update"></a>`Update` | `void()` | `Zanna.Audio.Playlist.Update` |
-| <a id="zanna-audio-playlist-new"></a>`New` | `obj()` | `Zanna.Audio.Playlist.New` |
+| <a id="zanna-audio-playlist-new"></a>`New` | `obj<Zanna.Audio.Playlist>()` | `Zanna.Audio.Playlist.New` |
 
 <a id="zanna-audio-soundbank"></a>
 ### `Zanna.Audio.SoundBank`
@@ -212,7 +213,7 @@ Constructor: `Zanna.Audio.SoundBank.New`
 | <a id="zanna-audio-soundbank-get"></a>`Get` | `obj<Zanna.Audio.Sound>(str)` | `Zanna.Audio.SoundBank.Get` |
 | <a id="zanna-audio-soundbank-remove"></a>`Remove` | `void(str)` | `Zanna.Audio.SoundBank.Remove` |
 | <a id="zanna-audio-soundbank-clear"></a>`Clear` | `void()` | `Zanna.Audio.SoundBank.Clear` |
-| <a id="zanna-audio-soundbank-new"></a>`New` | `obj()` | `Zanna.Audio.SoundBank.New` |
+| <a id="zanna-audio-soundbank-new"></a>`New` | `obj<Zanna.Audio.SoundBank>()` | `Zanna.Audio.SoundBank.New` |
 
 <a id="zanna-audio-synth"></a>
 ### `Zanna.Audio.Synth`
@@ -271,7 +272,7 @@ Constructor: `Zanna.Audio.MusicGen.New`
 | <a id="zanna-audio-musicgen-setswing"></a>`SetSwing` | `void(i64)` | `Zanna.Audio.MusicGen.SetSwing` |
 | <a id="zanna-audio-musicgen-setloopable"></a>`SetLoopable` | `void(i1)` | `Zanna.Audio.MusicGen.SetLoopable` |
 | <a id="zanna-audio-musicgen-build"></a>`Build` | `obj<Zanna.Audio.Sound>()` | `Zanna.Audio.MusicGen.Build` |
-| <a id="zanna-audio-musicgen-new"></a>`New` | `obj(i64)` | `Zanna.Audio.MusicGen.New` |
+| <a id="zanna-audio-musicgen-new"></a>`New` | `obj<Zanna.Audio.MusicGen>(i64)` | `Zanna.Audio.MusicGen.New` |
 
 <a id="zanna-audio-spatialaudio3d"></a>
 ### `Zanna.Audio.SpatialAudio3D`
@@ -354,6 +355,7 @@ Its public surface exposes operations including `SetListener`, `PlayAt`, `Update
 | `Zanna.Audio.Voice.GetLevel` | `f64(i64)` | `rt_voice_get_level` |
 | `Zanna.Audio.Mixer.SetGroupDucking` | `void(str,str,f64,f64,f64)` | `rt_audio_set_group_ducking` |
 | `Zanna.Audio.Music.Load` | `obj<Zanna.Audio.Music>(str)` | `rt_music_load` |
+| `Zanna.Audio.Music.LoadAsset` | `obj<Zanna.Audio.Music>(str)` | `rt_music_load_asset` |
 | `Zanna.Audio.Music.Destroy` | `void(obj<Zanna.Audio.Music>)` | `rt_music_destroy` |
 | `Zanna.Audio.Music.Play` | `void(obj<Zanna.Audio.Music>,i64)` | `rt_music_play` |
 | `Zanna.Audio.Music.Stop` | `void(obj<Zanna.Audio.Music>)` | `rt_music_stop` |
@@ -366,7 +368,7 @@ Its public surface exposes operations including `SetListener`, `PlayAt`, `Update
 | `Zanna.Audio.Music.Seek` | `void(obj<Zanna.Audio.Music>,i64)` | `rt_music_seek` |
 | <a id="zanna-audio-music-get-position"></a>`Zanna.Audio.Music.get_Position` | `i64(obj<Zanna.Audio.Music>)` | `rt_music_get_position` |
 | <a id="zanna-audio-music-get-duration"></a>`Zanna.Audio.Music.get_Duration` | `i64(obj<Zanna.Audio.Music>)` | `rt_music_get_duration` |
-| `Zanna.Audio.Playlist.New` | `obj()` | `rt_playlist_new` |
+| `Zanna.Audio.Playlist.New` | `obj<Zanna.Audio.Playlist>()` | `rt_playlist_new` |
 | `Zanna.Audio.Playlist.Add` | `void(obj,str)` | `rt_playlist_add` |
 | `Zanna.Audio.Playlist.Insert` | `void(obj,i64,str)` | `rt_playlist_insert` |
 | `Zanna.Audio.Playlist.Remove` | `void(obj,i64)` | `rt_playlist_remove` |
@@ -389,7 +391,7 @@ Its public surface exposes operations including `SetListener`, `PlayAt`, `Update
 | <a id="zanna-audio-playlist-set-shuffle"></a>`Zanna.Audio.Playlist.set_Shuffle` | `void(obj,i1)` | `rt_playlist_set_shuffle` |
 | <a id="zanna-audio-playlist-get-repeat"></a>`Zanna.Audio.Playlist.get_Repeat` | `i64(obj)` | `rt_playlist_get_repeat` |
 | <a id="zanna-audio-playlist-set-repeat"></a>`Zanna.Audio.Playlist.set_Repeat` | `void(obj,i64)` | `rt_playlist_set_repeat` |
-| `Zanna.Audio.SoundBank.New` | `obj()` | `rt_soundbank_new` |
+| `Zanna.Audio.SoundBank.New` | `obj<Zanna.Audio.SoundBank>()` | `rt_soundbank_new` |
 | `Zanna.Audio.SoundBank.Register` | `i64(obj,str,str)` | `rt_soundbank_register` |
 | `Zanna.Audio.SoundBank.RegisterSound` | `i64(obj,str,obj<Zanna.Audio.Sound>)` | `rt_soundbank_register_sound` |
 | `Zanna.Audio.SoundBank.Play` | `i64(obj,str)` | `rt_soundbank_play` |
@@ -403,7 +405,7 @@ Its public surface exposes operations including `SetListener`, `PlayAt`, `Update
 | `Zanna.Audio.Synth.Sweep` | `obj<Zanna.Audio.Sound>(i64,i64,i64,i64)` | `rt_synth_sweep` |
 | `Zanna.Audio.Synth.Noise` | `obj<Zanna.Audio.Sound>(i64,i64)` | `rt_synth_noise` |
 | `Zanna.Audio.Synth.Sfx` | `obj<Zanna.Audio.Sound>(i64)` | `rt_synth_sfx` |
-| `Zanna.Audio.MusicGen.New` | `obj(i64)` | `rt_musicgen_new` |
+| `Zanna.Audio.MusicGen.New` | `obj<Zanna.Audio.MusicGen>(i64)` | `rt_musicgen_new` |
 | `Zanna.Audio.MusicGen.AddChannel` | `i64(obj,i64)` | `rt_musicgen_add_channel` |
 | `Zanna.Audio.MusicGen.SetEnvelope` | `void(obj,i64,i64,i64,i64,i64)` | `rt_musicgen_set_envelope` |
 | `Zanna.Audio.MusicGen.SetChannelVolume` | `void(obj,i64,i64)` | `rt_musicgen_set_channel_vol` |

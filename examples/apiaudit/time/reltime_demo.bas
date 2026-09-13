@@ -29,8 +29,8 @@ PRINT "Format(7d ago): "; Zanna.Time.RelativeTime.Format(weekAgo)
 PRINT "--- FormatFrom ---"
 DIM ts1 AS INTEGER
 DIM ts2 AS INTEGER
-ts1 = Zanna.Time.DateTime.Create(2024, 1, 1, 0, 0, 0)
-ts2 = Zanna.Time.DateTime.Create(2024, 1, 2, 0, 0, 0)
+ts1 = Zanna.Time.DateTime.FromParts(2024, 1, 1, 0, 0, 0)
+ts2 = Zanna.Time.DateTime.FromParts(2024, 1, 2, 0, 0, 0)
 PRINT "FormatFrom(Jan1, Jan2): "; Zanna.Time.RelativeTime.FormatFrom(ts1, ts2)
 
 ' --- FormatDuration ---

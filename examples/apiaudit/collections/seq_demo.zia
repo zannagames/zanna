@@ -52,8 +52,8 @@ func start() {
 
     // --- Find / Has ---
     Say("--- Find / Has ---");
-    SayInt(s.Find(Box.I64(10)));   // 0
-    SayInt(s.Find(Box.I64(99)));   // -1
+    SayInt(s.FindOption(Box.I64(10)).UnwrapOrI64(-1));   // 0
+    SayInt(s.FindOption(Box.I64(99)).UnwrapOrI64(-1));   // -1
     SayBool(s.Has(Box.I64(30)));   // 1
     SayBool(s.Has(Box.I64(99)));   // 0
     var found = s.FindOption(Box.I64(10));
@@ -70,7 +70,7 @@ func start() {
 
     // --- Remove ---
     Say("--- Remove ---");
-    var removed = s.Remove(1);
+    var removed = s.RemoveAt(1);
     SayInt(Box.ToI64(removed));     // 15
     SayInt(s.Count);                  // 3
 

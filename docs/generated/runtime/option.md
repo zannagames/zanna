@@ -26,12 +26,12 @@ operations including `Some`, `SomeStr`, `SomeI64`, `SomeI1`.
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-option-some"></a>`Some` | `obj(obj)` | `Zanna.Option.Some` |
-| <a id="zanna-option-somestr"></a>`SomeStr` | `obj(str)` | `Zanna.Option.SomeStr` |
-| <a id="zanna-option-somei64"></a>`SomeI64` | `obj(i64)` | `Zanna.Option.SomeI64` |
-| <a id="zanna-option-somei1"></a>`SomeI1` | `obj(i1)` | `Zanna.Option.SomeI1` |
-| <a id="zanna-option-somef64"></a>`SomeF64` | `obj(f64)` | `Zanna.Option.SomeF64` |
-| <a id="zanna-option-none"></a>`None` | `obj()` | `Zanna.Option.None` |
+| <a id="zanna-option-some"></a>`Some` | `obj<Zanna.Option>(obj)` | `Zanna.Option.Some` |
+| <a id="zanna-option-somestr"></a>`SomeStr` | `obj<Zanna.Option>(str)` | `Zanna.Option.SomeStr` |
+| <a id="zanna-option-somei64"></a>`SomeI64` | `obj<Zanna.Option>(i64)` | `Zanna.Option.SomeI64` |
+| <a id="zanna-option-somei1"></a>`SomeI1` | `obj<Zanna.Option>(i1)` | `Zanna.Option.SomeI1` |
+| <a id="zanna-option-somef64"></a>`SomeF64` | `obj<Zanna.Option>(f64)` | `Zanna.Option.SomeF64` |
+| <a id="zanna-option-none"></a>`None` | `obj<Zanna.Option>()` | `Zanna.Option.None` |
 | <a id="zanna-option-unwrap"></a>`Unwrap` | `obj()` | `Zanna.Option.Unwrap` |
 | <a id="zanna-option-unwrapstr"></a>`UnwrapStr` | `str()` | `Zanna.Option.UnwrapStr` |
 | <a id="zanna-option-unwrapi64"></a>`UnwrapI64` | `i64()` | `Zanna.Option.UnwrapI64` |
@@ -47,21 +47,21 @@ operations including `Some`, `SomeStr`, `SomeI64`, `SomeI1`.
 | <a id="zanna-option-okorstr"></a>`OkOrStr` | `obj<Zanna.Result>(str)` | `Zanna.Option.OkOrStr` |
 | <a id="zanna-option-tostring"></a>`ToString` | `str()` | `Zanna.Option.ToString` |
 | <a id="zanna-option-equals"></a>`Equals` | `i1(obj)` | `Zanna.Option.Equals` |
-| <a id="zanna-option-map"></a>`Map` | `obj(obj)` | `Zanna.Option.Map` |
-| <a id="zanna-option-andthen"></a>`AndThen` | `obj(obj)` | `Zanna.Option.AndThen` |
-| <a id="zanna-option-orelse"></a>`OrElse` | `obj(obj)` | `Zanna.Option.OrElse` |
-| <a id="zanna-option-filter"></a>`Filter` | `obj(obj)` | `Zanna.Option.Filter` |
+| <a id="zanna-option-map"></a>`Map` | `obj<Zanna.Option>(obj)` | `Zanna.Option.Map` |
+| <a id="zanna-option-andthen"></a>`AndThen` | `obj<Zanna.Option>(obj)` | `Zanna.Option.AndThen` |
+| <a id="zanna-option-orelse"></a>`OrElse` | `obj<Zanna.Option>(obj)` | `Zanna.Option.OrElse` |
+| <a id="zanna-option-filter"></a>`Filter` | `obj<Zanna.Option>(obj)` | `Zanna.Option.Filter` |
 
 ## Functions
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Option.Some` | `obj(obj)` | `rt_option_some` |
-| `Zanna.Option.SomeStr` | `obj(str)` | `rt_option_some_str` |
-| `Zanna.Option.SomeI64` | `obj(i64)` | `rt_option_some_i64` |
-| `Zanna.Option.SomeI1` | `obj(i1)` | `rt_option_some_i1` |
-| `Zanna.Option.SomeF64` | `obj(f64)` | `rt_option_some_f64` |
-| `Zanna.Option.None` | `obj()` | `rt_option_none` |
+| `Zanna.Option.Some` | `obj<Zanna.Option>(obj)` | `rt_option_some` |
+| `Zanna.Option.SomeStr` | `obj<Zanna.Option>(str)` | `rt_option_some_str` |
+| `Zanna.Option.SomeI64` | `obj<Zanna.Option>(i64)` | `rt_option_some_i64` |
+| `Zanna.Option.SomeI1` | `obj<Zanna.Option>(i1)` | `rt_option_some_i1` |
+| `Zanna.Option.SomeF64` | `obj<Zanna.Option>(f64)` | `rt_option_some_f64` |
+| `Zanna.Option.None` | `obj<Zanna.Option>()` | `rt_option_none` |
 | <a id="zanna-option-get-issome"></a>`Zanna.Option.get_IsSome` | `i1(obj)` | `rt_option_is_some` |
 | <a id="zanna-option-get-isnone"></a>`Zanna.Option.get_IsNone` | `i1(obj)` | `rt_option_is_none` |
 | `Zanna.Option.Unwrap` | `obj(obj)` | `rt_option_unwrap` |
@@ -79,8 +79,8 @@ operations including `Some`, `SomeStr`, `SomeI64`, `SomeI1`.
 | `Zanna.Option.OkOrStr` | `obj<Zanna.Result>(obj,str)` | `rt_option_ok_or_str` |
 | `Zanna.Option.ToString` | `str(obj)` | `rt_option_to_string` |
 | `Zanna.Option.Equals` | `i1(obj,obj)` | `rt_option_equals` |
-| `Zanna.Option.Map` | `obj(obj,obj)` | `rt_option_map_wrapper` |
-| `Zanna.Option.AndThen` | `obj(obj,obj)` | `rt_option_and_then_wrapper` |
-| `Zanna.Option.OrElse` | `obj(obj,obj)` | `rt_option_or_else_wrapper` |
-| `Zanna.Option.Filter` | `obj(obj,obj)` | `rt_option_filter_wrapper` |
+| `Zanna.Option.Map` | `obj<Zanna.Option>(obj,obj)` | `rt_option_map_wrapper` |
+| `Zanna.Option.AndThen` | `obj<Zanna.Option>(obj,obj)` | `rt_option_and_then_wrapper` |
+| `Zanna.Option.OrElse` | `obj<Zanna.Option>(obj,obj)` | `rt_option_or_else_wrapper` |
+| `Zanna.Option.Filter` | `obj<Zanna.Option>(obj,obj)` | `rt_option_filter_wrapper` |
 

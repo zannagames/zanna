@@ -1,7 +1,7 @@
 ' =============================================================================
 ' API Audit: Zanna.IO.BinFile - Binary File I/O
 ' =============================================================================
-' Tests: Open, Close, ReadByte, WriteByte, Read, Write, Seek, Pos, Size, Eof, Flush
+' Tests: Open, Close, ReadByte, WriteByte, Read, Write, Seek, Position, SizeBytes, Eof, Flush
 ' =============================================================================
 
 PRINT "=== API Audit: Zanna.IO.BinFile ==="
@@ -20,8 +20,8 @@ Zanna.IO.BinFile.WriteByte(wf, 66)
 Zanna.IO.BinFile.WriteByte(wf, 67)
 PRINT "Wrote 3 bytes: A B C"
 
-' --- Pos ---
-PRINT "--- Pos ---"
+' --- Position ---
+PRINT "--- Position ---"
 PRINT "Pos after write: "; Zanna.IO.BinFile.get_Position(wf)
 
 ' --- Flush ---
@@ -39,9 +39,9 @@ PRINT "--- Open (read) ---"
 DIM rf AS OBJECT
 rf = Zanna.IO.BinFile.Open(testPath, "r")
 
-' --- Size ---
-PRINT "--- Size ---"
-PRINT "Size: "; Zanna.IO.BinFile.get_Size(rf)
+' --- SizeBytes ---
+PRINT "--- SizeBytes ---"
+PRINT "Size: "; Zanna.IO.BinFile.get_SizeBytes(rf)
 
 ' --- ReadByte ---
 PRINT "--- ReadByte ---"

@@ -1,5 +1,5 @@
 // bag_demo.zia - Comprehensive API audit for Zanna.Collections.StringSet
-// Tests: New, Put, Has, Drop, Len, IsEmpty, Items, Clear, Common, Diff, Merge
+// Tests: New, Add, Has, Remove, Count, IsEmpty, ToSeq, Clear, Union, Intersect, Difference
 
 module BagDemo;
 
@@ -9,20 +9,20 @@ bind Zanna.Terminal;
 bind Zanna.Text.Fmt;
 
 func start() {
-    Say("=== Bag API Audit ===");
+    Say("=== StringSet API Audit ===");
 
     // --- New ---
     Say("--- New ---");
-    var bag = Bag.New();
+    var bag = StringSet.New();
     SayInt(bag.Count);       // 0
     SayBool(bag.IsEmpty);  // 1
 
-    // --- Put / Len ---
-    Say("--- Put / Len ---");
-    SayBool(bag.Put("apple"));   // 1 (new)
-    SayBool(bag.Put("banana"));  // 1 (new)
-    SayBool(bag.Put("cherry")); // 1 (new)
-    SayBool(bag.Put("apple"));  // 0 (duplicate)
+    // --- Add / Count ---
+    Say("--- Add / Count ---");
+    SayBool(bag.Add("apple"));   // 1 (new)
+    SayBool(bag.Add("banana"));  // 1 (new)
+    SayBool(bag.Add("cherry")); // 1 (new)
+    SayBool(bag.Add("apple"));  // 0 (duplicate)
     SayInt(bag.Count);             // 3
     SayBool(bag.IsEmpty);        // 0
 
@@ -32,29 +32,29 @@ func start() {
     SayBool(bag.Has("banana"));  // 1
     SayBool(bag.Has("grape"));   // 0
 
-    // --- Drop ---
-    Say("--- Drop ---");
-    SayBool(bag.Drop("banana")); // 1
+    // --- Remove ---
+    Say("--- Remove ---");
+    SayBool(bag.Remove("banana")); // 1
     SayBool(bag.Has("banana"));  // 0
     SayInt(bag.Count);             // 2
-    SayBool(bag.Drop("banana")); // 0 (already removed)
+    SayBool(bag.Remove("banana")); // 0 (already removed)
 
-    // --- Items ---
-    Say("--- Items ---");
-    var items = bag.Items();
+    // --- ToSeq ---
+    Say("--- ToSeq ---");
+    var items = bag.ToSeq();
     SayInt(items.Count);           // 2
 
-    // --- Merge (union) ---
-    Say("--- Merge ---");
-    var b1 = Bag.New();
-    b1.Put("a");
-    b1.Put("b");
-    b1.Put("c");
+    // --- Union ---
+    Say("--- Union ---");
+    var b1 = StringSet.New();
+    b1.Add("a");
+    b1.Add("b");
+    b1.Add("c");
 
-    var b2 = Bag.New();
-    b2.Put("b");
-    b2.Put("c");
-    b2.Put("d");
+    var b2 = StringSet.New();
+    b2.Add("b");
+    b2.Add("c");
+    b2.Add("d");
 
     var merged = b1.Union(b2);
     SayInt(merged.Count);          // 4 (a, b, c, d)
@@ -69,9 +69,9 @@ func start() {
     SayBool(common.Has("c"));    // 1
     SayBool(common.Has("a"));    // 0
 
-    // --- Diff ---
-    Say("--- Diff ---");
-    var diff = b1.Diff(b2);
+    // --- Difference ---
+    Say("--- Difference ---");
+    var diff = b1.Difference(b2);
     SayInt(diff.Count);            // 1 (a)
     SayBool(diff.Has("a"));      // 1
     SayBool(diff.Has("b"));      // 0
@@ -82,5 +82,5 @@ func start() {
     SayInt(b1.Count);              // 0
     SayBool(b1.IsEmpty);         // 1
 
-    Say("=== Bag audit complete ===");
+    Say("=== StringSet audit complete ===");
 }

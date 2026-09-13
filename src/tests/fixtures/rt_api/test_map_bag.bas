@@ -31,15 +31,15 @@ PRINT "bag empty after clear: "; b.IsEmpty
 
 DIM cm AS Zanna.Collections.CountMap
 cm = Zanna.Collections.CountMap.New()
-cm.Inc("a")
-cm.Inc("a")
-cm.Inc("b")
+cm.Increment("a")
+cm.Increment("a")
+cm.Increment("b")
 cm.IncrementBy("c", 5)
 PRINT "cm get a: "; cm.Get("a")
 PRINT "cm get c: "; cm.Get("c")
 PRINT "cm total: "; cm.Total
 PRINT "cm len: "; cm.Count
-cm.Dec("a")
+cm.Decrement("a")
 PRINT "cm get a after dec: "; cm.Get("a")
 cm.Set("d", 10)
 PRINT "cm get d: "; cm.Get("d")

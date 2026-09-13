@@ -13,7 +13,7 @@ PRINT Zanna.IO.Path.Normalize("a/b/../c")
 
 ' File write/read round-trip
 DIM tmp AS STRING
-LET tmp = "_rt_api_test_tmp.txt"
+LET tmp = Zanna.IO.TempFile.PathWithExt("rt_api_basic_io_path", ".txt")
 Zanna.IO.File.WriteAllText(tmp, "hello from zanna")
 PRINT Zanna.IO.File.Exists(tmp)
 PRINT Zanna.IO.File.ReadAllText(tmp)

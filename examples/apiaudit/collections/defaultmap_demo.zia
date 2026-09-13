@@ -55,10 +55,10 @@ func start() {
 
     // --- Remove ---
     Say("--- Remove ---");
-    SayInt(dm.Remove("city"));        // 1
+    SayBool(dm.Remove("city"));       // 1
     SayBool(dm.Has("city"));          // 0
     SayInt(dm.Count);                   // 2
-    SayInt(dm.Remove("city"));        // 0
+    SayBool(dm.Remove("city"));       // 0
     Say(Box.ToStr(dm.Get("city")));   // N/A (returns default now)
 
     // --- Clear ---

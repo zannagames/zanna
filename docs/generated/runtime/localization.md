@@ -31,14 +31,14 @@ Constructor: `Zanna.Localization.Locale.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-locale-parse"></a>`Parse` | `obj(str)` | `Zanna.Localization.Locale.Parse` |
+| <a id="zanna-localization-locale-parse"></a>`Parse` | `obj<Zanna.Localization.Locale>(str)` | `Zanna.Localization.Locale.Parse` |
 | <a id="zanna-localization-locale-tryparse"></a>`TryParse` | `obj<Zanna.Option>(str)` | `Zanna.Localization.Locale.TryParse` |
-| <a id="zanna-localization-locale-fromparts"></a>`FromParts` | `obj(str,str,str)` | `Zanna.Localization.Locale.FromParts` |
-| <a id="zanna-localization-locale-invariant"></a>`Invariant` | `obj()` | `Zanna.Localization.Locale.Invariant` |
+| <a id="zanna-localization-locale-fromparts"></a>`FromParts` | `obj<Zanna.Localization.Locale>(str,str,str)` | `Zanna.Localization.Locale.FromParts` |
+| <a id="zanna-localization-locale-invariant"></a>`Invariant` | `obj<Zanna.Localization.Locale>()` | `Zanna.Localization.Locale.Invariant` |
 | <a id="zanna-localization-locale-equals"></a>`Equals` | `i1(obj)` | `Zanna.Localization.Locale.Equals` |
 | <a id="zanna-localization-locale-fallbacks"></a>`Fallbacks` | `obj<Zanna.Collections.List>()` | `Zanna.Localization.Locale.Fallbacks` |
 | <a id="zanna-localization-locale-tostring"></a>`ToString` | `str()` | `Zanna.Localization.Locale.ToString` |
-| <a id="zanna-localization-locale-new"></a>`New` | `obj()` | `Zanna.Localization.Locale.New` |
+| <a id="zanna-localization-locale-new"></a>`New` | `obj<Zanna.Localization.Locale>()` | `Zanna.Localization.Locale.New` |
 
 <a id="zanna-localization-localeinfo"></a>
 ### `Zanna.Localization.LocaleInfo`
@@ -77,16 +77,16 @@ Constructor: `Zanna.Localization.MessageBundle.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-localization-messagebundle-locale"></a>`Locale` | `obj` | read-only |
+| <a id="zanna-localization-messagebundle-locale"></a>`Locale` | `obj<Zanna.Localization.Locale>` | read-only |
 | <a id="zanna-localization-messagebundle-count"></a>`Count` | `i64` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-messagebundle-loadfromjson"></a>`LoadFromJson` | `obj(obj,str)` | `Zanna.Localization.MessageBundle.LoadFromJson` |
-| <a id="zanna-localization-messagebundle-loadfromasset"></a>`LoadFromAsset` | `obj(obj,str)` | `Zanna.Localization.MessageBundle.LoadFromAsset` |
-| <a id="zanna-localization-messagebundle-frommap"></a>`FromMap` | `obj(obj,obj)` | `Zanna.Localization.MessageBundle.FromMap` |
+| <a id="zanna-localization-messagebundle-loadfromjson"></a>`LoadFromJson` | `obj<Zanna.Localization.MessageBundle>(obj,str)` | `Zanna.Localization.MessageBundle.LoadFromJson` |
+| <a id="zanna-localization-messagebundle-loadfromasset"></a>`LoadFromAsset` | `obj<Zanna.Localization.MessageBundle>(obj,str)` | `Zanna.Localization.MessageBundle.LoadFromAsset` |
+| <a id="zanna-localization-messagebundle-frommap"></a>`FromMap` | `obj<Zanna.Localization.MessageBundle>(obj,obj)` | `Zanna.Localization.MessageBundle.FromMap` |
 | <a id="zanna-localization-messagebundle-get"></a>`Get` | `str(str)` | `Zanna.Localization.MessageBundle.Get` |
 | <a id="zanna-localization-messagebundle-getor"></a>`GetOr` | `str(str,str)` | `Zanna.Localization.MessageBundle.GetOr` |
 | <a id="zanna-localization-messagebundle-tryget"></a>`TryGet` | `obj<Zanna.Option>(str)` | `Zanna.Localization.MessageBundle.TryGet` |
@@ -94,9 +94,9 @@ Constructor: `Zanna.Localization.MessageBundle.New`
 | <a id="zanna-localization-messagebundle-format"></a>`Format` | `str(str,obj)` | `Zanna.Localization.MessageBundle.Format` |
 | <a id="zanna-localization-messagebundle-formatwith"></a>`FormatWith` | `str(str,obj)` | `Zanna.Localization.MessageBundle.FormatWith` |
 | <a id="zanna-localization-messagebundle-plural"></a>`Plural` | `str(str,i64,obj)` | `Zanna.Localization.MessageBundle.Plural` |
-| <a id="zanna-localization-messagebundle-fallback"></a>`Fallback` | `obj(obj)` | `Zanna.Localization.MessageBundle.Fallback` |
+| <a id="zanna-localization-messagebundle-fallback"></a>`Fallback` | `obj<Zanna.Localization.MessageBundle>(obj)` | `Zanna.Localization.MessageBundle.Fallback` |
 | <a id="zanna-localization-messagebundle-keys"></a>`Keys` | `obj<Zanna.Collections.List>()` | `Zanna.Localization.MessageBundle.Keys` |
-| <a id="zanna-localization-messagebundle-new"></a>`New` | `obj()` | `Zanna.Localization.MessageBundle.New` |
+| <a id="zanna-localization-messagebundle-new"></a>`New` | `obj<Zanna.Localization.MessageBundle>()` | `Zanna.Localization.MessageBundle.New` |
 
 <a id="zanna-localization-listformat"></a>
 ### `Zanna.Localization.ListFormat`
@@ -113,18 +113,18 @@ Constructor: `Zanna.Localization.ListFormat.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-localization-listformat-locale"></a>`Locale` | `obj` | read-only |
+| <a id="zanna-localization-listformat-locale"></a>`Locale` | `obj<Zanna.Localization.Locale>` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-listformat-forlocale"></a>`ForLocale` | `obj(obj)` | `Zanna.Localization.ListFormat.ForLocale` |
+| <a id="zanna-localization-listformat-forlocale"></a>`ForLocale` | `obj<Zanna.Localization.ListFormat>(obj)` | `Zanna.Localization.ListFormat.ForLocale` |
 | <a id="zanna-localization-listformat-and"></a>`And` | `str(obj)` | `Zanna.Localization.ListFormat.And` |
 | <a id="zanna-localization-listformat-or"></a>`Or` | `str(obj)` | `Zanna.Localization.ListFormat.Or` |
 | <a id="zanna-localization-listformat-unit"></a>`Unit` | `str(obj)` | `Zanna.Localization.ListFormat.Unit` |
 | <a id="zanna-localization-listformat-short"></a>`Short` | `str(obj)` | `Zanna.Localization.ListFormat.Short` |
-| <a id="zanna-localization-listformat-new"></a>`New` | `obj()` | `Zanna.Localization.ListFormat.New` |
+| <a id="zanna-localization-listformat-new"></a>`New` | `obj<Zanna.Localization.ListFormat>()` | `Zanna.Localization.ListFormat.New` |
 
 <a id="zanna-localization-textdirection"></a>
 ### `Zanna.Localization.TextDirection`
@@ -160,13 +160,13 @@ Constructor: `Zanna.Localization.DateFormat.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-localization-dateformat-locale"></a>`Locale` | `obj` | read-only |
+| <a id="zanna-localization-dateformat-locale"></a>`Locale` | `obj<Zanna.Localization.Locale>` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-dateformat-forlocale"></a>`ForLocale` | `obj(obj)` | `Zanna.Localization.DateFormat.ForLocale` |
+| <a id="zanna-localization-dateformat-forlocale"></a>`ForLocale` | `obj<Zanna.Localization.DateFormat>(obj)` | `Zanna.Localization.DateFormat.ForLocale` |
 | <a id="zanna-localization-dateformat-short"></a>`Short` | `str(i64)` | `Zanna.Localization.DateFormat.Short` |
 | <a id="zanna-localization-dateformat-medium"></a>`Medium` | `str(i64)` | `Zanna.Localization.DateFormat.Medium` |
 | <a id="zanna-localization-dateformat-long"></a>`Long` | `str(i64)` | `Zanna.Localization.DateFormat.Long` |
@@ -180,7 +180,7 @@ Constructor: `Zanna.Localization.DateFormat.New`
 | <a id="zanna-localization-dateformat-monthname"></a>`MonthName` | `str(i64,i1)` | `Zanna.Localization.DateFormat.MonthName` |
 | <a id="zanna-localization-dateformat-dayname"></a>`DayName` | `str(i64,i1)` | `Zanna.Localization.DateFormat.DayName` |
 | <a id="zanna-localization-dateformat-ampm"></a>`AmPm` | `str(i1)` | `Zanna.Localization.DateFormat.AmPm` |
-| <a id="zanna-localization-dateformat-new"></a>`New` | `obj()` | `Zanna.Localization.DateFormat.New` |
+| <a id="zanna-localization-dateformat-new"></a>`New` | `obj<Zanna.Localization.DateFormat>()` | `Zanna.Localization.DateFormat.New` |
 
 <a id="zanna-localization-relativetimeformat"></a>
 ### `Zanna.Localization.RelativeTimeFormat`
@@ -198,20 +198,20 @@ Constructor: `Zanna.Localization.RelativeTimeFormat.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-localization-relativetimeformat-locale"></a>`Locale` | `obj` | read-only |
+| <a id="zanna-localization-relativetimeformat-locale"></a>`Locale` | `obj<Zanna.Localization.Locale>` | read-only |
 | <a id="zanna-localization-relativetimeformat-style"></a>`Style` | `str` | read/write |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-relativetimeformat-forlocale"></a>`ForLocale` | `obj(obj)` | `Zanna.Localization.RelativeTimeFormat.ForLocale` |
+| <a id="zanna-localization-relativetimeformat-forlocale"></a>`ForLocale` | `obj<Zanna.Localization.RelativeTimeFormat>(obj)` | `Zanna.Localization.RelativeTimeFormat.ForLocale` |
 | <a id="zanna-localization-relativetimeformat-format"></a>`Format` | `str(i64)` | `Zanna.Localization.RelativeTimeFormat.Format` |
 | <a id="zanna-localization-relativetimeformat-formatfrom"></a>`FormatFrom` | `str(i64,i64)` | `Zanna.Localization.RelativeTimeFormat.FormatFrom` |
 | <a id="zanna-localization-relativetimeformat-short"></a>`Short` | `str(i64)` | `Zanna.Localization.RelativeTimeFormat.Short` |
 | <a id="zanna-localization-relativetimeformat-long"></a>`Long` | `str(i64)` | `Zanna.Localization.RelativeTimeFormat.Long` |
 | <a id="zanna-localization-relativetimeformat-numeric"></a>`Numeric` | `str(i64,str)` | `Zanna.Localization.RelativeTimeFormat.Numeric` |
-| <a id="zanna-localization-relativetimeformat-new"></a>`New` | `obj()` | `Zanna.Localization.RelativeTimeFormat.New` |
+| <a id="zanna-localization-relativetimeformat-new"></a>`New` | `obj<Zanna.Localization.RelativeTimeFormat>()` | `Zanna.Localization.RelativeTimeFormat.New` |
 
 <a id="zanna-localization-pluralrules"></a>
 ### `Zanna.Localization.PluralRules`
@@ -226,7 +226,7 @@ callers to construct the class directly. Its public surface exposes operations i
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-pluralrules-forlocale"></a>`ForLocale` | `obj(obj)` | `Zanna.Localization.PluralRules.ForLocale` |
+| <a id="zanna-localization-pluralrules-forlocale"></a>`ForLocale` | `obj<Zanna.Localization.PluralRules>(obj)` | `Zanna.Localization.PluralRules.ForLocale` |
 | <a id="zanna-localization-pluralrules-cardinal"></a>`Cardinal` | `str(f64)` | `Zanna.Localization.PluralRules.Cardinal` |
 | <a id="zanna-localization-pluralrules-cardinalint"></a>`CardinalInt` | `str(i64)` | `Zanna.Localization.PluralRules.CardinalInt` |
 | <a id="zanna-localization-pluralrules-ordinal"></a>`Ordinal` | `str(i64)` | `Zanna.Localization.PluralRules.Ordinal` |
@@ -248,7 +248,7 @@ Constructor: `Zanna.Localization.NumberFormat.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-localization-numberformat-locale"></a>`Locale` | `obj` | read-only |
+| <a id="zanna-localization-numberformat-locale"></a>`Locale` | `obj<Zanna.Localization.Locale>` | read-only |
 | <a id="zanna-localization-numberformat-minfractiondigits"></a>`MinFractionDigits` | `i64` | read/write |
 | <a id="zanna-localization-numberformat-maxfractiondigits"></a>`MaxFractionDigits` | `i64` | read/write |
 | <a id="zanna-localization-numberformat-usegrouping"></a>`UseGrouping` | `i1` | read/write |
@@ -259,7 +259,7 @@ Constructor: `Zanna.Localization.NumberFormat.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-numberformat-forlocale"></a>`ForLocale` | `obj(obj)` | `Zanna.Localization.NumberFormat.ForLocale` |
+| <a id="zanna-localization-numberformat-forlocale"></a>`ForLocale` | `obj<Zanna.Localization.NumberFormat>(obj)` | `Zanna.Localization.NumberFormat.ForLocale` |
 | <a id="zanna-localization-numberformat-decimal"></a>`Decimal` | `str(f64)` | `Zanna.Localization.NumberFormat.Decimal` |
 | <a id="zanna-localization-numberformat-decimaln"></a>`DecimalN` | `str(f64,i64)` | `Zanna.Localization.NumberFormat.DecimalN` |
 | <a id="zanna-localization-numberformat-integer"></a>`Integer` | `str(i64)` | `Zanna.Localization.NumberFormat.Integer` |
@@ -274,7 +274,7 @@ Constructor: `Zanna.Localization.NumberFormat.New`
 | <a id="zanna-localization-numberformat-tryparseinteger"></a>`TryParseInteger` | `obj<Zanna.Option>(str)` | `Zanna.Localization.NumberFormat.TryParseInteger` |
 | <a id="zanna-localization-numberformat-parsecurrency"></a>`ParseCurrency` | `f64(str)` | `Zanna.Localization.NumberFormat.ParseCurrency` |
 | <a id="zanna-localization-numberformat-tryparsecurrency"></a>`TryParseCurrency` | `obj<Zanna.Option>(str)` | `Zanna.Localization.NumberFormat.TryParseCurrency` |
-| <a id="zanna-localization-numberformat-new"></a>`New` | `obj()` | `Zanna.Localization.NumberFormat.New` |
+| <a id="zanna-localization-numberformat-new"></a>`New` | `obj<Zanna.Localization.NumberFormat>()` | `Zanna.Localization.NumberFormat.New` |
 
 <a id="zanna-localization-localemanager"></a>
 ### `Zanna.Localization.LocaleManager`
@@ -289,9 +289,9 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-localization-localemanager-current"></a>`Current` | `obj()` | `Zanna.Localization.LocaleManager.Current` |
+| <a id="zanna-localization-localemanager-current"></a>`Current` | `obj<Zanna.Localization.Locale>()` | `Zanna.Localization.LocaleManager.Current` |
 | <a id="zanna-localization-localemanager-setcurrent"></a>`SetCurrent` | `void(obj)` | `Zanna.Localization.LocaleManager.SetCurrent` |
-| <a id="zanna-localization-localemanager-system"></a>`System` | `obj()` | `Zanna.Localization.LocaleManager.System` |
+| <a id="zanna-localization-localemanager-system"></a>`System` | `obj<Zanna.Localization.Locale>()` | `Zanna.Localization.LocaleManager.System` |
 | <a id="zanna-localization-localemanager-available"></a>`Available` | `obj<Zanna.Collections.List>()` | `Zanna.Localization.LocaleManager.Available` |
 | <a id="zanna-localization-localemanager-isloaded"></a>`IsLoaded` | `i1(obj)` | `Zanna.Localization.LocaleManager.IsLoaded` |
 | <a id="zanna-localization-localemanager-loadfromjson"></a>`LoadFromJson` | `void(str)` | `Zanna.Localization.LocaleManager.LoadFromJson` |
@@ -299,7 +299,7 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 | <a id="zanna-localization-localemanager-loadfromasset"></a>`LoadFromAsset` | `void(str)` | `Zanna.Localization.LocaleManager.LoadFromAsset` |
 | <a id="zanna-localization-localemanager-tryloadfromasset"></a>`TryLoadFromAsset` | `i1(str)` | `Zanna.Localization.LocaleManager.TryLoadFromAsset` |
 | <a id="zanna-localization-localemanager-loadbuiltin"></a>`LoadBuiltin` | `void(str)` | `Zanna.Localization.LocaleManager.LoadBuiltin` |
-| <a id="zanna-localization-localemanager-load"></a>`Load` | `obj(str)` | `Zanna.Localization.LocaleManager.Load` |
+| <a id="zanna-localization-localemanager-load"></a>`Load` | `obj<Zanna.Localization.Locale>(str)` | `Zanna.Localization.LocaleManager.Load` |
 | <a id="zanna-localization-localemanager-searchpath"></a>`SearchPath` | `str()` | `Zanna.Localization.LocaleManager.SearchPath` |
 | <a id="zanna-localization-localemanager-addsearchpath"></a>`AddSearchPath` | `void(str)` | `Zanna.Localization.LocaleManager.AddSearchPath` |
 | <a id="zanna-localization-localemanager-unload"></a>`Unload` | `i1(obj)` | `Zanna.Localization.LocaleManager.Unload` |
@@ -309,10 +309,10 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Localization.MessageBundle.New` | `obj()` | `rt_message_bundle_new` |
-| `Zanna.Localization.MessageBundle.LoadFromJson` | `obj(obj,str)` | `rt_message_bundle_load_from_json` |
-| `Zanna.Localization.MessageBundle.LoadFromAsset` | `obj(obj,str)` | `rt_message_bundle_load_from_asset` |
-| `Zanna.Localization.MessageBundle.FromMap` | `obj(obj,obj)` | `rt_message_bundle_from_map` |
+| `Zanna.Localization.MessageBundle.New` | `obj<Zanna.Localization.MessageBundle>()` | `rt_message_bundle_new` |
+| `Zanna.Localization.MessageBundle.LoadFromJson` | `obj<Zanna.Localization.MessageBundle>(obj,str)` | `rt_message_bundle_load_from_json` |
+| `Zanna.Localization.MessageBundle.LoadFromAsset` | `obj<Zanna.Localization.MessageBundle>(obj,str)` | `rt_message_bundle_load_from_asset` |
+| `Zanna.Localization.MessageBundle.FromMap` | `obj<Zanna.Localization.MessageBundle>(obj,obj)` | `rt_message_bundle_from_map` |
 | `Zanna.Localization.MessageBundle.Get` | `str(obj,str)` | `rt_message_bundle_get` |
 | `Zanna.Localization.MessageBundle.GetOr` | `str(obj,str,str)` | `rt_message_bundle_get_or` |
 | `Zanna.Localization.MessageBundle.TryGet` | `obj<Zanna.Option>(obj,str)` | `rt_message_bundle_try_get_option` |
@@ -320,25 +320,25 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 | `Zanna.Localization.MessageBundle.Format` | `str(obj,str,obj)` | `rt_message_bundle_format` |
 | `Zanna.Localization.MessageBundle.FormatWith` | `str(obj,str,obj)` | `rt_message_bundle_format_with` |
 | `Zanna.Localization.MessageBundle.Plural` | `str(obj,str,i64,obj)` | `rt_message_bundle_plural` |
-| `Zanna.Localization.MessageBundle.Fallback` | `obj(obj,obj)` | `rt_message_bundle_set_fallback` |
+| `Zanna.Localization.MessageBundle.Fallback` | `obj<Zanna.Localization.MessageBundle>(obj,obj)` | `rt_message_bundle_set_fallback` |
 | `Zanna.Localization.MessageBundle.Keys` | `obj<Zanna.Collections.List>(obj)` | `rt_message_bundle_keys` |
-| <a id="zanna-localization-messagebundle-get-locale"></a>`Zanna.Localization.MessageBundle.get_Locale` | `obj(obj)` | `rt_message_bundle_get_locale` |
+| <a id="zanna-localization-messagebundle-get-locale"></a>`Zanna.Localization.MessageBundle.get_Locale` | `obj<Zanna.Localization.Locale>(obj)` | `rt_message_bundle_get_locale` |
 | <a id="zanna-localization-messagebundle-get-count"></a>`Zanna.Localization.MessageBundle.get_Count` | `i64(obj)` | `rt_message_bundle_get_count` |
-| `Zanna.Localization.ListFormat.New` | `obj()` | `rt_list_format_new` |
-| `Zanna.Localization.ListFormat.ForLocale` | `obj(obj)` | `rt_list_format_for_locale` |
+| `Zanna.Localization.ListFormat.New` | `obj<Zanna.Localization.ListFormat>()` | `rt_list_format_new` |
+| `Zanna.Localization.ListFormat.ForLocale` | `obj<Zanna.Localization.ListFormat>(obj)` | `rt_list_format_for_locale` |
 | `Zanna.Localization.ListFormat.And` | `str(obj,obj)` | `rt_list_format_and` |
 | `Zanna.Localization.ListFormat.Or` | `str(obj,obj)` | `rt_list_format_or` |
 | `Zanna.Localization.ListFormat.Unit` | `str(obj,obj)` | `rt_list_format_unit` |
 | `Zanna.Localization.ListFormat.Short` | `str(obj,obj)` | `rt_list_format_short` |
-| <a id="zanna-localization-listformat-get-locale"></a>`Zanna.Localization.ListFormat.get_Locale` | `obj(obj)` | `rt_list_format_get_locale` |
+| <a id="zanna-localization-listformat-get-locale"></a>`Zanna.Localization.ListFormat.get_Locale` | `obj<Zanna.Localization.Locale>(obj)` | `rt_list_format_get_locale` |
 | `Zanna.Localization.TextDirection.OfLocale` | `str(obj)` | `rt_text_direction_of_locale` |
 | `Zanna.Localization.TextDirection.Detect` | `str(str)` | `rt_text_direction_detect` |
 | `Zanna.Localization.TextDirection.IsRtl` | `i1(str)` | `rt_text_direction_is_rtl` |
 | `Zanna.Localization.TextDirection.IsLtr` | `i1(str)` | `rt_text_direction_is_ltr` |
 | `Zanna.Localization.TextDirection.FirstStrong` | `str(str)` | `rt_text_direction_first_strong` |
 | `Zanna.Localization.TextDirection.Bidi` | `str(str)` | `rt_text_direction_bidi` |
-| `Zanna.Localization.DateFormat.New` | `obj()` | `rt_dateformat_new` |
-| `Zanna.Localization.DateFormat.ForLocale` | `obj(obj)` | `rt_dateformat_for_locale` |
+| `Zanna.Localization.DateFormat.New` | `obj<Zanna.Localization.DateFormat>()` | `rt_dateformat_new` |
+| `Zanna.Localization.DateFormat.ForLocale` | `obj<Zanna.Localization.DateFormat>(obj)` | `rt_dateformat_for_locale` |
 | `Zanna.Localization.DateFormat.Short` | `str(obj,i64)` | `rt_dateformat_short` |
 | `Zanna.Localization.DateFormat.Medium` | `str(obj,i64)` | `rt_dateformat_medium` |
 | `Zanna.Localization.DateFormat.Long` | `str(obj,i64)` | `rt_dateformat_long` |
@@ -352,24 +352,24 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 | `Zanna.Localization.DateFormat.MonthName` | `str(obj,i64,i1)` | `rt_dateformat_month_name` |
 | `Zanna.Localization.DateFormat.DayName` | `str(obj,i64,i1)` | `rt_dateformat_day_name` |
 | `Zanna.Localization.DateFormat.AmPm` | `str(obj,i1)` | `rt_dateformat_am_pm` |
-| <a id="zanna-localization-dateformat-get-locale"></a>`Zanna.Localization.DateFormat.get_Locale` | `obj(obj)` | `rt_dateformat_get_locale` |
-| `Zanna.Localization.RelativeTimeFormat.New` | `obj()` | `rt_reltimefmt_new` |
-| `Zanna.Localization.RelativeTimeFormat.ForLocale` | `obj(obj)` | `rt_reltimefmt_for_locale` |
+| <a id="zanna-localization-dateformat-get-locale"></a>`Zanna.Localization.DateFormat.get_Locale` | `obj<Zanna.Localization.Locale>(obj)` | `rt_dateformat_get_locale` |
+| `Zanna.Localization.RelativeTimeFormat.New` | `obj<Zanna.Localization.RelativeTimeFormat>()` | `rt_reltimefmt_new` |
+| `Zanna.Localization.RelativeTimeFormat.ForLocale` | `obj<Zanna.Localization.RelativeTimeFormat>(obj)` | `rt_reltimefmt_for_locale` |
 | `Zanna.Localization.RelativeTimeFormat.Format` | `str(obj,i64)` | `rt_reltimefmt_format` |
 | `Zanna.Localization.RelativeTimeFormat.FormatFrom` | `str(obj,i64,i64)` | `rt_reltimefmt_format_from` |
 | `Zanna.Localization.RelativeTimeFormat.Short` | `str(obj,i64)` | `rt_reltimefmt_short` |
 | `Zanna.Localization.RelativeTimeFormat.Long` | `str(obj,i64)` | `rt_reltimefmt_long` |
 | `Zanna.Localization.RelativeTimeFormat.Numeric` | `str(obj,i64,str)` | `rt_reltimefmt_numeric` |
-| <a id="zanna-localization-relativetimeformat-get-locale"></a>`Zanna.Localization.RelativeTimeFormat.get_Locale` | `obj(obj)` | `rt_reltimefmt_get_locale` |
+| <a id="zanna-localization-relativetimeformat-get-locale"></a>`Zanna.Localization.RelativeTimeFormat.get_Locale` | `obj<Zanna.Localization.Locale>(obj)` | `rt_reltimefmt_get_locale` |
 | <a id="zanna-localization-relativetimeformat-get-style"></a>`Zanna.Localization.RelativeTimeFormat.get_Style` | `str(obj)` | `rt_reltimefmt_get_style` |
 | <a id="zanna-localization-relativetimeformat-set-style"></a>`Zanna.Localization.RelativeTimeFormat.set_Style` | `void(obj,str)` | `rt_reltimefmt_set_style` |
-| `Zanna.Localization.PluralRules.ForLocale` | `obj(obj)` | `rt_plural_rules_for_locale` |
+| `Zanna.Localization.PluralRules.ForLocale` | `obj<Zanna.Localization.PluralRules>(obj)` | `rt_plural_rules_for_locale` |
 | `Zanna.Localization.PluralRules.Cardinal` | `str(obj,f64)` | `rt_plural_rules_cardinal` |
 | `Zanna.Localization.PluralRules.CardinalInt` | `str(obj,i64)` | `rt_plural_rules_cardinal_int` |
 | `Zanna.Localization.PluralRules.Ordinal` | `str(obj,i64)` | `rt_plural_rules_ordinal` |
 | `Zanna.Localization.PluralRules.Categories` | `obj<Zanna.Collections.List>(obj)` | `rt_plural_rules_categories` |
-| `Zanna.Localization.NumberFormat.New` | `obj()` | `rt_numformat_new` |
-| `Zanna.Localization.NumberFormat.ForLocale` | `obj(obj)` | `rt_numformat_for_locale` |
+| `Zanna.Localization.NumberFormat.New` | `obj<Zanna.Localization.NumberFormat>()` | `rt_numformat_new` |
+| `Zanna.Localization.NumberFormat.ForLocale` | `obj<Zanna.Localization.NumberFormat>(obj)` | `rt_numformat_for_locale` |
 | `Zanna.Localization.NumberFormat.Decimal` | `str(obj,f64)` | `rt_numformat_decimal` |
 | `Zanna.Localization.NumberFormat.DecimalN` | `str(obj,f64,i64)` | `rt_numformat_decimal_n` |
 | `Zanna.Localization.NumberFormat.Integer` | `str(obj,i64)` | `rt_numformat_integer` |
@@ -384,7 +384,7 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 | `Zanna.Localization.NumberFormat.TryParseInteger` | `obj<Zanna.Option>(obj,str)` | `rt_numformat_try_parse_integer` |
 | `Zanna.Localization.NumberFormat.ParseCurrency` | `f64(obj,str)` | `rt_numformat_parse_currency` |
 | `Zanna.Localization.NumberFormat.TryParseCurrency` | `obj<Zanna.Option>(obj,str)` | `rt_numformat_try_parse_currency` |
-| <a id="zanna-localization-numberformat-get-locale"></a>`Zanna.Localization.NumberFormat.get_Locale` | `obj(obj)` | `rt_numformat_get_locale` |
+| <a id="zanna-localization-numberformat-get-locale"></a>`Zanna.Localization.NumberFormat.get_Locale` | `obj<Zanna.Localization.Locale>(obj)` | `rt_numformat_get_locale` |
 | <a id="zanna-localization-numberformat-get-minfractiondigits"></a>`Zanna.Localization.NumberFormat.get_MinFractionDigits` | `i64(obj)` | `rt_numformat_get_min_frac` |
 | <a id="zanna-localization-numberformat-set-minfractiondigits"></a>`Zanna.Localization.NumberFormat.set_MinFractionDigits` | `void(obj,i64)` | `rt_numformat_set_min_frac` |
 | <a id="zanna-localization-numberformat-get-maxfractiondigits"></a>`Zanna.Localization.NumberFormat.get_MaxFractionDigits` | `i64(obj)` | `rt_numformat_get_max_frac` |
@@ -395,11 +395,11 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 | <a id="zanna-localization-numberformat-set-strict"></a>`Zanna.Localization.NumberFormat.set_Strict` | `void(obj,i1)` | `rt_numformat_set_strict` |
 | <a id="zanna-localization-numberformat-get-roundingmode"></a>`Zanna.Localization.NumberFormat.get_RoundingMode` | `str(obj)` | `rt_numformat_get_rounding` |
 | <a id="zanna-localization-numberformat-set-roundingmode"></a>`Zanna.Localization.NumberFormat.set_RoundingMode` | `void(obj,str)` | `rt_numformat_set_rounding` |
-| `Zanna.Localization.Locale.New` | `obj()` | `rt_locale_new` |
-| `Zanna.Localization.Locale.Parse` | `obj(str)` | `rt_locale_parse` |
+| `Zanna.Localization.Locale.New` | `obj<Zanna.Localization.Locale>()` | `rt_locale_new` |
+| `Zanna.Localization.Locale.Parse` | `obj<Zanna.Localization.Locale>(str)` | `rt_locale_parse` |
 | `Zanna.Localization.Locale.TryParse` | `obj<Zanna.Option>(str)` | `rt_locale_try_parse_option` |
-| `Zanna.Localization.Locale.FromParts` | `obj(str,str,str)` | `rt_locale_from_parts` |
-| `Zanna.Localization.Locale.Invariant` | `obj()` | `rt_locale_invariant` |
+| `Zanna.Localization.Locale.FromParts` | `obj<Zanna.Localization.Locale>(str,str,str)` | `rt_locale_from_parts` |
+| `Zanna.Localization.Locale.Invariant` | `obj<Zanna.Localization.Locale>()` | `rt_locale_invariant` |
 | `Zanna.Localization.Locale.Equals` | `i1(obj,obj)` | `rt_locale_equals` |
 | `Zanna.Localization.Locale.Fallbacks` | `obj<Zanna.Collections.List>(obj)` | `rt_locale_fallbacks` |
 | `Zanna.Localization.Locale.ToString` | `str(obj)` | `rt_locale_to_string` |
@@ -415,9 +415,9 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 | `Zanna.Localization.LocaleInfo.IsRightToLeft` | `i1(obj)` | `rt_locale_info_is_rtl` |
 | `Zanna.Localization.LocaleInfo.MeasurementSystem` | `str(obj)` | `rt_locale_info_measurement` |
 | `Zanna.Localization.LocaleInfo.Currency` | `str(obj)` | `rt_locale_info_currency` |
-| `Zanna.Localization.LocaleManager.Current` | `obj()` | `rt_locale_manager_current` |
+| `Zanna.Localization.LocaleManager.Current` | `obj<Zanna.Localization.Locale>()` | `rt_locale_manager_current` |
 | `Zanna.Localization.LocaleManager.SetCurrent` | `void(obj)` | `rt_locale_manager_set_current` |
-| `Zanna.Localization.LocaleManager.System` | `obj()` | `rt_locale_manager_system` |
+| `Zanna.Localization.LocaleManager.System` | `obj<Zanna.Localization.Locale>()` | `rt_locale_manager_system` |
 | `Zanna.Localization.LocaleManager.Available` | `obj<Zanna.Collections.List>()` | `rt_locale_manager_available` |
 | `Zanna.Localization.LocaleManager.IsLoaded` | `i1(obj)` | `rt_locale_manager_is_loaded` |
 | `Zanna.Localization.LocaleManager.LoadFromJson` | `void(str)` | `rt_locale_manager_load_from_json` |
@@ -425,7 +425,7 @@ Its public surface exposes operations including `Current`, `SetCurrent`, `System
 | `Zanna.Localization.LocaleManager.LoadFromAsset` | `void(str)` | `rt_locale_manager_load_from_asset` |
 | `Zanna.Localization.LocaleManager.TryLoadFromAsset` | `i1(str)` | `rt_locale_manager_try_load_from_asset` |
 | `Zanna.Localization.LocaleManager.LoadBuiltin` | `void(str)` | `rt_locale_manager_load_builtin` |
-| `Zanna.Localization.LocaleManager.Load` | `obj(str)` | `rt_locale_manager_load` |
+| `Zanna.Localization.LocaleManager.Load` | `obj<Zanna.Localization.Locale>(str)` | `rt_locale_manager_load` |
 | `Zanna.Localization.LocaleManager.SearchPath` | `str()` | `rt_locale_manager_search_path` |
 | `Zanna.Localization.LocaleManager.AddSearchPath` | `void(str)` | `rt_locale_manager_add_search_path` |
 | `Zanna.Localization.LocaleManager.Unload` | `i1(obj)` | `rt_locale_manager_unload` |

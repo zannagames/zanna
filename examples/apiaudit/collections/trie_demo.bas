@@ -13,11 +13,11 @@ PRINT t.IsEmpty   ' 1
 
 ' --- Put / Len ---
 PRINT "--- Put / Len ---"
-t.Put("cat", Zanna.Core.Box.I64(1))
-t.Put("car", Zanna.Core.Box.I64(2))
-t.Put("card", Zanna.Core.Box.I64(3))
-t.Put("care", Zanna.Core.Box.I64(4))
-t.Put("dog", Zanna.Core.Box.I64(5))
+t.Set("cat", Zanna.Core.Box.I64(1))
+t.Set("car", Zanna.Core.Box.I64(2))
+t.Set("card", Zanna.Core.Box.I64(3))
+t.Set("care", Zanna.Core.Box.I64(4))
+t.Set("dog", Zanna.Core.Box.I64(5))
 PRINT t.Count       ' 5
 PRINT t.IsEmpty   ' 0
 
@@ -68,7 +68,7 @@ PRINT keys.Count                       ' 5
 
 ' --- Put (update existing) ---
 PRINT "--- Put (update) ---"
-t.Put("cat", Zanna.Core.Box.I64(100))
+t.Set("cat", Zanna.Core.Box.I64(100))
 PRINT Zanna.Core.Box.ToI64(t.Get("cat"))  ' 100
 PRINT t.Count                                ' 5
 

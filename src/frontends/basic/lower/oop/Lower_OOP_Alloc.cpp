@@ -125,9 +125,11 @@ Lowerer::RVal Lowerer::lowerNewExpr(const NewExpr &expr) {
     }
     std::size_t objectSize = 0;
     std::int64_t classId = 0;
-    if (auto layoutIt = classLayouts_.find(expr.className); layoutIt != classLayouts_.end()) {
-        objectSize = layoutIt->second.size;
-        classId = layoutIt->second.classId;
+    // NEW App.Person names the class by its qualified path; findClassLayout resolves it.
+    const ClassLayout *layout = findClassLayout(expr.className);
+    if (layout) {
+        objectSize = layout->size;
+        classId = layout->classId;
     }
 
     // Ensure space for vptr at offset 0 even when class has no fields.
@@ -141,9 +143,8 @@ Lowerer::RVal Lowerer::lowerNewExpr(const NewExpr &expr) {
 
     // Pre-initialize vptr from canonical per-class vtable pointer via registry
     if (oopIndex_.findClass(qualify(expr.className))) {
-        auto itLayout = classLayouts_.find(expr.className);
-        if (itLayout != classLayouts_.end()) {
-            const long long typeId = (long long)itLayout->second.classId;
+        if (layout) {
+            const long long typeId = (long long)layout->classId;
             Value vtblPtr = emitCallRet(
                 Type(Type::Kind::Ptr), "rt_get_class_vtable", {Value::constInt(typeId)});
             // Store the vptr at offset 0 in the object

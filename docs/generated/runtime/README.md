@@ -7,7 +7,7 @@ This exhaustive reference is generated from the modular runtime definition regis
 | Domain | Classes | Functions |
 |---|---:|---:|
 | [Assets](assets.md) | 1 | 1 |
-| [Audio](audio.md) | 9 | 132 |
+| [Audio](audio.md) | 9 | 133 |
 | [Basic](basic.md) | 1 | 5 |
 | [Collections](collections.md) | 31 | 487 |
 | [Core](core.md) | 6 | 60 |
@@ -17,8 +17,8 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Error](error.md) | 0 | 3 |
 | [Functional](functional.md) | 2 | 33 |
 | [GUI](gui.md) | 79 | 1169 |
-| [Game](game.md) | 52 | 793 |
-| [Game2D](game2d.md) | 1 | 143 |
+| [Game](game.md) | 56 | 793 |
+| [Game2D](game2d.md) | 2 | 143 |
 | [Game3D](game3d.md) | 61 | 818 |
 | [Graphics](graphics.md) | 48 | 595 |
 | [Graphics2D](graphics2d.md) | 4 | 109 |
@@ -33,7 +33,7 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Project](project.md) | 1 | 2 |
 | [Result](result.md) | 1 | 26 |
 | [Runtime](runtime.md) | 2 | 16 |
-| [Services](services.md) | 8 | 63 |
+| [Services](services.md) | 21 | 153 |
 | [String](string.md) | 1 | 53 |
 | [System](system.md) | 12 | 97 |
 | [Terminal](terminal.md) | 1 | 24 |

@@ -333,8 +333,7 @@ TEST(RuntimeMethodIndexBasic, GraphicsSurfaceBindingsAreCataloged) {
     EXPECT_TRUE(
         runtimeMethodIndex().find("Zanna.Graphics2D.Tilemap", "ResolveAnimTile", 1).has_value());
 
-    EXPECT_TRUE(
-        runtimeMethodIndex().find("Zanna.Game.ParticleEmitter", "Destroy", 0).has_value());
+    EXPECT_TRUE(runtimeMethodIndex().find("Zanna.Game.ParticleEmitter", "Destroy", 0).has_value());
     EXPECT_TRUE(runtimeMethodIndex().find("Zanna.Game.ParticleEmitter", "Destroy", 0).has_value());
     EXPECT_TRUE(runtimeMethodIndex().find("Zanna.Game.Lighting2D", "Destroy", 0).has_value());
 
@@ -464,6 +463,30 @@ TEST(RuntimeMethodIndexBasic, IoNamedFactoriesDoNotCreateNewAliases) {
     EXPECT_TRUE(registry.findFunction("Zanna.IO.BinFile.Open").has_value());
     EXPECT_TRUE(registry.findFunction("Zanna.IO.LineReader.Open").has_value());
     EXPECT_TRUE(registry.findFunction("Zanna.IO.LineWriter.Open").has_value());
+}
+
+/// @brief Constructors, free functions and property getters report the class their row declares.
+/// @details A constructor is not a catalog method, so the registry indexes it from its
+///          runtime.def row; frontends infer `x = Zanna.Text.CompiledPattern.New(...)` from it
+///          (ADR 0356). BASIC spells qualified names in upper case, so lookups ignore case.
+TEST(RuntimeMethodIndexTest, FunctionLookupCoversConstructorsAndGetters) {
+    const auto &registry = il::runtime::RuntimeRegistry::instance();
+
+    auto ctor = registry.findFunction("Zanna.Text.CompiledPattern.New");
+    ASSERT_TRUE(ctor.has_value());
+    EXPECT_EQ(il::runtime::concreteRuntimeReturnClassQName(*ctor),
+              std::string("Zanna.Text.CompiledPattern"));
+
+    auto upper = registry.findFunction("ZANNA.GAME2D.SCENEDOCUMENT.NEW");
+    ASSERT_TRUE(upper.has_value());
+    EXPECT_EQ(il::runtime::concreteRuntimeReturnClassQName(*upper),
+              std::string("Zanna.Game2D.SceneDocument"));
+
+    auto getter = registry.findFunction("Zanna.Graphics3D.Camera3D.get_Position");
+    ASSERT_TRUE(getter.has_value());
+    EXPECT_TRUE(getter->params.empty());
+    EXPECT_EQ(il::runtime::concreteRuntimeReturnClassQName(*getter),
+              std::string("Zanna.Math.Vec3"));
 }
 
 /// @brief Test entry point.

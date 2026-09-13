@@ -74,7 +74,7 @@ func start() {
 
     // --- NewDefault (default capacity) ---
     Say("--- NewDefault ---");
-    var rd = Ring.New();
+    var rd = Ring.NewDefault();
     SayBool(rd.IsEmpty);        // 1
     rd.Push(Box.I64(1));
     SayInt(rd.Count);             // 1

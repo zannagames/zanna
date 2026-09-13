@@ -19,7 +19,7 @@ PRINT it.Count       ' 5
 
 ' --- HasNext ---
 PRINT "--- HasNext ---"
-PRINT it.HasNext     ' 1
+PRINT it.HasNext()     ' 1
 
 ' --- Index ---
 PRINT "--- Index ---"
@@ -51,14 +51,14 @@ PRINT it.Peek()      ' e
 ' --- Next to exhaustion ---
 PRINT "--- Next to exhaustion ---"
 PRINT it.Next()      ' e
-PRINT it.HasNext     ' 0
+PRINT it.HasNext()     ' 0
 PRINT it.Index       ' 5
 
 ' --- Reset ---
 PRINT "--- Reset ---"
 it.Reset()
 PRINT it.Index       ' 0
-PRINT it.HasNext     ' 1
+PRINT it.HasNext()     ' 1
 PRINT it.Peek()      ' a
 
 ' --- ToSeq ---
@@ -77,7 +77,7 @@ PRINT "--- Skip past end ---"
 DIM it2 AS OBJECT
 it2 = Zanna.Collections.Iterator.FromSeq(seq)
 PRINT it2.Skip(10)   ' 5
-PRINT it2.HasNext    ' 0
+PRINT it2.HasNext()    ' 0
 
 ' --- Empty iterator ---
 PRINT "--- Empty iterator ---"
@@ -85,7 +85,7 @@ DIM emptySeq AS Zanna.Collections.Seq
 emptySeq = Zanna.Collections.Seq.New()
 DIM it3 AS OBJECT
 it3 = Zanna.Collections.Iterator.FromSeq(emptySeq)
-PRINT it3.HasNext    ' 0
+PRINT it3.HasNext()    ' 0
 PRINT it3.Count      ' 0
 PRINT it3.Index      ' 0
 

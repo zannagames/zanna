@@ -112,8 +112,9 @@ void OopEmitHelper::emitAllParamInits(const std::vector<Param> &params,
 /// @param klass The class declaration (provides field extents/types).
 /// @param selfSlotId Slot id holding the `self` pointer.
 /// @details For each array field, computes the total length from inclusive BASIC extents,
-///          allocates the matching runtime array (str/object/i64), and stores the handle into
-///          the field via a GEP at the field's layout offset.
+///          allocates the matching runtime array (str/object/f64/i64), and stores the handle
+///          into the field via a GEP at the field's layout offset. The element kind must match
+///          the accessors element reads and writes use, and the release in the destructor.
 void OopEmitHelper::emitArrayFieldInits(const ClassDecl &klass, unsigned selfSlotId) {
     const ClassLayout *layout = lowerer_.findClassLayout(klass.name);
     if (!layout)
@@ -146,6 +147,9 @@ void OopEmitHelper::emitArrayFieldInits(const ClassDecl &klass, unsigned selfSlo
             // Object-typed fields use object array allocation. (BUG-089)
             lowerer_.requireArrayObjNew();
             handle = lowerer_.emitCallRet(IlType(IlType::Kind::Ptr), "rt_arr_obj_new", {length});
+        } else if (field.type == AstType::F64) {
+            lowerer_.requireArrayF64New();
+            handle = lowerer_.emitCallRet(IlType(IlType::Kind::Ptr), "rt_arr_f64_new", {length});
         } else {
             lowerer_.requireArrayI64New();
             handle = lowerer_.emitCallRet(IlType(IlType::Kind::Ptr), "rt_arr_i64_new", {length});

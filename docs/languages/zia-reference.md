@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-09-01
+last-verified: 2026-09-13
 ---
 
 # Zia — Reference
@@ -540,6 +540,19 @@ assertion. Use after a null guard or when you are certain the value is non-null:
 if maybePage == null { return null; }
 var page = maybePage!;              // Safe: null was handled above
 ```
+
+A null check also narrows without `!`. Inside `if x != null { ... }`, and after
+`if x == null { return; }` or `guard x != null else { return; }`, `x` has the
+non-optional type. Checks combined with `&&`, `||` and `!` narrow every value
+their outcome proves non-null:
+
+```zia
+if a != null && b != null { use(a, b); }   // both narrowed
+if a == null || b == null { return; }      // both narrowed after the return
+if a != null && a.count > 0 { ... }        // the right operand sees `a` narrowed
+```
+
+`a != null || b != null` proves neither value, so neither is narrowed.
 
 ### Indexing
 

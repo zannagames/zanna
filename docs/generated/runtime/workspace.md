@@ -37,7 +37,7 @@ Constructor: `Zanna.Workspace.FileIndexCursor.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-workspace-fileindexcursor-new"></a>`New` | `obj(str,str,str,i1)` | `Zanna.Workspace.FileIndexCursor.New` |
+| <a id="zanna-workspace-fileindexcursor-new"></a>`New` | `obj<Zanna.Workspace.FileIndexCursor>(str,str,str,i1)` | `Zanna.Workspace.FileIndexCursor.New` |
 | <a id="zanna-workspace-fileindexcursor-isvalid"></a>`IsValid` | `i1(obj)` | `Zanna.Workspace.FileIndexCursor.IsValid` |
 | <a id="zanna-workspace-fileindexcursor-generation"></a>`Generation` | `i64(obj)` | `Zanna.Workspace.FileIndexCursor.Generation` |
 | <a id="zanna-workspace-fileindexcursor-next"></a>`Next` | `obj<Zanna.Collections.Map>(obj,i64)` | `Zanna.Workspace.FileIndexCursor.Next` |
@@ -106,7 +106,7 @@ A prepared edit is immutable and one-shot. `Result` clones its validation diagno
 | `Zanna.Workspace.FileIndex.Page` | `obj<Zanna.Collections.Map>(str,str,str,i1,i64,i64)` | `rt_workspace_file_index_page` |
 | `Zanna.Workspace.FileIndex.Status` | `obj<Zanna.Collections.Map>(str,str,str,i1)` | `rt_workspace_file_index_status` |
 | `Zanna.Workspace.FileIndex.ShouldIgnore` | `i1(str,str,str)` | `rt_workspace_file_index_should_ignore` |
-| `Zanna.Workspace.FileIndexCursor.New` | `obj(str,str,str,i1)` | `rt_workspace_file_index_cursor_new` |
+| `Zanna.Workspace.FileIndexCursor.New` | `obj<Zanna.Workspace.FileIndexCursor>(str,str,str,i1)` | `rt_workspace_file_index_cursor_new` |
 | `Zanna.Workspace.FileIndexCursor.IsValid` | `i1(obj)` | `rt_workspace_file_index_cursor_is_valid` |
 | `Zanna.Workspace.FileIndexCursor.Generation` | `i64(obj)` | `rt_workspace_file_index_cursor_generation` |
 | `Zanna.Workspace.FileIndexCursor.Next` | `obj<Zanna.Collections.Map>(obj,i64)` | `rt_workspace_file_index_cursor_next` |

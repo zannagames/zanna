@@ -515,15 +515,16 @@ zanna package . --target windows --executable build/myapp.exe
 zanna package . --target tarball -o myapp.tar.gz
 zanna package . --target linux-bundle -o myapp.run
 zanna package . --target rpm --linux-sign-key "Maintainer Key"
+zanna package . --target steam-macos --steam-redist ~/steamworks/sdk
 zanna package . --dry-run --verbose
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--target macos\|linux\|windows\|linux-bundle\|rpm\|dmg\|tarball` | Select output format; default is the host platform. `appimage` is a deprecated alias for `linux-bundle` and warns |
+| `--target macos\|linux\|windows\|linux-bundle\|rpm\|dmg\|tarball\|steam-windows\|steam-macos\|steam-linux` | Select output format; default is the host platform. `appimage` is a deprecated alias for `linux-bundle` and warns. `steam-*` targets build a SteamPipe depot build root (see [Steam depots](#steam-depots)) |
 | `--arch x64\|arm64` | Select payload architecture |
 | `--executable <path>` | Package a prebuilt native executable; required for non-host installer targets |
-| `-o <path>` | Output artifact path |
+| `-o <path>` | Output artifact path; for `steam-*` targets, the build root directory (default `<project>-<version>-steam`) |
 | `--macos-sign-mode none\|preserve\|adhoc\|developer-id` | Override macOS signing mode |
 | `--macos-sign-identity <identity>` | Developer ID Application identity for macOS signing |
 | `--macos-entitlements <path>` | Entitlements plist used during macOS signing |
@@ -539,12 +540,13 @@ zanna package . --dry-run --verbose
 | `--windows-signtool <path>` | `signtool.exe` path override |
 | `--windows-sign-no-verify` | Skip `signtool verify` after signing |
 | `--linux-sign-key <id>` | GPG-sign the generated `.deb`/`.rpm` with `dpkg-sig`/`rpmsign` |
+| `--steam-redist <path>` | Steamworks SDK redistributable directory for `steam-*` targets, overriding `steam-redist`; relative to the current directory |
 | `--dry-run` | Validate metadata and print resolved package contents without building |
 | `--json` | With `--dry-run`, print the resolved package plan as JSON |
-| `--keep-failed-artifact` | Preserve generated artifacts after a failed package step for inspection |
+| `--keep-failed-artifact` | Preserve generated artifacts and the temporary build directory after a failed package step for inspection; a `steam-*` build root is never deleted |
 | `--verbose` | Print binary, output, asset, and verification details |
 
-`.app`/`.dmg` build on a macOS host (`.dmg` shells to `hdiutil`), `.deb`/`.AppImage`/`.tar.gz` are emitted directly on any host, and `.rpm` requires `rpmbuild`. `--linux-sign-key` applies only to `--target linux`/`rpm` and requires `dpkg-sig`/`rpmsign`; each path fails with a clear diagnostic when its tool is unavailable.
+`.app`/`.dmg` build on a macOS host (`.dmg` shells to `hdiutil`), `.deb`/`.AppImage`/`.tar.gz` are emitted directly on any host, and `.rpm` requires `rpmbuild`. Without `--executable`, a target compiles its payload when its executable runs on the host operating system (`macos`, `dmg`, and `steam-macos` on macOS, for example); the compiled binary and generated packs live in a private temporary directory that is removed afterwards. `--linux-sign-key` applies only to `--target linux`/`rpm` and requires `dpkg-sig`/`rpmsign`; each path fails with a clear diagnostic when its tool is unavailable.
 
 Packaging manifest paths are project-relative. The `--executable` CLI option is a normal command-line path: relative values resolve from the current working directory. Scalar package fields such as `package-name`, `package-author`, `package-homepage`, `package-license`, `package-welcome`, platform minimum versions, `package-category`, `linux-startup-wm-class`, `linux-keywords`, `linux-appstream-id`, `windows-publisher`, and `windows-wizard-summary` must be one manifest token; quote values that contain spaces. `package-icon`, `package-license-file`, `package-readme`, `macos-dmg-background`, `macos-dmg-icon`, `windows-dll`, `asset`, `post-install`, and `pre-uninstall` paths may also be quoted when they contain spaces. Sources are resolved inside the canonical project root and reject absolute paths, `..` traversal, unreadable directory entries, and symlinks that resolve outside the project. Missing icons/assets, non-file icons, and assets that are neither files nor directories are fatal. Archive entry paths are normalized to forward slashes, must remain relative, and must be unique after normalization.
 
@@ -568,11 +570,47 @@ The XenoScape demo manifest is configured as a user-scope Windows game package: 
 
 macOS app packages are staged as a real `.app` bundle before ZIP emission. On macOS the default signing mode is `adhoc`, which runs `codesign --force --sign -` over the bundle so `Info.plist` and bundled resources are sealed in `Contents/_CodeSignature/CodeResources`; on non-macOS hosts the default is `preserve` because local signing tools are unavailable. `adhoc` signing does not require an Apple Developer account and is suitable for local testing or internal handoff where users can explicitly approve an unidentified developer app. For public distribution to quarantined Macs, use `macos-sign-mode developer-id`, `macos-sign-identity "Developer ID Application: ..."` and `macos-notary-profile <profile>`; notarization requires Apple credentials configured in `notarytool` and is accepted only with Developer ID signing. `macos-staple on` requires `macos-sign-mode developer-id` and `macos-notary-profile <profile>`, then staples the ticket before the final ZIP. `preserve` leaves an already-signed payload untouched, and `none` emits an unsigned bundle. App `.dmg` output accepts `macos-dmg-background` and `macos-dmg-icon` manifest paths for Finder window styling and a volume icon.
 
+Every target ships the project's `pack` and `pack-compressed` groups (`<project>-<group>.zpak`) where the runtime mounts them at startup ([ADR 0355](../adr/0355-package-formats-ship-pack-groups.md)): in `Contents/Resources` inside a macOS `.app` (ZIP or DMG), beside the executable in the Windows installer's install directory and in portable tarballs, and in `/usr/lib/<package>/` for `.deb`, `.rpm`, and `linux-bundle` output. Those three Linux formats then install the executable itself as `/usr/lib/<package>/<exe>` beside its packs, with `/usr/bin/<exe>` a symbolic link to it, because the runtime looks for packs in the executable's resolved directory; projects without packs keep `/usr/bin/<exe>` as a regular file. Do not also list a generated pack as an `asset`: where both copies land in one directory the build fails with a collision, and elsewhere the pack ships twice. `--dry-run` lists each group as `Pack: <group> -> <file>`, and `--dry-run --json` adds a `packs` array. The macOS ZIP and the Windows installer are ZIP32 containers, so packs count toward their 4 GiB limit.
+
 `asset <source> <target>` targets are relative to the platform's app resource root: `Contents/Resources/<target>` on macOS, `/usr/share/<package>/<target>` for Linux `.deb`, `<target>` inside the Windows install-root payload, and `<top-dir>/<target>` in portable tarballs. For example, `asset assets assets` packages `assets/fonts/font.bdf` as `Contents/Resources/assets/fonts/font.bdf` in a macOS app. Asset directory symlinks are followed when their resolved targets remain inside the project root, packaged paths preserve the symlink path rather than leaking the canonical target path, and packagers read from the validated resolved path. Linux `.deb` and portable tarball outputs preserve executable bits on asset files. App tarballs include `install.sh`, `uninstall.sh`, `README.install`, and `LICENSE`; `package-readme` adds a project README and `package-license-file` supplies full license text. Portable tarball top directories use a filesystem-safe version component, so Debian epochs such as `2:1.0` become `2_1.0` in the directory name while the package version remains unchanged.
 
-Standalone application bundles (`--target linux-bundle`) use Zanna's FUSE-less self-extracting `.run` runtime — not the AppImage specification. The generated artifact accepts `--appimage-help` and `--appimage-extract` (extracts safely to `./zanna-bundle-root`) as compatibility aliases, plus `ZANNA_APPIMAGE_CLEAN_CACHE=1` to force a cache refresh. These application-only controls are separate from `install-package`'s `.run` toolchain format.
+Standalone application bundles (`--target linux-bundle`) use Zanna's FUSE-less self-extracting `.run` runtime — not the AppImage specification. The bundle's `AppRun` entry point is a launcher script that runs `usr/bin/<exe>`. The generated artifact accepts `--appimage-help` and `--appimage-extract` (extracts safely to `./zanna-bundle-root`) as compatibility aliases, plus `ZANNA_APPIMAGE_CLEAN_CACHE=1` to force a cache refresh. These application-only controls are separate from `install-package`'s `.run` toolchain format.
 
 Built artifacts are structurally and payload-verified by default: macOS ZIPs must contain the `.app` Info.plist and executable, `.deb` packages must contain the expected `usr/bin` payload, Windows installers verify the PE structure plus required ZIP overlay entries including `meta/manifest.sha256`, and tarballs verify gzip framing, USTAR headers, duplicate-free paths, and the expected executable. ZIP verification normalizes paths before duplicate checks and rejects central-directory/local-header disagreements. Failed verification removes the generated artifact. On macOS, signing failures are fatal before ZIP output, and the staged app bundle is checked with `codesign --verify --deep --strict`.
+
+#### Steam depots
+
+`--target steam-windows`, `steam-macos`, and `steam-linux` build a SteamPipe build root instead of a single artifact ([ADR 0354](../adr/0354-store-depot-packaging.md)). Package each operating system into the same root, then upload it once:
+
+```bash
+zanna package . --target steam-macos --steam-redist ~/steamworks/sdk -o game-steam
+zanna package . --target steam-windows --executable build/win/game.exe -o game-steam
+steamcmd +login <account> +run_app_build "$PWD/game-steam/scripts/app_build_480.vdf" +quit
+```
+
+```text
+<root>/content/<platform>/          depot content for windows, macos, linux, or linux-arm64
+<root>/scripts/app_build_<app>.vdf  app build script uploading every mapped platform present
+<root>/manifests/<platform>.json    content files with sizes and SHA-256, launch path, and trust
+```
+
+| Directive | Meaning |
+|-----------|---------|
+| `steam-app-id <id>` | Steam app id, an integer in `1..4294967295`; required by `steam-*` targets |
+| `steam-redist <dir>` | Steamworks SDK `redistributable_bin`, or a directory containing `redistributable_bin/` or `sdk/redistributable_bin/`; absolute or project-relative, and it may leave the project |
+| `steam-depot <platform> <depot-id>` | Upload `content/<platform>` (`windows`, `macos`, `linux`, or `linux-arm64`) to a depot; each platform and each depot id at most once |
+| `steam-build-description <text>` | Build description; defaults to `<project> <version>`; must not contain `"` or `\` |
+| `steam-set-live <branch>` | Set a branch live after upload; letters, digits, `_`, `.`, and `-`; `default` is rejected because Steam sets it live only in the App Admin panel |
+
+Each run replaces only `content/<platform>/` and `manifests/<platform>.json`, then rewrites the build script for every platform that has both content and a `steam-depot` mapping (a platform without a mapping warns). Content is staged privately and moved into place only after it verifies, so a failed run leaves the previous depot intact.
+
+- **Windows** (x64 only; Valve ships no Windows arm64 redistributable): `<exe>.exe`, `steam_api64.dll`, adjacent non-system DLLs and `windows-dll` files, assets, and `.zpak` pack groups, all beside the executable. `--windows-sign` signs the executable and project DLLs; the Steamworks DLL keeps Valve's signature.
+- **macOS** (x64, arm64, or a universal prebuilt executable): the same `<Name>.app` the `macos` target builds, with `libsteam_api.dylib` in `Contents/MacOS` and pack groups in `Contents/Resources`. With `adhoc` or `developer-id` signing the dylib is signed first, then the bundle with the project's `macos-entitlements` plus `com.apple.security.cs.disable-library-validation` and `com.apple.security.cs.allow-dyld-environment-variables`; an entitlements file that disables either key or enables `com.apple.security.app-sandbox` is rejected, and binary plists must be converted with `plutil -convert xml1`. Notarization and stapling follow the `macos-*` options.
+- **Linux** (x64 uses `linux`, arm64 uses `linux-arm64`): `<exe>` and `libsteam_api.so`, both mode 0755, with assets and pack groups beside the executable.
+
+Before staging, the redistributable must exist, be the platform's shared-library format for every architecture of the executable, and contain the ten core exports of a Steamworks SDK 1.61–1.65 redistributable. An executable that links the Zanna.Services Steam provider fails without a redistributable; one that does not warns when a redistributable is staged anyway. `steam_appid.txt` never ships, because `Zanna.Services.Platform.Init` sets `SteamAppId` itself. Windows and Linux content paths must be unique ignoring case, and the build root must not be inside an `asset`, `pack`, or `embed` source. Steamworks launch options should name the launch path the command reports: `<exe>.exe`, `<Name>.app`, or `<exe>`.
+
+`--dry-run` prints the app id, depot, content directory, launch path, redistributable, entitlements, build script, and manifest paths; `--dry-run --json` adds them as a `steam` object. A dry run inspects a prebuilt `--executable` when given; otherwise the provider check waits for the build.
 
 ### zanna asset
 

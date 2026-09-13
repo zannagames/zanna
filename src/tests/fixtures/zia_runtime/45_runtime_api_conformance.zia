@@ -125,7 +125,7 @@ func testOptionResultCombinatorCallbacks() {
     payload.Push("original");
 
     var mapped = Option.Some(payload).Map(combinatorTag);
-    assertEqInt(Zanna.Collections.Seq.get_Count(mapped.Unwrap()), 2, "option_map_callback_ran");
+    assertEqInt(Zanna.Collections.Seq.get_Count(mapped.Unwrap() as Zanna.Collections.Seq), 2, "option_map_callback_ran");
     assertTrue(Option.Some(payload).Filter(combinatorNonEmpty).IsSome, "option_filter_pred_ran");
     assertTrue(Option.None().OrElse(combinatorFallback).IsSome, "option_or_else_fallback_ran");
 

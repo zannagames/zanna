@@ -491,17 +491,29 @@ Type Parser::parseTypeKeyword() {
     if (at(TokenKind::Identifier)) {
         std::string name = peek().lexeme;
         consume();
-        std::string upperName = string_utils::to_upper(name);
-        if (upperName == "INTEGER" || upperName == "INT" || upperName == "LONG")
-            return Type::I64;
-        if (upperName == "DOUBLE" || upperName == "FLOAT")
-            return Type::F64;
-        if (upperName == "SINGLE")
-            return Type::F64;
-        if (upperName == "STRING")
-            return Type::Str;
+        if (auto primitive = primitiveTypeFromName(name))
+            return *primitive;
     }
     return Type::I64;
+}
+
+/// @brief Map a primitive type name written after AS to its type.
+/// @details The single list of primitive spellings every AS clause (DIM, parameters,
+///          fields, FUNCTION and method results) consults, so `AS I64` is an integer
+///          everywhere rather than a reference to a class named `I64`.
+/// @param name Type name as written.
+/// @return The primitive type, or std::nullopt for a class name.
+std::optional<Type> Parser::primitiveTypeFromName(std::string_view name) {
+    const std::string upper = string_utils::to_upper(name);
+    if (upper == "INTEGER" || upper == "INT" || upper == "LONG" || upper == "I64")
+        return Type::I64;
+    if (upper == "DOUBLE" || upper == "FLOAT" || upper == "SINGLE" || upper == "F64")
+        return Type::F64;
+    if (upper == "STRING")
+        return Type::Str;
+    if (upper == "BOOLEAN" || upper == "BOOL")
+        return Type::Bool;
+    return std::nullopt;
 }
 
 /// @brief Parse an optional parenthesised parameter list.
@@ -548,11 +560,7 @@ std::vector<Param> Parser::parseParamList() {
             if (at(TokenKind::Identifier)) {
                 // Determine if this is a primitive keyword or a class name
                 std::string first = peek().lexeme;
-                std::string upper = string_utils::to_upper(first);
-                const bool isPrimitive =
-                    (upper == "INTEGER" || upper == "INT" || upper == "LONG" || upper == "DOUBLE" ||
-                     upper == "FLOAT" || upper == "SINGLE" || upper == "STRING" ||
-                     upper == "BOOLEAN");
+                const bool isPrimitive = primitiveTypeFromName(first).has_value();
                 if (isPrimitive) {
                     p.type = parseTypeKeyword();
                 } else {

@@ -66,9 +66,9 @@ PRINT "Initial Count: "; list.Count
 ' Create a simple object to add to list
 DIM obj AS Zanna.Text.StringBuilder
 obj = NEW Zanna.Text.StringBuilder()
-list.Add(obj)
-list.Add(obj)
-list.Add(obj)
+list.Push(obj)
+list.Push(obj)
+list.Push(obj)
 PRINT "After 3 Add: "; list.Count
 
 list.RemoveAt(1)
@@ -118,9 +118,9 @@ r1 = RND()
 r2 = RND()
 r3 = RND()
 PRINT "Seeded random (12345):"
-PRINT "  r1 in [0,1): "; (r1 >= 0 AND r1 < 1)
-PRINT "  r2 in [0,1): "; (r2 >= 0 AND r2 < 1)
-PRINT "  r3 in [0,1): "; (r3 >= 0 AND r3 < 1)
+PRINT "  r1 in 0..1: "; (r1 >= 0 AND r1 < 1)
+PRINT "  r2 in 0..1: "; (r2 >= 0 AND r2 < 1)
+PRINT "  r3 in 0..1: "; (r3 >= 0 AND r3 < 1)
 
 ' Re-seed with same value should give same sequence
 RANDOMIZE 12345

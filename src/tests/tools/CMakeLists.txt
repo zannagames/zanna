@@ -95,6 +95,15 @@ function(zanna_add_tools_tests)
     target_link_libraries(test_tools_asset_compiler PRIVATE ${ZANNA_TOOLS_LIBS} zanna_packaging)
     zanna_add_ctest(test_tools_asset_compiler test_tools_asset_compiler)
 
+    # Store depot packaging (ADR 0354): binary inspection, entitlement merging, Steam
+    # directives, and depot staging over synthesized binaries.
+    zanna_add_test(test_tools_store_depot_packaging
+            ${_ZANNA_TOOLS_DIR}/StoreDepotPackagingTests.cpp)
+    target_include_directories(test_tools_store_depot_packaging PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_tools_store_depot_packaging PRIVATE ${ZANNA_TOOLS_LIBS} zanna_packaging)
+    zanna_add_ctest(test_tools_store_depot_packaging test_tools_store_depot_packaging)
+    zanna_add_test_labels(test_tools_store_depot_packaging tools packaging)
+
     zanna_add_ctest(run_build_performance_flags
             ${CMAKE_COMMAND}
             -DZANNA_EXE=$<TARGET_FILE:zanna>
@@ -108,6 +117,17 @@ function(zanna_add_tools_tests)
             -DTEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/package_cli
             -P ${_ZANNA_TOOLS_DIR}/PackageCliTests.cmake)
     zanna_add_test_labels(package_cli tools installer)
+
+    # Packaged pack groups (ADR 0355): build, unpack, and run a pack-using app.
+    zanna_add_ctest(package_asset_packs_smoke
+            ${CMAKE_COMMAND}
+            -DZANNA_BIN=$<TARGET_FILE:zanna>
+            -DTEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/package_asset_packs_smoke
+            -P ${_ZANNA_TOOLS_DIR}/PackageAssetPacksSmoke.cmake)
+    set_tests_properties(package_asset_packs_smoke PROPERTIES
+            TIMEOUT 300
+            SKIP_REGULAR_EXPRESSION "Skipping package asset packs smoke")
+    zanna_add_test_labels(package_asset_packs_smoke tools installer zia)
 
     if (APPLE)
         if (ZANNA_INSTALL_ZANNASTUDIO)

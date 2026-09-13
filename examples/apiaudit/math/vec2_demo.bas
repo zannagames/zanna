@@ -61,7 +61,7 @@ PRINT "Div(3,4 / 2.0) Y: "; vdiv.Y
 ' --- Neg ---
 PRINT "--- Neg ---"
 DIM vneg AS Zanna.Math.Vec2
-vneg = v1.Neg()
+vneg = v1.Negate()
 PRINT "Neg(3,4) X: "; vneg.X
 PRINT "Neg(3,4) Y: "; vneg.Y
 
@@ -122,9 +122,9 @@ PRINT "Lerp(0,0 -> 10,20 t=1.0) Y: "; vl1.Y
 
 ' --- Angle ---
 PRINT "--- Angle ---"
-PRINT "Angle(1,0): "; vx.Angle()
-PRINT "Angle(0,1): "; vy.Angle()
-PRINT "Angle(3,4): "; v1.Angle()
+PRINT "Angle(1,0): "; vx.Heading()
+PRINT "Angle(0,1): "; vy.Heading()
+PRINT "Angle(3,4): "; v1.Heading()
 
 ' --- Rotate ---
 PRINT "--- Rotate ---"

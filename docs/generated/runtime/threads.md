@@ -36,7 +36,7 @@ Constructor: `Zanna.Threads.Pool.New`
 | <a id="zanna-threads-pool-waitfor"></a>`WaitFor` | `i1(i64)` | `Zanna.Threads.Pool.WaitFor` |
 | <a id="zanna-threads-pool-shutdown"></a>`Shutdown` | `void()` | `Zanna.Threads.Pool.Shutdown` |
 | <a id="zanna-threads-pool-shutdownnow"></a>`ShutdownNow` | `void()` | `Zanna.Threads.Pool.ShutdownNow` |
-| <a id="zanna-threads-pool-new"></a>`New` | `obj(i64)` | `Zanna.Threads.Pool.New` |
+| <a id="zanna-threads-pool-new"></a>`New` | `obj<Zanna.Threads.Pool>(i64)` | `Zanna.Threads.Pool.New` |
 
 <a id="zanna-threads-channel"></a>
 ### `Zanna.Threads.Channel`
@@ -70,7 +70,7 @@ Constructor: `Zanna.Threads.Channel.New`
 | <a id="zanna-threads-channel-tryrecv"></a>`TryRecv` | `obj<Zanna.Option>()` | `Zanna.Threads.Channel.TryRecv` |
 | <a id="zanna-threads-channel-recvfor"></a>`RecvFor` | `obj(i64)` | `Zanna.Threads.Channel.RecvFor` |
 | <a id="zanna-threads-channel-close"></a>`Close` | `void()` | `Zanna.Threads.Channel.Close` |
-| <a id="zanna-threads-channel-new"></a>`New` | `obj(i64)` | `Zanna.Threads.Channel.New` |
+| <a id="zanna-threads-channel-new"></a>`New` | `obj<Zanna.Threads.Channel>(i64)` | `Zanna.Threads.Channel.New` |
 
 <a id="zanna-threads-concurrentqueue"></a>
 ### `Zanna.Threads.ConcurrentQueue`
@@ -102,7 +102,7 @@ Constructor: `Zanna.Threads.ConcurrentQueue.New`
 | <a id="zanna-threads-concurrentqueue-push"></a>`Push` | `void(obj)` | `Zanna.Threads.ConcurrentQueue.Push` |
 | <a id="zanna-threads-concurrentqueue-peek"></a>`Peek` | `obj()` | `Zanna.Threads.ConcurrentQueue.Peek` |
 | <a id="zanna-threads-concurrentqueue-trypop"></a>`TryPop` | `obj<Zanna.Option>()` | `Zanna.Threads.ConcurrentQueue.TryPop` |
-| <a id="zanna-threads-concurrentqueue-new"></a>`New` | `obj()` | `Zanna.Threads.ConcurrentQueue.New` |
+| <a id="zanna-threads-concurrentqueue-new"></a>`New` | `obj<Zanna.Threads.ConcurrentQueue>()` | `Zanna.Threads.ConcurrentQueue.New` |
 
 <a id="zanna-threads-concurrentmap"></a>
 ### `Zanna.Threads.ConcurrentMap`
@@ -135,7 +135,7 @@ Constructor: `Zanna.Threads.ConcurrentMap.New`
 | <a id="zanna-threads-concurrentmap-set"></a>`Set` | `void(str,obj)` | `Zanna.Threads.ConcurrentMap.Set` |
 | <a id="zanna-threads-concurrentmap-setifmissing"></a>`SetIfMissing` | `i1(str,obj)` | `Zanna.Threads.ConcurrentMap.SetIfMissing` |
 | <a id="zanna-threads-concurrentmap-values"></a>`Values` | `seq<obj>()` | `Zanna.Threads.ConcurrentMap.Values` |
-| <a id="zanna-threads-concurrentmap-new"></a>`New` | `obj()` | `Zanna.Threads.ConcurrentMap.New` |
+| <a id="zanna-threads-concurrentmap-new"></a>`New` | `obj<Zanna.Threads.ConcurrentMap>()` | `Zanna.Threads.ConcurrentMap.New` |
 
 <a id="zanna-threads-monitor"></a>
 ### `Zanna.Threads.Monitor`
@@ -178,7 +178,7 @@ Constructor: `Zanna.Threads.SafeI64.New`
 | <a id="zanna-threads-safei64-set"></a>`Set` | `void(i64)` | `Zanna.Threads.SafeI64.Set` |
 | <a id="zanna-threads-safei64-add"></a>`Add` | `i64(i64)` | `Zanna.Threads.SafeI64.Add` |
 | <a id="zanna-threads-safei64-compareexchange"></a>`CompareExchange` | `i64(i64,i64)` | `Zanna.Threads.SafeI64.CompareExchange` |
-| <a id="zanna-threads-safei64-new"></a>`New` | `obj(i64)` | `Zanna.Threads.SafeI64.New` |
+| <a id="zanna-threads-safei64-new"></a>`New` | `obj<Zanna.Threads.SafeI64>(i64)` | `Zanna.Threads.SafeI64.New` |
 
 <a id="zanna-threads-gate"></a>
 ### `Zanna.Threads.Gate`
@@ -206,7 +206,7 @@ Constructor: `Zanna.Threads.Gate.New`
 | <a id="zanna-threads-gate-tryenterfor"></a>`TryEnterFor` | `i1(i64)` | `Zanna.Threads.Gate.TryEnterFor` |
 | <a id="zanna-threads-gate-leave"></a>`Leave` | `void()` | `Zanna.Threads.Gate.Leave` |
 | `Leave` | `void(i64)` | `Zanna.Threads.Gate.LeaveMany` |
-| <a id="zanna-threads-gate-new"></a>`New` | `obj(i64)` | `Zanna.Threads.Gate.New` |
+| <a id="zanna-threads-gate-new"></a>`New` | `obj<Zanna.Threads.Gate>(i64)` | `Zanna.Threads.Gate.New` |
 
 <a id="zanna-threads-barrier"></a>
 ### `Zanna.Threads.Barrier`
@@ -232,7 +232,7 @@ Constructor: `Zanna.Threads.Barrier.New`
 |---|---|---|
 | <a id="zanna-threads-barrier-arrive"></a>`Arrive` | `i64()` | `Zanna.Threads.Barrier.Arrive` |
 | <a id="zanna-threads-barrier-reset"></a>`Reset` | `void()` | `Zanna.Threads.Barrier.Reset` |
-| <a id="zanna-threads-barrier-new"></a>`New` | `obj(i64)` | `Zanna.Threads.Barrier.New` |
+| <a id="zanna-threads-barrier-new"></a>`New` | `obj<Zanna.Threads.Barrier>(i64)` | `Zanna.Threads.Barrier.New` |
 
 <a id="zanna-threads-rwlock"></a>
 ### `Zanna.Threads.RwLock`
@@ -263,7 +263,7 @@ Constructor: `Zanna.Threads.RwLock.New`
 | <a id="zanna-threads-rwlock-writeexit"></a>`WriteExit` | `void()` | `Zanna.Threads.RwLock.WriteExit` |
 | <a id="zanna-threads-rwlock-tryreadenter"></a>`TryReadEnter` | `i1()` | `Zanna.Threads.RwLock.TryReadEnter` |
 | <a id="zanna-threads-rwlock-trywriteenter"></a>`TryWriteEnter` | `i1()` | `Zanna.Threads.RwLock.TryWriteEnter` |
-| <a id="zanna-threads-rwlock-new"></a>`New` | `obj()` | `Zanna.Threads.RwLock.New` |
+| <a id="zanna-threads-rwlock-new"></a>`New` | `obj<Zanna.Threads.RwLock>()` | `Zanna.Threads.RwLock.New` |
 
 <a id="zanna-threads-thread"></a>
 ### `Zanna.Threads.Thread`
@@ -287,10 +287,10 @@ construct the class directly. Its public surface exposes properties such as `Id`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-threads-thread-start"></a>`Start` | `obj(obj,obj)` | `Zanna.Threads.Thread.Start` |
-| <a id="zanna-threads-thread-startowned"></a>`StartOwned` | `obj(obj,obj)` | `Zanna.Threads.Thread.StartOwned` |
-| <a id="zanna-threads-thread-startsafe"></a>`StartSafe` | `obj(obj,obj)` | `Zanna.Threads.Thread.StartSafe` |
-| <a id="zanna-threads-thread-startsafeowned"></a>`StartSafeOwned` | `obj(obj,obj)` | `Zanna.Threads.Thread.StartSafeOwned` |
+| <a id="zanna-threads-thread-start"></a>`Start` | `obj<Zanna.Threads.Thread>(obj,obj)` | `Zanna.Threads.Thread.Start` |
+| <a id="zanna-threads-thread-startowned"></a>`StartOwned` | `obj<Zanna.Threads.Thread>(obj,obj)` | `Zanna.Threads.Thread.StartOwned` |
+| <a id="zanna-threads-thread-startsafe"></a>`StartSafe` | `obj<Zanna.Threads.Thread>(obj,obj)` | `Zanna.Threads.Thread.StartSafe` |
+| <a id="zanna-threads-thread-startsafeowned"></a>`StartSafeOwned` | `obj<Zanna.Threads.Thread>(obj,obj)` | `Zanna.Threads.Thread.StartSafeOwned` |
 | <a id="zanna-threads-thread-join"></a>`Join` | `void()` | `Zanna.Threads.Thread.Join` |
 | <a id="zanna-threads-thread-tryjoin"></a>`TryJoin` | `i1()` | `Zanna.Threads.Thread.TryJoin` |
 | <a id="zanna-threads-thread-joinfor"></a>`JoinFor` | `i1(i64)` | `Zanna.Threads.Thread.JoinFor` |
@@ -325,7 +325,7 @@ Constructor: `Zanna.Threads.Promise.New`
 | <a id="zanna-threads-promise-set"></a>`Set` | `void(obj)` | `Zanna.Threads.Promise.Set` |
 | <a id="zanna-threads-promise-setowned"></a>`SetOwned` | `void(obj)` | `Zanna.Threads.Promise.SetOwned` |
 | <a id="zanna-threads-promise-seterror"></a>`SetError` | `void(str)` | `Zanna.Threads.Promise.SetError` |
-| <a id="zanna-threads-promise-new"></a>`New` | `obj()` | `Zanna.Threads.Promise.New` |
+| <a id="zanna-threads-promise-new"></a>`New` | `obj<Zanna.Threads.Promise>()` | `Zanna.Threads.Promise.New` |
 
 <a id="zanna-threads-future"></a>
 ### `Zanna.Threads.Future`
@@ -392,8 +392,8 @@ construct the class directly. Its public surface exposes operations including `F
 |---|---|---|
 | <a id="zanna-threads-parallel-foreach"></a>`ForEach` | `void(obj,obj)` | `Zanna.Threads.Parallel.ForEach` |
 | <a id="zanna-threads-parallel-foreachpool"></a>`ForEachPool` | `void(obj,obj,obj)` | `Zanna.Threads.Parallel.ForEachPool` |
-| <a id="zanna-threads-parallel-map"></a>`Map` | `obj(obj,obj)` | `Zanna.Threads.Parallel.Map` |
-| <a id="zanna-threads-parallel-mappool"></a>`MapPool` | `obj(obj,obj,obj)` | `Zanna.Threads.Parallel.MapPool` |
+| <a id="zanna-threads-parallel-map"></a>`Map` | `seq<obj>(obj,obj)` | `Zanna.Threads.Parallel.Map` |
+| <a id="zanna-threads-parallel-mappool"></a>`MapPool` | `seq<obj>(obj,obj,obj)` | `Zanna.Threads.Parallel.MapPool` |
 | <a id="zanna-threads-parallel-invoke"></a>`Invoke` | `void(obj)` | `Zanna.Threads.Parallel.Invoke` |
 | <a id="zanna-threads-parallel-invokepool"></a>`InvokePool` | `void(obj,obj)` | `Zanna.Threads.Parallel.InvokePool` |
 | <a id="zanna-threads-parallel-for"></a>`For` | `void(i64,i64,obj)` | `Zanna.Threads.Parallel.For` |
@@ -426,9 +426,9 @@ Constructor: `Zanna.Threads.CancelToken.New`
 |---|---|---|
 | <a id="zanna-threads-canceltoken-cancel"></a>`Cancel` | `void()` | `Zanna.Threads.CancelToken.Cancel` |
 | <a id="zanna-threads-canceltoken-reset"></a>`Reset` | `void()` | `Zanna.Threads.CancelToken.Reset` |
-| <a id="zanna-threads-canceltoken-linked"></a>`Linked` | `obj(obj)` | `Zanna.Threads.CancelToken.Linked` |
+| <a id="zanna-threads-canceltoken-linked"></a>`Linked` | `obj<Zanna.Threads.CancelToken>(obj)` | `Zanna.Threads.CancelToken.Linked` |
 | <a id="zanna-threads-canceltoken-throwifcancelled"></a>`ThrowIfCancelled` | `void()` | `Zanna.Threads.CancelToken.ThrowIfCancelled` |
-| <a id="zanna-threads-canceltoken-new"></a>`New` | `obj()` | `Zanna.Threads.CancelToken.New` |
+| <a id="zanna-threads-canceltoken-new"></a>`New` | `obj<Zanna.Threads.CancelToken>()` | `Zanna.Threads.CancelToken.New` |
 
 <a id="zanna-threads-debouncer"></a>
 ### `Zanna.Threads.Debouncer`
@@ -455,7 +455,7 @@ Constructor: `Zanna.Threads.Debouncer.New`
 |---|---|---|
 | <a id="zanna-threads-debouncer-signal"></a>`Signal` | `void()` | `Zanna.Threads.Debouncer.Signal` |
 | <a id="zanna-threads-debouncer-reset"></a>`Reset` | `void()` | `Zanna.Threads.Debouncer.Reset` |
-| <a id="zanna-threads-debouncer-new"></a>`New` | `obj(i64)` | `Zanna.Threads.Debouncer.New` |
+| <a id="zanna-threads-debouncer-new"></a>`New` | `obj<Zanna.Threads.Debouncer>(i64)` | `Zanna.Threads.Debouncer.New` |
 
 <a id="zanna-threads-throttler"></a>
 ### `Zanna.Threads.Throttler`
@@ -483,7 +483,7 @@ Constructor: `Zanna.Threads.Throttler.New`
 |---|---|---|
 | <a id="zanna-threads-throttler-tryacquire"></a>`TryAcquire` | `i1()` | `Zanna.Threads.Throttler.TryAcquire` |
 | <a id="zanna-threads-throttler-reset"></a>`Reset` | `void()` | `Zanna.Threads.Throttler.Reset` |
-| <a id="zanna-threads-throttler-new"></a>`New` | `obj(i64)` | `Zanna.Threads.Throttler.New` |
+| <a id="zanna-threads-throttler-new"></a>`New` | `obj<Zanna.Threads.Throttler>(i64)` | `Zanna.Threads.Throttler.New` |
 
 <a id="zanna-threads-scheduler"></a>
 ### `Zanna.Threads.Scheduler`
@@ -515,13 +515,13 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | <a id="zanna-threads-scheduler-generationofoption"></a>`GenerationOfOption` | `obj<Zanna.Option>(str)` | `Zanna.Threads.Scheduler.GenerationOfOption` |
 | <a id="zanna-threads-scheduler-poll"></a>`Poll` | `seq<str>()` | `Zanna.Threads.Scheduler.Poll` |
 | <a id="zanna-threads-scheduler-clear"></a>`Clear` | `void()` | `Zanna.Threads.Scheduler.Clear` |
-| <a id="zanna-threads-scheduler-new"></a>`New` | `obj()` | `Zanna.Threads.Scheduler.New` |
+| <a id="zanna-threads-scheduler-new"></a>`New` | `obj<Zanna.Threads.Scheduler>()` | `Zanna.Threads.Scheduler.New` |
 
 ## Functions
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Threads.ConcurrentQueue.New` | `obj()` | `rt_concqueue_new` |
+| `Zanna.Threads.ConcurrentQueue.New` | `obj<Zanna.Threads.ConcurrentQueue>()` | `rt_concqueue_new` |
 | <a id="zanna-threads-concurrentqueue-get-count"></a>`Zanna.Threads.ConcurrentQueue.get_Count` | `i64(obj)` | `rt_concqueue_len` |
 | <a id="zanna-threads-concurrentqueue-get-isempty"></a>`Zanna.Threads.ConcurrentQueue.get_IsEmpty` | `i1(obj)` | `rt_concqueue_is_empty` |
 | <a id="zanna-threads-concurrentqueue-get-isclosed"></a>`Zanna.Threads.ConcurrentQueue.get_IsClosed` | `i1(obj)` | `rt_concqueue_get_is_closed` |
@@ -532,7 +532,7 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | `Zanna.Threads.ConcurrentQueue.Peek` | `obj(obj)` | `rt_concqueue_peek` |
 | `Zanna.Threads.ConcurrentQueue.Clear` | `void(obj)` | `rt_concqueue_clear` |
 | `Zanna.Threads.ConcurrentQueue.Close` | `void(obj)` | `rt_concqueue_close` |
-| `Zanna.Threads.ConcurrentMap.New` | `obj()` | `rt_concmap_new` |
+| `Zanna.Threads.ConcurrentMap.New` | `obj<Zanna.Threads.ConcurrentMap>()` | `rt_concmap_new` |
 | <a id="zanna-threads-concurrentmap-get-count"></a>`Zanna.Threads.ConcurrentMap.get_Count` | `i64(obj)` | `rt_concmap_len` |
 | <a id="zanna-threads-concurrentmap-get-isempty"></a>`Zanna.Threads.ConcurrentMap.get_IsEmpty` | `i1(obj)` | `rt_concmap_is_empty` |
 | `Zanna.Threads.ConcurrentMap.Set` | `void(obj,str,obj)` | `rt_concmap_set` |
@@ -544,26 +544,26 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | `Zanna.Threads.ConcurrentMap.Clear` | `void(obj)` | `rt_concmap_clear` |
 | `Zanna.Threads.ConcurrentMap.Keys` | `seq<obj>(obj)` | `rt_concmap_keys` |
 | `Zanna.Threads.ConcurrentMap.Values` | `seq<obj>(obj)` | `rt_concmap_values` |
-| `Zanna.Threads.CancelToken.New` | `obj()` | `rt_cancellation_new` |
+| `Zanna.Threads.CancelToken.New` | `obj<Zanna.Threads.CancelToken>()` | `rt_cancellation_new` |
 | <a id="zanna-threads-canceltoken-get-iscancelled"></a>`Zanna.Threads.CancelToken.get_IsCancelled` | `i1(obj)` | `rt_cancellation_is_cancelled` |
 | `Zanna.Threads.CancelToken.Cancel` | `void(obj)` | `rt_cancellation_cancel` |
 | `Zanna.Threads.CancelToken.Reset` | `void(obj)` | `rt_cancellation_reset` |
-| `Zanna.Threads.CancelToken.Linked` | `obj(obj)` | `rt_cancellation_linked` |
+| `Zanna.Threads.CancelToken.Linked` | `obj<Zanna.Threads.CancelToken>(obj)` | `rt_cancellation_linked` |
 | `Zanna.Threads.CancelToken.ThrowIfCancelled` | `void(obj)` | `rt_cancellation_throw_if_cancelled` |
-| `Zanna.Threads.Debouncer.New` | `obj(i64)` | `rt_debounce_new` |
+| `Zanna.Threads.Debouncer.New` | `obj<Zanna.Threads.Debouncer>(i64)` | `rt_debounce_new` |
 | `Zanna.Threads.Debouncer.Signal` | `void(obj)` | `rt_debounce_signal` |
 | <a id="zanna-threads-debouncer-get-isready"></a>`Zanna.Threads.Debouncer.get_IsReady` | `i1(obj)` | `rt_debounce_is_ready` |
 | `Zanna.Threads.Debouncer.Reset` | `void(obj)` | `rt_debounce_reset` |
 | <a id="zanna-threads-debouncer-get-delay"></a>`Zanna.Threads.Debouncer.get_Delay` | `i64(obj)` | `rt_debounce_get_delay` |
 | <a id="zanna-threads-debouncer-get-signalcount"></a>`Zanna.Threads.Debouncer.get_SignalCount` | `i64(obj)` | `rt_debounce_get_signal_count` |
-| `Zanna.Threads.Throttler.New` | `obj(i64)` | `rt_throttle_new` |
+| `Zanna.Threads.Throttler.New` | `obj<Zanna.Threads.Throttler>(i64)` | `rt_throttle_new` |
 | `Zanna.Threads.Throttler.TryAcquire` | `i1(obj)` | `rt_throttle_try` |
 | <a id="zanna-threads-throttler-get-canproceed"></a>`Zanna.Threads.Throttler.get_CanProceed` | `i1(obj)` | `rt_throttle_can_proceed` |
 | `Zanna.Threads.Throttler.Reset` | `void(obj)` | `rt_throttle_reset` |
 | <a id="zanna-threads-throttler-get-interval"></a>`Zanna.Threads.Throttler.get_Interval` | `i64(obj)` | `rt_throttle_get_interval` |
 | <a id="zanna-threads-throttler-get-count"></a>`Zanna.Threads.Throttler.get_Count` | `i64(obj)` | `rt_throttle_get_count` |
 | <a id="zanna-threads-throttler-get-remainingms"></a>`Zanna.Threads.Throttler.get_RemainingMs` | `i64(obj)` | `rt_throttle_remaining_ms` |
-| `Zanna.Threads.Scheduler.New` | `obj()` | `rt_scheduler_new` |
+| `Zanna.Threads.Scheduler.New` | `obj<Zanna.Threads.Scheduler>()` | `rt_scheduler_new` |
 | `Zanna.Threads.Scheduler.Schedule` | `void(obj,str,i64)` | `rt_scheduler_schedule` |
 | `Zanna.Threads.Scheduler.ScheduleGeneration` | `void(obj,str,i64,i64)` | `rt_scheduler_schedule_gen` |
 | `Zanna.Threads.Scheduler.Cancel` | `i1(obj,str)` | `rt_scheduler_cancel` |
@@ -582,8 +582,8 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | `Zanna.Threads.Monitor.WaitFor` | `i1(obj,i64)` | `rt_monitor_wait_for` |
 | `Zanna.Threads.Monitor.Notify` | `void(obj)` | `rt_monitor_pause` |
 | `Zanna.Threads.Monitor.NotifyAll` | `void(obj)` | `rt_monitor_pause_all` |
-| `Zanna.Threads.Thread.Start` | `obj(obj,obj)` | `rt_thread_start` |
-| `Zanna.Threads.Thread.StartOwned` | `obj(obj,obj)` | `rt_thread_start_owned` |
+| `Zanna.Threads.Thread.Start` | `obj<Zanna.Threads.Thread>(obj,obj)` | `rt_thread_start` |
+| `Zanna.Threads.Thread.StartOwned` | `obj<Zanna.Threads.Thread>(obj,obj)` | `rt_thread_start_owned` |
 | `Zanna.Threads.Thread.Join` | `void(obj)` | `rt_thread_join` |
 | `Zanna.Threads.Thread.TryJoin` | `i1(obj)` | `rt_thread_try_join` |
 | `Zanna.Threads.Thread.JoinFor` | `i1(obj,i64)` | `rt_thread_join_for` |
@@ -591,31 +591,31 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | <a id="zanna-threads-thread-get-isalive"></a>`Zanna.Threads.Thread.get_IsAlive` | `i1(obj)` | `rt_thread_get_is_alive` |
 | `Zanna.Threads.Thread.Sleep` | `void(i64)` | `rt_thread_sleep` |
 | `Zanna.Threads.Thread.Yield` | `void()` | `rt_thread_yield` |
-| `Zanna.Threads.Thread.StartSafe` | `obj(obj,obj)` | `rt_thread_start_safe` |
-| `Zanna.Threads.Thread.StartSafeOwned` | `obj(obj,obj)` | `rt_thread_start_safe_owned` |
+| `Zanna.Threads.Thread.StartSafe` | `obj<Zanna.Threads.Thread>(obj,obj)` | `rt_thread_start_safe` |
+| `Zanna.Threads.Thread.StartSafeOwned` | `obj<Zanna.Threads.Thread>(obj,obj)` | `rt_thread_start_safe_owned` |
 | <a id="zanna-threads-thread-get-haserror"></a>`Zanna.Threads.Thread.get_HasError` | `i1(obj)` | `rt_thread_has_error` |
 | <a id="zanna-threads-thread-get-error"></a>`Zanna.Threads.Thread.get_Error` | `str(obj)` | `rt_thread_get_error` |
 | `Zanna.Threads.Thread.SafeJoin` | `void(obj)` | `rt_thread_safe_join` |
 | `Zanna.Threads.Thread.SafeGetId` | `i64(obj)` | `rt_thread_safe_get_id` |
 | `Zanna.Threads.Thread.SafeIsAlive` | `i1(obj)` | `rt_thread_safe_is_alive` |
-| `Zanna.Threads.SafeI64.New` | `obj(i64)` | `rt_safe_i64_new` |
+| `Zanna.Threads.SafeI64.New` | `obj<Zanna.Threads.SafeI64>(i64)` | `rt_safe_i64_new` |
 | `Zanna.Threads.SafeI64.Get` | `i64(obj)` | `rt_safe_i64_get` |
 | `Zanna.Threads.SafeI64.Set` | `void(obj,i64)` | `rt_safe_i64_set` |
 | `Zanna.Threads.SafeI64.Add` | `i64(obj,i64)` | `rt_safe_i64_add` |
 | `Zanna.Threads.SafeI64.CompareExchange` | `i64(obj,i64,i64)` | `rt_safe_i64_compare_exchange` |
-| `Zanna.Threads.Gate.New` | `obj(i64)` | `rt_gate_new` |
+| `Zanna.Threads.Gate.New` | `obj<Zanna.Threads.Gate>(i64)` | `rt_gate_new` |
 | `Zanna.Threads.Gate.Enter` | `void(obj)` | `rt_gate_enter` |
 | `Zanna.Threads.Gate.TryEnter` | `i1(obj)` | `rt_gate_try_enter` |
 | `Zanna.Threads.Gate.TryEnterFor` | `i1(obj,i64)` | `rt_gate_try_enter_for` |
 | `Zanna.Threads.Gate.Leave` | `void(obj)` | `rt_gate_leave` |
 | <a id="zanna-threads-gate-leavemany"></a>`Zanna.Threads.Gate.LeaveMany` | `void(obj,i64)` | `rt_gate_leave_many` |
 | <a id="zanna-threads-gate-get-permits"></a>`Zanna.Threads.Gate.get_Permits` | `i64(obj)` | `rt_gate_get_permits` |
-| `Zanna.Threads.Barrier.New` | `obj(i64)` | `rt_barrier_new` |
+| `Zanna.Threads.Barrier.New` | `obj<Zanna.Threads.Barrier>(i64)` | `rt_barrier_new` |
 | `Zanna.Threads.Barrier.Arrive` | `i64(obj)` | `rt_barrier_arrive` |
 | `Zanna.Threads.Barrier.Reset` | `void(obj)` | `rt_barrier_reset` |
 | <a id="zanna-threads-barrier-get-parties"></a>`Zanna.Threads.Barrier.get_Parties` | `i64(obj)` | `rt_barrier_get_parties` |
 | <a id="zanna-threads-barrier-get-waiting"></a>`Zanna.Threads.Barrier.get_Waiting` | `i64(obj)` | `rt_barrier_get_waiting` |
-| `Zanna.Threads.RwLock.New` | `obj()` | `rt_rwlock_new` |
+| `Zanna.Threads.RwLock.New` | `obj<Zanna.Threads.RwLock>()` | `rt_rwlock_new` |
 | `Zanna.Threads.RwLock.ReadEnter` | `void(obj)` | `rt_rwlock_read_enter` |
 | `Zanna.Threads.RwLock.ReadExit` | `void(obj)` | `rt_rwlock_read_exit` |
 | `Zanna.Threads.RwLock.WriteEnter` | `void(obj)` | `rt_rwlock_write_enter` |
@@ -624,7 +624,7 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | `Zanna.Threads.RwLock.TryWriteEnter` | `i1(obj)` | `rt_rwlock_try_write_enter` |
 | <a id="zanna-threads-rwlock-get-readers"></a>`Zanna.Threads.RwLock.get_Readers` | `i64(obj)` | `rt_rwlock_get_readers` |
 | <a id="zanna-threads-rwlock-get-iswritelocked"></a>`Zanna.Threads.RwLock.get_IsWriteLocked` | `i1(obj)` | `rt_rwlock_get_is_write_locked` |
-| `Zanna.Threads.Pool.New` | `obj(i64)` | `rt_threadpool_new` |
+| `Zanna.Threads.Pool.New` | `obj<Zanna.Threads.Pool>(i64)` | `rt_threadpool_new` |
 | `Zanna.Threads.Pool.Submit` | `i1(obj,obj,obj)` | `rt_threadpool_submit` |
 | `Zanna.Threads.Pool.SubmitOwned` | `i1(obj,obj,obj)` | `rt_threadpool_submit_owned` |
 | `Zanna.Threads.Pool.Wait` | `void(obj)` | `rt_threadpool_wait` |
@@ -638,8 +638,8 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | `Zanna.Threads.Parallel.DefaultPool` | `obj<Zanna.Threads.Pool>()` | `rt_parallel_default_pool` |
 | `Zanna.Threads.Parallel.ForEach` | `void(obj,obj)` | `rt_parallel_foreach` |
 | `Zanna.Threads.Parallel.ForEachPool` | `void(obj,obj,obj)` | `rt_parallel_foreach_pool` |
-| `Zanna.Threads.Parallel.Map` | `obj(obj,obj)` | `rt_parallel_map` |
-| `Zanna.Threads.Parallel.MapPool` | `obj(obj,obj,obj)` | `rt_parallel_map_pool` |
+| `Zanna.Threads.Parallel.Map` | `seq<obj>(obj,obj)` | `rt_parallel_map` |
+| `Zanna.Threads.Parallel.MapPool` | `seq<obj>(obj,obj,obj)` | `rt_parallel_map_pool` |
 | `Zanna.Threads.Parallel.Invoke` | `void(obj)` | `rt_parallel_invoke` |
 | `Zanna.Threads.Parallel.InvokePool` | `void(obj,obj)` | `rt_parallel_invoke_pool` |
 | `Zanna.Threads.Parallel.For` | `void(i64,i64,obj)` | `rt_parallel_for` |
@@ -647,7 +647,7 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | `Zanna.Threads.Parallel.Reduce` | `obj(obj,obj,obj)` | `rt_parallel_reduce` |
 | `Zanna.Threads.Parallel.ReducePool` | `obj(obj,obj,obj,obj)` | `rt_parallel_reduce_pool` |
 | <a id="zanna-threads-pool-get-isshutdown"></a>`Zanna.Threads.Pool.get_IsShutdown` | `i1(obj)` | `rt_threadpool_get_is_shutdown` |
-| `Zanna.Threads.Channel.New` | `obj(i64)` | `rt_channel_new` |
+| `Zanna.Threads.Channel.New` | `obj<Zanna.Threads.Channel>(i64)` | `rt_channel_new` |
 | `Zanna.Threads.Channel.Send` | `void(obj,obj)` | `rt_channel_send` |
 | `Zanna.Threads.Channel.TrySend` | `i1(obj,obj)` | `rt_channel_try_send` |
 | `Zanna.Threads.Channel.SendFor` | `i1(obj,obj,i64)` | `rt_channel_send_for` |
@@ -660,7 +660,7 @@ Constructor: `Zanna.Threads.Scheduler.New`
 | <a id="zanna-threads-channel-get-isclosed"></a>`Zanna.Threads.Channel.get_IsClosed` | `i1(obj)` | `rt_channel_get_is_closed` |
 | <a id="zanna-threads-channel-get-isempty"></a>`Zanna.Threads.Channel.get_IsEmpty` | `i1(obj)` | `rt_channel_get_is_empty` |
 | <a id="zanna-threads-channel-get-isfull"></a>`Zanna.Threads.Channel.get_IsFull` | `i1(obj)` | `rt_channel_get_is_full` |
-| `Zanna.Threads.Promise.New` | `obj()` | `rt_promise_new` |
+| `Zanna.Threads.Promise.New` | `obj<Zanna.Threads.Promise>()` | `rt_promise_new` |
 | `Zanna.Threads.Promise.GetFuture` | `obj<Zanna.Threads.Future>(obj)` | `rt_promise_get_future` |
 | `Zanna.Threads.Promise.Set` | `void(obj,obj)` | `rt_promise_set` |
 | `Zanna.Threads.Promise.SetOwned` | `void(obj,obj)` | `rt_promise_set_owned` |

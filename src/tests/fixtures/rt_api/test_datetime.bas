@@ -1,6 +1,6 @@
 ' test_datetime.bas — Zanna.Time.DateTime + Duration
 DIM t AS INTEGER
-LET t = Zanna.Time.DateTime.Create(2024, 6, 15, 10, 30, 0)
+LET t = Zanna.Time.DateTime.FromParts(2024, 6, 15, 10, 30, 0)
 PRINT Zanna.Time.DateTime.Year(t)
 PRINT Zanna.Time.DateTime.Month(t)
 PRINT Zanna.Time.DateTime.Day(t)
@@ -11,7 +11,7 @@ PRINT Zanna.Time.DateTime.DayOfWeek(t)
 
 DIM iso AS STRING
 LET iso = Zanna.Time.DateTime.ToIso8601(t)
-PRINT Zanna.String.Has(iso, "2024")
+PRINT Zanna.String.Contains(iso, "2024")
 
 DIM t2 AS INTEGER
 LET t2 = Zanna.Time.DateTime.AddDays(t, 10)
@@ -38,7 +38,7 @@ PRINT Zanna.Time.Duration.get_Minutes(d)
 PRINT Zanna.Time.Duration.get_Seconds(d)
 
 DIM d2 AS INTEGER
-LET d2 = Zanna.Time.Duration.Create(1, 2, 30, 0, 0)
+LET d2 = Zanna.Time.Duration.FromParts(1, 2, 30, 0, 0)
 PRINT Zanna.Time.Duration.TotalHours(d2)
 PRINT Zanna.Time.Duration.ToString(d2)
 

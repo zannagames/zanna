@@ -185,7 +185,7 @@ void test_two_file_base_derived_with_using() {
 NAMESPACE Foundation
   CLASS Entity
     DIM id AS I64
-    DIM name AS STR
+    DIM name AS STRING
   END CLASS
 END NAMESPACE
 )";
@@ -197,7 +197,7 @@ USING Foundation
 NAMESPACE App
   REM Inherit from Entity without qualification (via USING)
   CLASS Customer : Entity
-    DIM email AS STR
+    DIM email AS STRING
   END CLASS
 END NAMESPACE
 

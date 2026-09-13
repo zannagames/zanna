@@ -13,31 +13,29 @@ PRINT "IsMatch lowercase 'Hello': "; Zanna.Text.Pattern.IsMatch("Hello", "^[a-z]
 
 ' --- Find ---
 PRINT "--- Find ---"
-PRINT "Find digits: "; Zanna.Text.Pattern.Find("abc123def", "[0-9]+")
-PRINT "Find word: "; Zanna.Text.Pattern.Find("Hello World", "[A-Z][a-z]+")
+PRINT "Find word: "; Zanna.Text.Pattern.Find("Hello World", "[A-Z][a-z]+").UnwrapStr()
 DIM found AS OBJECT
-found = Zanna.Text.Pattern.FindOption("abc123def", "[0-9]+")
-PRINT "FindOption IsSome: "; found.IsSome
-PRINT "FindOption value: "; found.UnwrapStr()
-PRINT "FindOption no match: "; Zanna.Text.Pattern.FindOption("abcdef", "[0-9]+").IsNone
+found = Zanna.Text.Pattern.Find("abc123def", "[0-9]+")
+PRINT "Find IsSome: "; found.IsSome
+PRINT "Find value: "; found.UnwrapStr()
+PRINT "Find no match: "; Zanna.Text.Pattern.Find("abcdef", "[0-9]+").IsNone
 
 ' --- FindFrom ---
 PRINT "--- FindFrom ---"
-PRINT "FindFrom pos 6: "; Zanna.Text.Pattern.FindFrom("abc123def456", "[0-9]+", 6)
 DIM foundFrom AS OBJECT
 foundFrom = Zanna.Text.Pattern.FindFrom("abc123def456", "[0-9]+", 6)
-PRINT "FindFromOption IsSome: "; foundFrom.IsSome
-PRINT "FindFromOption value: "; foundFrom.UnwrapStr()
+PRINT "FindFrom IsSome: "; foundFrom.IsSome
+PRINT "FindFrom value: "; foundFrom.UnwrapStr()
 
 ' --- FindPos ---
 PRINT "--- FindPos ---"
-PRINT "FindPos digits: "; Zanna.Text.Pattern.FindPos("abc123def", "[0-9]+")
-PRINT "FindPos no match: "; Zanna.Text.Pattern.FindPos("abcdef", "[0-9]+")
+PRINT "FindPos digits: "; Zanna.Text.Pattern.FindPos("abc123def", "[0-9]+").UnwrapOrI64(-1)
+PRINT "FindPos no match: "; Zanna.Text.Pattern.FindPos("abcdef", "[0-9]+").UnwrapOrI64(-1)
 DIM foundPos AS OBJECT
 foundPos = Zanna.Text.Pattern.FindPos("abc123def", "[0-9]+")
-PRINT "FindPosOption IsSome: "; foundPos.IsSome
-PRINT "FindPosOption value: "; foundPos.UnwrapI64()
-PRINT "FindPosOption no match: "; Zanna.Text.Pattern.FindPos("abcdef", "[0-9]+").IsNone
+PRINT "FindPos IsSome: "; foundPos.IsSome
+PRINT "FindPos value: "; foundPos.UnwrapI64()
+PRINT "FindPos no match IsNone: "; Zanna.Text.Pattern.FindPos("abcdef", "[0-9]+").IsNone
 
 ' --- FindAll ---
 PRINT "--- FindAll ---"

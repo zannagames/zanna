@@ -437,39 +437,60 @@ void OopIndexBuilder::processInterfaceDecl(const InterfaceDecl &idecl) {
             continue;
         }
 
+        // The parser records interface members as SUB and FUNCTION declarations; a
+        // METHOD declaration can also appear. Each one is a slot in declaration order.
+        const std::string *memberName = nullptr;
+        const std::vector<Param> *memberParams = nullptr;
+        std::optional<Type> memberReturn;
+        bool memberIsStatic = false;
+        il::support::SourceLoc memberLoc = mem->loc;
         if (auto *md = as<const MethodDecl>(*mem)) {
-            if (md->isStatic && emitter_) {
-                emitter_->emit(il::support::Severity::Error,
-                               "B2116",
-                               md->loc,
-                               1,
-                               "interfaces cannot declare STATIC methods");
-            }
-
-            if (seen.contains(md->name)) {
-                if (emitter_) {
-                    std::string msg = "interface '" + ii.qualifiedName +
-                                      "' declares duplicate method '" + md->name + "'.";
-                    emitter_->emit(il::support::Severity::Error,
-                                   "E_IFACE_DUP_METHOD",
-                                   md->loc,
-                                   static_cast<uint32_t>(md->name.size()),
-                                   std::move(msg));
-                }
-                continue;
-            }
-            seen.insert(md->name);
-
-            IfaceMethodSig slot;
-            slot.name = md->name;
-            for (const auto &p : md->params)
-                slot.paramTypes.push_back(p.type);
-            if (md->ret)
-                slot.returnType = md->ret;
-            else if (auto suffixType = inferAstTypeFromSuffix(md->name))
-                slot.returnType = suffixType;
-            ii.slots.push_back(std::move(slot));
+            memberName = &md->name;
+            memberParams = &md->params;
+            memberReturn = md->ret;
+            memberIsStatic = md->isStatic;
+        } else if (auto *sd = as<const SubDecl>(*mem)) {
+            memberName = &sd->name;
+            memberParams = &sd->params;
+        } else if (auto *fd = as<const FunctionDecl>(*mem)) {
+            memberName = &fd->name;
+            memberParams = &fd->params;
+            memberReturn = fd->ret;
         }
+        if (!memberName)
+            continue;
+
+        if (memberIsStatic && emitter_) {
+            emitter_->emit(il::support::Severity::Error,
+                           "B2116",
+                           memberLoc,
+                           1,
+                           "interfaces cannot declare STATIC methods");
+        }
+
+        if (seen.contains(*memberName)) {
+            if (emitter_) {
+                std::string msg = "interface '" + ii.qualifiedName +
+                                  "' declares duplicate method '" + *memberName + "'.";
+                emitter_->emit(il::support::Severity::Error,
+                               "E_IFACE_DUP_METHOD",
+                               memberLoc,
+                               static_cast<uint32_t>(memberName->size()),
+                               std::move(msg));
+            }
+            continue;
+        }
+        seen.insert(*memberName);
+
+        IfaceMethodSig slot;
+        slot.name = *memberName;
+        for (const auto &p : *memberParams)
+            slot.paramTypes.push_back(p.type);
+        if (memberReturn)
+            slot.returnType = memberReturn;
+        else if (auto suffixType = inferAstTypeFromSuffix(*memberName))
+            slot.returnType = suffixType;
+        ii.slots.push_back(std::move(slot));
     }
     index_.interfacesByQname()[ii.qualifiedName] = std::move(ii);
 }
@@ -563,18 +584,18 @@ std::string OopIndexBuilder::resolveBase(const std::string &classQ, const std::s
 std::string OopIndexBuilder::resolveInterface(const std::string &classQ,
                                               const std::string &raw) const {
     if (raw.find('.') != std::string::npos) {
-        if (index_.interfacesByQname().contains(raw))
-            return raw;
+        if (const auto *iface = index_.findInterface(raw))
+            return iface->qualifiedName;
     }
 
     auto lastDot = classQ.rfind('.');
     std::string prefix = (lastDot == std::string::npos) ? std::string{} : classQ.substr(0, lastDot);
     std::string candidate = prefix.empty() ? raw : (prefix + "." + raw);
-    if (index_.interfacesByQname().contains(candidate))
-        return candidate;
+    if (const auto *iface = index_.findInterface(candidate))
+        return iface->qualifiedName;
 
-    if (index_.interfacesByQname().contains(raw))
-        return raw;
+    if (const auto *iface = index_.findInterface(raw))
+        return iface->qualifiedName;
 
     return {};
 }

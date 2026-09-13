@@ -59,6 +59,7 @@ int main() {
         fn_bits(&rt_voice_set_pan),
         fn_bits(&rt_voice_is_playing),
         fn_bits(&rt_music_load),
+        fn_bits(&rt_music_load_asset),
         fn_bits(&rt_music_destroy),
         fn_bits(&rt_music_play),
         fn_bits(&rt_music_stop),

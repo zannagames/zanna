@@ -72,9 +72,13 @@ void appendTypeString(std::ostringstream &ss, const ZannaType &type, bool develo
         return;
     }
     ++recursionDepth;
+
     struct DepthGuard {
         int &d;
-        ~DepthGuard() { --d; }
+
+        ~DepthGuard() {
+            --d;
+        }
     } depthGuard{recursionDepth};
 
     /// @brief Appends a bracketed semantic type-argument list.
@@ -266,6 +270,9 @@ bool ZannaType::equals(const ZannaType &other) const {
 
 namespace {
 
+/// @brief Root runtime class that every runtime object is an instance of.
+constexpr const char *kRuntimeRootClassName = "Zanna.Core.Object";
+
 /// @brief Canonical `Zanna.Collections.*` class name for a collection type.
 /// @details Bridges the two spellings the type system uses for the same runtime
 ///          class: the dedicated List/Map/Set kinds and the named-Ptr sentinels
@@ -357,11 +364,18 @@ bool ZannaType::isAssignableFrom(const ZannaType &source) const {
     // the process. Require an exact collection match on both sides; unrelated
     // runtime classes keep the historical permissive behaviour because Zia does
     // not model the runtime GUI class hierarchy (a FloatingPanel is a Widget).
+    //
+    // `Zanna.Core.Object` is the root of every runtime class, so any runtime
+    // object flows into it, but it never flows back into a concrete class
+    // implicitly: narrowing one is an explicit `as`, exactly like `Any` (ADR 0356).
     if (kind == TypeKindSem::Ptr) {
         const std::string targetCollection = collectionClassName(*this);
         const std::string sourceCollection = collectionClassName(source);
         if (!targetCollection.empty() && !sourceCollection.empty() &&
             targetCollection != sourceCollection)
+            return false;
+        if (source.kind == TypeKindSem::Ptr && source.name == kRuntimeRootClassName &&
+            !name.empty() && name != kRuntimeRootClassName)
             return false;
         return source.kind == TypeKindSem::Ptr || source.kind == TypeKindSem::Function ||
                source.isReference();

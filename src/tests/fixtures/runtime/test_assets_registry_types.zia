@@ -1,0 +1,59 @@
+module TestAssetsRegistryTypes;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+// COVER: Zanna.IO.Assets.List
+// COVER: Zanna.IO.Assets.Load
+// COVER: Zanna.IO.Assets.LoadBytes
+// COVER: Zanna.IO.Assets.SizeBytes
+
+// Asset results carry their runtime types: Assets.List returns a Seq of names,
+// Assets.LoadBytes returns Bytes, and Assets.Load returns a Zanna.Core.Object to narrow
+// with `as`. All three were once registered as untyped objects, so the Zia frontend
+// inferred the Assets class itself: `.Count` / `.Length` failed to type-check, and a
+// member used on a Load result dispatched to the wrong class. Loose assets resolve against
+// the working directory (fixtures/runtime).
+
+func testListIsASeq() {
+    setTest("ListIsASeq");
+    var names = Zanna.IO.Assets.List();
+    assertGteInt(names.Count, 0, "asset names form a Seq");
+}
+
+func testLoadBytesReturnsBytes() {
+    setTest("LoadBytesReturnsBytes");
+    var missing = Zanna.IO.Assets.LoadBytes("assets/gltf/no_such_asset.bin");
+    assertTrue(missing == null, "a missing asset loads as null");
+
+    var bytes = Zanna.IO.Assets.LoadBytes("assets/gltf/load_asset_triangle.gltf");
+    assertTrue(bytes != null, "a loose asset loads");
+    if bytes != null {
+        assertEqInt(bytes.Length,
+                    Zanna.IO.Assets.SizeBytes("assets/gltf/load_asset_triangle.gltf"),
+                    "Length matches SizeBytes");
+    }
+}
+
+func testLoadReturnsCoreObject() {
+    setTest("LoadReturnsCoreObject");
+    var missing = Zanna.IO.Assets.Load("assets/gltf/no_such_image.png");
+    assertTrue(missing == null, "a missing asset loads as null");
+
+    var loaded = Zanna.IO.Assets.Load("test_sprite_load.png");
+    assertTrue(loaded != null, "the image asset loads");
+    if loaded != null {
+        // Zanna.Core.Object members type-check on the result before any narrowing.
+        assertTrue(loaded.Equals(loaded), "Load returns a Zanna.Core.Object");
+        var image = loaded as Zanna.Graphics.Pixels;
+        assertEqInt(image.Width, 4, "the loaded image narrows to Pixels");
+        assertEqInt(image.Height, 4, "and keeps its height");
+    }
+}
+
+func start() {
+    testListIsASeq();
+    testLoadBytesReturnsBytes();
+    testLoadReturnsCoreObject();
+    report();
+}

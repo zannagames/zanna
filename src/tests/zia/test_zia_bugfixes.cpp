@@ -2979,6 +2979,54 @@ func start() {
     EXPECT_GE(countCallsTo(*mainFn, kListCount), static_cast<size_t>(1));
 }
 
+TEST(ZiaBugFixes, CollectionIsEmptyReadsTheCountAndIsReadOnly) {
+    CompilerOptions opts{};
+
+    SourceManager sm;
+    const std::string source = R"(
+module Test;
+
+func start() {
+    var values: List[Integer] = [];
+    var names: Map[String, Integer] = new Map[String, Integer]();
+    var ids: Map[Integer, String] = new Map[Integer, String]();
+    var tags: Set[String] = new Set[String]();
+    var empty: Boolean = values.IsEmpty && names.IsEmpty && ids.IsEmpty && tags.IsEmpty;
+    var maybe: List[Integer]? = values;
+    var chained: Boolean? = maybe?.IsEmpty;
+    Zanna.Terminal.SayBool(empty);
+    Zanna.Terminal.SayBool(chained ?? false);
+}
+)";
+    CompilerInput input{.source = source, .path = "collection_is_empty.zia"};
+    auto result = compile(input, opts, sm);
+
+    ASSERT_TRUE(result.succeeded());
+    const auto *mainFn = findFunction(result.module, "main");
+    ASSERT_TRUE(mainFn != nullptr);
+    EXPECT_GE(countCallsTo(*mainFn, kListCount), static_cast<size_t>(2));
+    EXPECT_GE(countCallsTo(*mainFn, kMapCount), static_cast<size_t>(1));
+    EXPECT_GE(countCallsTo(*mainFn, kIntMapCount), static_cast<size_t>(1));
+    EXPECT_GE(countCallsTo(*mainFn, kSetCount), static_cast<size_t>(1));
+    EXPECT_GE(countOpcode(*mainFn, il::core::Opcode::ICmpEq), static_cast<size_t>(5));
+
+    SourceManager sm2;
+    const std::string assign = R"(
+module Test;
+
+func start() {
+    var values = [1, 2, 3];
+    values.IsEmpty = true;
+}
+)";
+    CompilerInput assignInput{.source = assign, .path = "readonly_is_empty_assign.zia"};
+    auto assignResult = compile(assignInput, opts, sm2);
+    EXPECT_FALSE(assignResult.succeeded());
+    EXPECT_TRUE(
+        hasErrorContaining(assignResult, "Cannot assign to read-only property 'IsEmpty' on List"));
+    EXPECT_FALSE(hasErrorContaining(assignResult, "Type mismatch"));
+}
+
 TEST(ZiaBugFixes, StructLiteralsTrailingCommasAndMatchLookaheadGaps) {
     SourceManager sm;
     const std::string source = R"(

@@ -11,6 +11,8 @@
 // Key invariants:
 //   - .deb = ar(debian-binary + control.tar.gz + data.tar.gz).
 //   - .tar.gz uses FHS-compliant paths (/usr/bin, /usr/share, etc.).
+//   - Generated .zpak packs install beside the executable's real file; with
+//     packs the .deb/.rpm/bundle executable lives in usr/lib/<pkg> (ADR 0355).
 //   - All format bytes emitted directly — no dpkg-deb or tar dependency.
 //   - md5sums file contains hex digest + two-space + path for every data file.
 //
@@ -18,7 +20,8 @@
 //   - Free functions consume caller-provided paths and write one requested artifact.
 //
 // Links: ArWriter.hpp, TarWriter.hpp, PkgGzip.hpp, PkgMD5.hpp,
-//        DesktopEntryGenerator.hpp, PackageConfig.hpp
+//        DesktopEntryGenerator.hpp, PackageConfig.hpp,
+//        docs/adr/0355-package-formats-ship-pack-groups.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +36,7 @@
 #include "ToolchainInstallManifest.hpp"
 
 #include <string>
+#include <vector>
 
 namespace zanna::pkg {
 
@@ -44,7 +48,11 @@ struct LinuxBuildParams {
     std::string projectRoot;    ///< Absolute project root used to resolve configured assets.
     PackageConfig pkgConfig;    ///< Manifest-derived package metadata and integration settings.
     std::string outputPath;     ///< Destination artifact path.
-    std::string archStr;        ///< Format-specific architecture (`amd64`/`arm64` or `x64`/`arm64`).
+    std::string archStr; ///< Format-specific architecture (`amd64`/`arm64` or `x64`/`arm64`).
+    /// Generated `.zpak` pack groups (trusted paths) installed beside the executable, where the
+    /// runtime mounts them (ADR 0355). A non-empty list moves a `.deb`, `.rpm`, or bundle
+    /// executable to `usr/lib/<pkg>/` and links it from `usr/bin/`.
+    std::vector<std::string> packFiles;
 };
 
 /// @brief Build a Debian .deb package.
@@ -58,11 +66,12 @@ void buildDebPackage(const LinuxBuildParams &params);
 void buildTarball(const LinuxBuildParams &params);
 
 /// @brief Build a self-extracting Linux `.run` bundle for an end-user application.
-/// @details Lays the payload out as a portable tree (app binary at `usr/bin/<exe>`
-///          with an `AppRun` symlink entry point, bundled assets under
-///          `usr/share/<pkg>/`, and a `.desktop` launcher plus icon at the payload
-///          root), then wraps it in the shared FUSE-less self-extracting runtime
-///          stub. `params.archStr` must be the portable form ("x64" or "arm64").
+/// @details Lays the payload out as a portable tree (app binary at `usr/bin/<exe>`, or at
+///          `usr/lib/<pkg>/<exe>` beside its packs with a `usr/bin/<exe>` link, an `AppRun`
+///          launcher script entry point, bundled assets under `usr/share/<pkg>/`, and a
+///          `.desktop` launcher plus icon at the payload root), then wraps it in the shared
+///          FUSE-less self-extracting runtime stub. `params.archStr` must be the portable
+///          form ("x64" or "arm64").
 /// @param params Build parameters.
 /// @throws std::runtime_error on failure.
 void buildAppImage(const LinuxBuildParams &params);

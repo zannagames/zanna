@@ -235,6 +235,34 @@ class Emitter {
 
     /// @brief Discard all deferred temporaries without emitting release calls.
     void clearDeferredTemps();
+
+    /// @brief One deferred ownership release scheduled at statement boundary.
+    struct TempRelease {
+        /// Runtime handle to release.
+        Value v;
+        /// True for string handles; false for object handles.
+        bool isString{false};
+        std::string className; // optional, for object destructors
+    };
+
+    /// @brief Remove and return every queued deferred release.
+    /// @details A compound statement sets its header's temporaries aside while
+    ///          its nested statements are lowered, so a nested statement boundary
+    ///          cannot release a header value, and releases them itself where
+    ///          its paths rejoin.
+    /// @return The queued releases in scheduling order; the queue is left empty.
+    [[nodiscard]] std::vector<TempRelease> takeDeferredTemps();
+
+    /// @brief Queue previously taken releases again, ahead of any queued since.
+    /// @param temps Releases returned by @ref takeDeferredTemps.
+    void restoreDeferredTemps(std::vector<TempRelease> temps);
+
+    /// @brief Remove @p v from the deferred-release queue without releasing it.
+    /// @details Transfers the temporary's reference to a new owner, such as a
+    ///          RETURN that hands its owned result to the caller.
+    /// @param v Temporary to unqueue.
+    /// @return True when @p v was queued.
+    bool takeDeferredTemp(Value v);
     /// @}
 
     /// @brief Emit an unconditional trap (program abort).
@@ -311,15 +339,6 @@ class Emitter {
                           const SymbolInfo &info,
                           ArrayReleaseState &state,
                           bool skipObjectArrays);
-
-    /// @brief One deferred ownership release scheduled at statement boundary.
-    struct TempRelease {
-        /// Runtime handle to release.
-        Value v;
-        /// True for string handles; false for object handles.
-        bool isString{false};
-        std::string className; // optional, for object destructors
-    };
 
     /// Deferred releases retained in scheduling order.
     std::vector<TempRelease> deferredTemps_;

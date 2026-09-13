@@ -31,16 +31,16 @@ func main() {
     Zanna.Terminal.Say("");
     Zanna.Terminal.Say("=== Map ===");
     var map = Zanna.Collections.Map.New();
-    Zanna.Collections.Map.Set(map, Zanna.Core.Box.Str("name"), Zanna.Core.Box.Str("Alice"));
-    Zanna.Collections.Map.Set(map, Zanna.Core.Box.Str("city"), Zanna.Core.Box.Str("Boston"));
+    Zanna.Collections.Map.Set(map, "name", Zanna.Core.Box.Str("Alice"));
+    Zanna.Collections.Map.Set(map, "city", Zanna.Core.Box.Str("Boston"));
 
     Zanna.Terminal.Print("Map has 'name': ");
-    Zanna.Terminal.Say(Zanna.Text.Fmt.Bool(Zanna.Collections.Map.Has(map, Zanna.Core.Box.Str("name"))));
+    Zanna.Terminal.Say(Zanna.Text.Fmt.Bool(Zanna.Collections.Map.Has(map, "name")));
 
-    var nameVal = Zanna.Collections.Map.Get(map, Zanna.Core.Box.Str("name"));
+    var nameVal = Zanna.Collections.Map.Get(map, "name");
     Zanna.Terminal.Say("Map get 'name': " + Zanna.Core.Box.ToStr(nameVal));
 
-    var cityVal = Zanna.Collections.Map.Get(map, Zanna.Core.Box.Str("city"));
+    var cityVal = Zanna.Collections.Map.Get(map, "city");
     Zanna.Terminal.Say("Map get 'city': " + Zanna.Core.Box.ToStr(cityVal));
 
     // Note: ZannaLang has no native arrays

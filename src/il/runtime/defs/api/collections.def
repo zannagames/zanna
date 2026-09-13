@@ -43,27 +43,27 @@ RT_FUNC(BitsXor,    rt_bits_xor,    "Zanna.Math.Bits.Xor",    "i64(i64,i64)")
 // COLLECTIONS - BITSET
 //=============================================================================
 
-RT_FUNC(BitSetAnd, rt_bitset_and, "Zanna.Collections.BitSet.And", "obj(obj,obj)", owned)
+RT_FUNC(BitSetAnd, rt_bitset_and, "Zanna.Collections.BitSet.And", "obj<Zanna.Collections.BitSet>(obj,obj)", owned)
 RT_FUNC(BitSetClear,     rt_bitset_clear,      "Zanna.Collections.BitSet.ClearBit",        "void(obj,i64)")
 RT_FUNC(BitSetClearAll,  rt_bitset_clear_all,  "Zanna.Collections.BitSet.Clear",     "void(obj)")
 RT_FUNC(BitSetGet,       rt_bitset_get,        "Zanna.Collections.BitSet.GetBit",          "i1(obj,i64)")
 RT_FUNC(BitSetIsEmpty,   rt_bitset_is_empty,   "Zanna.Collections.BitSet.get_IsEmpty",  "i1(obj)")
 RT_FUNC(BitSetLen,       rt_bitset_len,        "Zanna.Collections.BitSet.get_Length",      "i64(obj)")
 RT_FUNC(BitSetCount,     rt_bitset_count,      "Zanna.Collections.BitSet.get_Count",    "i64(obj)")
-RT_FUNC(BitSetNew, rt_bitset_new, "Zanna.Collections.BitSet.New", "obj(i64)", owned)
-RT_FUNC(BitSetNot, rt_bitset_not, "Zanna.Collections.BitSet.Not", "obj(obj)", owned)
-RT_FUNC(BitSetOr, rt_bitset_or, "Zanna.Collections.BitSet.Or", "obj(obj,obj)", owned)
+RT_FUNC(BitSetNew, rt_bitset_new, "Zanna.Collections.BitSet.New", "obj<Zanna.Collections.BitSet>(i64)", owned)
+RT_FUNC(BitSetNot, rt_bitset_not, "Zanna.Collections.BitSet.Not", "obj<Zanna.Collections.BitSet>(obj)", owned)
+RT_FUNC(BitSetOr, rt_bitset_or, "Zanna.Collections.BitSet.Or", "obj<Zanna.Collections.BitSet>(obj,obj)", owned)
 RT_FUNC(BitSetSet,       rt_bitset_set,        "Zanna.Collections.BitSet.SetBit",          "void(obj,i64)")
 RT_FUNC(BitSetSetAll,    rt_bitset_set_all,    "Zanna.Collections.BitSet.SetAll",       "void(obj)")
 RT_FUNC(BitSetToggle,    rt_bitset_toggle,     "Zanna.Collections.BitSet.ToggleBit",       "void(obj,i64)")
 RT_FUNC(BitSetToString, rt_bitset_to_string, "Zanna.Collections.BitSet.ToString", "str(obj)", owned)
-RT_FUNC(BitSetXor, rt_bitset_xor, "Zanna.Collections.BitSet.Xor", "obj(obj,obj)", owned)
+RT_FUNC(BitSetXor, rt_bitset_xor, "Zanna.Collections.BitSet.Xor", "obj<Zanna.Collections.BitSet>(obj,obj)", owned)
 
 //=============================================================================
 // BLOOM FILTER
 //=============================================================================
 
-RT_FUNC(BloomFilterNew, rt_bloomfilter_new, "Zanna.Collections.BloomFilter.New", "obj(i64,f64)", owned)
+RT_FUNC(BloomFilterNew, rt_bloomfilter_new, "Zanna.Collections.BloomFilter.New", "obj<Zanna.Collections.BloomFilter>(i64,f64)", owned)
 RT_FUNC(BloomFilterAdd,          rt_bloomfilter_add,          "Zanna.Collections.BloomFilter.Add",          "void(obj,str)")
 RT_FUNC(BloomFilterMightContain, rt_bloomfilter_might_contain, "Zanna.Collections.BloomFilter.MightContain", "i1(obj,str)")
 RT_FUNC(BloomFilterLen,          rt_bloomfilter_count,        "Zanna.Collections.BloomFilter.get_Count",    "i64(obj)")
@@ -75,7 +75,7 @@ RT_FUNC(BloomFilterMerge,        rt_bloomfilter_merge,        "Zanna.Collections
 // UNION FIND
 //=============================================================================
 
-RT_FUNC(UnionFindNew, rt_unionfind_new, "Zanna.Collections.UnionFind.New", "obj(i64)", owned)
+RT_FUNC(UnionFindNew, rt_unionfind_new, "Zanna.Collections.UnionFind.New", "obj<Zanna.Collections.UnionFind>(i64)", owned)
 RT_FUNC(UnionFindFindRootOption, rt_unionfind_find_root_option, "Zanna.Collections.UnionFind.FindRoot", "obj<Zanna.Option>(obj,i64)", owned)
 RT_FUNC(UnionFindUnion,     rt_unionfind_union,     "Zanna.Collections.UnionFind.Union",     "i64(obj,i64,i64)")
 RT_FUNC(UnionFindReset,     rt_unionfind_reset,     "Zanna.Collections.UnionFind.Clear",     "void(obj)")
@@ -87,7 +87,7 @@ RT_FUNC(UnionFindSetSize,   rt_unionfind_set_size,  "Zanna.Collections.UnionFind
 // ORDERED MAP
 //=============================================================================
 
-RT_FUNC(OrderedMapNew, rt_orderedmap_new, "Zanna.Collections.OrderedMap.New", "obj()", owned)
+RT_FUNC(OrderedMapNew, rt_orderedmap_new, "Zanna.Collections.OrderedMap.New", "obj<Zanna.Collections.OrderedMap>()", owned)
 RT_FUNC(OrderedMapLen,     rt_orderedmap_len,     "Zanna.Collections.OrderedMap.get_Count",    "i64(obj)")
 RT_FUNC(OrderedMapIsEmpty, rt_orderedmap_is_empty, "Zanna.Collections.OrderedMap.get_IsEmpty", "i1(obj)")
 RT_FUNC(OrderedMapSet,     rt_orderedmap_set,     "Zanna.Collections.OrderedMap.Set",        "void(obj,str,obj)")
@@ -149,19 +149,19 @@ RT_CLASS_END()
 // COLLECTIONS - BYTES
 //=============================================================================
 
-RT_FUNC(BytesClone, rt_bytes_clone, "Zanna.Collections.Bytes.Clone", "obj(obj)", owned)
+RT_FUNC(BytesClone, rt_bytes_clone, "Zanna.Collections.Bytes.Clone", "obj<Zanna.Collections.Bytes>(obj)", owned)
 RT_FUNC(BytesCopy,    rt_bytes_copy,     "Zanna.Collections.Bytes.Copy",      "void(obj,i64,obj,i64,i64)")
 RT_FUNC(BytesFill,    rt_bytes_fill,     "Zanna.Collections.Bytes.Fill",      "void(obj,i64)")
 RT_FUNC(BytesFindOption, rt_bytes_find_option, "Zanna.Collections.Bytes.Find", "obj<Zanna.Option>(obj,i64)", owned)
-RT_FUNC(BytesFromBase64, rt_bytes_from_base64, "Zanna.Collections.Bytes.FromBase64", "obj(str)", owned)
-RT_FUNC(BytesFromHex, rt_bytes_from_hex, "Zanna.Collections.Bytes.FromHex", "obj(str)", owned)
-RT_FUNC(BytesFromStr, rt_bytes_from_str, "Zanna.Collections.Bytes.FromStr", "obj(str)", owned)
+RT_FUNC(BytesFromBase64, rt_bytes_from_base64, "Zanna.Collections.Bytes.FromBase64", "obj<Zanna.Collections.Bytes>(str)", owned)
+RT_FUNC(BytesFromHex, rt_bytes_from_hex, "Zanna.Collections.Bytes.FromHex", "obj<Zanna.Collections.Bytes>(str)", owned)
+RT_FUNC(BytesFromStr, rt_bytes_from_str, "Zanna.Collections.Bytes.FromStr", "obj<Zanna.Collections.Bytes>(str)", owned)
 RT_FUNC(BytesGet,     rt_bytes_get,      "Zanna.Collections.Bytes.Get",       "i64(obj,i64)")
 RT_FUNC(BytesIsEmpty, rt_bytes_is_empty, "Zanna.Collections.Bytes.get_IsEmpty",  "i1(obj)")
 RT_FUNC(BytesLen,     rt_bytes_len,      "Zanna.Collections.Bytes.get_Length",   "i64(obj)")
-RT_FUNC(BytesNew, rt_bytes_new, "Zanna.Collections.Bytes.New", "obj(i64)", owned)
+RT_FUNC(BytesNew, rt_bytes_new, "Zanna.Collections.Bytes.New", "obj<Zanna.Collections.Bytes>(i64)", owned)
 RT_FUNC(BytesSet,     rt_bytes_set,      "Zanna.Collections.Bytes.Set",       "void(obj,i64,i64)")
-RT_FUNC(BytesSlice, rt_bytes_slice, "Zanna.Collections.Bytes.Slice", "obj(obj,i64,i64)", owned)
+RT_FUNC(BytesSlice, rt_bytes_slice, "Zanna.Collections.Bytes.Slice", "obj<Zanna.Collections.Bytes>(obj,i64,i64)", owned)
 RT_FUNC(BytesToBase64, rt_bytes_to_base64, "Zanna.Collections.Bytes.ToBase64", "str(obj)", owned)
 RT_FUNC(BytesToHex, rt_bytes_to_hex, "Zanna.Collections.Bytes.ToHex", "str(obj)", owned)
 RT_FUNC(BytesToStr, rt_bytes_to_str, "Zanna.Collections.Bytes.ToStr", "str(obj)", owned)
@@ -182,8 +182,8 @@ RT_FUNC(BytesWriteI64BE, rt_bytes_write_i64be, "Zanna.Collections.Bytes.WriteI64
 // COLLECTIONS - NUMERIC BUFFERS
 //=============================================================================
 
-RT_FUNC(F64BufNew, rt_f64buf_new, "Zanna.Collections.F64Buffer.New", "obj(i64)", owned)
-RT_FUNC(F64BufFromSeq, rt_f64buf_from_seq, "Zanna.Collections.F64Buffer.FromSeq", "obj(obj)", owned)
+RT_FUNC(F64BufNew, rt_f64buf_new, "Zanna.Collections.F64Buffer.New", "obj<Zanna.Collections.F64Buffer>(i64)", owned)
+RT_FUNC(F64BufFromSeq, rt_f64buf_from_seq, "Zanna.Collections.F64Buffer.FromSeq", "obj<Zanna.Collections.F64Buffer>(obj)", owned)
 RT_FUNC(F64BufLen,       rt_f64buf_len,        "Zanna.Collections.F64Buffer.get_Length", "i64(obj)")
 RT_FUNC(F64BufGet,       rt_f64buf_get,        "Zanna.Collections.F64Buffer.Get",        "f64(obj,i64)")
 RT_FUNC(F64BufSet,       rt_f64buf_set,        "Zanna.Collections.F64Buffer.Set",        "void(obj,i64,f64)")
@@ -200,8 +200,8 @@ RT_FUNC(F64BufMax,       rt_f64buf_max,        "Zanna.Collections.F64Buffer.Max"
 RT_FUNC(F64BufToList, rt_f64buf_to_list, "Zanna.Collections.F64Buffer.ToList", "obj<Zanna.Collections.List>(obj)", owned)
 RT_FUNC(F64BufToSeq, rt_f64buf_to_seq, "Zanna.Collections.F64Buffer.ToSeq", "obj<Zanna.Collections.Seq>(obj)", owned)
 
-RT_FUNC(I64BufNew, rt_i64buf_new, "Zanna.Collections.I64Buffer.New", "obj(i64)", owned)
-RT_FUNC(I64BufFromSeq, rt_i64buf_from_seq, "Zanna.Collections.I64Buffer.FromSeq", "obj(obj)", owned)
+RT_FUNC(I64BufNew, rt_i64buf_new, "Zanna.Collections.I64Buffer.New", "obj<Zanna.Collections.I64Buffer>(i64)", owned)
+RT_FUNC(I64BufFromSeq, rt_i64buf_from_seq, "Zanna.Collections.I64Buffer.FromSeq", "obj<Zanna.Collections.I64Buffer>(obj)", owned)
 RT_FUNC(I64BufLen,       rt_i64buf_len,        "Zanna.Collections.I64Buffer.get_Length", "i64(obj)")
 RT_FUNC(I64BufGet,       rt_i64buf_get,        "Zanna.Collections.I64Buffer.Get",        "i64(obj,i64)")
 RT_FUNC(I64BufSet,       rt_i64buf_set,        "Zanna.Collections.I64Buffer.Set",        "void(obj,i64,i64)")
@@ -262,7 +262,7 @@ RT_FUNC(BagHas,     rt_bag_has,      "Zanna.Collections.StringSet.Has",         
 RT_FUNC(BagIsEmpty, rt_bag_is_empty, "Zanna.Collections.StringSet.get_IsEmpty", "i1(obj)")
 RT_FUNC(BagLen,     rt_bag_len,      "Zanna.Collections.StringSet.get_Count",     "i64(obj)")
 RT_FUNC(BagUnion, rt_bag_union, "Zanna.Collections.StringSet.Union", "obj<Zanna.Collections.StringSet>(obj,obj)", owned)
-RT_FUNC(BagNew, rt_bag_new, "Zanna.Collections.StringSet.New", "obj()", owned)
+RT_FUNC(BagNew, rt_bag_new, "Zanna.Collections.StringSet.New", "obj<Zanna.Collections.StringSet>()", owned)
 RT_FUNC(BagAdd,     rt_bag_add,      "Zanna.Collections.StringSet.Add",         "i1(obj,str)")
 
 // Bag aliases (backward compatibility)
@@ -276,7 +276,7 @@ RT_FUNC(BagToSet, rt_bag_to_set, "Zanna.Collections.StringSet.ToSet", "obj<Zanna
 // COLLECTIONS - SPARSEARRAY
 //=============================================================================
 
-RT_FUNC(SparseNew, rt_sparse_new, "Zanna.Collections.SparseArray.New", "obj()", owned)
+RT_FUNC(SparseNew, rt_sparse_new, "Zanna.Collections.SparseArray.New", "obj<Zanna.Collections.SparseArray>()", owned)
 RT_FUNC(SparseLen,     rt_sparse_len,     "Zanna.Collections.SparseArray.get_Count",    "i64(obj)")
 RT_FUNC(SparseGet, rt_sparse_get, "Zanna.Collections.SparseArray.Get", "obj(obj,i64)", borrowed)
 RT_FUNC(SparseSet,     rt_sparse_set,     "Zanna.Collections.SparseArray.Set",        "void(obj,i64,obj)")
@@ -290,7 +290,7 @@ RT_FUNC(SparseClear,   rt_sparse_clear,   "Zanna.Collections.SparseArray.Clear",
 // COLLECTIONS - WEAKMAP
 //=============================================================================
 
-RT_FUNC(WeakMapNew, rt_weakmap_new, "Zanna.Collections.WeakMap.New", "obj()", owned)
+RT_FUNC(WeakMapNew, rt_weakmap_new, "Zanna.Collections.WeakMap.New", "obj<Zanna.Collections.WeakMap>()", owned)
 RT_FUNC(WeakMapLen,     rt_weakmap_len,     "Zanna.Collections.WeakMap.get_Count",    "i64(obj)")
 RT_FUNC(WeakMapIsEmpty, rt_weakmap_is_empty,"Zanna.Collections.WeakMap.get_IsEmpty", "i1(obj)")
 RT_FUNC(WeakMapSet,     rt_weakmap_set,     "Zanna.Collections.WeakMap.Set",        "void(obj,str,obj)")
@@ -309,7 +309,7 @@ RT_FUNC(RuntimeUnsafeRetain,     rt_memory_retain,      "Zanna.Runtime.Unsafe.Re
 RT_FUNC(RuntimeUnsafeRelease,    rt_memory_release,     "Zanna.Runtime.Unsafe.Release",    "i64(obj)")
 RT_FUNC(RuntimeUnsafeRetainStr,  rt_memory_retain_str,  "Zanna.Runtime.Unsafe.RetainStr",  "void(str)")
 RT_FUNC(RuntimeUnsafeReleaseStr, rt_memory_release_str, "Zanna.Runtime.Unsafe.ReleaseStr", "i64(str)")
-RT_FUNC(RuntimeUnsafeValueType, rt_box_value_type, "Zanna.Runtime.Unsafe.ValueType", "obj(i64)", owned)
+RT_FUNC(RuntimeUnsafeValueType, rt_box_value_type, "Zanna.Runtime.Unsafe.ValueType", "obj<Zanna.Core.Object>(i64)", owned)
 RT_FUNC(RuntimeUnsafeValueTypeAddField, rt_box_value_type_add_field, "Zanna.Runtime.Unsafe.ValueTypeAddField", "void(obj,i64,i64,i1)")
 RT_FUNC(RuntimeUnsafeSetThrowMsg, rt_throw_msg_set, "Zanna.Runtime.Unsafe.SetThrowMsg", "void(str)")
 RT_FUNC(RuntimeUnsafeClearThrowMsg, rt_throw_msg_clear, "Zanna.Runtime.Unsafe.ClearThrowMsg", "void()")
@@ -329,7 +329,7 @@ RT_CLASS_BEGIN("Zanna.Runtime.Unsafe", RuntimeUnsafe, "obj", none)
     RT_METHOD("Release",    "i64(obj)",  RuntimeUnsafeRelease)
     RT_METHOD("RetainStr",  "void(str)", RuntimeUnsafeRetainStr)
     RT_METHOD("ReleaseStr", "i64(str)",  RuntimeUnsafeReleaseStr)
-    RT_METHOD("ValueType", "obj(i64)", RuntimeUnsafeValueType)
+    RT_METHOD("ValueType", "obj<Zanna.Core.Object>(i64)", RuntimeUnsafeValueType)
     RT_METHOD("ValueTypeAddField", "void(obj,i64,i64,i1)", RuntimeUnsafeValueTypeAddField)
     RT_METHOD("SetThrowMsg", "void(str)", RuntimeUnsafeSetThrowMsg)
     RT_METHOD("ClearThrowMsg", "void()", RuntimeUnsafeClearThrowMsg)
@@ -378,7 +378,7 @@ RT_FUNC(SetIsSubset,   rt_set_is_subset,   "Zanna.Collections.Set.IsSubset",    
 RT_FUNC(SetIsSuperset, rt_set_is_superset, "Zanna.Collections.Set.IsSuperset",  "i1(obj,obj)")
 RT_FUNC(SetLen,        rt_set_len,         "Zanna.Collections.Set.get_Count",     "i64(obj)")
 RT_FUNC(SetUnion, rt_set_union, "Zanna.Collections.Set.Union", "obj<Zanna.Collections.Set>(obj,obj)", owned)
-RT_FUNC(SetNew, rt_set_new, "Zanna.Collections.Set.New", "obj()", owned)
+RT_FUNC(SetNew, rt_set_new, "Zanna.Collections.Set.New", "obj<Zanna.Collections.Set>()", owned)
 RT_FUNC(SetAdd,        rt_set_add,         "Zanna.Collections.Set.Add",         "i1(obj,obj)")
 RT_FUNC(SetClone, rt_set_clone, "Zanna.Collections.Set.Clone", "obj<Zanna.Collections.Set>(obj)", owned)
 
@@ -401,7 +401,7 @@ RT_FUNC(ListGetLen,   rt_list_len,       "Zanna.Collections.List.get_Count",    
 RT_FUNC(ListGet, rt_list_get, "Zanna.Collections.List.Get", "obj(obj,i64)", owned)
 RT_FUNC(ListHas,      rt_list_has,       "Zanna.Collections.List.Has",        "i1(obj,obj)")
 RT_FUNC(ListInsert,   rt_list_insert,    "Zanna.Collections.List.Insert",     "void(obj,i64,obj)")
-RT_FUNC(ListNew, rt_list_new, "Zanna.Collections.List.New", "obj()", owned)
+RT_FUNC(ListNew, rt_list_new, "Zanna.Collections.List.New", "obj<Zanna.Collections.List>()", owned)
 RT_FUNC(ListRemove,   rt_list_remove,    "Zanna.Collections.List.Remove",     "i1(obj,obj)")
 RT_FUNC(ListRemoveAt, rt_list_remove_at, "Zanna.Collections.List.RemoveAt",   "void(obj,i64)")
 RT_FUNC(ListSet,      rt_list_set,       "Zanna.Collections.List.Set",        "void(obj,i64,obj)")
@@ -439,7 +439,7 @@ RT_FUNC(LruCacheHas,          rt_lrucache_has,            "Zanna.Collections.Lru
 RT_FUNC(LruCacheIsEmpty,      rt_lrucache_is_empty,       "Zanna.Collections.LruCache.get_IsEmpty",  "i1(obj)")
 RT_FUNC(LruCacheKeys, rt_lrucache_keys, "Zanna.Collections.LruCache.Keys", "seq<str>(obj)", owned)
 RT_FUNC(LruCacheLen,          rt_lrucache_len,            "Zanna.Collections.LruCache.get_Count",      "i64(obj)")
-RT_FUNC(LruCacheNew, rt_lrucache_new, "Zanna.Collections.LruCache.New", "obj(i64)", owned)
+RT_FUNC(LruCacheNew, rt_lrucache_new, "Zanna.Collections.LruCache.New", "obj<Zanna.Collections.LruCache>(i64)", owned)
 RT_FUNC(LruCachePeek, rt_lrucache_peek, "Zanna.Collections.LruCache.Peek", "obj(obj,str)", borrowed)
 RT_FUNC(LruCacheSet,          rt_lrucache_put,            "Zanna.Collections.LruCache.Set",          "void(obj,str,obj)")
 RT_FUNC(LruCacheRemove,       rt_lrucache_remove,         "Zanna.Collections.LruCache.Remove",       "i1(obj,str)")
@@ -457,7 +457,7 @@ RT_FUNC(MapTrim,    rt_map_trim,     "Zanna.Collections.Map.Trim",        "i1(ob
 // COLLECTIONS - BIMAP
 //=============================================================================
 
-RT_FUNC(BiMapNew, rt_bimap_new, "Zanna.Collections.BiMap.New", "obj()", owned)
+RT_FUNC(BiMapNew, rt_bimap_new, "Zanna.Collections.BiMap.New", "obj<Zanna.Collections.BiMap>()", owned)
 RT_FUNC(BiMapLen,           rt_bimap_len,           "Zanna.Collections.BiMap.get_Count",      "i64(obj)")
 RT_FUNC(BiMapIsEmpty,       rt_bimap_is_empty,      "Zanna.Collections.BiMap.get_IsEmpty",  "i1(obj)")
 RT_FUNC(BiMapSet,           rt_bimap_put,           "Zanna.Collections.BiMap.Set",          "void(obj,str,str)")
@@ -475,7 +475,7 @@ RT_FUNC(BiMapClear,         rt_bimap_clear,         "Zanna.Collections.BiMap.Cle
 // COLLECTIONS - COUNTMAP
 //=============================================================================
 
-RT_FUNC(CountMapNew, rt_countmap_new, "Zanna.Collections.CountMap.New", "obj()", owned)
+RT_FUNC(CountMapNew, rt_countmap_new, "Zanna.Collections.CountMap.New", "obj<Zanna.Collections.CountMap>()", owned)
 RT_FUNC(CountMapLen,        rt_countmap_len,        "Zanna.Collections.CountMap.get_Count",    "i64(obj)")
 RT_FUNC(CountMapIsEmpty,    rt_countmap_is_empty,   "Zanna.Collections.CountMap.get_IsEmpty","i1(obj)")
 RT_FUNC(CountMapInc,        rt_countmap_inc,        "Zanna.Collections.CountMap.Increment",        "i64(obj,str)")
@@ -503,7 +503,7 @@ RT_FUNC(MultiMapIsEmpty,   rt_multimap_is_empty,   "Zanna.Collections.MultiMap.g
 RT_FUNC(MultiMapKeyCount,  rt_multimap_key_count,  "Zanna.Collections.MultiMap.get_KeyCount", "i64(obj)")
 RT_FUNC(MultiMapKeys, rt_multimap_keys, "Zanna.Collections.MultiMap.Keys", "seq<str>(obj)", owned)
 RT_FUNC(MultiMapLen,       rt_multimap_len,        "Zanna.Collections.MultiMap.get_Count",      "i64(obj)")
-RT_FUNC(MultiMapNew, rt_multimap_new, "Zanna.Collections.MultiMap.New", "obj()", owned)
+RT_FUNC(MultiMapNew, rt_multimap_new, "Zanna.Collections.MultiMap.New", "obj<Zanna.Collections.MultiMap>()", owned)
 RT_FUNC(MultiMapAdd,       rt_multimap_put,        "Zanna.Collections.MultiMap.Add",          "void(obj,str,obj)")
 RT_FUNC(MultiMapRemoveAll, rt_multimap_remove_all, "Zanna.Collections.MultiMap.RemoveAll",    "i1(obj,str)")
 RT_FUNC(MapGet, rt_map_get, "Zanna.Collections.Map.Get", "obj(obj,str)", borrowed)
@@ -512,7 +512,7 @@ RT_FUNC(MapHas,     rt_map_has,      "Zanna.Collections.Map.Has",         "i1(ob
 RT_FUNC(MapIsEmpty, rt_map_is_empty, "Zanna.Collections.Map.get_IsEmpty", "i1(obj)")
 RT_FUNC(MapKeys, rt_map_keys, "Zanna.Collections.Map.Keys", "seq<str>(obj)", owned)
 RT_FUNC(MapLen,     rt_map_len,      "Zanna.Collections.Map.get_Count",     "i64(obj)")
-RT_FUNC(MapNew, rt_map_new, "Zanna.Collections.Map.New", "obj()", owned)
+RT_FUNC(MapNew, rt_map_new, "Zanna.Collections.Map.New", "obj<Zanna.Collections.Map>()", owned)
 RT_FUNC(MapRemove,  rt_map_remove,   "Zanna.Collections.Map.Remove",      "i1(obj,str)")
 RT_FUNC(MapSet,     rt_map_set,      "Zanna.Collections.Map.Set",         "void(obj,str,obj)")
 RT_FUNC(MapSetIfMissing, rt_map_set_if_missing, "Zanna.Collections.Map.SetIfMissing", "i1(obj,str,obj)")
@@ -535,7 +535,7 @@ RT_FUNC(MapGetOptStr, rt_map_get_opt_str, "Zanna.Collections.Map.GetOptStr", "st
 // COLLECTIONS - INTMAP
 //=============================================================================
 
-RT_FUNC(IntMapNew, rt_intmap_new, "Zanna.Collections.IntMap.New", "obj()", owned)
+RT_FUNC(IntMapNew, rt_intmap_new, "Zanna.Collections.IntMap.New", "obj<Zanna.Collections.IntMap>()", owned)
 RT_FUNC(IntMapLen,     rt_intmap_len,      "Zanna.Collections.IntMap.get_Count",     "i64(obj)")
 RT_FUNC(IntMapIsEmpty, rt_intmap_is_empty, "Zanna.Collections.IntMap.get_IsEmpty", "i1(obj)")
 RT_FUNC(IntMapSet,     rt_intmap_set,      "Zanna.Collections.IntMap.Set",         "void(obj,i64,obj)")
@@ -556,7 +556,7 @@ RT_FUNC(QueuePush,    rt_queue_push,     "Zanna.Collections.Queue.Push",        
 RT_FUNC(QueueClear,   rt_queue_clear,    "Zanna.Collections.Queue.Clear",       "void(obj)")
 RT_FUNC(QueueIsEmpty, rt_queue_is_empty, "Zanna.Collections.Queue.get_IsEmpty", "i1(obj)")
 RT_FUNC(QueueLen,     rt_queue_len,      "Zanna.Collections.Queue.get_Count",     "i64(obj)")
-RT_FUNC(QueueNew, rt_queue_new, "Zanna.Collections.Queue.New", "obj()", owned)
+RT_FUNC(QueueNew, rt_queue_new, "Zanna.Collections.Queue.New", "obj<Zanna.Collections.Queue>()", owned)
 RT_FUNC(QueuePeek, rt_queue_peek, "Zanna.Collections.Queue.Peek", "obj(obj)", borrowed)
 RT_FUNC(QueuePop, rt_queue_pop, "Zanna.Collections.Queue.Pop", "obj(obj)", owned)
 RT_FUNC(QueueHas,     rt_queue_has,      "Zanna.Collections.Queue.Has",         "i1(obj,obj)")
@@ -576,8 +576,8 @@ RT_FUNC(HeapClear,    rt_pqueue_clear,     "Zanna.Collections.Heap.Clear",      
 RT_FUNC(HeapIsEmpty,  rt_pqueue_is_empty,  "Zanna.Collections.Heap.get_IsEmpty",  "i1(obj)")
 RT_FUNC(HeapIsMax,    rt_pqueue_is_max,    "Zanna.Collections.Heap.get_IsMax",    "i1(obj)")
 RT_FUNC(HeapLen,      rt_pqueue_len,       "Zanna.Collections.Heap.get_Count",      "i64(obj)")
-RT_FUNC(HeapNew, rt_pqueue_new, "Zanna.Collections.Heap.New", "obj()", owned)
-RT_FUNC(HeapNewMax, rt_pqueue_new_max, "Zanna.Collections.Heap.NewMax", "obj(i1)", owned)
+RT_FUNC(HeapNew, rt_pqueue_new, "Zanna.Collections.Heap.New", "obj<Zanna.Collections.Heap>()", owned)
+RT_FUNC(HeapNewMax, rt_pqueue_new_max, "Zanna.Collections.Heap.NewMax", "obj<Zanna.Collections.Heap>(i1)", owned)
 RT_FUNC(HeapPeek, rt_pqueue_peek, "Zanna.Collections.Heap.Peek", "obj(obj)", owned)
 RT_FUNC(HeapPop, rt_pqueue_pop, "Zanna.Collections.Heap.Pop", "obj(obj)", owned)
 RT_FUNC(HeapPush,     rt_pqueue_push,      "Zanna.Collections.Heap.Push",         "void(obj,i64,obj)")
@@ -597,8 +597,8 @@ RT_FUNC(RingGet, rt_ring_get, "Zanna.Collections.Ring.Get", "obj(obj,i64)", borr
 RT_FUNC(RingIsEmpty, rt_ring_is_empty, "Zanna.Collections.Ring.get_IsEmpty", "i1(obj)")
 RT_FUNC(RingIsFull,  rt_ring_is_full,  "Zanna.Collections.Ring.get_IsFull",  "i1(obj)")
 RT_FUNC(RingLen,     rt_ring_len,      "Zanna.Collections.Ring.get_Count",     "i64(obj)")
-RT_FUNC(RingNew, rt_ring_new, "Zanna.Collections.Ring.New", "obj(i64)", owned)
-RT_FUNC(RingNewDefault, rt_ring_new_default, "Zanna.Collections.Ring.NewDefault", "obj()", owned)
+RT_FUNC(RingNew, rt_ring_new, "Zanna.Collections.Ring.New", "obj<Zanna.Collections.Ring>(i64)", owned)
+RT_FUNC(RingNewDefault, rt_ring_new_default, "Zanna.Collections.Ring.NewDefault", "obj<Zanna.Collections.Ring>()", owned)
 RT_FUNC(RingPeek, rt_ring_peek, "Zanna.Collections.Ring.Peek", "obj(obj)", borrowed)
 RT_FUNC(RingPop, rt_ring_pop, "Zanna.Collections.Ring.Pop", "obj(obj)", borrowed)
 RT_FUNC(RingPush,    rt_ring_push,     "Zanna.Collections.Ring.Push",        "void(obj,obj)")
@@ -681,7 +681,7 @@ RT_FUNC(SeqToBag, rt_seq_to_bag, "Zanna.Collections.Seq.ToStringSet", "obj<Zanna
 RT_FUNC(StackClear,   rt_stack_clear,    "Zanna.Collections.Stack.Clear",       "void(obj)")
 RT_FUNC(StackIsEmpty, rt_stack_is_empty, "Zanna.Collections.Stack.get_IsEmpty", "i1(obj)")
 RT_FUNC(StackLen,     rt_stack_len,      "Zanna.Collections.Stack.get_Count",     "i64(obj)")
-RT_FUNC(StackNew, rt_stack_new, "Zanna.Collections.Stack.New", "obj()", owned)
+RT_FUNC(StackNew, rt_stack_new, "Zanna.Collections.Stack.New", "obj<Zanna.Collections.Stack>()", owned)
 RT_FUNC(StackPeek, rt_stack_peek, "Zanna.Collections.Stack.Peek", "obj(obj)", borrowed)
 RT_FUNC(StackPop, rt_stack_pop, "Zanna.Collections.Stack.Pop", "obj(obj)", owned)
 RT_FUNC(StackPush,    rt_stack_push,     "Zanna.Collections.Stack.Push",        "void(obj,obj)")
@@ -698,14 +698,14 @@ RT_FUNC(StackSetOwnsElements, rt_stack_set_owns_elements, "Zanna.Collections.Sta
 // COLLECTIONS - ITERATOR
 //=============================================================================
 
-RT_FUNC(IterFromSeq, rt_iter_from_seq, "Zanna.Collections.Iterator.FromSeq", "obj(obj)", owned)
-RT_FUNC(IterFromList, rt_iter_from_list, "Zanna.Collections.Iterator.FromList", "obj(obj)", owned)
-RT_FUNC(IterFromDeque, rt_iter_from_deque, "Zanna.Collections.Iterator.FromDeque", "obj(obj)", owned)
-RT_FUNC(IterFromMapKeys, rt_iter_from_map_keys, "Zanna.Collections.Iterator.FromMapKeys", "obj(obj)", owned)
-RT_FUNC(IterFromMapValues, rt_iter_from_map_values, "Zanna.Collections.Iterator.FromMapValues", "obj(obj)", owned)
-RT_FUNC(IterFromSet, rt_iter_from_set, "Zanna.Collections.Iterator.FromSet", "obj(obj)", owned)
-RT_FUNC(IterFromStack, rt_iter_from_stack, "Zanna.Collections.Iterator.FromStack", "obj(obj)", owned)
-RT_FUNC(IterFromRing, rt_iter_from_ring, "Zanna.Collections.Iterator.FromRing", "obj(obj)", owned)
+RT_FUNC(IterFromSeq, rt_iter_from_seq, "Zanna.Collections.Iterator.FromSeq", "obj<Zanna.Collections.Iterator>(obj)", owned)
+RT_FUNC(IterFromList, rt_iter_from_list, "Zanna.Collections.Iterator.FromList", "obj<Zanna.Collections.Iterator>(obj)", owned)
+RT_FUNC(IterFromDeque, rt_iter_from_deque, "Zanna.Collections.Iterator.FromDeque", "obj<Zanna.Collections.Iterator>(obj)", owned)
+RT_FUNC(IterFromMapKeys, rt_iter_from_map_keys, "Zanna.Collections.Iterator.FromMapKeys", "obj<Zanna.Collections.Iterator>(obj)", owned)
+RT_FUNC(IterFromMapValues, rt_iter_from_map_values, "Zanna.Collections.Iterator.FromMapValues", "obj<Zanna.Collections.Iterator>(obj)", owned)
+RT_FUNC(IterFromSet, rt_iter_from_set, "Zanna.Collections.Iterator.FromSet", "obj<Zanna.Collections.Iterator>(obj)", owned)
+RT_FUNC(IterFromStack, rt_iter_from_stack, "Zanna.Collections.Iterator.FromStack", "obj<Zanna.Collections.Iterator>(obj)", owned)
+RT_FUNC(IterFromRing, rt_iter_from_ring, "Zanna.Collections.Iterator.FromRing", "obj<Zanna.Collections.Iterator>(obj)", owned)
 RT_FUNC(IterHasNext,       rt_iter_has_next,        "Zanna.Collections.Iterator.HasNext",       "i1(obj)")
 RT_FUNC(IterNext, rt_iter_next, "Zanna.Collections.Iterator.Next", "obj(obj)", owned)
 RT_FUNC(IterPeek, rt_iter_peek, "Zanna.Collections.Iterator.Peek", "obj(obj)", owned)
@@ -719,7 +719,7 @@ RT_FUNC(IterSkip,          rt_iter_skip,            "Zanna.Collections.Iterator.
 // COLLECTIONS - TREEMAP
 //=============================================================================
 
-RT_FUNC(TreeMapNew, rt_treemap_new, "Zanna.Collections.SortedMap.New", "obj()", owned)
+RT_FUNC(TreeMapNew, rt_treemap_new, "Zanna.Collections.SortedMap.New", "obj<Zanna.Collections.SortedMap>()", owned)
 RT_FUNC(TreeMapLen,     rt_treemap_len,      "Zanna.Collections.SortedMap.get_Count",     "i64(obj)")
 RT_FUNC(TreeMapIsEmpty, rt_treemap_is_empty, "Zanna.Collections.SortedMap.get_IsEmpty", "i1(obj)")
 RT_FUNC(TreeMapSet,     rt_treemap_set,      "Zanna.Collections.SortedMap.Set",         "void(obj,str,obj)")
@@ -743,12 +743,12 @@ RT_FUNC(TrieGet, rt_trie_get, "Zanna.Collections.Trie.Get", "obj(obj,str)", borr
 RT_FUNC(TrieHas,            rt_trie_has,            "Zanna.Collections.Trie.Has",            "i1(obj,str)")
 RT_FUNC(TrieHasPrefix,      rt_trie_has_prefix,     "Zanna.Collections.Trie.HasPrefix",      "i1(obj,str)")
 RT_FUNC(TrieIsEmpty,        rt_trie_is_empty,       "Zanna.Collections.Trie.get_IsEmpty",    "i1(obj)")
-RT_FUNC(TrieClone, rt_trie_clone, "Zanna.Collections.Trie.Clone", "obj(obj)", owned)
+RT_FUNC(TrieClone, rt_trie_clone, "Zanna.Collections.Trie.Clone", "obj<Zanna.Collections.Trie>(obj)", owned)
 RT_FUNC(TrieKeys, rt_trie_keys, "Zanna.Collections.Trie.Keys", "seq<str>(obj)", owned)
 RT_FUNC(TrieLen,            rt_trie_len,            "Zanna.Collections.Trie.get_Count",        "i64(obj)")
 RT_FUNC(TrieLongestPrefix, rt_trie_longest_prefix, "Zanna.Collections.Trie.LongestPrefix", "str(obj,str)", owned)
 RT_FUNC(TrieLongestPrefixOption, rt_trie_longest_prefix_option, "Zanna.Collections.Trie.LongestPrefixOption", "obj<Zanna.Option>(obj,str)", owned)
-RT_FUNC(TrieNew, rt_trie_new, "Zanna.Collections.Trie.New", "obj()", owned)
+RT_FUNC(TrieNew, rt_trie_new, "Zanna.Collections.Trie.New", "obj<Zanna.Collections.Trie>()", owned)
 RT_FUNC(TrieSet,            rt_trie_set,            "Zanna.Collections.Trie.Set",            "void(obj,str,obj)")
 RT_FUNC(TrieRemove,         rt_trie_remove,         "Zanna.Collections.Trie.Remove",         "i1(obj,str)")
 RT_FUNC(TrieWithPrefix, rt_trie_with_prefix, "Zanna.Collections.Trie.WithPrefix", "seq<str>(obj,str)", owned)

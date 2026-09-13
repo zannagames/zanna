@@ -5,7 +5,7 @@ l.Push("a")
 l.Push("b")
 l.Push("c")
 PRINT "len: "; l.Count
-PRINT "find b: "; l.Find("b")
+PRINT "find b: "; l.FindOption("b").IsSome
 PRINT "has b: "; l.Has("b")
 l.Set(1, "B")
 l.Insert(0, "z")
@@ -24,7 +24,7 @@ s.Push("x")
 s.Push("y")
 s.Push("z")
 PRINT "seq len: "; s.Count
-PRINT "seq find y: "; s.Find("y")
+PRINT "seq find y: "; s.FindOption("y").IsSome
 PRINT "seq has y: "; s.Has("y")
 PRINT "seq isempty: "; s.IsEmpty
 s.Reverse()

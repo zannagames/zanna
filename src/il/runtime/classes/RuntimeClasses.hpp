@@ -702,6 +702,27 @@ enum class RuntimeTypeId : std::size_t {
     RTCLS_ServicesFeature,
     RTCLS_ServicesRequestKind,
     RTCLS_ServicesSteamHardware,
+    // Zanna.Services player features (ADR 0353); appended so existing values never shift.
+    RTCLS_ServicesAchievements,
+    RTCLS_ServicesStats,
+    RTCLS_ServicesLeaderboards,
+    RTCLS_ServicesPresence,
+    RTCLS_ServicesOverlay,
+    RTCLS_ServicesOnScreenKeyboard,
+    RTCLS_ServicesCloud,
+    RTCLS_ServicesLeaderboardScope,
+    RTCLS_ServicesLeaderboardSort,
+    RTCLS_ServicesLeaderboardDisplay,
+    RTCLS_ServicesOverlayPage,
+    RTCLS_ServicesNotificationPosition,
+    RTCLS_ServicesTextInputMode,
+    // 2D game objects that were function-only namespaces (ADR 0356); appended so existing
+    // values never shift.
+    RTCLS_GameEntity,
+    RTCLS_GameBehavior,
+    RTCLS_Game2DLevelDocument,
+    RTCLS_GameSceneManager,
+    RTCLS_GameConfig,
 };
 
 /// @brief Describes a property on a runtime class.

@@ -690,12 +690,19 @@ else ()
     list(APPEND RT_NETWORK_SOURCES network/rt_tls_verify_posix.c)
 endif ()
 
-# Platform services (ADR 0352): the provider-neutral core plus built-in
-# providers. Provider redistributables are loaded at run time by explicit path,
-# so the component has no build-time dependency beyond the platform loader.
+# Platform services (ADR 0352, ADR 0353): the provider-neutral core and feature
+# classes plus built-in providers. Provider redistributables are loaded at run
+# time by explicit path, so the component has no build-time dependency beyond
+# the platform loader.
 set(RT_SERVICES_SOURCES
         services/rt_services.c
+        services/rt_services_progress.c
+        services/rt_services_social.c
+        services/rt_services_cloud.c
         services/steam/rt_steam_provider.c
+        services/steam/rt_steam_user_stats.c
+        services/steam/rt_steam_social.c
+        services/steam/rt_steam_cloud.c
 )
 
 if (WIN32)
@@ -801,6 +808,9 @@ set(RT_PUBLIC_HEADERS
         ${CMAKE_CURRENT_SOURCE_DIR}/threads/rt_threads.h
         ${CMAKE_CURRENT_SOURCE_DIR}/network/rt_network.h
         ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_progress.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_social.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_cloud.h
         ${CMAKE_CURRENT_SOURCE_DIR}/services/steam/rt_steam.h
 )
 

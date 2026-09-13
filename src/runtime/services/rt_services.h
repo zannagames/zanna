@@ -17,17 +17,23 @@
 //     Constant getters may run on any thread.
 //   - Absence is normal: with no started provider every query returns a
 //     neutral value (0, false, or the empty string) and never traps.
-//   - Constant ordinals are stable public values documented in ADR 0352.
+//   - Constant ordinals are stable public values documented in ADR 0352 and
+//     ADR 0353; later phases only append values.
 // Ownership/Lifetime:
 //   - String results are new caller-owned references.
 //   - Init returns a caller-owned Zanna.Result; request methods return a
 //     caller-owned Zanna.Services.Request; Diagnostics returns a caller-owned
 //     Seq of caller-owned strings.
+//   - A Request owns copies of its result text and leaderboard entries.
 //   - Provider state is process-global and lives until Shutdown.
 // Links: src/runtime/services/rt_services.c,
 //        src/runtime/services/rt_services_provider.h,
+//        src/runtime/services/rt_services_progress.h,
+//        src/runtime/services/rt_services_social.h,
+//        src/runtime/services/rt_services_cloud.h,
 //        docs/zannalib/services.md,
-//        docs/adr/0352-platform-services-runtime-loaded-providers.md
+//        docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        docs/adr/0353-platform-services-player-features.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -95,6 +101,13 @@ extern "C" {
 #define RT_SERVICES_EVENT_LAUNCH_PARAMETERS_CHANGED INT64_C(6)
 /// @brief The platform client is shutting down; the game should save and stop the provider.
 #define RT_SERVICES_EVENT_SERVICE_SHUTDOWN INT64_C(7)
+/// @brief Stats.Store finished (code = provider result, flag = stored successfully).
+#define RT_SERVICES_EVENT_STATS_STORED INT64_C(8)
+/// @brief An achievement unlock or progress report was stored (text = achievement id,
+///        flag = unlocked, value = progress, total = progress maximum).
+#define RT_SERVICES_EVENT_ACHIEVEMENT_STORED INT64_C(9)
+/// @brief The floating on-screen keyboard opened by OnScreenKeyboard.ShowFloating closed.
+#define RT_SERVICES_EVENT_TEXT_INPUT_DISMISSED INT64_C(10)
 
 /// @brief User identity queries (UserId, UserName, IsOnline).
 #define RT_SERVICES_FEATURE_IDENTITY INT64_C(1)
@@ -104,9 +117,31 @@ extern "C" {
 #define RT_SERVICES_FEATURE_LANGUAGE INT64_C(3)
 /// @brief Current player-count requests.
 #define RT_SERVICES_FEATURE_PLAYER_COUNT INT64_C(4)
+/// @brief Zanna.Services.Achievements.
+#define RT_SERVICES_FEATURE_ACHIEVEMENTS INT64_C(5)
+/// @brief Zanna.Services.Stats.
+#define RT_SERVICES_FEATURE_STATS INT64_C(6)
+/// @brief Zanna.Services.Leaderboards.
+#define RT_SERVICES_FEATURE_LEADERBOARDS INT64_C(7)
+/// @brief Zanna.Services.Presence.
+#define RT_SERVICES_FEATURE_PRESENCE INT64_C(8)
+/// @brief Zanna.Services.Overlay.
+#define RT_SERVICES_FEATURE_OVERLAY INT64_C(9)
+/// @brief Zanna.Services.OnScreenKeyboard.
+#define RT_SERVICES_FEATURE_TEXT_INPUT INT64_C(10)
+/// @brief Zanna.Services.Cloud.
+#define RT_SERVICES_FEATURE_CLOUD INT64_C(11)
 
 /// @brief Request kind for Platform.RequestPlayerCount.
 #define RT_SERVICES_REQUEST_PLAYER_COUNT INT64_C(1)
+/// @brief Request kind for Leaderboards.Find and Leaderboards.FindOrCreate.
+#define RT_SERVICES_REQUEST_LEADERBOARD_FIND INT64_C(2)
+/// @brief Request kind for Leaderboards.Upload.
+#define RT_SERVICES_REQUEST_LEADERBOARD_UPLOAD INT64_C(3)
+/// @brief Request kind for Leaderboards.Download.
+#define RT_SERVICES_REQUEST_LEADERBOARD_DOWNLOAD INT64_C(4)
+/// @brief Request kind for OnScreenKeyboard.RequestText.
+#define RT_SERVICES_REQUEST_TEXT_INPUT INT64_C(5)
 
 /// @brief Capacity of the platform event queue.
 #define RT_SERVICES_EVENT_CAPACITY 256
@@ -114,6 +149,8 @@ extern "C" {
 #define RT_SERVICES_PENDING_REQUEST_CAPACITY 64
 /// @brief Maximum number of retained diagnostic messages.
 #define RT_SERVICES_DIAGNOSTIC_CAPACITY 32
+/// @brief Maximum number of leaderboard entries one request holds.
+#define RT_SERVICES_LEADERBOARD_ENTRY_CAPACITY 100
 
 //===----------------------------------------------------------------------===//
 // Zanna.Services.Platform
@@ -235,6 +272,12 @@ int64_t rt_services_platform_get_event_value(void);
 /// @return Event-specific flag, or 0.
 int8_t rt_services_platform_get_event_flag(void);
 
+/// @brief Read the total that the last polled event's value counts toward.
+/// @details Progress events such as AchievementStored report a value out of a
+///          total; every other event reports 0.
+/// @return Event-specific total, or 0.
+int64_t rt_services_platform_get_event_total(void);
+
 /// @brief Read how many events were discarded because the queue was full.
 /// @return Count since the last Init or Shutdown.
 int64_t rt_services_platform_get_dropped_events(void);
@@ -265,13 +308,59 @@ int64_t rt_services_request_get_result_code(void *request);
 
 /// @brief Read a completed request's integer result.
 /// @param request Borrowed Zanna.Services.Request.
-/// @return Kind-specific value (player count for PlayerCount), or 0.
+/// @return Kind-specific value (player count for PlayerCount, total board
+///         entries for LeaderboardFind and LeaderboardDownload, the new global
+///         rank for LeaderboardUpload), or 0.
 int64_t rt_services_request_get_value(void *request);
+
+/// @brief Read a completed request's boolean result.
+/// @param request Borrowed Zanna.Services.Request.
+/// @return Kind-specific flag (LeaderboardUpload: the stored score changed), or 0.
+int8_t rt_services_request_get_flag(void *request);
+
+/// @brief Read a completed request's text result.
+/// @param request Borrowed Zanna.Services.Request.
+/// @return Caller-owned kind-specific text (the leaderboard name for leaderboard
+///         kinds, the entered text for TextInput), or the empty string.
+rt_string rt_services_request_get_text(void *request);
 
 /// @brief Read a failed request's error message.
 /// @param request Borrowed Zanna.Services.Request.
 /// @return Caller-owned message, or the empty string when none exists.
 rt_string rt_services_request_get_error(void *request);
+
+/// @brief Read how many leaderboard entries a completed request holds.
+/// @param request Borrowed Zanna.Services.Request.
+/// @return Entry count (LeaderboardDownload only; at most
+///         RT_SERVICES_LEADERBOARD_ENTRY_CAPACITY), or 0.
+int64_t rt_services_request_get_entry_count(void *request);
+
+/// @brief Read one leaderboard entry's global rank.
+/// @param request Borrowed Zanna.Services.Request.
+/// @param index Entry index in 0..EntryCount-1; other values trap.
+/// @return Global rank, starting at 1.
+int64_t rt_services_request_entry_rank(void *request, int64_t index);
+
+/// @brief Read one leaderboard entry's score.
+/// @param request Borrowed Zanna.Services.Request.
+/// @param index Entry index in 0..EntryCount-1; other values trap.
+/// @return Score as stored on the board.
+int64_t rt_services_request_entry_score(void *request, int64_t index);
+
+/// @brief Read one leaderboard entry's user id.
+/// @param request Borrowed Zanna.Services.Request.
+/// @param index Entry index in 0..EntryCount-1; other values trap.
+/// @return Caller-owned provider-defined user id (decimal SteamID64 on Steam).
+rt_string rt_services_request_entry_user_id(void *request, int64_t index);
+
+/// @brief Read one leaderboard entry's user display name.
+/// @details While the provider that produced the request is still active the
+///          name is looked up live, because platforms can learn names after the
+///          entries arrive; otherwise the name captured at completion is used.
+/// @param request Borrowed Zanna.Services.Request.
+/// @param index Entry index in 0..EntryCount-1; other values trap.
+/// @return Caller-owned display name, or the empty string while it is unknown.
+rt_string rt_services_request_entry_user_name(void *request, int64_t index);
 
 //===----------------------------------------------------------------------===//
 // Constant classes: Zanna.Services.Status / EventKind / Feature / RequestKind
@@ -329,6 +418,15 @@ int64_t rt_services_event_kind_launch_parameters_changed(void);
 /// @brief Return `Zanna.Services.EventKind.ServiceShutdown`.
 /// @return Stable ordinal 7.
 int64_t rt_services_event_kind_service_shutdown(void);
+/// @brief Return `Zanna.Services.EventKind.StatsStored`.
+/// @return Stable ordinal 8.
+int64_t rt_services_event_kind_stats_stored(void);
+/// @brief Return `Zanna.Services.EventKind.AchievementStored`.
+/// @return Stable ordinal 9.
+int64_t rt_services_event_kind_achievement_stored(void);
+/// @brief Return `Zanna.Services.EventKind.TextInputDismissed`.
+/// @return Stable ordinal 10.
+int64_t rt_services_event_kind_text_input_dismissed(void);
 
 /// @brief Return `Zanna.Services.Feature.Identity`.
 /// @return Stable ordinal 1.
@@ -342,10 +440,43 @@ int64_t rt_services_feature_language(void);
 /// @brief Return `Zanna.Services.Feature.PlayerCount`.
 /// @return Stable ordinal 4.
 int64_t rt_services_feature_player_count(void);
+/// @brief Return `Zanna.Services.Feature.Achievements`.
+/// @return Stable ordinal 5.
+int64_t rt_services_feature_achievements(void);
+/// @brief Return `Zanna.Services.Feature.Stats`.
+/// @return Stable ordinal 6.
+int64_t rt_services_feature_stats(void);
+/// @brief Return `Zanna.Services.Feature.Leaderboards`.
+/// @return Stable ordinal 7.
+int64_t rt_services_feature_leaderboards(void);
+/// @brief Return `Zanna.Services.Feature.Presence`.
+/// @return Stable ordinal 8.
+int64_t rt_services_feature_presence(void);
+/// @brief Return `Zanna.Services.Feature.Overlay`.
+/// @return Stable ordinal 9.
+int64_t rt_services_feature_overlay(void);
+/// @brief Return `Zanna.Services.Feature.TextInput`.
+/// @return Stable ordinal 10.
+int64_t rt_services_feature_text_input(void);
+/// @brief Return `Zanna.Services.Feature.Cloud`.
+/// @return Stable ordinal 11.
+int64_t rt_services_feature_cloud(void);
 
 /// @brief Return `Zanna.Services.RequestKind.PlayerCount`.
 /// @return Stable ordinal 1.
 int64_t rt_services_request_kind_player_count(void);
+/// @brief Return `Zanna.Services.RequestKind.LeaderboardFind`.
+/// @return Stable ordinal 2.
+int64_t rt_services_request_kind_leaderboard_find(void);
+/// @brief Return `Zanna.Services.RequestKind.LeaderboardUpload`.
+/// @return Stable ordinal 3.
+int64_t rt_services_request_kind_leaderboard_upload(void);
+/// @brief Return `Zanna.Services.RequestKind.LeaderboardDownload`.
+/// @return Stable ordinal 4.
+int64_t rt_services_request_kind_leaderboard_download(void);
+/// @brief Return `Zanna.Services.RequestKind.TextInput`.
+/// @return Stable ordinal 5.
+int64_t rt_services_request_kind_text_input(void);
 
 #ifdef __cplusplus
 }

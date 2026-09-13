@@ -218,13 +218,7 @@ MethodDispatchResolver::Resolution MethodDispatchResolver::resolveInterfaceCall(
     result.hasReceiver = true;
 
     // Find interface in OOP index
-    const InterfaceInfo *iface = nullptr;
-    for (const auto &p : lowerer_.oopIndex_.interfacesByQname()) {
-        if (p.first == interfaceQName) {
-            iface = &p.second;
-            break;
-        }
-    }
+    const InterfaceInfo *iface = lowerer_.oopIndex_.findInterface(interfaceQName);
 
     if (!iface) {
         result.kind = Resolution::Kind::Unresolved;

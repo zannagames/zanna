@@ -112,14 +112,6 @@ struct ZiaRuntimeExternSpec {
 
 #include "il/runtime/ZiaRuntimeExterns.inc"
 
-/// @brief Explicit class refinement for an object-returning runtime function.
-struct RuntimeReturnOverride {
-    /// Canonical runtime function name.
-    std::string_view canonical;
-    /// Concrete runtime class returned.
-    std::string_view className;
-};
-
 /// @brief Trim ASCII whitespace from both ends of a runtime signature token.
 /// @param value Token view to trim.
 /// @return Subview containing the non-whitespace token.
@@ -153,88 +145,6 @@ static std::string_view runtimeTokenTypeArg(std::string_view token) {
         genericEnd <= genericStart)
         return {};
     return trimRuntimeToken(token.substr(genericStart + 1, genericEnd - genericStart - 1));
-}
-
-/// @brief Test a string-view prefix without allocating.
-/// @param value Candidate full value.
-/// @param prefix Prefix to match.
-/// @return True when @p value begins with @p prefix.
-static bool startsWith(std::string_view value, std::string_view prefix) {
-    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
-}
-
-/// @brief Classify generated runtime method names that conventionally create owner instances.
-/// @param method Unqualified method name.
-/// @return True for known factory names and factory-like verb prefixes.
-static bool isGeneratedFactoryMethod(std::string_view method) {
-    if (method == "New" || method == "Clone" || method == "Copy" || method == "Zero" ||
-        method == "Range")
-        return true;
-
-    return startsWith(method, "Open") || startsWith(method, "Load") || startsWith(method, "From") ||
-           startsWith(method, "Parse") || startsWith(method, "Read") ||
-           startsWith(method, "Decode") || startsWith(method, "Create");
-}
-
-/// @brief Test whether a fully qualified name appears in the runtime class catalog.
-/// @param catalog Runtime class catalog.
-/// @param className Qualified class name.
-/// @return True when a catalog entry has exactly that name.
-static bool isKnownRuntimeClass(const std::vector<il::runtime::RuntimeClass> &catalog,
-                                std::string_view className) {
-    for (const auto &cls : catalog) {
-        if (cls.qname && className == cls.qname)
-            return true;
-    }
-    return false;
-}
-
-/// @brief Look up an explicit concrete class for a generated object-returning extern.
-/// @param canonical Canonical runtime function name.
-/// @return Qualified runtime class override, or an empty view when inference should continue.
-static std::string_view generatedReturnOverride(std::string_view canonical) {
-    static constexpr RuntimeReturnOverride kReturnOverrides[] = {
-        // Crypto functions returning Zanna.Collections.Bytes
-        {"Zanna.Crypto.SecureRandom.Bytes", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.Encrypt", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.Decrypt", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.EncryptAAD", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.DecryptAAD", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.EncryptWithKey", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.DecryptWithKey", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.EncryptWithKeyAAD", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.DecryptWithKeyAAD", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.GenerateKey", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Cipher.DeriveKey", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Aes.Encrypt", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Aes.Decrypt", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Aes.EncryptAuth", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Aes.DecryptAuth", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.Aes.EncryptStr", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.KeyDerive.Pbkdf2SHA256", "Zanna.Collections.Bytes"},
-        {"Zanna.Crypto.KeyDerive.ScryptSHA256", "Zanna.Collections.Bytes"},
-        // IO functions returning Zanna.Collections.Bytes
-        {"Zanna.IO.Stream.ToBytes", "Zanna.Collections.Bytes"},
-        // Text functions returning Zanna.Collections.Seq
-        {"Zanna.Data.Csv.ParseLine", "Zanna.Collections.Seq"},
-        {"Zanna.Data.Csv.ParseLineWith", "Zanna.Collections.Seq"},
-        {"Zanna.Data.Csv.Parse", "Zanna.Collections.Seq"},
-        {"Zanna.Data.Csv.ParseWith", "Zanna.Collections.Seq"},
-        {"Zanna.Text.Markdown.ExtractLinks", "Zanna.Collections.Seq"},
-        {"Zanna.Text.Markdown.ExtractHeadings", "Zanna.Collections.Seq"},
-        {"Zanna.Text.Html.ExtractLinks", "Zanna.Collections.Seq"},
-        {"Zanna.Text.Html.ExtractText", "Zanna.Collections.Seq"},
-        // Collection methods returning Seq from non-Seq classes
-        {"Zanna.Collections.StringSet.Items", "Zanna.Collections.Seq"},
-        {"Zanna.Collections.SortedSet.Items", "Zanna.Collections.Seq"},
-        {"Zanna.Collections.Set.Items", "Zanna.Collections.Seq"},
-    };
-
-    for (const auto &override : kReturnOverrides) {
-        if (canonical == override.canonical)
-            return override.className;
-    }
-    return {};
 }
 
 /// @brief Convert a generated runtime parameter token to its Zia surface type.
@@ -318,18 +228,16 @@ static std::vector<TypeRef> ziaParamTypesForGeneratedExtern(std::string_view sig
     return paramTypes;
 }
 
-/// @brief Refine a generated extern's parsed return type for the Zia surface.
-/// @param canonical Canonical runtime function name.
+/// @brief Translate a generated extern's parsed return type for the Zia surface.
+/// @details The runtime row is the only source of a returned object's class (ADR 0356): an
+///          `obj<Class>` return becomes that class, `seq<T>`/`list<T>` a typed container, and a
+///          bare `obj` stays Any. Nothing is inferred from the owning class or the method name.
 /// @param sig Parsed runtime signature.
-/// @param catalog Runtime classes available for owner/factory inference.
-/// @return Concrete container or runtime class when metadata permits, scalar translation for
-///         scalar returns, and Any for an otherwise opaque object.
-static TypeRef ziaReturnTypeForGeneratedExtern(
-    std::string_view canonical,
-    const il::runtime::ParsedSignature &sig,
-    const std::vector<il::runtime::RuntimeClass> &catalog) {
+/// @return Declared class or container, scalar translation for scalar returns, and Any for an
+///         undeclared object.
+static TypeRef ziaReturnTypeForGeneratedExtern(const il::runtime::ParsedSignature &sig) {
     if (!sig.objectTypeName.empty())
-        return types::runtimeClass(sig.objectTypeName);
+        return runtimeObjectType(sig.objectTypeName);
 
     if (!sig.elementTypeName.empty()) {
         TypeRef elemType = ziaParamTypeForGeneratedToken(sig.elementTypeName);
@@ -338,21 +246,7 @@ static TypeRef ziaReturnTypeForGeneratedExtern(
         return types::seqOf(elemType);
     }
 
-    if (sig.returnType != il::runtime::ILScalarType::Object)
-        return toZiaType(sig.returnType);
-
-    if (std::string_view overrideClass = generatedReturnOverride(canonical); !overrideClass.empty())
-        return types::runtimeClass(std::string(overrideClass));
-
-    size_t lastDot = canonical.rfind('.');
-    if (lastDot != std::string_view::npos) {
-        std::string_view method = canonical.substr(lastDot + 1);
-        std::string_view className = canonical.substr(0, lastDot);
-        if (isGeneratedFactoryMethod(method) || isKnownRuntimeClass(catalog, className))
-            return types::runtimeClass(std::string(className));
-    }
-
-    return types::any();
+    return toZiaType(sig.returnType);
 }
 
 /// @brief Decode newline-delimited generated parameter names.
@@ -407,46 +301,6 @@ static std::vector<Sema::RuntimePointerBridgeRole> decodeGeneratedBridgeRoles(
 
 } // namespace
 
-/// @brief Heuristic: should a plain-object runtime @p method be treated as
-///        returning the owner type? Accessor-style names (Get*/Keys/Values/
-///        Pop/Peek/First/Last/Find/…) return an element instead, so they are
-///        excluded; everything else infers an owner-typed return.
-/// @param method Runtime method metadata.
-/// @return True when an otherwise opaque object result should be refined to the owner class.
-static bool shouldInferOwnerReturnForPlainObject(const il::runtime::RuntimeMethod &method) {
-    if (!method.name)
-        return true;
-
-    std::string_view name(method.name);
-    if (name == "Keys" || name == "Values" || name == "Items" || name == "Indices" ||
-        name == "Get" || name == "GetOr" || name == "GetFirst" || name == "Peek" || name == "Pop" ||
-        name == "TryPop" || name == "PeekFront" || name == "PeekBack" || name == "PopFront" ||
-        name == "PopBack" || name == "TryPopFront" || name == "TryPopBack" || name == "First" ||
-        name == "Last" || name == "Next" || name == "Find" || name == "FindWhere" || name == "Fold")
-        return false;
-
-    if (name.rfind("Get", 0) == 0)
-        return false;
-
-    return true;
-}
-
-/// @brief True if runtime @p method's target function belongs to runtime
-///        class @p className (matches the "<class>." prefix on the target).
-/// @param method Runtime method metadata.
-/// @param className Qualified owning class name.
-/// @return True when the target begins with the owner followed by a period.
-static bool methodTargetBelongsToClass(const il::runtime::RuntimeMethod &method,
-                                       const char *className) {
-    if (!method.target || !className)
-        return false;
-
-    std::string_view target(method.target);
-    std::string_view owner(className);
-    return target.size() > owner.size() && target.compare(0, owner.size(), owner) == 0 &&
-           target[owner.size()] == '.';
-}
-
 /// @brief Initializes all runtime function bindings for semantic analysis.
 ///
 /// @details This method populates the Zia semantic analyzer's symbol table
@@ -478,8 +332,7 @@ static bool methodTargetBelongsToClass(const il::runtime::RuntimeMethod &method,
 /// ## Performance
 ///
 /// This function is called once during Sema construction. Work is linear in the
-/// generated extern table plus the runtime catalog's methods and properties,
-/// apart from small catalog lookups used for return-type refinement.
+/// generated extern table plus the runtime catalog's methods and properties.
 ///
 void Sema::initRuntimeFunctions() {
     // Access the singleton RuntimeRegistry which contains all parsed signatures
@@ -542,7 +395,7 @@ void Sema::initRuntimeFunctions() {
         if (!sig.isValid())
             continue;
 
-        TypeRef returnType = ziaReturnTypeForGeneratedExtern(entry.canonical, sig, catalog);
+        TypeRef returnType = ziaReturnTypeForGeneratedExtern(sig);
         if (sig.isOptionalReturn)
             returnType = types::optional(returnType);
 
@@ -574,16 +427,9 @@ void Sema::initRuntimeFunctions() {
             if (!sig.isValid())
                 continue; // Skip methods with unparseable signatures
 
-            // Convert IL types to Zia types, honouring element type hints from seq<T>.
+            // Convert IL types to Zia types, honouring element type hints from seq<T>. An object
+            // result has exactly the class its row declares; a bare `obj` stays Any (ADR 0356).
             TypeRef returnType = toZiaReturnType(sig);
-            // When a class method returns plain 'obj' (no element type annotation),
-            // infer the owning class type only for methods that conventionally return
-            // the receiver's class. Accessors and snapshot methods intentionally remain
-            // opaque unless runtime.def provides an explicit obj<Class> or seq<T> return.
-            if (sig.returnType == il::runtime::ILScalarType::Object &&
-                sig.elementTypeName.empty() && sig.objectTypeName.empty() && cls.qname &&
-                methodTargetBelongsToClass(m, cls.qname) && shouldInferOwnerReturnForPlainObject(m))
-                returnType = types::runtimeClass(cls.qname);
             if (sig.isOptionalReturn)
                 returnType = types::optional(returnType);
             std::vector<TypeRef> paramTypes = toZiaParamTypes(sig);

@@ -104,9 +104,9 @@ double rt_unbox_f64(void *box);
 int8_t rt_unbox_i1(void *box);
 
 /// @brief Unbox to string.
-/// @param box Boxed value (must be RT_BOX_STR).
+/// @param box String box (RT_BOX_STR) or a raw string handle stored in an object slot.
 /// @return The unboxed string (retained).
-/// @note Traps if box is NULL or wrong type.
+/// @note Traps if box is NULL, neither a string nor a box, or a box of another type.
 rt_string rt_unbox_str(void *box);
 
 /// @brief Try to unbox to integer without trapping.
@@ -128,7 +128,7 @@ int8_t rt_box_try_to_f64(void *box, double *out);
 int8_t rt_box_try_to_i1(void *box, int8_t *out);
 
 /// @brief Try to unbox to string without trapping for structural mismatches.
-/// @param box Candidate boxed value.
+/// @param box Candidate String box or raw string handle.
 /// @param out Receives a retained string reference on success.
 /// @return 1 on success; 0 for NULL, invalid box, wrong type, NULL out, or a
 ///         returning contained-string retain trap. On failure, @p out is NULL.
@@ -173,7 +173,7 @@ int64_t rt_box_eq_i64(void *box, int64_t val);
 int64_t rt_box_eq_f64(void *box, double val);
 
 /// @brief Check if a boxed value equals a string.
-/// @param box Boxed value.
+/// @param box String box or raw string handle; any other value compares unequal.
 /// @param val String to compare.
 /// @return 1 if equal, 0 otherwise.
 int64_t rt_box_eq_str(void *box, rt_string val);

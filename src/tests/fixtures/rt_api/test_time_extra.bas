@@ -16,12 +16,12 @@ PRINT "clock ticksus > 0: "; (Zanna.Time.Clock.NowMicros() > 0)
 DIM cd AS Zanna.Time.Countdown
 cd = Zanna.Time.Countdown.New(5000)
 PRINT "cd interval: "; cd.Interval
-PRINT "cd expired: "; cd.Expired
+PRINT "cd expired: "; cd.IsExpired
 PRINT "cd running: "; cd.IsRunning
 
 DIM d AS OBJECT
 PRINT "relative: "; Zanna.Time.RelativeTime.FormatDuration(65000)
-d = Zanna.Time.DateOnly.Create(2026, 4, 6)
+d = Zanna.Time.DateOnly.FromParts(2026, 4, 6)
 PRINT "date year: "; d.Year
 PRINT "date month: "; d.Month
 PRINT "date day: "; d.Day

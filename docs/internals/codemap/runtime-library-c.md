@@ -486,16 +486,24 @@ Backend correctness, ownership, and validation invariants are tracked in the
 ## Platform Services
 
 Provider-neutral `Zanna.Services` layer and its built-in providers (`src/runtime/services/`,
-component archive `zanna_rt_services`, ADR 0352).
+component archive `zanna_rt_services`, ADR 0352 and ADR 0353).
 
 | File                              | Purpose                                                                 |
 |-----------------------------------|-------------------------------------------------------------------------|
-| `rt_services.c` / `rt_services.h` | Neutral core: provider registry, status, event queue, requests, diagnostics, constants |
-| `rt_services_provider.h`          | Internal provider interface (`rt_services_provider` table) and core callbacks for providers |
+| `rt_services.c` / `rt_services.h` | Neutral core: provider registry, status, event queue, requests and their results, diagnostics, core constants |
+| `rt_services_progress.c` / `.h`   | `Achievements`, `Stats`, `Leaderboards`, and the leaderboard constant classes |
+| `rt_services_social.c` / `.h`     | `Presence`, `Overlay`, `OnScreenKeyboard`, and the page, position, and mode constants |
+| `rt_services_cloud.c` / `.h`      | `Cloud` file storage                                                    |
+| `rt_services_internal.h`          | Internal helpers shared by the core and the feature classes (argument traps, request start) |
+| `rt_services_provider.h`          | Internal provider interface: `rt_services_provider` table, feature operation tables, request arguments and results, core callbacks |
 | `rt_services_dynlib.h`            | Internal explicit-path shared-library loading contract                  |
 | `rt_services_dynlib_posix.c`      | `dlopen`/`dlsym` adapter (macOS, Linux)                                 |
 | `rt_services_dynlib_win.c`        | `LoadLibraryW`/`GetProcAddress` adapter (Windows)                       |
-| `steam/rt_steam_provider.c`       | Steam provider: redistributable resolution, flat-API binding, manual dispatch, `Zanna.Services.Steam` |
+| `steam/rt_steam_provider.c`       | Steam provider core: redistributable resolution, interface binding, manual dispatch, request operation table, `Zanna.Services.Steam` |
+| `steam/rt_steam_user_stats.c`     | Steam achievements, stats, and leaderboards (name cache, multi-call requests, entry names) |
+| `steam/rt_steam_social.c`         | Steam rich presence, overlay pages and notifications, floating and full-screen keyboards |
+| `steam/rt_steam_cloud.c`          | Steam Cloud (`ISteamRemoteStorage`) files, quota, and write batches      |
+| `steam/rt_steam_internal.h`       | Internal Steam provider state and helpers shared by the Steam sources   |
 | `steam/rt_steam.h`                | `Zanna.Services.Steam` and `SteamHardware` C ABI                        |
 | `steam/rt_steam_abi.h`            | Authored Steamworks flat-API subset and pack-4/pack-8 callback layouts  |
 | `core/rt_service_hooks.c` / `.h`  | Base frame-pump slot (called by `Canvas.Poll`/`Canvas3D.Poll`) and GPU-presenter flag |

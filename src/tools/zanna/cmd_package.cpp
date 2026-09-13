@@ -8,21 +8,28 @@
 /// @file
 /// @brief Implements native application packaging for the `zanna package` command.
 /// @details Resolves a project, compiles or accepts its native executable, and
-///          packages the result for a selected platform. The implementation also
-///          validates package metadata and payloads, applies signing policy, and
-///          supports a dependency-free JSON dry-run description.
+///          packages the result for a selected platform or store depot. The
+///          implementation also validates package metadata and payloads, applies
+///          signing policy, and supports a dependency-free JSON dry-run description.
 //
 // Key invariants:
 //   - Resolves project, compiles to native, then packages.
 //   - Default target is the host platform.
 //   - Non-host package formats can package a caller-supplied executable even
 //     when the current host cannot build the target-native payload itself.
+//   - Store depot targets (steam-*) write a build root directory and never
+//     delete it on failure, because it accumulates other platforms' depots.
+//   - Every target ships the project's generated .zpak pack groups where the
+//     runtime mounts them (ADR 0355).
 //
 // Ownership/Lifetime:
-//   - Temporary files (IL, native binary) are cleaned up after packaging.
+//   - The compiled binary and generated packs live in a private temporary
+//     directory that is removed after packaging.
 //
 // Links: cmd_run.cpp (compile pattern), MacOSPackageBuilder.hpp,
-//        native_compiler.hpp, project_loader.hpp
+//        StoreDepotBuilder.hpp, native_compiler.hpp, project_loader.hpp,
+//        docs/adr/0354-store-depot-packaging.md,
+//        docs/adr/0355-package-formats-ship-pack-groups.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,6 +38,7 @@
 #include "common/Filesystem.hpp"
 #include "common/PlatformCapabilities.hpp"
 #include "common/RunProcess.hpp"
+#include "tools/common/asset/AssetCompiler.hpp"
 #include "tools/common/native_compiler.hpp"
 #include "tools/common/packaging/LinuxPackageBuilder.hpp"
 #include "tools/common/packaging/LinuxRuntimeStubGen.hpp"
@@ -38,6 +46,7 @@
 #include "tools/common/packaging/PkgHash.hpp"
 #include "tools/common/packaging/PkgUtils.hpp"
 #include "tools/common/packaging/PkgVerify.hpp"
+#include "tools/common/packaging/StoreDepotBuilder.hpp"
 #include "tools/common/packaging/WindowsPackageBuilder.hpp"
 #include "tools/common/project_loader.hpp"
 
@@ -53,10 +62,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #if ZANNA_HOST_WINDOWS
@@ -71,8 +82,74 @@ namespace fs = std::filesystem;
 
 /// @brief Package formats accepted by the package command.
 /// @details Covers native macOS, Debian, Windows, portable tar, self-extracting
-///          Linux bundle, RPM, and DMG outputs; Auto selects the host default.
-enum class PackageTarget { MacOS, Linux, Windows, Tarball, AppImage, Rpm, Dmg, Auto };
+///          Linux bundle, RPM, and DMG outputs, plus SteamPipe depot build roots;
+///          Auto selects the host default.
+enum class PackageTarget {
+    MacOS,
+    Linux,
+    Windows,
+    Tarball,
+    AppImage,
+    Rpm,
+    Dmg,
+    SteamWindows,
+    SteamMacOS,
+    SteamLinux,
+    Auto
+};
+
+/// @brief Report whether a target produces a store depot build root.
+/// @param target Package target.
+/// @return True for steam-windows, steam-macos, and steam-linux.
+bool isStoreDepotTarget(PackageTarget target) {
+    return target == PackageTarget::SteamWindows || target == PackageTarget::SteamMacOS ||
+           target == PackageTarget::SteamLinux;
+}
+
+/// @brief Store served by a depot target.
+/// @param target Store depot target.
+/// @return Store identity.
+zanna::pkg::StoreKind storeForTarget(PackageTarget target) {
+    (void)target;
+    return zanna::pkg::StoreKind::Steam;
+}
+
+/// @brief Payload operating system of a depot target.
+/// @param target Store depot target.
+/// @return Depot operating system.
+zanna::pkg::DepotOs depotOsForTarget(PackageTarget target) {
+    if (target == PackageTarget::SteamWindows)
+        return zanna::pkg::DepotOs::Windows;
+    if (target == PackageTarget::SteamMacOS)
+        return zanna::pkg::DepotOs::MacOS;
+    return zanna::pkg::DepotOs::Linux;
+}
+
+/// @brief Native platform whose executable a target packages.
+/// @details The built-in compile path only builds for the host, so a target can compile its own
+///          payload exactly when this family equals the host platform.
+/// @param target Package target.
+/// @return MacOS, Linux, or Windows for native formats; Tarball for the portable archive.
+PackageTarget executablePlatformFamily(PackageTarget target) {
+    switch (target) {
+        case PackageTarget::MacOS:
+        case PackageTarget::Dmg:
+        case PackageTarget::SteamMacOS:
+            return PackageTarget::MacOS;
+        case PackageTarget::Linux:
+        case PackageTarget::AppImage:
+        case PackageTarget::Rpm:
+        case PackageTarget::SteamLinux:
+            return PackageTarget::Linux;
+        case PackageTarget::Windows:
+        case PackageTarget::SteamWindows:
+            return PackageTarget::Windows;
+        case PackageTarget::Tarball:
+        case PackageTarget::Auto:
+            break;
+    }
+    return PackageTarget::Tarball;
+}
 
 /// @brief Native executable container formats recognized during validation.
 enum class ExecutableFormat { Unknown, MachO, ELF, PE };
@@ -93,16 +170,18 @@ void packageUsage(std::ostream &out = std::cerr) {
         << "  [project]  Path to a directory or zanna.project file (default: .)\n"
         << "\n"
         << "Options:\n"
-        << "  --target <platform>       macos, linux, windows, linux-bundle, rpm, dmg, or "
-           "tarball "
+        << "  --target <platform>       macos, linux, windows, linux-bundle, rpm, dmg, tarball,\n"
+        << "                            steam-windows, steam-macos, or steam-linux "
            "(default: host)\n"
         << "  --target=<platform>       Inline form of --target\n"
         << "  --arch <arch>             Target architecture: x64 or arm64 (default: host)\n"
         << "  --arch=<arch>             Inline form of --arch\n"
         << "  --executable <path>       Package a prebuilt native executable instead of compiling\n"
         << "  --executable=<path>       Inline form of --executable\n"
-        << "  -o, --output <path>       Output file path\n"
+        << "  -o, --output <path>       Output file path (build root directory for steam-*)\n"
         << "  --output=<path>           Inline form of --output\n"
+        << "  --steam-redist <path>     Steamworks SDK redistributable directory for steam-*\n"
+        << "  --steam-redist=<path>     Inline form of --steam-redist\n"
         << "  --dry-run                 List package contents without building or signing\n"
         << "  --json                    With --dry-run, print the package plan as JSON\n"
         << "  --keep-failed-artifact    Preserve generated artifacts after a failed package step\n"
@@ -115,6 +194,7 @@ void packageUsage(std::ostream &out = std::cerr) {
         << "  zanna package                       Package current dir for host platform\n"
         << "  zanna package myapp/ --target linux  Build .deb for Linux\n"
         << "  zanna package . --target windows -o myapp-setup.exe\n"
+        << "  zanna package . --target steam-macos --steam-redist ~/steamworks/sdk\n"
         << "\n"
         << "Output formats:\n"
         << "  macOS:    .app bundle in .zip (Finder-native, drag to /Applications)\n"
@@ -124,6 +204,8 @@ void packageUsage(std::ostream &out = std::cerr) {
         << "  RPM:      .rpm package (dnf/yum) — requires rpmbuild on the build host\n"
         << "  Windows:  PE32+ .exe with embedded ZIP (assets, shortcuts, uninstaller)\n"
         << "  Tarball:  .tar.gz portable archive\n"
+        << "  Steam:    SteamPipe build root: content/<platform>/, an app build script for\n"
+        << "            steamcmd, and manifests/<platform>.json\n"
         << "\n"
         << "macOS code-signing/notarization run only on a macOS host; Windows Authenticode\n"
         << "signing runs only where signtool is available. .dmg builds on a macOS host and\n"
@@ -140,42 +222,44 @@ struct PackageArgs {
     PackageTarget platformTarget{PackageTarget::Auto}; ///< Requested output format.
     std::string outputPath;                            ///< Explicit artifact output path.
     std::string archOverride;                          ///< Requested `x64` or `arm64` architecture.
-    std::string executablePath; ///< Optional prebuilt native executable to package.
-    std::string macosSignMode;  ///< Command-line macOS signing mode override.
-    bool macosSignModeSet{false}; ///< Whether @c macosSignMode was explicitly supplied.
-    std::string macosSignIdentity; ///< Command-line macOS signing identity override.
-    bool macosSignIdentitySet{false}; ///< Whether the signing identity was supplied.
-    std::string macosEntitlements; ///< Command-line entitlements path override.
-    bool macosEntitlementsSet{false}; ///< Whether the entitlements option was supplied.
-    std::string macosNotaryProfile; ///< Command-line notary profile override.
-    bool macosNotaryProfileSet{false}; ///< Whether the notary profile was supplied.
-    bool macosHardenedRuntime{false}; ///< Whether hardened runtime was requested.
-    bool macosHardenedRuntimeSet{false}; ///< Whether the hardened-runtime flag was supplied.
-    bool macosStaple{false}; ///< Whether notarization tickets should be stapled.
-    bool macosStapleSet{false}; ///< Whether the staple flag was supplied.
-    std::string windowsInstallScope; ///< Machine/user installation scope override.
-    bool windowsInstallScopeSet{false}; ///< Whether the install scope was supplied.
-    std::string windowsInstallDir; ///< Windows installation-directory name override.
-    bool windowsInstallDirSet{false}; ///< Whether the install-directory option was supplied.
-    bool windowsSign{false}; ///< Whether Authenticode signing was requested.
-    bool windowsSignSet{false}; ///< Whether the Windows signing flag was supplied.
-    std::string windowsSignPfx; ///< PFX certificate path override.
-    bool windowsSignPfxSet{false}; ///< Whether a PFX path was supplied.
-    std::string windowsSignThumbprint; ///< Certificate-store SHA-1 thumbprint override.
+    std::string executablePath;           ///< Optional prebuilt native executable to package.
+    std::string macosSignMode;            ///< Command-line macOS signing mode override.
+    bool macosSignModeSet{false};         ///< Whether @c macosSignMode was explicitly supplied.
+    std::string macosSignIdentity;        ///< Command-line macOS signing identity override.
+    bool macosSignIdentitySet{false};     ///< Whether the signing identity was supplied.
+    std::string macosEntitlements;        ///< Command-line entitlements path override.
+    bool macosEntitlementsSet{false};     ///< Whether the entitlements option was supplied.
+    std::string macosNotaryProfile;       ///< Command-line notary profile override.
+    bool macosNotaryProfileSet{false};    ///< Whether the notary profile was supplied.
+    bool macosHardenedRuntime{false};     ///< Whether hardened runtime was requested.
+    bool macosHardenedRuntimeSet{false};  ///< Whether the hardened-runtime flag was supplied.
+    bool macosStaple{false};              ///< Whether notarization tickets should be stapled.
+    bool macosStapleSet{false};           ///< Whether the staple flag was supplied.
+    std::string windowsInstallScope;      ///< Machine/user installation scope override.
+    bool windowsInstallScopeSet{false};   ///< Whether the install scope was supplied.
+    std::string windowsInstallDir;        ///< Windows installation-directory name override.
+    bool windowsInstallDirSet{false};     ///< Whether the install-directory option was supplied.
+    bool windowsSign{false};              ///< Whether Authenticode signing was requested.
+    bool windowsSignSet{false};           ///< Whether the Windows signing flag was supplied.
+    std::string windowsSignPfx;           ///< PFX certificate path override.
+    bool windowsSignPfxSet{false};        ///< Whether a PFX path was supplied.
+    std::string windowsSignThumbprint;    ///< Certificate-store SHA-1 thumbprint override.
     bool windowsSignThumbprintSet{false}; ///< Whether a thumbprint was supplied.
-    std::string windowsTimestampUrl; ///< Authenticode timestamp service URL override.
-    bool windowsTimestampUrlSet{false}; ///< Whether a timestamp URL was supplied.
-    std::string windowsSigntoolPath; ///< Authenticode signing tool path override.
-    bool windowsSigntoolPathSet{false}; ///< Whether a signing tool path was supplied.
-    bool windowsSignNoVerify{false}; ///< Whether post-signature verification is disabled.
-    bool windowsSignNoVerifySet{false}; ///< Whether the no-verify flag was supplied.
-    std::string linuxSignKey; ///< OpenPGP key selector for Linux package signing.
-    bool linuxSignKeySet{false}; ///< Whether a Linux signing key was supplied.
-    bool dryRun{false}; ///< Whether to describe the package without building it.
-    bool jsonOutput{false}; ///< Whether dry-run output uses JSON.
+    std::string windowsTimestampUrl;      ///< Authenticode timestamp service URL override.
+    bool windowsTimestampUrlSet{false};   ///< Whether a timestamp URL was supplied.
+    std::string windowsSigntoolPath;      ///< Authenticode signing tool path override.
+    bool windowsSigntoolPathSet{false};   ///< Whether a signing tool path was supplied.
+    bool windowsSignNoVerify{false};      ///< Whether post-signature verification is disabled.
+    bool windowsSignNoVerifySet{false};   ///< Whether the no-verify flag was supplied.
+    std::string linuxSignKey;             ///< OpenPGP key selector for Linux package signing.
+    bool linuxSignKeySet{false};          ///< Whether a Linux signing key was supplied.
+    std::string steamRedist;        ///< Steamworks redistributable directory, relative to the cwd.
+    bool steamRedistSet{false};     ///< Whether --steam-redist was supplied.
+    bool dryRun{false};             ///< Whether to describe the package without building it.
+    bool jsonOutput{false};         ///< Whether dry-run output uses JSON.
     bool keepFailedArtifact{false}; ///< Whether partial artifacts survive failure.
-    bool verbose{false}; ///< Whether detailed progress output is enabled.
-    bool help{false}; ///< Whether help was printed and normal execution should stop.
+    bool verbose{false};            ///< Whether detailed progress output is enabled.
+    bool help{false};               ///< Whether help was printed and normal execution should stop.
 };
 
 /// @brief Determine the packaging target matching the host build platform.
@@ -195,7 +279,7 @@ PackageTarget detectHostPlatform() {
 /// @brief Parse a package target name from the command line.
 /// @param value User supplied target value.
 /// @param out Receives the parsed target on success.
-/// @return True when @p value is one of macos, linux, windows, or tarball.
+/// @return True when @p value names a supported target.
 bool parsePackageTargetValue(std::string_view value, PackageTarget &out) {
     if (value == "macos")
         out = PackageTarget::MacOS;
@@ -211,6 +295,12 @@ bool parsePackageTargetValue(std::string_view value, PackageTarget &out) {
         out = PackageTarget::Rpm;
     else if (value == "dmg")
         out = PackageTarget::Dmg;
+    else if (value == "steam-windows")
+        out = PackageTarget::SteamWindows;
+    else if (value == "steam-macos")
+        out = PackageTarget::SteamMacOS;
+    else if (value == "steam-linux")
+        out = PackageTarget::SteamLinux;
     else
         return false;
     return true;
@@ -256,6 +346,12 @@ std::string platformName(PackageTarget t) {
             return "linux";
         case PackageTarget::Dmg:
             return "macos";
+        case PackageTarget::SteamWindows:
+            return "steam-windows";
+        case PackageTarget::SteamMacOS:
+            return "steam-macos";
+        case PackageTarget::SteamLinux:
+            return "steam-linux";
         default:
             return "unknown";
     }
@@ -280,6 +376,10 @@ std::string platformExtension(PackageTarget t) {
             return ".rpm";
         case PackageTarget::Dmg:
             return ".dmg";
+        case PackageTarget::SteamWindows:
+        case PackageTarget::SteamMacOS:
+        case PackageTarget::SteamLinux:
+            return "";
         default:
             return ".zip";
     }
@@ -383,6 +483,12 @@ std::string defaultPackageOutputPath(const ProjectConfig &proj,
                                      const std::string &version,
                                      PackageTarget target,
                                      const std::string &archStr) {
+    // One store build root collects every platform's depot, so its name has no platform.
+    if (isStoreDepotTarget(target)) {
+        return sanitizeOutputFileComponent(proj.name, "package") + "-" +
+               sanitizeOutputFileComponent(version, "0.0.0") + "-" +
+               zanna::pkg::storeProfile(storeForTarget(target)).outputSuffix;
+    }
     return sanitizeOutputFileComponent(proj.name, "package") + "-" +
            sanitizeOutputFileComponent(version, "0.0.0") + "-" + platformName(target) + "-" +
            sanitizeOutputFileComponent(archStr, "native") + platformExtension(target);
@@ -529,6 +635,12 @@ ExecutableFormat expectedExecutableFormat(PackageTarget target) {
             return ExecutableFormat::ELF;
         case PackageTarget::Dmg:
             return ExecutableFormat::MachO;
+        case PackageTarget::SteamWindows:
+            return ExecutableFormat::PE;
+        case PackageTarget::SteamMacOS:
+            return ExecutableFormat::MachO;
+        case PackageTarget::SteamLinux:
+            return ExecutableFormat::ELF;
         case PackageTarget::Auto:
         default:
             return ExecutableFormat::ELF;
@@ -941,8 +1053,8 @@ bool parsePackageArgs(int argc, char **argv, PackageArgs &args) {
                 arg, "--target", i, argc, argv, val, "a value", false, matched)) {
             if (!parsePackageTargetValue(val, args.platformTarget)) {
                 std::cerr << "error: unknown target '" << val
-                          << "'; expected macos, linux, windows, linux-bundle, rpm, dmg, or "
-                             "tarball\n";
+                          << "'; expected macos, linux, windows, linux-bundle, rpm, dmg, "
+                             "tarball, steam-windows, steam-macos, or steam-linux\n";
                 return false;
             }
             if (val == "appimage") {
@@ -1092,6 +1204,18 @@ bool parsePackageArgs(int argc, char **argv, PackageArgs &args) {
                                              true,
                                              matched)) {
             args.linuxSignKeySet = true;
+        } else if (matched) {
+            return false;
+        } else if (consumePackageOptionValue(arg,
+                                             "--steam-redist",
+                                             i,
+                                             argc,
+                                             argv,
+                                             args.steamRedist,
+                                             "a path",
+                                             false,
+                                             matched)) {
+            args.steamRedistSet = true;
         } else if (matched) {
             return false;
         } else if (consumePackageOptionValue(arg,
@@ -1278,6 +1402,7 @@ bool validatePackageConfigForTarget(const ProjectConfig &proj,
         switch (target) {
             case PackageTarget::MacOS:
             case PackageTarget::Dmg:
+            case PackageTarget::SteamMacOS:
                 if (displayName.empty() || displayName.find('/') != std::string::npos ||
                     displayName.find('\\') != std::string::npos ||
                     displayName.find(':') != std::string::npos) {
@@ -1430,8 +1555,40 @@ bool validatePackageConfigForTarget(const ProjectConfig &proj,
                 (void)zanna::pkg::normalizeExecName(proj.name);
                 break;
             }
+            case PackageTarget::SteamWindows:
+                zanna::pkg::validateHttpsPackageUrl(pkg.windowsTimestampUrl,
+                                                    "Windows timestamp URL");
+                zanna::pkg::validateSingleLineField(pkg.windowsSigntoolPath,
+                                                    "Windows signtool path");
+                zanna::pkg::validateWindowsCertificateThumbprint(pkg.windowsSignThumbprint,
+                                                                 "Windows signing thumbprint");
+                if (requireSigningCredentials && !pkg.windowsSignPfx.empty()) {
+                    const fs::path pfx =
+                        resolveOptionalProjectPath(proj.rootDir, pkg.windowsSignPfx);
+                    if (!fs::is_regular_file(pfx)) {
+                        throw std::runtime_error("Windows signing PFX not found: " +
+                                                 zanna::filesystem::pathToUtf8(pfx));
+                    }
+                }
+                for (const auto &dllPath : pkg.windowsDlls) {
+                    if (!validatePackageSourcePathExists(
+                            proj, dllPath, "Windows DLL dependency", false))
+                        return false;
+                }
+                zanna::pkg::validateWindowsFileName(
+                    zanna::pkg::normalizeExecName(proj.name) + ".exe", "Windows executable name");
+                break;
+            case PackageTarget::SteamLinux:
+                (void)zanna::pkg::normalizeExecName(proj.name);
+                break;
             case PackageTarget::Auto:
                 break;
+        }
+        if (isStoreDepotTarget(target)) {
+            const zanna::pkg::StoreProfile &profile =
+                zanna::pkg::storeProfile(storeForTarget(target));
+            profile.validateConfig(pkg);
+            (void)zanna::pkg::storeDepotPlatformKey(profile, depotOsForTarget(target), archStr);
         }
     } catch (const std::exception &ex) {
         err << "error: package configuration invalid: " << ex.what() << "\n";
@@ -1560,6 +1717,273 @@ std::vector<std::string> requiredAssetPayloadPaths(const ProjectConfig &proj,
     return paths;
 }
 
+/// @brief Owns the private directory that receives the compiled binary and generated packs.
+/// @details The directory is removed when packaging succeeds, and also on failure unless
+///          `--keep-failed-artifact` asked to inspect it.
+class PackageBuildDirectory {
+  public:
+    /// @brief Adopt a build directory.
+    /// @param path Directory to own; empty when packaging a prebuilt executable.
+    /// @param keepOnFailure Whether a failed run preserves the directory.
+    PackageBuildDirectory(fs::path path, bool keepOnFailure)
+        : path_(std::move(path)), keepOnFailure_(keepOnFailure) {}
+
+    /// @brief Remove the directory unless a failed run keeps it.
+    ~PackageBuildDirectory() {
+        if (path_.empty())
+            return;
+        if (!succeeded_ && keepOnFailure_) {
+            std::cerr << "note: kept temporary build directory "
+                      << zanna::filesystem::pathToUtf8(path_) << "\n";
+            return;
+        }
+        std::error_code ec;
+        fs::remove_all(path_, ec);
+    }
+
+    PackageBuildDirectory(const PackageBuildDirectory &) = delete;
+    PackageBuildDirectory &operator=(const PackageBuildDirectory &) = delete;
+
+    /// @brief Record success so the directory is always removed.
+    void markSucceeded() {
+        succeeded_ = true;
+    }
+
+  private:
+    fs::path path_;
+    bool keepOnFailure_{false};
+    bool succeeded_{false};
+};
+
+/// @brief Assemble store depot inputs shared by dry runs and builds.
+/// @param proj Loaded project with command-line overrides applied.
+/// @param args Parsed command-line arguments.
+/// @param version Effective package version.
+/// @param archStr Selected architecture.
+/// @param executablePath Native executable, or empty for a dry run without one.
+/// @return Depot parameters without generated packs or a signer.
+zanna::pkg::StoreDepotParams makeStoreDepotParams(const ProjectConfig &proj,
+                                                  const PackageArgs &args,
+                                                  const std::string &version,
+                                                  const std::string &archStr,
+                                                  const std::string &executablePath) {
+    const zanna::pkg::StoreProfile &profile =
+        zanna::pkg::storeProfile(storeForTarget(args.platformTarget));
+    zanna::pkg::StoreDepotParams params;
+    params.store = profile.kind;
+    params.os = depotOsForTarget(args.platformTarget);
+    params.arch = archStr;
+    params.projectName = proj.name;
+    params.version = version;
+    params.projectRoot = proj.rootDir;
+    params.pkgConfig = proj.packageConfig;
+    params.outputRoot = args.outputPath;
+    params.executablePath = executablePath;
+    if (args.steamRedistSet) {
+        std::error_code ec;
+        params.redistSource = args.steamRedist;
+        params.redistOrigin = profile.redistOption;
+        params.redistBaseDir = zanna::filesystem::pathToUtf8(fs::current_path(ec));
+    } else {
+        params.redistSource = proj.packageConfig.steamRedist;
+        params.redistOrigin = profile.redistDirective;
+        params.redistBaseDir = proj.rootDir;
+    }
+    for (const auto &group : proj.packGroups)
+        params.extraSourcePaths.insert(
+            params.extraSourcePaths.end(), group.sources.begin(), group.sources.end());
+    for (const auto &embed : proj.embedAssets)
+        params.extraSourcePaths.push_back(embed.sourcePath);
+    return params;
+}
+
+/// @brief Print the store section of a text dry run.
+/// @param out Destination stream.
+/// @param plan Resolved depot plan.
+void printStoreDepotPlanText(std::ostream &out, const zanna::pkg::StoreDepotPlan &plan) {
+    const std::string &store = plan.storeName;
+    out << "  " << store << " app id: " << plan.appId << "\n";
+    if (plan.depotId.empty())
+        out << "  " << store << " depot: none configured for " << plan.platformKey << "\n";
+    else
+        out << "  " << store << " depot: " << plan.depotId << " (" << plan.platformKey << ")\n";
+    out << "  " << store << " content: " << plan.contentDir << "\n";
+    out << "  " << store << " launch path: " << plan.launchPath << "\n";
+    if (plan.redistSource.empty())
+        out << "  " << store << " redistributable: none\n";
+    else
+        out << "  " << store << " redistributable: " << plan.redistSource << " -> "
+            << plan.redistStagedPath << "\n";
+    if (!plan.requiredEntitlements.empty()) {
+        out << "  " << store << " entitlements:";
+        for (const auto &key : plan.requiredEntitlements)
+            out << " " << key;
+        out << "\n";
+    }
+    out << "  " << store << " build script: " << plan.buildScriptPath << "\n";
+    out << "  " << store << " build description: " << plan.buildDescription << "\n";
+    if (!plan.setLive.empty())
+        out << "  " << store << " set live: " << plan.setLive << "\n";
+    out << "  " << store << " manifest: " << plan.manifestPath << "\n";
+}
+
+/// @brief Print the store object of a JSON dry run (without a trailing newline).
+/// @param out Destination stream.
+/// @param plan Resolved depot plan.
+void printStoreDepotPlanJson(std::ostream &out, const zanna::pkg::StoreDepotPlan &plan) {
+    /// @brief Write a JSON string value or null for empty text.
+    /// @param text Value.
+    /// @return Encoded JSON value.
+    auto optionalString = [](const std::string &text) {
+        return text.empty() ? std::string("null") : "\"" + jsonEscape(text) + "\"";
+    };
+    out << "  \"" << jsonEscape(plan.store) << "\": {\n"
+        << "    \"appId\": \"" << jsonEscape(plan.appId) << "\",\n"
+        << "    \"platform\": \"" << jsonEscape(plan.platformKey) << "\",\n"
+        << "    \"depotId\": " << optionalString(plan.depotId) << ",\n"
+        << "    \"outputRoot\": \"" << jsonEscape(plan.outputRoot) << "\",\n"
+        << "    \"contentDir\": \"" << jsonEscape(plan.contentDir) << "\",\n"
+        << "    \"launch\": \"" << jsonEscape(plan.launchPath) << "\",\n"
+        << "    \"executable\": \"" << jsonEscape(plan.executableRelativePath) << "\",\n"
+        << "    \"redistributable\": ";
+    if (plan.redistSource.empty()) {
+        out << "null";
+    } else {
+        out << "{\"source\": \"" << jsonEscape(plan.redistSource) << "\", \"staged\": \""
+            << jsonEscape(plan.redistStagedPath) << "\"}";
+    }
+    out << ",\n    \"entitlements\": [";
+    for (size_t i = 0; i < plan.requiredEntitlements.size(); ++i)
+        out << (i == 0 ? "" : ", ") << "\"" << jsonEscape(plan.requiredEntitlements[i]) << "\"";
+    out << "],\n    \"forbiddenEntitlements\": [";
+    for (size_t i = 0; i < plan.forbiddenEntitlements.size(); ++i)
+        out << (i == 0 ? "" : ", ") << "\"" << jsonEscape(plan.forbiddenEntitlements[i]) << "\"";
+    out << "],\n"
+        << "    \"buildScript\": \"" << jsonEscape(plan.buildScriptPath) << "\",\n"
+        << "    \"buildDescription\": \"" << jsonEscape(plan.buildDescription) << "\",\n"
+        << "    \"setLive\": " << optionalString(plan.setLive) << ",\n"
+        << "    \"manifest\": \"" << jsonEscape(plan.manifestPath) << "\",\n"
+        << "    \"usesProvider\": "
+        << (plan.executableInspected ? (plan.usesProvider ? "true" : "false") : "null") << "\n"
+        << "  }";
+}
+
+/// @brief Generate the project's `.zpak` pack groups for a package (ADR 0355).
+/// @details The compile path already wrote the packs beside the binary in @p buildDir, and
+///          compileAssets returns that cached bundle again after checking the files. A prebuilt
+///          executable gets its packs generated into a private directory owned by
+///          @p packDirOwner, which removes it when packaging finishes.
+/// @param proj Loaded project.
+/// @param buildDir Private build directory holding the compiled binary, or empty.
+/// @param packDirOwner Receives ownership of a directory created for the packs.
+/// @param packFiles Receives the generated pack paths (non-empty groups only).
+/// @return True on success; false after printing an error.
+bool generatePackagePacks(const ProjectConfig &proj,
+                          const fs::path &buildDir,
+                          std::optional<PackageBuildDirectory> &packDirOwner,
+                          std::vector<std::string> &packFiles) {
+    if (proj.packGroups.empty())
+        return true;
+    fs::path packDir = buildDir;
+    if (packDir.empty()) {
+        try {
+            packDir = zanna::pkg::createUniqueTempDirectory(fs::temp_directory_path(),
+                                                            "zanna-package-packs");
+        } catch (const std::exception &ex) {
+            std::cerr << "error: " << ex.what() << "\n";
+            return false;
+        }
+        packDirOwner.emplace(packDir, false);
+    }
+    std::string assetErr;
+    const auto bundle =
+        zanna::asset::compileAssets(proj, zanna::filesystem::pathToUtf8(packDir), assetErr);
+    if (!bundle) {
+        std::cerr << "error: asset compilation failed: " << assetErr << "\n";
+        return false;
+    }
+    packFiles = bundle->packFilePaths;
+    return true;
+}
+
+/// @brief File names of the packs a package ships, for verification.
+/// @param packFiles Generated pack paths.
+/// @return Leaf names in the same order.
+std::vector<std::string> packPayloadNames(const std::vector<std::string> &packFiles) {
+    std::vector<std::string> names;
+    names.reserve(packFiles.size());
+    for (const auto &pack : packFiles)
+        names.push_back(
+            zanna::filesystem::genericPathToUtf8(zanna::filesystem::pathFromUtf8(pack).filename()));
+    return names;
+}
+
+/// @brief Build one store depot from a native executable.
+/// @details Stages the depot with the generated packs and prints the upload command.
+/// @param proj Loaded project with command-line overrides applied.
+/// @param args Parsed command-line arguments.
+/// @param displayName Display name for progress output.
+/// @param version Effective package version.
+/// @param archStr Selected architecture.
+/// @param executablePath Native executable to stage.
+/// @param packFiles Generated `.zpak` pack paths.
+/// @return Process exit status.
+int packageStoreDepot(const ProjectConfig &proj,
+                      const PackageArgs &args,
+                      const std::string &displayName,
+                      const std::string &version,
+                      const std::string &archStr,
+                      const std::string &executablePath,
+                      const std::vector<std::string> &packFiles) {
+    zanna::pkg::StoreDepotParams params =
+        makeStoreDepotParams(proj, args, version, archStr, executablePath);
+    params.packFiles = packFiles;
+    if (args.platformTarget == PackageTarget::SteamWindows) {
+        const fs::path installerHost = findWindowsInstallerSupportExecutable(
+            proj, "ZANNA_WINDOWS_INSTALLER_HOST", "zanna-installer-host.exe");
+        if (!installerHost.empty())
+            params.windowsCompilerRuntimeDir =
+                zanna::filesystem::pathToUtf8(installerHost.parent_path());
+        if (windowsSigningRequested(proj.packageConfig)) {
+            /// @brief Sign one staged Windows PE.
+            /// @param logicalName Content-relative name.
+            /// @param unsignedPe Unsigned PE bytes.
+            /// @return Signed PE bytes.
+            params.windowsSigner = [&proj, &args](std::string_view logicalName,
+                                                  const std::vector<uint8_t> &unsignedPe) {
+                return signWindowsPeBytes(proj, logicalName, unsignedPe, args.verbose);
+            };
+        }
+    }
+
+    std::cerr << "Packaging " << displayName << " for " << platformName(args.platformTarget) << " ("
+              << archStr << ")...\n";
+    zanna::pkg::StoreDepotResult result;
+    try {
+        result = zanna::pkg::buildStoreDepot(params);
+    } catch (const std::exception &ex) {
+        std::cerr << "error: packaging failed: " << ex.what() << "\n";
+        return 1;
+    }
+    for (const auto &warning : result.warnings)
+        std::cerr << "warning: " << warning << "\n";
+    if (args.verbose) {
+        uint64_t totalBytes = 0;
+        for (const auto &file : result.files)
+            totalBytes += file.size;
+        std::cerr << "  Files: " << result.files.size() << " (" << totalBytes << " bytes)\n";
+        std::cerr << "  Trust: " << result.trust << "\n";
+        std::cerr << "  Manifest: " << result.plan.manifestPath << "\n";
+    }
+    std::cerr << "Depot content created: " << result.plan.contentDir << "\n";
+    const zanna::pkg::StoreProfile &profile = zanna::pkg::storeProfile(params.store);
+    for (const auto &script : result.buildScripts) {
+        std::cerr << "Build script: " << script << "\n";
+        std::cerr << "Upload with: " << profile.uploadCommand(script) << "\n";
+    }
+    return 0;
+}
+
 } // namespace
 
 /// @brief Build, inspect, sign, and verify an application package.
@@ -1579,6 +2003,16 @@ int cmdPackage(int argc, char **argv) {
         return 1;
     if (args.help)
         return 0;
+    if (!args.linuxSignKey.empty() && args.platformTarget != PackageTarget::Linux &&
+        args.platformTarget != PackageTarget::Rpm) {
+        std::cerr << "error: --linux-sign-key applies only to --target linux or --target rpm\n";
+        return 1;
+    }
+    if (args.steamRedistSet && !isStoreDepotTarget(args.platformTarget)) {
+        std::cerr << "error: --steam-redist applies only to --target steam-windows, steam-macos, "
+                     "or steam-linux\n";
+        return 1;
+    }
 
     // Resolve project
     auto project = resolveProject(args.target);
@@ -1639,6 +2073,28 @@ int cmdPackage(int argc, char **argv) {
 
     // Dry-run mode: list what would be packaged, then exit
     if (args.dryRun) {
+        // Pack groups the package ships (ADR 0355); names only, the sources are not read.
+        std::vector<std::pair<std::string, std::string>> packNames;
+        try {
+            for (const auto &group : proj.packGroups)
+                packNames.emplace_back(group.name,
+                                       zanna::asset::packFileName(proj.name, group.name));
+        } catch (const std::exception &ex) {
+            std::cerr << "error: invalid pack group: " << ex.what() << "\n";
+            return 1;
+        }
+        std::optional<zanna::pkg::StoreDepotPlan> depotPlan;
+        if (isStoreDepotTarget(args.platformTarget)) {
+            try {
+                depotPlan = zanna::pkg::planStoreDepot(makeStoreDepotParams(
+                    proj, args, resolvedVersion, archStr, args.executablePath));
+            } catch (const std::exception &ex) {
+                std::cerr << "error: " << ex.what() << "\n";
+                return 1;
+            }
+            for (const auto &warning : depotPlan->warnings)
+                std::cerr << "warning: " << warning << "\n";
+        }
         if (args.jsonOutput) {
             std::cout << "{\n";
             std::cout << "  \"project\": \"" << jsonEscape(proj.name) << "\",\n";
@@ -1661,6 +2117,14 @@ int cmdPackage(int argc, char **argv) {
                     std::cout << ", ";
                 std::cout << "{\"source\":\"" << jsonEscape(asset.sourcePath) << "\",\"target\":\""
                           << jsonEscape(asset.targetPath) << "\"}";
+            }
+            std::cout << "],\n";
+            std::cout << "  \"packs\": [";
+            for (size_t i = 0; i < packNames.size(); ++i) {
+                if (i != 0)
+                    std::cout << ", ";
+                std::cout << "{\"group\":\"" << jsonEscape(packNames[i].first) << "\",\"file\":\""
+                          << jsonEscape(packNames[i].second) << "\"}";
             }
             std::cout << "],\n";
             std::cout << "  \"fileAssociations\": [";
@@ -1700,8 +2164,12 @@ int cmdPackage(int argc, char **argv) {
             std::cout << "  \"linuxCategory\": \"" << jsonEscape(proj.packageConfig.category)
                       << "\",\n";
             std::cout << "  \"linuxAppStreamId\": \"" << jsonEscape(proj.packageConfig.appstreamId)
-                      << "\"\n";
-            std::cout << "}\n";
+                      << "\"";
+            if (depotPlan) {
+                std::cout << ",\n";
+                printStoreDepotPlanJson(std::cout, *depotPlan);
+            }
+            std::cout << "\n}\n";
             return 0;
         }
         std::ostream &dryOut = std::cout;
@@ -1726,7 +2194,7 @@ int cmdPackage(int argc, char **argv) {
                 dryOut << " [NOT FOUND]";
             dryOut << "\n";
         }
-        if (args.platformTarget == PackageTarget::MacOS) {
+        if (executablePlatformFamily(args.platformTarget) == PackageTarget::MacOS) {
             const std::string signMode =
                 zanna::pkg::resolveMacOSSignModeForHost(proj.packageConfig);
             dryOut << "  macOS signing: " << signMode << "\n";
@@ -1743,14 +2211,16 @@ int cmdPackage(int argc, char **argv) {
             if (proj.packageConfig.macosStaple)
                 dryOut << "  macOS staple: on\n";
         }
-        if (args.platformTarget == PackageTarget::Windows) {
-            const std::string scope = proj.packageConfig.windowsInstallScope.empty()
-                                          ? "user"
-                                          : proj.packageConfig.windowsInstallScope;
-            dryOut << "  Windows install scope: " << scope << "\n";
-            if (!proj.packageConfig.windowsInstallDir.empty())
-                dryOut << "  Windows install directory: " << proj.packageConfig.windowsInstallDir
-                       << "\n";
+        if (executablePlatformFamily(args.platformTarget) == PackageTarget::Windows) {
+            if (args.platformTarget == PackageTarget::Windows) {
+                const std::string scope = proj.packageConfig.windowsInstallScope.empty()
+                                              ? "user"
+                                              : proj.packageConfig.windowsInstallScope;
+                dryOut << "  Windows install scope: " << scope << "\n";
+                if (!proj.packageConfig.windowsInstallDir.empty())
+                    dryOut << "  Windows install directory: "
+                           << proj.packageConfig.windowsInstallDir << "\n";
+            }
             if (windowsSigningRequested(proj.packageConfig)) {
                 dryOut << "  Windows signing: on\n";
                 if (!proj.packageConfig.windowsSignPfx.empty())
@@ -1764,6 +2234,8 @@ int cmdPackage(int argc, char **argv) {
                            << "\n";
             }
         }
+        if (depotPlan)
+            printStoreDepotPlanText(dryOut, *depotPlan);
         for (const auto &asset : proj.packageConfig.assets) {
             fs::path assetPath;
             dryOut << "  Asset: " << asset.sourcePath << " -> " << asset.targetPath;
@@ -1793,6 +2265,8 @@ int cmdPackage(int argc, char **argv) {
             }
             dryOut << "\n";
         }
+        for (const auto &[group, file] : packNames)
+            dryOut << "  Pack: " << group << " -> " << file << "\n";
         for (const auto &assoc : proj.packageConfig.fileAssociations) {
             dryOut << "  File assoc: " << assoc.extension << " (" << assoc.description << ")";
             if (!assoc.openCommandArguments.empty())
@@ -1812,7 +2286,7 @@ int cmdPackage(int argc, char **argv) {
 
     const PackageTarget hostPlatform = detectHostPlatform();
     if (args.executablePath.empty() && args.platformTarget != PackageTarget::Tarball &&
-        args.platformTarget != hostPlatform) {
+        executablePlatformFamily(args.platformTarget) != hostPlatform) {
         std::cerr << "error: packaging for '" << platformName(args.platformTarget)
                   << "' from this host requires --executable because the built-in compile path "
                      "still targets the host platform\n";
@@ -1827,7 +2301,18 @@ int cmdPackage(int argc, char **argv) {
     }
 
     std::string packageBinaryPath;
-    bool cleanupPackagedBinary = false;
+    fs::path buildDirPath;
+    if (args.executablePath.empty()) {
+        try {
+            buildDirPath = zanna::pkg::createUniqueTempDirectory(fs::temp_directory_path(),
+                                                                 "zanna-package-build");
+        } catch (const std::exception &ex) {
+            std::cerr << "error: cannot create a temporary build directory: " << ex.what() << "\n";
+            return 1;
+        }
+    }
+    // Owns the compiled binary and any packs the build generated beside it.
+    PackageBuildDirectory buildDir(buildDirPath, args.keepFailedArtifact);
 
     if (!args.executablePath.empty()) {
         fs::path exePath = zanna::filesystem::pathFromUtf8(args.executablePath);
@@ -1879,22 +2364,27 @@ int cmdPackage(int argc, char **argv) {
 
         // Build through the same in-process path as `zanna build` so packaging
         // observes project manifests, frontend options, assets, and native
-        // backend flags consistently.
-        std::string tempBinaryExt;
+        // backend flags consistently. The build writes pack groups beside the
+        // binary, so it runs in the private build directory.
+        std::string tempBinaryName = "app";
+        try {
+            tempBinaryName = zanna::pkg::normalizeExecName(proj.name);
+        } catch (const std::exception &) {
+            // Targets that need the executable name validated it already.
+        }
 #if ZANNA_HOST_WINDOWS
-        tempBinaryExt = ".exe";
+        tempBinaryName += ".exe";
 #endif
-        std::string tempBinaryPath =
-            zanna::tools::generateTempFilePath("zanna_package", tempBinaryExt.c_str());
-        packageBinaryPath = tempBinaryPath;
-        cleanupPackagedBinary = true;
+        packageBinaryPath = zanna::filesystem::pathToUtf8(
+            buildDirPath / zanna::filesystem::pathFromUtf8(tempBinaryName));
 
         const int buildRc = buildProjectToNativeForPackage(
-            args.target, tempBinaryPath, archStr, args.platformTarget == PackageTarget::Windows);
+            args.target,
+            packageBinaryPath,
+            archStr,
+            executablePlatformFamily(args.platformTarget) == PackageTarget::Windows);
         if (buildRc != 0) {
             std::cerr << "error: compilation failed\n";
-            std::error_code ec;
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
             return 1;
         }
 
@@ -1903,14 +2393,9 @@ int cmdPackage(int argc, char **argv) {
             if (compiledEc) {
                 std::cerr << "error: cannot inspect compiled binary at " << packageBinaryPath
                           << ": " << compiledEc.message() << "\n";
-                std::error_code cleanupEc;
-                removeFailedArtifactUnlessKept(
-                    packageBinaryPath, args.keepFailedArtifact, cleanupEc);
                 return 1;
             }
             std::cerr << "error: compiled binary not found at " << packageBinaryPath << "\n";
-            std::error_code ec;
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
             return 1;
         }
         try {
@@ -1918,10 +2403,22 @@ int cmdPackage(int argc, char **argv) {
         } catch (const std::exception &ex) {
             std::cerr << "error: compiled executable is not valid for this package: " << ex.what()
                       << "\n";
-            std::error_code ec;
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
             return 1;
         }
+    }
+
+    // Every target ships the project's pack groups beside the executable (ADR 0355).
+    std::vector<std::string> packFiles;
+    std::optional<PackageBuildDirectory> packDirOwner;
+    if (!generatePackagePacks(proj, buildDirPath, packDirOwner, packFiles))
+        return 1;
+
+    if (isStoreDepotTarget(args.platformTarget)) {
+        const int depotRc = packageStoreDepot(
+            proj, args, displayName, resolvedVersion, archStr, packageBinaryPath, packFiles);
+        if (depotRc == 0)
+            buildDir.markSucceeded();
+        return depotRc;
     }
 
     // Step 3: Package
@@ -1945,11 +2442,6 @@ int cmdPackage(int argc, char **argv) {
     }
 
     try {
-        if (!args.linuxSignKey.empty() && args.platformTarget != PackageTarget::Linux &&
-            args.platformTarget != PackageTarget::Rpm) {
-            throw std::runtime_error(
-                "--linux-sign-key applies only to --target linux or --target rpm");
-        }
         const fs::path outputParent =
             zanna::filesystem::pathFromUtf8(args.outputPath).parent_path();
         if (!outputParent.empty()) {
@@ -1970,6 +2462,7 @@ int cmdPackage(int argc, char **argv) {
                 params.projectRoot = proj.rootDir;
                 params.pkgConfig = proj.packageConfig;
                 params.outputPath = args.outputPath;
+                params.packFiles = packFiles;
                 zanna::pkg::buildMacOSPackage(params);
                 break;
             }
@@ -1981,6 +2474,7 @@ int cmdPackage(int argc, char **argv) {
                 lparams.projectRoot = proj.rootDir;
                 lparams.pkgConfig = proj.packageConfig;
                 lparams.outputPath = args.outputPath;
+                lparams.packFiles = packFiles;
                 // Map architecture: Debian uses "amd64" not "x64"
                 lparams.archStr = (archStr == "x64") ? "amd64" : archStr;
                 zanna::pkg::buildDebPackage(lparams);
@@ -1999,6 +2493,7 @@ int cmdPackage(int argc, char **argv) {
                 wparams.pkgConfig = proj.packageConfig;
                 wparams.outputPath = args.outputPath;
                 wparams.archStr = archStr;
+                wparams.packFiles = packFiles;
                 wparams.installerHostPath =
                     zanna::filesystem::pathToUtf8(findWindowsInstallerSupportExecutable(
                         proj, "ZANNA_WINDOWS_INSTALLER_HOST", "zanna-installer-host.exe"));
@@ -2012,8 +2507,8 @@ int cmdPackage(int argc, char **argv) {
                         proj, "ZANNA_WINDOWS_INSTALLER_CLEANUP", "zanna-installer-cleanup.exe"));
                 if (wparams.installerCleanupPath.empty()) {
                     throw std::runtime_error(
-                                         "native Windows installer cleanup helper not found; install/build "
-                                         "zanna-installer-cleanup or set ZANNA_WINDOWS_INSTALLER_CLEANUP");
+                        "native Windows installer cleanup helper not found; install/build "
+                        "zanna-installer-cleanup or set ZANNA_WINDOWS_INSTALLER_CLEANUP");
                 }
                 if (windowsSigningRequested(proj.packageConfig)) {
                     /// @brief Sign one generated Windows PE payload.
@@ -2038,6 +2533,7 @@ int cmdPackage(int argc, char **argv) {
                 tparams.pkgConfig = proj.packageConfig;
                 tparams.outputPath = args.outputPath;
                 tparams.archStr = archStr;
+                tparams.packFiles = packFiles;
                 zanna::pkg::buildTarball(tparams);
                 break;
             }
@@ -2050,6 +2546,7 @@ int cmdPackage(int argc, char **argv) {
                 aparams.pkgConfig = proj.packageConfig;
                 aparams.outputPath = args.outputPath;
                 aparams.archStr = archStr; // Linux bundles use the portable x64/arm64 form.
+                aparams.packFiles = packFiles;
                 zanna::pkg::buildAppImage(aparams);
                 break;
             }
@@ -2062,6 +2559,7 @@ int cmdPackage(int argc, char **argv) {
                 rparams.pkgConfig = proj.packageConfig;
                 rparams.outputPath = args.outputPath;
                 rparams.archStr = archStr; // RPM uses the portable x64/arm64 form
+                rparams.packFiles = packFiles;
                 zanna::pkg::buildRpmPackage(rparams);
                 if (!args.linuxSignKey.empty())
                     zanna::pkg::signLinuxPackage(args.outputPath,
@@ -2077,6 +2575,7 @@ int cmdPackage(int argc, char **argv) {
                 params.projectRoot = proj.rootDir;
                 params.pkgConfig = proj.packageConfig;
                 params.outputPath = args.outputPath;
+                params.packFiles = packFiles;
                 zanna::pkg::buildMacOSAppDmg(params);
                 break;
             }
@@ -2086,8 +2585,6 @@ int cmdPackage(int argc, char **argv) {
     } catch (const std::exception &e) {
         std::cerr << "error: packaging failed: " << e.what() << "\n";
         std::error_code ec;
-        if (cleanupPackagedBinary)
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
         removeFailedArtifactUnlessKept(args.outputPath, args.keepFailedArtifact, ec);
         return 1;
     }
@@ -2101,16 +2598,12 @@ int cmdPackage(int argc, char **argv) {
         else
             std::cerr << "error: package builder did not create output file: " << args.outputPath
                       << "\n";
-        if (cleanupPackagedBinary)
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
         return 1;
     }
 
     if (args.platformTarget == PackageTarget::Windows &&
         !signWindowsInstallerArtifact(proj, outputNative, args.verbose, std::cerr)) {
         removeFailedArtifactUnlessKept(args.outputPath, args.keepFailedArtifact, ec);
-        if (cleanupPackagedBinary)
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
         return 1;
     }
 
@@ -2119,8 +2612,6 @@ int cmdPackage(int argc, char **argv) {
         pkgData = zanna::pkg::readFile(args.outputPath);
     } catch (const std::exception &ex) {
         std::cerr << "error: cannot read generated package for verification: " << ex.what() << "\n";
-        if (cleanupPackagedBinary)
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
         return 1;
     }
 
@@ -2130,16 +2621,23 @@ int cmdPackage(int argc, char **argv) {
     try {
         switch (args.platformTarget) {
             case PackageTarget::MacOS: {
-                const auto requiredResources = requiredAssetPayloadPaths(proj, "");
+                auto requiredResources = requiredAssetPayloadPaths(proj, "");
+                for (const auto &pack : packPayloadNames(packFiles))
+                    requiredResources.push_back(pack);
                 valid = zanna::pkg::verifyMacOSAppZipPayload(
                     pkgData, displayName + ".app", execName, requiredResources, verifyErr);
                 break;
             }
             case PackageTarget::Linux: {
+                const std::string debName = zanna::pkg::normalizeDebName(proj.name);
                 std::vector<std::string> required = {"usr/bin/" + execName};
-                auto assetPaths = requiredAssetPayloadPaths(
-                    proj, "usr/share/" + zanna::pkg::normalizeDebName(proj.name));
+                auto assetPaths = requiredAssetPayloadPaths(proj, "usr/share/" + debName);
                 required.insert(required.end(), assetPaths.begin(), assetPaths.end());
+                if (!packFiles.empty()) {
+                    required.push_back("usr/lib/" + debName + "/" + execName);
+                    for (const auto &pack : packPayloadNames(packFiles))
+                        required.push_back("usr/lib/" + debName + "/" + pack);
+                }
                 valid = zanna::pkg::verifyDebPayload(pkgData, required, verifyErr);
                 break;
             }
@@ -2147,6 +2645,8 @@ int cmdPackage(int argc, char **argv) {
                 std::vector<std::string> requiredInner = {execName + ".exe"};
                 auto assetPaths = requiredAssetPayloadPaths(proj, "");
                 requiredInner.insert(requiredInner.end(), assetPaths.begin(), assetPaths.end());
+                for (const auto &pack : packPayloadNames(packFiles))
+                    requiredInner.push_back(pack);
                 valid = zanna::pkg::verifyWindowsNativeInstaller(pkgData, verifyErr) &&
                         zanna::pkg::verifyPEZipOverlayNestedPayload(pkgData,
                                                                     {"meta/payload.zip",
@@ -2165,6 +2665,8 @@ int cmdPackage(int argc, char **argv) {
                     topDir + "/" + execName, topDir + "/README.install", topDir + "/LICENSE"};
                 auto assetPaths = requiredAssetPayloadPaths(proj, topDir);
                 required.insert(required.end(), assetPaths.begin(), assetPaths.end());
+                for (const auto &pack : packPayloadNames(packFiles))
+                    required.push_back(topDir + "/" + pack);
                 valid = zanna::pkg::verifyTarGzPayload(pkgData, required, verifyErr);
                 break;
             }
@@ -2200,15 +2702,11 @@ int cmdPackage(int argc, char **argv) {
     } catch (const std::exception &ex) {
         std::cerr << "error: cannot prepare package verification: " << ex.what() << "\n";
         removeFailedArtifactUnlessKept(args.outputPath, args.keepFailedArtifact, ec);
-        if (cleanupPackagedBinary)
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
         return 1;
     }
     if (!valid) {
         std::cerr << "error: package verification failed:\n" << verifyErr.str();
         removeFailedArtifactUnlessKept(args.outputPath, args.keepFailedArtifact, ec);
-        if (cleanupPackagedBinary)
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
         return 1;
     }
     if (args.verbose)
@@ -2254,21 +2752,10 @@ int cmdPackage(int argc, char **argv) {
         ec.clear();
         fs::remove(zanna::filesystem::pathFromUtf8(args.outputPath + ".manifest.json"), ec);
         removeFailedArtifactUnlessKept(args.outputPath, args.keepFailedArtifact, ec);
-        if (cleanupPackagedBinary)
-            removeFailedArtifactUnlessKept(packageBinaryPath, args.keepFailedArtifact, ec);
         return 1;
     }
 
-    // Cleanup temp binary
-    if (cleanupPackagedBinary) {
-        ec.clear();
-        fs::remove(zanna::filesystem::pathFromUtf8(packageBinaryPath), ec);
-        if (ec && args.verbose) {
-            std::cerr << "warning: failed to remove temporary packaged binary '"
-                      << packageBinaryPath << "': " << ec.message() << "\n";
-        }
-    }
-
+    buildDir.markSucceeded();
     std::cerr << "Package created: " << args.outputPath;
     ec.clear();
     if (args.verbose && fs::exists(outputNative, ec)) {

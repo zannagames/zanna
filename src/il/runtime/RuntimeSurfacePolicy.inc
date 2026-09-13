@@ -17,6 +17,7 @@
 //   RUNTIME_SURFACE_EXPECT_FUNCTION(canonical, symbol)
 //   RUNTIME_SURFACE_EXPECT_METHOD(class_name, method_name, signature)
 //   RUNTIME_SURFACE_EXPECT_PROPERTY(class_name, property_name, type_name)
+//   RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT(canonical)
 //
 //===----------------------------------------------------------------------===//
 
@@ -65,6 +66,15 @@
  * @param class_name Fully qualified frontend class name.
  * @param property_name Frontend property name.
  * @param type_name Canonical property type.
+ */
+
+/**
+ * @def RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT
+ * @brief Allows one runtime function to return an object without declaring its class.
+ * @details Every other object result names its class (`obj<Class>`, `seq<T>` or `list<T>`);
+ *          frontends never infer one (ADR 0356). Class methods and property getters that
+ *          target the function inherit the allowance.
+ * @param canonical Fully qualified frontend function name.
  */
 
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_crypto.h")
@@ -182,13 +192,17 @@ RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/text/rt_numfmt_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/threads/rt_monitor_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/threads/rt_threads_internal.h")
 
-// Platform services (ADR 0352): the Base frame-pump slot, the provider
-// interface, the dynamic-library adapter, and the authored Steamworks ABI are
-// implementation contracts behind the registered Zanna.Services classes.
+// Platform services (ADR 0352, ADR 0353): the Base frame-pump slot, the
+// provider interface, the core helpers shared with the feature classes, the
+// dynamic-library adapter, the authored Steamworks ABI, and the Steam
+// provider's shared state are implementation contracts behind the registered
+// Zanna.Services classes.
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_service_hooks.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/rt_services_provider.h")
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/rt_services_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/rt_services_dynlib.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/steam/rt_steam_abi.h")
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/steam/rt_steam_internal.h")
 
 // Localization: Collator ships the C implementation + docs + tests, but the
 // frontend class is intentionally not registered in runtime.def for v1.
@@ -516,6 +530,100 @@ RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Game.ParticleSnapshot", "Size", "f64")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Game.ParticleSnapshot", "Color", "i64")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.GUI.VideoWidget", "ShowControls", "i1")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.GUI.VideoWidget", "Loop", "i1")
+
+// Results that may be any value, including strings and boxed scalars (ADR 0356). A result that
+// is always a runtime object of a value-dependent class declares obj<Zanna.Core.Object>;
+// everything else declares obj<Class>, seq<T>, or list<T>.
+
+// Elements stored by a collection, channel, future, or lazy value.
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.DefaultMap.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.DefaultMap.GetDefault")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Deque.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Deque.PeekBack")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Deque.PeekFront")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Deque.PopBack")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Deque.PopFront")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.FrozenMap.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.FrozenMap.GetOr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Heap.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Heap.Pop")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.IntMap.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.IntMap.GetOr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Iterator.Next")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Iterator.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.List.First")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.List.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.List.Last")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.List.Pop")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.LruCache.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.LruCache.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Map.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Map.GetOr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.MultiMap.GetFirst")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.OrderedMap.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Queue.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Queue.Pop")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Ring.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Ring.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Ring.Pop")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Ring.get_First")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Ring.get_Last")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Seq.First")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Seq.Fold")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Seq.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Seq.Last")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Seq.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Seq.Pop")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Seq.RemoveAt")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.SortedMap.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.SparseArray.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Stack.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Stack.Pop")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.Trie.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Collections.WeakMap.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Functional.Lazy.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Functional.LazySeq.Next")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Functional.LazySeq.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Memory.WeakRef.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Option.Expect")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Option.Unwrap")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Option.UnwrapOr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Result.Expect")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Result.ExpectErr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Result.Unwrap")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Result.UnwrapErr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Result.UnwrapOr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.Channel.Recv")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.Channel.RecvFor")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.ConcurrentMap.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.ConcurrentMap.GetOr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.ConcurrentQueue.Peek")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.ConcurrentQueue.Pop")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.ConcurrentQueue.PopFor")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.Future.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.Future.GetFor")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.Parallel.Reduce")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Threads.Parallel.ReducePool")
+
+// Parsed documents: a Map, Seq, boxed scalar, or string depending on the input.
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Data.Json.Parse")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Data.JsonPath.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Data.JsonPath.GetOr")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Data.Serialize.AutoParse")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Data.Serialize.Parse")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Data.Toml.Get")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Data.Yaml.Parse")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Network.RestClient.DeleteJson")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Network.RestClient.GetJson")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Network.RestClient.PatchJson")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Network.RestClient.PostJson")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Network.RestClient.PutJson")
+
+// Boxed scalars, which callers narrow back with `as Integer`, `as Number`, and so on.
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Core.Box.F64")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Core.Box.I1")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Core.Box.I64")
+RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT("Zanna.Core.Box.Str")
 
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_sound_load_mem")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_sound_is_handle")
@@ -1211,29 +1319,29 @@ RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Collections.Seq.ToStack", "rt_seq_to_stac
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Collections.Set.ToList", "rt_set_to_list")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Collections.Set.ToSeq", "rt_set_to_seq")
 
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.MessageBox", "New", "obj(str,str,i64)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.MessageBox", "NewInfo", "obj(str,str)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.MessageBox", "New", "obj<Zanna.GUI.MessageBox>(str,str,i64)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.MessageBox", "NewInfo", "obj<Zanna.GUI.MessageBox>(str,str)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.MessageBox", "AddButton", "void(str,i64)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.MessageBox", "Show", "i64()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.MessageBox", "Destroy", "void()")
 
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "New", "obj(i64)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "NewOpen", "obj()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "New", "obj<Zanna.GUI.FileDialog>(i64)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "NewOpen", "obj<Zanna.GUI.FileDialog>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "OpenMultiple", "str(str,str,str)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "GetPath", "str()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "GetPathAt", "str(i64)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.FileDialog", "Destroy", "void()")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.GUI.FileDialog", "PathCount", "i64")
 
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "Map", "obj(obj)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "AndThen", "obj(obj)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "OrElse", "obj(obj)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "Filter", "obj(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "Map", "obj<Zanna.Option>(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "AndThen", "obj<Zanna.Option>(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "OrElse", "obj<Zanna.Option>(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Option", "Filter", "obj<Zanna.Option>(obj)")
 
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "Map", "obj(obj)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "MapErr", "obj(obj)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "AndThen", "obj(obj)")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "OrElse", "obj(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "Map", "obj<Zanna.Result>(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "MapErr", "obj<Zanna.Result>(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "AndThen", "obj<Zanna.Result>(obj)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Result", "OrElse", "obj<Zanna.Result>(obj)")
 
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Functional.Lazy", "Map", "obj<Zanna.Functional.Lazy>(obj)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Functional.Lazy", "AndThen", "obj<Zanna.Functional.Lazy>(obj)")
@@ -1253,7 +1361,7 @@ RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Graphics.Sprite",
                               "DrawTransformed",
                               "void(obj,i64,i64,i64,i64,i64,i64,i64)")
 
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Graphics.SpriteAnimator", "New", "obj()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Graphics.SpriteAnimator", "New", "obj<Zanna.Graphics.SpriteAnimator>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Graphics.SpriteAnimator", "AddClip", "i1(str,i64,i64,i64,i64)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Graphics.SpriteAnimator", "Play", "i1(str)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Graphics.SpriteAnimator", "Update", "void(obj)")
@@ -1264,15 +1372,15 @@ RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Graphics.SpriteAnimator", "Current", "str
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Game.Physics2D.Body", "PrevX", "f64")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Game.Physics2D.Body", "PrevY", "f64")
 
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.List", "New", "obj()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.List", "New", "obj<Zanna.Collections.List>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.StringSet",
                               "ToSeq",
                               "obj<Zanna.Collections.Seq>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.StringSet",
                               "ToSet",
                               "obj<Zanna.Collections.Set>()")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Map", "New", "obj()")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Set", "New", "obj()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Map", "New", "obj<Zanna.Collections.Map>()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Set", "New", "obj<Zanna.Collections.Set>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Set", "ToSeq", "obj<Zanna.Collections.Seq>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Set", "ToList", "obj<Zanna.Collections.List>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.List", "ToSeq", "obj<Zanna.Collections.Seq>()")
@@ -1287,8 +1395,8 @@ RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Seq",
                               "obj<Zanna.Collections.StringSet>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Stack", "ToSeq", "obj<Zanna.Collections.Seq>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Deque", "ToSeq", "obj<Zanna.Collections.Seq>()")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Time.Stopwatch", "New", "obj()")
-RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Time.Stopwatch", "StartNew", "obj()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Time.Stopwatch", "New", "obj<Zanna.Time.Stopwatch>()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Time.Stopwatch", "StartNew", "obj<Zanna.Time.Stopwatch>()")
 
 // Platform services (ADR 0352): pin the provider-neutral lifecycle, the
 // non-blocking request contract, and the Steam extension entry points.
@@ -1308,6 +1416,21 @@ RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Platform", "Status", "i64")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Platform", "IsAvailable", "i1")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Request", "IsDone", "i1")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Steam", "HardwareType", "i64")
+
+// Platform services player features (ADR 0353): pin the commit, the
+// name-addressed leaderboard requests with their entry accessors, the
+// Result-returning cloud read, and the text input request.
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Achievements", "Unlock", "i1(str)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Stats", "Store", "i1()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Leaderboards",
+                              "Download",
+                              "obj<Zanna.Services.Request>(str,i64,i64,i64)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Request", "EntryUserName", "str(i64)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Cloud", "Read", "obj<Zanna.Result>(str)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.OnScreenKeyboard",
+                              "RequestText",
+                              "obj<Zanna.Services.Request>(str,str,i64,i64)")
+RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Platform", "EventTotal", "i64")
 
 // Retired public rows (2026-07-15 API consistency sweep): these C entry
 // points lost their public runtime.def rows when compatibility aliases,

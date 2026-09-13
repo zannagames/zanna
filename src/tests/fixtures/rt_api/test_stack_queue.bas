@@ -26,7 +26,7 @@ q.Clear()
 PRINT "queue empty after clear: "; q.IsEmpty
 
 DIM r AS Zanna.Collections.Ring
-r = Zanna.Collections.Ring.New()
+r = Zanna.Collections.Ring.NewDefault()
 PRINT "ring empty: "; r.IsEmpty
 r.Push("1")
 r.Push("2")

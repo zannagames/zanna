@@ -26,12 +26,12 @@ operations including `Ok`, `OkStr`, `OkI64`, `OkF64`.
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-result-ok"></a>`Ok` | `obj(obj)` | `Zanna.Result.Ok` |
-| <a id="zanna-result-okstr"></a>`OkStr` | `obj(str)` | `Zanna.Result.OkStr` |
-| <a id="zanna-result-oki64"></a>`OkI64` | `obj(i64)` | `Zanna.Result.OkI64` |
-| <a id="zanna-result-okf64"></a>`OkF64` | `obj(f64)` | `Zanna.Result.OkF64` |
-| <a id="zanna-result-err"></a>`Err` | `obj(obj)` | `Zanna.Result.Err` |
-| <a id="zanna-result-errstr"></a>`ErrStr` | `obj(str)` | `Zanna.Result.ErrStr` |
+| <a id="zanna-result-ok"></a>`Ok` | `obj<Zanna.Result>(obj)` | `Zanna.Result.Ok` |
+| <a id="zanna-result-okstr"></a>`OkStr` | `obj<Zanna.Result>(str)` | `Zanna.Result.OkStr` |
+| <a id="zanna-result-oki64"></a>`OkI64` | `obj<Zanna.Result>(i64)` | `Zanna.Result.OkI64` |
+| <a id="zanna-result-okf64"></a>`OkF64` | `obj<Zanna.Result>(f64)` | `Zanna.Result.OkF64` |
+| <a id="zanna-result-err"></a>`Err` | `obj<Zanna.Result>(obj)` | `Zanna.Result.Err` |
+| <a id="zanna-result-errstr"></a>`ErrStr` | `obj<Zanna.Result>(str)` | `Zanna.Result.ErrStr` |
 | <a id="zanna-result-unwrap"></a>`Unwrap` | `obj()` | `Zanna.Result.Unwrap` |
 | <a id="zanna-result-unwrapstr"></a>`UnwrapStr` | `str()` | `Zanna.Result.UnwrapStr` |
 | <a id="zanna-result-unwrapi64"></a>`UnwrapI64` | `i64()` | `Zanna.Result.UnwrapI64` |
@@ -46,21 +46,21 @@ operations including `Ok`, `OkStr`, `OkI64`, `OkF64`.
 | <a id="zanna-result-expecterr"></a>`ExpectErr` | `obj(str)` | `Zanna.Result.ExpectErr` |
 | <a id="zanna-result-tostring"></a>`ToString` | `str()` | `Zanna.Result.ToString` |
 | <a id="zanna-result-equals"></a>`Equals` | `i1(obj)` | `Zanna.Result.Equals` |
-| <a id="zanna-result-map"></a>`Map` | `obj(obj)` | `Zanna.Result.Map` |
-| <a id="zanna-result-maperr"></a>`MapErr` | `obj(obj)` | `Zanna.Result.MapErr` |
-| <a id="zanna-result-andthen"></a>`AndThen` | `obj(obj)` | `Zanna.Result.AndThen` |
-| <a id="zanna-result-orelse"></a>`OrElse` | `obj(obj)` | `Zanna.Result.OrElse` |
+| <a id="zanna-result-map"></a>`Map` | `obj<Zanna.Result>(obj)` | `Zanna.Result.Map` |
+| <a id="zanna-result-maperr"></a>`MapErr` | `obj<Zanna.Result>(obj)` | `Zanna.Result.MapErr` |
+| <a id="zanna-result-andthen"></a>`AndThen` | `obj<Zanna.Result>(obj)` | `Zanna.Result.AndThen` |
+| <a id="zanna-result-orelse"></a>`OrElse` | `obj<Zanna.Result>(obj)` | `Zanna.Result.OrElse` |
 
 ## Functions
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Result.Ok` | `obj(obj)` | `rt_result_ok` |
-| `Zanna.Result.OkStr` | `obj(str)` | `rt_result_ok_str` |
-| `Zanna.Result.OkI64` | `obj(i64)` | `rt_result_ok_i64` |
-| `Zanna.Result.OkF64` | `obj(f64)` | `rt_result_ok_f64` |
-| `Zanna.Result.Err` | `obj(obj)` | `rt_result_err` |
-| `Zanna.Result.ErrStr` | `obj(str)` | `rt_result_err_str` |
+| `Zanna.Result.Ok` | `obj<Zanna.Result>(obj)` | `rt_result_ok` |
+| `Zanna.Result.OkStr` | `obj<Zanna.Result>(str)` | `rt_result_ok_str` |
+| `Zanna.Result.OkI64` | `obj<Zanna.Result>(i64)` | `rt_result_ok_i64` |
+| `Zanna.Result.OkF64` | `obj<Zanna.Result>(f64)` | `rt_result_ok_f64` |
+| `Zanna.Result.Err` | `obj<Zanna.Result>(obj)` | `rt_result_err` |
+| `Zanna.Result.ErrStr` | `obj<Zanna.Result>(str)` | `rt_result_err_str` |
 | <a id="zanna-result-get-isok"></a>`Zanna.Result.get_IsOk` | `i1(obj)` | `rt_result_is_ok` |
 | <a id="zanna-result-get-iserr"></a>`Zanna.Result.get_IsErr` | `i1(obj)` | `rt_result_is_err` |
 | `Zanna.Result.Unwrap` | `obj(obj)` | `rt_result_unwrap` |
@@ -77,8 +77,8 @@ operations including `Ok`, `OkStr`, `OkI64`, `OkF64`.
 | `Zanna.Result.ExpectErr` | `obj(obj,str)` | `rt_result_expect_err` |
 | `Zanna.Result.ToString` | `str(obj)` | `rt_result_to_string` |
 | `Zanna.Result.Equals` | `i1(obj,obj)` | `rt_result_equals` |
-| `Zanna.Result.Map` | `obj(obj,obj)` | `rt_result_map_wrapper` |
-| `Zanna.Result.MapErr` | `obj(obj,obj)` | `rt_result_map_err_wrapper` |
-| `Zanna.Result.AndThen` | `obj(obj,obj)` | `rt_result_and_then_wrapper` |
-| `Zanna.Result.OrElse` | `obj(obj,obj)` | `rt_result_or_else_wrapper` |
+| `Zanna.Result.Map` | `obj<Zanna.Result>(obj,obj)` | `rt_result_map_wrapper` |
+| `Zanna.Result.MapErr` | `obj<Zanna.Result>(obj,obj)` | `rt_result_map_err_wrapper` |
+| `Zanna.Result.AndThen` | `obj<Zanna.Result>(obj,obj)` | `rt_result_and_then_wrapper` |
+| `Zanna.Result.OrElse` | `obj<Zanna.Result>(obj,obj)` | `rt_result_or_else_wrapper` |
 

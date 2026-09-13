@@ -1,7 +1,7 @@
 ' =============================================================================
 ' API Audit: Zanna.Graphics.Color (BASIC)
 ' =============================================================================
-' Tests: RGB, RGBA, FromHSL, GetR, GetG, GetB, GetA, GetH, GetS, GetL,
+' Tests: RGB, RGBA, FromHSL, GetRed, GetGreen, GetBlue, GetAlpha, GetHue, GetSaturation, GetLightness,
 '        Lerp, Brighten, Darken, FromHex, ToHex, Saturate, Desaturate,
 '        Complement, Grayscale, Invert
 ' =============================================================================
@@ -30,29 +30,29 @@ PRINT "RGBA(0, 0, 255, 255): "; opaqueBlue
 DIM transparent AS INTEGER = Zanna.Graphics.Color.RGBA(0, 0, 0, 0)
 PRINT "RGBA(0, 0, 0, 0): "; transparent
 
-' --- GetR ---
-PRINT "--- GetR ---"
-PRINT "GetR(red): "; Zanna.Graphics.Color.GetR(red)
-PRINT "GetR(green): "; Zanna.Graphics.Color.GetR(green)
-PRINT "GetR(white): "; Zanna.Graphics.Color.GetR(white)
+' --- GetRed ---
+PRINT "--- GetRed ---"
+PRINT "GetRed(red): "; Zanna.Graphics.Color.GetRed(red)
+PRINT "GetRed(green): "; Zanna.Graphics.Color.GetRed(green)
+PRINT "GetRed(white): "; Zanna.Graphics.Color.GetRed(white)
 
-' --- GetG ---
-PRINT "--- GetG ---"
-PRINT "GetG(red): "; Zanna.Graphics.Color.GetG(red)
-PRINT "GetG(green): "; Zanna.Graphics.Color.GetG(green)
-PRINT "GetG(white): "; Zanna.Graphics.Color.GetG(white)
+' --- GetGreen ---
+PRINT "--- GetGreen ---"
+PRINT "GetGreen(red): "; Zanna.Graphics.Color.GetGreen(red)
+PRINT "GetGreen(green): "; Zanna.Graphics.Color.GetGreen(green)
+PRINT "GetGreen(white): "; Zanna.Graphics.Color.GetGreen(white)
 
-' --- GetB ---
-PRINT "--- GetB ---"
-PRINT "GetB(red): "; Zanna.Graphics.Color.GetB(red)
-PRINT "GetB(blue): "; Zanna.Graphics.Color.GetB(blue)
-PRINT "GetB(white): "; Zanna.Graphics.Color.GetB(white)
+' --- GetBlue ---
+PRINT "--- GetBlue ---"
+PRINT "GetBlue(red): "; Zanna.Graphics.Color.GetBlue(red)
+PRINT "GetBlue(blue): "; Zanna.Graphics.Color.GetBlue(blue)
+PRINT "GetBlue(white): "; Zanna.Graphics.Color.GetBlue(white)
 
-' --- GetA ---
-PRINT "--- GetA ---"
-PRINT "GetA(semiRed): "; Zanna.Graphics.Color.GetA(semiRed)
-PRINT "GetA(opaqueBlue): "; Zanna.Graphics.Color.GetA(opaqueBlue)
-PRINT "GetA(transparent): "; Zanna.Graphics.Color.GetA(transparent)
+' --- GetAlpha ---
+PRINT "--- GetAlpha ---"
+PRINT "GetAlpha(semiRed): "; Zanna.Graphics.Color.GetAlpha(semiRed)
+PRINT "GetAlpha(opaqueBlue): "; Zanna.Graphics.Color.GetAlpha(opaqueBlue)
+PRINT "GetAlpha(transparent): "; Zanna.Graphics.Color.GetAlpha(transparent)
 
 ' --- FromHSL ---
 PRINT "--- FromHSL ---"
@@ -67,22 +67,22 @@ PRINT "FromHSL(0, 0, 100): "; hslWhite
 DIM hslBlack AS INTEGER = Zanna.Graphics.Color.FromHsl(0, 0, 0)
 PRINT "FromHSL(0, 0, 0): "; hslBlack
 
-' --- GetH ---
-PRINT "--- GetH ---"
-PRINT "GetH(red): "; Zanna.Graphics.Color.GetH(red)
-PRINT "GetH(green): "; Zanna.Graphics.Color.GetH(green)
-PRINT "GetH(blue): "; Zanna.Graphics.Color.GetH(blue)
+' --- GetHue ---
+PRINT "--- GetHue ---"
+PRINT "GetHue(red): "; Zanna.Graphics.Color.GetHue(red)
+PRINT "GetHue(green): "; Zanna.Graphics.Color.GetHue(green)
+PRINT "GetHue(blue): "; Zanna.Graphics.Color.GetHue(blue)
 
-' --- GetS ---
-PRINT "--- GetS ---"
-PRINT "GetS(red): "; Zanna.Graphics.Color.GetS(red)
-PRINT "GetS(white): "; Zanna.Graphics.Color.GetS(white)
+' --- GetSaturation ---
+PRINT "--- GetSaturation ---"
+PRINT "GetSaturation(red): "; Zanna.Graphics.Color.GetSaturation(red)
+PRINT "GetSaturation(white): "; Zanna.Graphics.Color.GetSaturation(white)
 
-' --- GetL ---
-PRINT "--- GetL ---"
-PRINT "GetL(red): "; Zanna.Graphics.Color.GetL(red)
-PRINT "GetL(white): "; Zanna.Graphics.Color.GetL(white)
-PRINT "GetL(black): "; Zanna.Graphics.Color.GetL(black)
+' --- GetLightness ---
+PRINT "--- GetLightness ---"
+PRINT "GetLightness(red): "; Zanna.Graphics.Color.GetLightness(red)
+PRINT "GetLightness(white): "; Zanna.Graphics.Color.GetLightness(white)
+PRINT "GetLightness(black): "; Zanna.Graphics.Color.GetLightness(black)
 
 ' --- Lerp ---
 PRINT "--- Lerp ---"
@@ -92,8 +92,8 @@ DIM lerp50 AS INTEGER = Zanna.Graphics.Color.Lerp(red, blue, 50)
 PRINT "Lerp(red, blue, 50): "; lerp50
 DIM lerp100 AS INTEGER = Zanna.Graphics.Color.Lerp(red, blue, 100)
 PRINT "Lerp(red, blue, 100): "; lerp100
-PRINT "Lerp R at 50%: "; Zanna.Graphics.Color.GetR(lerp50)
-PRINT "Lerp B at 50%: "; Zanna.Graphics.Color.GetB(lerp50)
+PRINT "Lerp R at 50%: "; Zanna.Graphics.Color.GetRed(lerp50)
+PRINT "Lerp B at 50%: "; Zanna.Graphics.Color.GetBlue(lerp50)
 
 ' --- Brighten ---
 PRINT "--- Brighten ---"
@@ -141,9 +141,9 @@ PRINT "Desaturate(red, 100): "; fullDesat
 PRINT "--- Complement ---"
 DIM compRed AS INTEGER = Zanna.Graphics.Color.Complement(red)
 PRINT "Complement(red): "; compRed
-PRINT "Complement R: "; Zanna.Graphics.Color.GetR(compRed)
-PRINT "Complement G: "; Zanna.Graphics.Color.GetG(compRed)
-PRINT "Complement B: "; Zanna.Graphics.Color.GetB(compRed)
+PRINT "Complement R: "; Zanna.Graphics.Color.GetRed(compRed)
+PRINT "Complement G: "; Zanna.Graphics.Color.GetGreen(compRed)
+PRINT "Complement B: "; Zanna.Graphics.Color.GetBlue(compRed)
 
 ' --- Grayscale ---
 PRINT "--- Grayscale ---"
@@ -158,9 +158,9 @@ PRINT "Grayscale(white): "; grayWhite
 PRINT "--- Invert ---"
 DIM invRed AS INTEGER = Zanna.Graphics.Color.Invert(red)
 PRINT "Invert(red): "; invRed
-PRINT "Invert R: "; Zanna.Graphics.Color.GetR(invRed)
-PRINT "Invert G: "; Zanna.Graphics.Color.GetG(invRed)
-PRINT "Invert B: "; Zanna.Graphics.Color.GetB(invRed)
+PRINT "Invert R: "; Zanna.Graphics.Color.GetRed(invRed)
+PRINT "Invert G: "; Zanna.Graphics.Color.GetGreen(invRed)
+PRINT "Invert B: "; Zanna.Graphics.Color.GetBlue(invRed)
 DIM invBlack AS INTEGER = Zanna.Graphics.Color.Invert(black)
 PRINT "Invert(black): "; invBlack
 DIM invWhite AS INTEGER = Zanna.Graphics.Color.Invert(white)

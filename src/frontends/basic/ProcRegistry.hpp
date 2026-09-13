@@ -108,12 +108,16 @@ struct ProcSignature {
     /// @brief True when this signature was imported from the runtime catalog.
     bool isRuntimeBuiltin{false};
 
-    /// @brief True when a runtime builtin returns an object reference.
+    /// @brief True when the procedure returns an object reference.
     /// @details The AST @ref Type enum cannot express object returns, so runtime
-    ///          helpers returning `obj` are seeded with @ref retType `I64`. This
-    ///          flag preserves the object-ness so semantic analysis can type the
-    ///          call result as OBJECT instead of INTEGER.
+    ///          helpers returning `obj` and FUNCTIONs declared `AS OBJECT` or
+    ///          `AS <Class>` carry a scalar @ref retType. This flag preserves the
+    ///          object-ness so semantic analysis can type the call result as
+    ///          OBJECT instead of INTEGER.
     bool objectReturn{false};
+
+    /// @brief Class a user FUNCTION's `AS <Class>` clause names, as written; empty otherwise.
+    std::string returnClassQName;
 
     /// @brief Canonical runtime target name for imported helpers.
     std::string runtimeTarget;
@@ -203,6 +207,10 @@ class ProcRegistry {
         std::span<const Param> params;
         /// Source location carried with the descriptor.
         il::support::SourceLoc loc;
+        /// Whether the FUNCTION declares an object result.
+        bool objectReturn{false};
+        /// Class the FUNCTION's AS clause names, as written; empty when none.
+        std::string returnClassQName;
     };
 
     /// @brief Validate parameters and copy a descriptor into a stored signature.

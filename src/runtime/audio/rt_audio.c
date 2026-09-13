@@ -1861,6 +1861,36 @@ void rt_audio_set_group_ducking(rt_string trigger_group,
 // Music Streaming
 //===----------------------------------------------------------------------===//
 
+/// @brief Wrap a freshly loaded backend stream in a registered runtime Music object.
+/// @details Caller holds the audio state lock. On allocation failure the backend
+///          stream is freed, so ownership of @p mus always transfers.
+/// @param mus Loaded backend stream, or NULL.
+/// @return New reference-counted music wrapper, or NULL.
+static void *rt_music_wrap_loaded_locked(vaud_music_t mus) {
+    if (!mus)
+        return NULL;
+    vaud_music_set_group(mus, RT_MIXGROUP_MUSIC);
+
+    rt_music *wrapper = (rt_music *)rt_obj_new_i64(0, (int64_t)sizeof(rt_music));
+    if (!wrapper) {
+        vaud_free_music(mus);
+        return NULL;
+    }
+
+    wrapper->vptr = NULL;
+    wrapper->magic = RT_MUSIC_MAGIC;
+    wrapper->music = mus;
+    wrapper->logical_volume = 100;
+    wrapper->logical_loop = 0;
+    wrapper->paused = 0;
+    wrapper->prev = NULL;
+    wrapper->next = NULL;
+    rt_obj_set_finalizer(wrapper, rt_music_finalize);
+    music_registry_add(wrapper);
+    rt_audio_apply_music_volume(wrapper);
+    return wrapper;
+}
+
 /// @brief Load a music track for streaming playback (WAV, OGG, or MP3 auto-detected).
 /// @details Unlike sounds, music streams from disk and is not fully decoded into memory.
 ///          Only one foreground music track plays at a time unless crossfade
@@ -1881,54 +1911,79 @@ void *rt_music_load(rt_string path) {
 
     /* Detect format and load via appropriate ZannaAUD function */
     int fmt = detect_audio_format(path_str);
-    vaud_music_t mus = NULL;
-    void *wrapper_obj = NULL;
+    void *wrapper = NULL;
 
     audio_state_lock();
-    if (!g_audio_ctx) {
-        audio_state_unlock();
-        return NULL;
+    if (g_audio_ctx) {
+        vaud_music_t mus = NULL;
+        switch (fmt) {
+            case 2:
+                mus = vaud_load_music_ogg(g_audio_ctx, path_str);
+                break;
+            case 3:
+                mus = vaud_load_music_mp3(g_audio_ctx, path_str);
+                break;
+            default:
+                mus = vaud_load_music(g_audio_ctx, path_str);
+                break;
+        }
+        wrapper = rt_music_wrap_loaded_locked(mus);
     }
-    switch (fmt) {
-        case 2:
-            mus = vaud_load_music_ogg(g_audio_ctx, path_str);
-            break;
-        case 3:
-            mus = vaud_load_music_mp3(g_audio_ctx, path_str);
-            break;
-        default:
-            mus = vaud_load_music(g_audio_ctx, path_str);
-            break;
-    }
-    if (!mus) {
-        audio_state_unlock();
-        return NULL;
-    }
-    vaud_music_set_group(mus, RT_MIXGROUP_MUSIC);
-
-    /* Allocate wrapper object */
-    rt_music *wrapper = (rt_music *)rt_obj_new_i64(0, (int64_t)sizeof(rt_music));
-    if (!wrapper) {
-        vaud_free_music(mus);
-        audio_state_unlock();
-        return NULL;
-    }
-
-    wrapper->vptr = NULL;
-    wrapper->magic = RT_MUSIC_MAGIC;
-    wrapper->music = mus;
-    wrapper->logical_volume = 100;
-    wrapper->logical_loop = 0;
-    wrapper->paused = 0;
-    wrapper->prev = NULL;
-    wrapper->next = NULL;
-    rt_obj_set_finalizer(wrapper, rt_music_finalize);
-    music_registry_add(wrapper);
-    rt_audio_apply_music_volume(wrapper);
-    wrapper_obj = wrapper;
     audio_state_unlock();
 
-    return wrapper_obj;
+    return wrapper;
+}
+
+/// @brief Load a music track for streaming playback through the runtime asset manager.
+/// @details Resolves @p name exactly like @ref rt_sound_load_asset (embedded
+///          image, mounted packs, then the loose filesystem). The stream keeps
+///          its own copy of the encoded bytes and decodes them incrementally,
+///          so a packed track plays, seeks, loops, and crossfades exactly like
+///          one loaded with @ref rt_music_load.
+/// @param name Runtime asset name, optionally prefixed by `asset://`.
+/// @return New reference-counted music wrapper, or NULL when the asset is
+///         missing, empty, undecodable, or initialization/allocation fails.
+void *rt_music_load_asset(rt_string name) {
+    if (!name)
+        return NULL;
+
+    size_t data_size = 0;
+    uint8_t *data = rt_asset_load_raw(name, &data_size);
+    if (!data || data_size == 0) {
+        free(data);
+        // A missing asset is a recoverable load failure, exactly like a
+        // missing file in Music.Load — return null, don't trap.
+        return NULL;
+    }
+
+    if (!ensure_audio_init()) {
+        free(data);
+        return NULL;
+    }
+
+    int fmt = detect_audio_format_mem(data, data_size);
+    void *wrapper = NULL;
+
+    audio_state_lock();
+    if (g_audio_ctx) {
+        vaud_music_t mus = NULL;
+        switch (fmt) {
+            case 2:
+                mus = vaud_load_music_ogg_mem(g_audio_ctx, data, data_size);
+                break;
+            case 3:
+                mus = vaud_load_music_mp3_mem(g_audio_ctx, data, data_size);
+                break;
+            default:
+                mus = vaud_load_music_mem(g_audio_ctx, data, data_size);
+                break;
+        }
+        wrapper = rt_music_wrap_loaded_locked(mus);
+    }
+    audio_state_unlock();
+
+    free(data);
+    return wrapper;
 }
 
 /// @brief Release one caller-owned reference to a music wrapper.
@@ -3189,6 +3244,17 @@ void *rt_music_load(rt_string path) {
         return NULL;
     (void)path;
     rt_audio_unavailable_("Music.Load: audio support not compiled in");
+    return NULL;
+}
+
+/// @brief Audio-disabled stub for `Music.LoadAsset`. Returns `NULL` for a
+///        null name; otherwise traps for the same reason as `Music.Load`.
+/// @param name Ignored.
+/// @return `NULL` for a null name; otherwise does not return normally.
+void *rt_music_load_asset(rt_string name) {
+    if (!name)
+        return NULL;
+    rt_audio_unavailable_("Music.LoadAsset: audio support not compiled in");
     return NULL;
 }
 

@@ -19,7 +19,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Sema.hpp"
-#include "il/runtime/RuntimeNameMap.hpp"
 #include <functional>
 #include <set>
 #include <string_view>
@@ -27,31 +26,6 @@
 namespace il::frontends::zia {
 
 namespace {
-
-/// @brief Return true when @p name is a concrete runtime object namespace.
-/// @details Runtime classes from the catalog are registered in Sema::typeRegistry_. Some
-///          legacy runtime objects are still represented only by runtime.def functions such as
-///          `Zanna.Game.Entity.New` and `Zanna.Game.Behavior.Update`. This helper recognizes
-///          those object namespaces without treating broad modules like `Zanna.Game` or arbitrary
-///          unknown `Zanna.*` names as types.
-/// @param name Fully-qualified runtime namespace candidate.
-/// @return True if the generated runtime name map has at least one direct member under @p name.
-bool isKnownRuntimeObjectNamespace(std::string_view name) {
-    if (name.rfind("Zanna.", 0) != 0)
-        return false;
-
-    std::string prefix(name);
-    prefix.push_back('.');
-    for (const auto &alias : il::runtime::kRuntimeNameAliases) {
-        std::string_view canonical = alias.canonical;
-        if (canonical.size() <= prefix.size() || canonical.compare(0, prefix.size(), prefix) != 0)
-            continue;
-        std::string_view remainder = canonical.substr(prefix.size());
-        if (!remainder.empty() && remainder.find('.') == std::string_view::npos)
-            return true;
-    }
-    return false;
-}
 
 /// @brief Return a canonical runtime type spelling for source-level compatibility aliases.
 /// @details A few Zia examples use older concise names for runtime objects whose catalog name is
@@ -247,14 +221,10 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
         if (it != typeRegistry_.end())
             return it->second;
 
-        // Runtime classes must be registered in typeRegistry_. Legacy runtime object
-        // namespaces backed by runtime.def direct members remain valid object types, but
-        // broad namespaces and functions are not valid type names.
-        if (canonicalFullName.rfind("Zanna.", 0) == 0) {
-            if (isKnownRuntimeObjectNamespace(canonicalFullName))
-                return types::runtimeClass(canonicalFullName);
+        // Runtime types are exactly the catalog classes registered in typeRegistry_;
+        // namespaces and functions are not type names.
+        if (canonicalFullName.rfind("Zanna.", 0) == 0)
             return nullptr;
-        }
     }
 
     // Handle qualified type references (e.g., "token.Token", "Mod.Ns.Type")
@@ -309,11 +279,8 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
             it = typeRegistry_.find(canonicalFullName);
             if (it != typeRegistry_.end())
                 return it->second;
-            if (canonicalFullName.rfind("Zanna.", 0) == 0) {
-                if (isKnownRuntimeObjectNamespace(canonicalFullName))
-                    return types::runtimeClass(canonicalFullName);
+            if (canonicalFullName.rfind("Zanna.", 0) == 0)
                 return nullptr;
-            }
         }
 
         // Look up the fully-qualified type name directly (used for namespaces).
@@ -321,8 +288,6 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
         it = typeRegistry_.find(canonicalName);
         if (it != typeRegistry_.end())
             return it->second;
-        if (canonicalName.rfind("Zanna.", 0) == 0 && isKnownRuntimeObjectNamespace(canonicalName))
-            return types::runtimeClass(canonicalName);
 
         // Backwards-compatible fallback only for spelling the current module prefix explicitly.
         if (currentModule_ && prefix == currentModule_->name) {
@@ -774,10 +739,8 @@ void Sema::collectExprCaptures(CaptureContext &ctx, const Expr *e) {
             // captured name mutates a private copy and is almost always a bug.
             // (Mutating a captured object's field/index is fine — reference
             // semantics — and is not a bare-identifier target, so it is allowed.)
-            if (bin->op == BinaryOp::Assign && bin->left &&
-                bin->left->kind == ExprKind::Ident) {
-                const std::string &tgt =
-                    static_cast<const IdentExpr *>(bin->left.get())->name;
+            if (bin->op == BinaryOp::Assign && bin->left && bin->left->kind == ExprKind::Ident) {
+                const std::string &tgt = static_cast<const IdentExpr *>(bin->left.get())->name;
                 bool isLocal = false;
                 for (auto it = ctx.localScopes.rbegin(); it != ctx.localScopes.rend(); ++it) {
                     if (it->find(tgt) != it->end()) {

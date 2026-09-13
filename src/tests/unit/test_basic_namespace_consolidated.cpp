@@ -7,6 +7,13 @@
 //
 // File: tests/unit/test_basic_namespace_consolidated.cpp
 // Purpose: Consolidated namespace/using tests (8 files merged, 75 TEST cases).
+// Key invariants:
+//   - Each case parses, analyzes and (where relevant) lowers in-memory BASIC
+//     source and asserts on the diagnostic count or resolved names.
+//   - Test programs use documented type names only; any other AS name is a
+//     class and must exist.
+// Ownership/Lifetime:
+//   - Every case owns its SourceManager, AST and diagnostics.
 // Links: docs/languages/basic-namespaces.md
 //
 //===----------------------------------------------------------------------===//
@@ -474,7 +481,7 @@ TEST(NsIntegration, TestCrossNamespaceInheritanceSuccess) {
 140 END NAMESPACE
 150 NAMESPACE App
 160   CLASS DerivedClass : Lib.Core.BaseClass
-170     DIM name AS STR
+170     DIM name AS STRING
 180   END CLASS
 190 END NAMESPACE
 )";

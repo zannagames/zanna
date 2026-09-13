@@ -28,9 +28,9 @@
 #include "RuntimeCallHelpers.hpp"
 #include "RuntimeNames.hpp"
 #include "frontends/basic/ASTUtils.hpp"
-#include "frontends/basic/lower/Emitter.hpp"
 #include "frontends/basic/LocationScope.hpp"
 #include "frontends/basic/SemanticAnalyzer.hpp"
+#include "frontends/basic/lower/Emitter.hpp"
 
 using namespace il::frontends::basic::runtime;
 
@@ -275,8 +275,9 @@ void IoStatementLowerer::lowerPrint(const PrintStmt &stmt) {
 /// @brief Convert a PRINT# argument into a runtime string representation.
 ///
 /// @details Determines whether the expression represents a string or numeric
-///          value, performs any necessary narrowing to match runtime helper
-///          contracts, and optionally quotes string values for CSV emission.
+///          value, formats integers at their full 64-bit width and floats as
+///          DOUBLE (or SINGLE for SINGLE-ranked expressions), and optionally
+///          quotes string values for CSV emission.
 ///          The helper returns both the lowered string and the runtime feature
 ///          that must be requested for linking.
 ///
@@ -299,55 +300,17 @@ PrintChArgString lowerPrintChArgToString(IoStatementLowerer &self,
         return {quoted, il::runtime::RuntimeFeature::CsvQuote};
     }
 
-    TypeRules::NumericType numericType = self.lowerer_.classifyNumericType(expr);
-    const char *runtime = nullptr;
+    // Every BASIC integer is 64-bit, so integer and boolean values format at full width;
+    // floating-point values format as DOUBLE unless the expression classifies as SINGLE.
+    const char *runtime = kStringFromDouble;
     il::runtime::RuntimeFeature feature = il::runtime::RuntimeFeature::StrFromDouble;
-
-    /// @brief Coerces an integer-like value to i64, then emits checked narrowing.
-    /// @param target Destination integer kind.
-    auto narrowInteger = [&](IlType::Kind target) {
+    if (value.type.kind != IlType::Kind::F64) {
+        runtime = kStringFromInt;
+        feature = il::runtime::RuntimeFeature::IntToStr;
         value = self.lowerer_.ensureI64(std::move(value), expr.loc);
-        int bits = 64;
-        switch (target) {
-            case IlType::Kind::I16:
-                bits = 16;
-                break;
-            case IlType::Kind::I32:
-                bits = 32;
-                break;
-            case IlType::Kind::I1:
-                bits = 1;
-                break;
-            default:
-                bits = 64;
-                break;
-        }
-        value.value = self.lowerer_.emitCommon(expr.loc).narrow_to(value.value, 64, bits);
-        value.type = IlType(target);
-    };
-
-    switch (numericType) {
-        case TypeRules::NumericType::Integer:
-            runtime = kStringFromI16;
-            feature = il::runtime::RuntimeFeature::StrFromI16;
-            narrowInteger(IlType::Kind::I16);
-            break;
-        case TypeRules::NumericType::Long:
-            runtime = kStringFromI32;
-            feature = il::runtime::RuntimeFeature::StrFromI32;
-            narrowInteger(IlType::Kind::I32);
-            break;
-        case TypeRules::NumericType::Single:
-            runtime = kStringFromSingle;
-            feature = il::runtime::RuntimeFeature::StrFromSingle;
-            value = self.lowerer_.ensureF64(std::move(value), expr.loc);
-            break;
-        case TypeRules::NumericType::Double:
-        default:
-            runtime = kStringFromDouble;
-            feature = il::runtime::RuntimeFeature::StrFromDouble;
-            value = self.lowerer_.ensureF64(std::move(value), expr.loc);
-            break;
+    } else if (self.lowerer_.classifyNumericType(expr) == TypeRules::NumericType::Single) {
+        runtime = kStringFromSingle;
+        feature = il::runtime::RuntimeFeature::StrFromSingle;
     }
 
     Value text = self.lowerer_.emitCallRet(IlType(IlType::Kind::Str), runtime, {value.value});
@@ -429,7 +392,10 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
             lowerer_.emitRuntimeErrCheck(
                 /// @brief Emits a trap for a failed channel write.
                 /// @param code Runtime error code.
-                err, stmt.loc, context, [&](Value code) { lowerer_.emitTrapFromErr(code); });
+                err,
+                stmt.loc,
+                context,
+                [&](Value code) { lowerer_.emitTrapFromErr(code); });
         }
         return;
     }
@@ -441,7 +407,10 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
         lowerer_.emitRuntimeErrCheck(
             /// @brief Emits a trap for a failed WRITE operation.
             /// @param code Runtime error code.
-            err, stmt.loc, "write", [&](Value code) { lowerer_.emitTrapFromErr(code); });
+            err,
+            stmt.loc,
+            "write",
+            [&](Value code) { lowerer_.emitTrapFromErr(code); });
         return;
     }
 
@@ -471,7 +440,10 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
         lowerer_.emitRuntimeErrCheck(
             /// @brief Emits a trap for a failed channel print.
             /// @param code Runtime error code.
-            err, arg->loc, "printch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
+            err,
+            arg->loc,
+            "printch",
+            [&](Value code) { lowerer_.emitTrapFromErr(code); });
     }
 
     if (stmt.trailingNewline) {
@@ -489,7 +461,10 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
             lowerer_.emitRuntimeErrCheck(
                 /// @brief Emits a trap for a failed empty channel print.
                 /// @param code Runtime error code.
-                err, stmt.loc, "printch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
+                err,
+                stmt.loc,
+                "printch",
+                [&](Value code) { lowerer_.emitTrapFromErr(code); });
         }
     }
 }
@@ -652,7 +627,10 @@ void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
     lowerer_.emitRuntimeErrCheck(
         /// @brief Emits a trap when channel line input fails.
         /// @param code Runtime error code.
-        err, stmt.loc, "lineinputch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
+        err,
+        stmt.loc,
+        "lineinputch",
+        [&](Value code) { lowerer_.emitTrapFromErr(code); });
 
     Value line = lowerer_.emitLoad(IlType(IlType::Kind::Str), outSlot);
 
@@ -755,7 +733,10 @@ void IoStatementLowerer::lowerLineInputCh(const LineInputChStmt &stmt) {
     lowerer_.emitRuntimeErrCheck(
         /// @brief Emits a trap when channel line input fails.
         /// @param code Runtime error code.
-        err, stmt.loc, "lineinputch", [&](Value code) { lowerer_.emitTrapFromErr(code); });
+        err,
+        stmt.loc,
+        "lineinputch",
+        [&](Value code) { lowerer_.emitTrapFromErr(code); });
 
     Value line = lowerer_.emitLoad(IlType(IlType::Kind::Str), outSlot);
 

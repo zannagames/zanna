@@ -112,7 +112,7 @@ Constructor: `Zanna.Graphics.Canvas.New`
 | <a id="zanna-graphics-canvas-textfontscaled"></a>`TextFontScaled` | `void(i64,i64,str,obj,i64,i64)` | `Zanna.Graphics.Canvas.TextFontScaled` |
 | <a id="zanna-graphics-canvas-textfontcentered"></a>`TextFontCentered` | `void(i64,str,obj,i64)` | `Zanna.Graphics.Canvas.TextFontCentered` |
 | <a id="zanna-graphics-canvas-textfontright"></a>`TextFontRight` | `void(i64,i64,str,obj,i64)` | `Zanna.Graphics.Canvas.TextFontRight` |
-| <a id="zanna-graphics-canvas-new"></a>`New` | `obj(str,i64,i64)` | `Zanna.Graphics.Canvas.New` |
+| <a id="zanna-graphics-canvas-new"></a>`New` | `obj<Zanna.Graphics.Canvas>(str,i64,i64)` | `Zanna.Graphics.Canvas.New` |
 
 <a id="zanna-graphics-bitmapfont"></a>
 ### `Zanna.Graphics.BitmapFont`
@@ -258,12 +258,12 @@ Constructor: `Zanna.Graphics.Pixels.New`
 | <a id="zanna-graphics-pixels-fillcolor"></a>`FillColor` | `void(i64)` | `Zanna.Graphics.Pixels.FillColor` |
 | <a id="zanna-graphics-pixels-clear"></a>`Clear` | `void()` | `Zanna.Graphics.Pixels.Clear` |
 | <a id="zanna-graphics-pixels-copy"></a>`Copy` | `void(i64,i64,obj,i64,i64,i64,i64)` | `Zanna.Graphics.Pixels.Copy` |
-| <a id="zanna-graphics-pixels-clone"></a>`Clone` | `obj()` | `Zanna.Graphics.Pixels.Clone` |
+| <a id="zanna-graphics-pixels-clone"></a>`Clone` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.Clone` |
 | <a id="zanna-graphics-pixels-tobytes"></a>`ToBytes` | `obj<Zanna.Collections.Bytes>()` | `Zanna.Graphics.Pixels.ToBytes` |
 | <a id="zanna-graphics-pixels-frombytes"></a>`FromBytes` | `obj<Zanna.Graphics.Pixels>(i64,i64,obj<Zanna.Collections.Bytes>)` | `Zanna.Graphics.Pixels.FromBytes` |
 | <a id="zanna-graphics-pixels-savebmp"></a>`SaveBmp` | `i64(str)` | `Zanna.Graphics.Pixels.SaveBmp` |
 | <a id="zanna-graphics-pixels-savepng"></a>`SavePng` | `i64(str)` | `Zanna.Graphics.Pixels.SavePng` |
-| <a id="zanna-graphics-pixels-fliph"></a>`FlipH` | `obj()` | `Zanna.Graphics.Pixels.FlipH` |
+| <a id="zanna-graphics-pixels-fliph"></a>`FlipH` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.FlipH` |
 | <a id="zanna-graphics-pixels-tintluminancemasked"></a>`TintLuminanceMasked` | `void(i64,f64,i64,i64)` | `Zanna.Graphics.Pixels.TintLuminanceMasked` |
 | <a id="zanna-graphics-pixels-recolormasked"></a>`RecolorMasked` | `void(i64,i64,i64)` | `Zanna.Graphics.Pixels.RecolorMasked` |
 | <a id="zanna-graphics-pixels-dilatemasked"></a>`DilateMasked` | `void(obj,i64)` | `Zanna.Graphics.Pixels.DilateMasked` |
@@ -272,17 +272,17 @@ Constructor: `Zanna.Graphics.Pixels.New`
 | <a id="zanna-graphics-pixels-colorizemaskedlinear"></a>`ColorizeMaskedLinear` | `void(obj,i64,i64,f64,f64)` | `Zanna.Graphics.Pixels.ColorizeMaskedLinear` |
 | <a id="zanna-graphics-pixels-stampnonzero"></a>`StampNonZero` | `void(obj)` | `Zanna.Graphics.Pixels.StampNonZero` |
 | <a id="zanna-graphics-pixels-tintmaskedneutral"></a>`TintMaskedNeutral` | `void(obj,i64,f64,i64,i64,i64)` | `Zanna.Graphics.Pixels.TintMaskedNeutral` |
-| <a id="zanna-graphics-pixels-flipv"></a>`FlipV` | `obj()` | `Zanna.Graphics.Pixels.FlipV` |
-| <a id="zanna-graphics-pixels-rotateclockwise"></a>`RotateClockwise` | `obj()` | `Zanna.Graphics.Pixels.RotateClockwise` |
-| <a id="zanna-graphics-pixels-rotatecounterclockwise"></a>`RotateCounterClockwise` | `obj()` | `Zanna.Graphics.Pixels.RotateCounterClockwise` |
-| <a id="zanna-graphics-pixels-rotate180"></a>`Rotate180` | `obj()` | `Zanna.Graphics.Pixels.Rotate180` |
-| <a id="zanna-graphics-pixels-rotate"></a>`Rotate` | `obj(f64)` | `Zanna.Graphics.Pixels.Rotate` |
-| <a id="zanna-graphics-pixels-scale"></a>`Scale` | `obj(i64,i64)` | `Zanna.Graphics.Pixels.Scale` |
-| <a id="zanna-graphics-pixels-invert"></a>`Invert` | `obj()` | `Zanna.Graphics.Pixels.Invert` |
-| <a id="zanna-graphics-pixels-grayscale"></a>`Grayscale` | `obj()` | `Zanna.Graphics.Pixels.Grayscale` |
-| <a id="zanna-graphics-pixels-tint"></a>`Tint` | `obj(i64)` | `Zanna.Graphics.Pixels.Tint` |
-| <a id="zanna-graphics-pixels-blur"></a>`Blur` | `obj(i64)` | `Zanna.Graphics.Pixels.Blur` |
-| <a id="zanna-graphics-pixels-resize"></a>`Resize` | `obj(i64,i64)` | `Zanna.Graphics.Pixels.Resize` |
+| <a id="zanna-graphics-pixels-flipv"></a>`FlipV` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.FlipV` |
+| <a id="zanna-graphics-pixels-rotateclockwise"></a>`RotateClockwise` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.RotateClockwise` |
+| <a id="zanna-graphics-pixels-rotatecounterclockwise"></a>`RotateCounterClockwise` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.RotateCounterClockwise` |
+| <a id="zanna-graphics-pixels-rotate180"></a>`Rotate180` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.Rotate180` |
+| <a id="zanna-graphics-pixels-rotate"></a>`Rotate` | `obj<Zanna.Graphics.Pixels>(f64)` | `Zanna.Graphics.Pixels.Rotate` |
+| <a id="zanna-graphics-pixels-scale"></a>`Scale` | `obj<Zanna.Graphics.Pixels>(i64,i64)` | `Zanna.Graphics.Pixels.Scale` |
+| <a id="zanna-graphics-pixels-invert"></a>`Invert` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.Invert` |
+| <a id="zanna-graphics-pixels-grayscale"></a>`Grayscale` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Pixels.Grayscale` |
+| <a id="zanna-graphics-pixels-tint"></a>`Tint` | `obj<Zanna.Graphics.Pixels>(i64)` | `Zanna.Graphics.Pixels.Tint` |
+| <a id="zanna-graphics-pixels-blur"></a>`Blur` | `obj<Zanna.Graphics.Pixels>(i64)` | `Zanna.Graphics.Pixels.Blur` |
+| <a id="zanna-graphics-pixels-resize"></a>`Resize` | `obj<Zanna.Graphics.Pixels>(i64,i64)` | `Zanna.Graphics.Pixels.Resize` |
 | <a id="zanna-graphics-pixels-setrgb"></a>`SetRgb` | `void(i64,i64,i64)` | `Zanna.Graphics.Pixels.SetRgb` |
 | <a id="zanna-graphics-pixels-getrgb"></a>`GetRgb` | `i64(i64,i64)` | `Zanna.Graphics.Pixels.GetRgb` |
 | <a id="zanna-graphics-pixels-drawline"></a>`DrawLine` | `void(i64,i64,i64,i64,i64)` | `Zanna.Graphics.Pixels.DrawLine` |
@@ -307,12 +307,12 @@ Constructor: `Zanna.Graphics.Pixels.New`
 | <a id="zanna-graphics-pixels-drawtextright"></a>`DrawTextRight` | `void(i64,i64,str,i64)` | `Zanna.Graphics.Pixels.DrawTextRight` |
 | <a id="zanna-graphics-pixels-drawtextcenteredscaled"></a>`DrawTextCenteredScaled` | `void(i64,str,i64,i64)` | `Zanna.Graphics.Pixels.DrawTextCenteredScaled` |
 | <a id="zanna-graphics-pixels-blendpixel"></a>`BlendPixel` | `void(i64,i64,i64,i64)` | `Zanna.Graphics.Pixels.BlendPixel` |
-| <a id="zanna-graphics-pixels-loadbmp"></a>`LoadBmp` | `obj(str)` | `Zanna.Graphics.Pixels.LoadBmp` |
-| <a id="zanna-graphics-pixels-loadpng"></a>`LoadPng` | `obj(str)` | `Zanna.Graphics.Pixels.LoadPng` |
-| <a id="zanna-graphics-pixels-loadjpeg"></a>`LoadJpeg` | `obj(str)` | `Zanna.Graphics.Pixels.LoadJpeg` |
-| <a id="zanna-graphics-pixels-loadgif"></a>`LoadGif` | `obj(str)` | `Zanna.Graphics.Pixels.LoadGif` |
-| <a id="zanna-graphics-pixels-load"></a>`Load` | `obj(str)` | `Zanna.Graphics.Pixels.Load` |
-| <a id="zanna-graphics-pixels-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics.Pixels.New` |
+| <a id="zanna-graphics-pixels-loadbmp"></a>`LoadBmp` | `obj<Zanna.Graphics.Pixels>(str)` | `Zanna.Graphics.Pixels.LoadBmp` |
+| <a id="zanna-graphics-pixels-loadpng"></a>`LoadPng` | `obj<Zanna.Graphics.Pixels>(str)` | `Zanna.Graphics.Pixels.LoadPng` |
+| <a id="zanna-graphics-pixels-loadjpeg"></a>`LoadJpeg` | `obj<Zanna.Graphics.Pixels>(str)` | `Zanna.Graphics.Pixels.LoadJpeg` |
+| <a id="zanna-graphics-pixels-loadgif"></a>`LoadGif` | `obj<Zanna.Graphics.Pixels>(str)` | `Zanna.Graphics.Pixels.LoadGif` |
+| <a id="zanna-graphics-pixels-load"></a>`Load` | `obj<Zanna.Graphics.Pixels>(str)` | `Zanna.Graphics.Pixels.Load` |
+| <a id="zanna-graphics-pixels-new"></a>`New` | `obj<Zanna.Graphics.Pixels>(i64,i64)` | `Zanna.Graphics.Pixels.New` |
 
 <a id="zanna-graphics-sprite"></a>
 ### `Zanna.Graphics.Sprite`
@@ -388,7 +388,7 @@ Constructor: `Zanna.Graphics.SpriteAnimator.New`
 | <a id="zanna-graphics-spriteanimator-stop"></a>`Stop` | `void()` | `Zanna.Graphics.SpriteAnimator.Stop` |
 | <a id="zanna-graphics-spriteanimator-update"></a>`Update` | `void(obj)` | `Zanna.Graphics.SpriteAnimator.Update` |
 | <a id="zanna-graphics-spriteanimator-destroy"></a>`Destroy` | `void()` | `Zanna.Graphics.SpriteAnimator.Destroy` |
-| <a id="zanna-graphics-spriteanimator-new"></a>`New` | `obj()` | `Zanna.Graphics.SpriteAnimator.New` |
+| <a id="zanna-graphics-spriteanimator-new"></a>`New` | `obj<Zanna.Graphics.SpriteAnimator>()` | `Zanna.Graphics.SpriteAnimator.New` |
 
 <a id="zanna-graphics-camera"></a>
 ### `Zanna.Graphics.Camera`
@@ -434,7 +434,7 @@ Constructor: `Zanna.Graphics.Camera.New`
 | <a id="zanna-graphics-camera-removeparallax"></a>`RemoveParallax` | `void(i64)` | `Zanna.Graphics.Camera.RemoveParallax` |
 | <a id="zanna-graphics-camera-clearparallax"></a>`ClearParallax` | `void()` | `Zanna.Graphics.Camera.ClearParallax` |
 | <a id="zanna-graphics-camera-drawparallax"></a>`DrawParallax` | `i64(obj)` | `Zanna.Graphics.Camera.DrawParallax` |
-| <a id="zanna-graphics-camera-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics.Camera.New` |
+| <a id="zanna-graphics-camera-new"></a>`New` | `obj<Zanna.Graphics.Camera>(i64,i64)` | `Zanna.Graphics.Camera.New` |
 
 <a id="zanna-graphics-spritebatch"></a>
 ### `Zanna.Graphics.SpriteBatch`
@@ -473,7 +473,7 @@ Constructor: `Zanna.Graphics.SpriteBatch.New`
 | <a id="zanna-graphics-spritebatch-drawatlas"></a>`DrawAtlas` | `void(obj,str,i64,i64)` | `Zanna.Graphics.SpriteBatch.DrawAtlas` |
 | <a id="zanna-graphics-spritebatch-drawatlasscaled"></a>`DrawAtlasScaled` | `void(obj,str,i64,i64,i64)` | `Zanna.Graphics.SpriteBatch.DrawAtlasScaled` |
 | `DrawAtlas` | `void(obj,str,i64,i64,i64,i64,i64)` | `Zanna.Graphics.SpriteBatch.DrawAtlasWithTransform` |
-| <a id="zanna-graphics-spritebatch-new"></a>`New` | `obj(i64)` | `Zanna.Graphics.SpriteBatch.New` |
+| <a id="zanna-graphics-spritebatch-new"></a>`New` | `obj<Zanna.Graphics.SpriteBatch>(i64)` | `Zanna.Graphics.SpriteBatch.New` |
 
 <a id="zanna-graphics-textureatlas"></a>
 ### `Zanna.Graphics.TextureAtlas`
@@ -490,21 +490,21 @@ Constructor: `Zanna.Graphics.TextureAtlas.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-graphics-textureatlas-pixels"></a>`Pixels` | `obj` | read-only |
+| <a id="zanna-graphics-textureatlas-pixels"></a>`Pixels` | `obj<Zanna.Graphics.Pixels>` | read-only |
 | <a id="zanna-graphics-textureatlas-regioncount"></a>`RegionCount` | `i64` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-textureatlas-loadgrid"></a>`LoadGrid` | `obj(obj,i64,i64)` | `Zanna.Graphics.TextureAtlas.LoadGrid` |
+| <a id="zanna-graphics-textureatlas-loadgrid"></a>`LoadGrid` | `obj<Zanna.Graphics.TextureAtlas>(obj,i64,i64)` | `Zanna.Graphics.TextureAtlas.LoadGrid` |
 | <a id="zanna-graphics-textureatlas-add"></a>`Add` | `void(str,i64,i64,i64,i64)` | `Zanna.Graphics.TextureAtlas.Add` |
 | <a id="zanna-graphics-textureatlas-has"></a>`Has` | `i1(str)` | `Zanna.Graphics.TextureAtlas.Has` |
 | <a id="zanna-graphics-textureatlas-getx"></a>`GetX` | `i64(str)` | `Zanna.Graphics.TextureAtlas.GetX` |
 | <a id="zanna-graphics-textureatlas-gety"></a>`GetY` | `i64(str)` | `Zanna.Graphics.TextureAtlas.GetY` |
 | <a id="zanna-graphics-textureatlas-getwidth"></a>`GetWidth` | `i64(str)` | `Zanna.Graphics.TextureAtlas.GetWidth` |
 | <a id="zanna-graphics-textureatlas-getheight"></a>`GetHeight` | `i64(str)` | `Zanna.Graphics.TextureAtlas.GetHeight` |
-| <a id="zanna-graphics-textureatlas-new"></a>`New` | `obj(obj)` | `Zanna.Graphics.TextureAtlas.New` |
+| <a id="zanna-graphics-textureatlas-new"></a>`New` | `obj<Zanna.Graphics.TextureAtlas>(obj)` | `Zanna.Graphics.TextureAtlas.New` |
 
 <a id="zanna-graphics-rendertarget2d"></a>
 ### `Zanna.Graphics.RenderTarget2D`
@@ -524,7 +524,7 @@ Constructor: `Zanna.Graphics.RenderTarget2D.New`
 |---|---|---|
 | <a id="zanna-graphics-rendertarget2d-width"></a>`Width` | `i64` | read-only |
 | <a id="zanna-graphics-rendertarget2d-height"></a>`Height` | `i64` | read-only |
-| <a id="zanna-graphics-rendertarget2d-pixels"></a>`Pixels` | `obj` | read-only |
+| <a id="zanna-graphics-rendertarget2d-pixels"></a>`Pixels` | `obj<Zanna.Graphics.Pixels>` | read-only |
 
 #### Methods
 
@@ -534,7 +534,7 @@ Constructor: `Zanna.Graphics.RenderTarget2D.New`
 | <a id="zanna-graphics-rendertarget2d-resize"></a>`Resize` | `void(i64,i64)` | `Zanna.Graphics.RenderTarget2D.Resize` |
 | <a id="zanna-graphics-rendertarget2d-drawpixels"></a>`DrawPixels` | `void(i64,i64,obj)` | `Zanna.Graphics.RenderTarget2D.DrawPixels` |
 | <a id="zanna-graphics-rendertarget2d-drawregion"></a>`DrawRegion` | `void(i64,i64,obj,i64,i64,i64,i64)` | `Zanna.Graphics.RenderTarget2D.DrawRegion` |
-| <a id="zanna-graphics-rendertarget2d-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics.RenderTarget2D.New` |
+| <a id="zanna-graphics-rendertarget2d-new"></a>`New` | `obj<Zanna.Graphics.RenderTarget2D>(i64,i64)` | `Zanna.Graphics.RenderTarget2D.New` |
 
 <a id="zanna-graphics-texture2d"></a>
 ### `Zanna.Graphics.Texture2D`
@@ -553,7 +553,7 @@ Constructor: `Zanna.Graphics.Texture2D.New`
 |---|---|---|
 | <a id="zanna-graphics-texture2d-width"></a>`Width` | `i64` | read-only |
 | <a id="zanna-graphics-texture2d-height"></a>`Height` | `i64` | read-only |
-| <a id="zanna-graphics-texture2d-pixels"></a>`Pixels` | `obj` | read-only |
+| <a id="zanna-graphics-texture2d-pixels"></a>`Pixels` | `obj<Zanna.Graphics.Pixels>` | read-only |
 | <a id="zanna-graphics-texture2d-filter"></a>`Filter` | `i64` | read/write |
 | <a id="zanna-graphics-texture2d-wrap"></a>`Wrap` | `i64` | read/write |
 
@@ -561,9 +561,9 @@ Constructor: `Zanna.Graphics.Texture2D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-texture2d-fromfile"></a>`FromFile` | `obj(str)` | `Zanna.Graphics.Texture2D.FromFile` |
-| <a id="zanna-graphics-texture2d-clonepixels"></a>`ClonePixels` | `obj()` | `Zanna.Graphics.Texture2D.ClonePixels` |
-| <a id="zanna-graphics-texture2d-new"></a>`New` | `obj(obj)` | `Zanna.Graphics.Texture2D.New` |
+| <a id="zanna-graphics-texture2d-fromfile"></a>`FromFile` | `obj<Zanna.Graphics.Texture2D>(str)` | `Zanna.Graphics.Texture2D.FromFile` |
+| <a id="zanna-graphics-texture2d-clonepixels"></a>`ClonePixels` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Texture2D.ClonePixels` |
+| <a id="zanna-graphics-texture2d-new"></a>`New` | `obj<Zanna.Graphics.Texture2D>(obj)` | `Zanna.Graphics.Texture2D.New` |
 
 <a id="zanna-graphics-gputexture2d"></a>
 ### `Zanna.Graphics.GpuTexture2D`
@@ -582,7 +582,7 @@ Constructor: `Zanna.Graphics.GpuTexture2D.New`
 |---|---|---|
 | <a id="zanna-graphics-gputexture2d-width"></a>`Width` | `i64` | read-only |
 | <a id="zanna-graphics-gputexture2d-height"></a>`Height` | `i64` | read-only |
-| <a id="zanna-graphics-gputexture2d-pixels"></a>`Pixels` | `obj` | read-only |
+| <a id="zanna-graphics-gputexture2d-pixels"></a>`Pixels` | `obj<Zanna.Graphics.Pixels>` | read-only |
 | <a id="zanna-graphics-gputexture2d-filter"></a>`Filter` | `i64` | read/write |
 | <a id="zanna-graphics-gputexture2d-wrap"></a>`Wrap` | `i64` | read/write |
 
@@ -590,9 +590,9 @@ Constructor: `Zanna.Graphics.GpuTexture2D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-gputexture2d-fromfile"></a>`FromFile` | `obj(str)` | `Zanna.Graphics.GpuTexture2D.FromFile` |
-| <a id="zanna-graphics-gputexture2d-clonepixels"></a>`ClonePixels` | `obj()` | `Zanna.Graphics.Texture2D.ClonePixels` |
-| <a id="zanna-graphics-gputexture2d-new"></a>`New` | `obj(obj)` | `Zanna.Graphics.GpuTexture2D.New` |
+| <a id="zanna-graphics-gputexture2d-fromfile"></a>`FromFile` | `obj<Zanna.Graphics.GpuTexture2D>(str)` | `Zanna.Graphics.GpuTexture2D.FromFile` |
+| <a id="zanna-graphics-gputexture2d-clonepixels"></a>`ClonePixels` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics.Texture2D.ClonePixels` |
+| <a id="zanna-graphics-gputexture2d-new"></a>`New` | `obj<Zanna.Graphics.GpuTexture2D>(obj)` | `Zanna.Graphics.GpuTexture2D.New` |
 
 <a id="zanna-graphics-renderer2d"></a>
 ### `Zanna.Graphics.Renderer2D`
@@ -629,7 +629,7 @@ Constructor: `Zanna.Graphics.Renderer2D.New`
 | <a id="zanna-graphics-renderer2d-drawregion"></a>`DrawRegion` | `void(obj,i64,i64,i64,i64,i64,i64)` | `Zanna.Graphics.Renderer2D.DrawRegion` |
 | <a id="zanna-graphics-renderer2d-flushtotarget"></a>`FlushToTarget` | `void(obj)` | `Zanna.Graphics.Renderer2D.FlushToTarget` |
 | <a id="zanna-graphics-renderer2d-end"></a>`End` | `void(obj)` | `Zanna.Graphics.Renderer2D.End` |
-| <a id="zanna-graphics-renderer2d-new"></a>`New` | `obj(i64)` | `Zanna.Graphics.Renderer2D.New` |
+| <a id="zanna-graphics-renderer2d-new"></a>`New` | `obj<Zanna.Graphics.Renderer2D>(i64)` | `Zanna.Graphics.Renderer2D.New` |
 
 <a id="zanna-graphics-material2d"></a>
 ### `Zanna.Graphics.Material2D`
@@ -654,8 +654,8 @@ Constructor: `Zanna.Graphics.Material2D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-material2d-apply"></a>`Apply` | `obj(obj)` | `Zanna.Graphics.Material2D.Apply` |
-| <a id="zanna-graphics-material2d-new"></a>`New` | `obj()` | `Zanna.Graphics.Material2D.New` |
+| <a id="zanna-graphics-material2d-apply"></a>`Apply` | `obj<Zanna.Graphics.Pixels>(obj)` | `Zanna.Graphics.Material2D.Apply` |
+| <a id="zanna-graphics-material2d-new"></a>`New` | `obj<Zanna.Graphics.Material2D>()` | `Zanna.Graphics.Material2D.New` |
 
 <a id="zanna-graphics-shader2d"></a>
 ### `Zanna.Graphics.Shader2D`
@@ -680,8 +680,8 @@ Constructor: `Zanna.Graphics.Shader2D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-shader2d-apply"></a>`Apply` | `obj(obj)` | `Zanna.Graphics.Shader2D.Apply` |
-| <a id="zanna-graphics-shader2d-new"></a>`New` | `obj(i64)` | `Zanna.Graphics.Shader2D.New` |
+| <a id="zanna-graphics-shader2d-apply"></a>`Apply` | `obj<Zanna.Graphics.Pixels>(obj)` | `Zanna.Graphics.Shader2D.Apply` |
+| <a id="zanna-graphics-shader2d-new"></a>`New` | `obj<Zanna.Graphics.Shader2D>(i64)` | `Zanna.Graphics.Shader2D.New` |
 
 <a id="zanna-graphics-postprocess2d"></a>
 ### `Zanna.Graphics.PostProcess2D`
@@ -701,8 +701,8 @@ Constructor: `Zanna.Graphics.PostProcess2D.New`
 | <a id="zanna-graphics-postprocess2d-seteffect"></a>`SetEffect` | `void(i64)` | `Zanna.Graphics.PostProcess2D.set_Effect` |
 | <a id="zanna-graphics-postprocess2d-setamount"></a>`SetAmount` | `void(i64)` | `Zanna.Graphics.PostProcess2D.set_Amount` |
 | <a id="zanna-graphics-postprocess2d-setcolor"></a>`SetColor` | `void(i64)` | `Zanna.Graphics.PostProcess2D.set_Color` |
-| <a id="zanna-graphics-postprocess2d-apply"></a>`Apply` | `obj(obj)` | `Zanna.Graphics.PostProcess2D.Apply` |
-| <a id="zanna-graphics-postprocess2d-new"></a>`New` | `obj()` | `Zanna.Graphics.PostProcess2D.New` |
+| <a id="zanna-graphics-postprocess2d-apply"></a>`Apply` | `obj<Zanna.Graphics.Pixels>(obj)` | `Zanna.Graphics.PostProcess2D.Apply` |
+| <a id="zanna-graphics-postprocess2d-new"></a>`New` | `obj<Zanna.Graphics.PostProcess2D>()` | `Zanna.Graphics.PostProcess2D.New` |
 
 <a id="zanna-graphics-viewport2d"></a>
 ### `Zanna.Graphics.Viewport2D`
@@ -735,7 +735,7 @@ Constructor: `Zanna.Graphics.Viewport2D.New`
 | <a id="zanna-graphics-viewport2d-worldtoscreeny"></a>`WorldToScreenY` | `i64(i64)` | `Zanna.Graphics.Viewport2D.WorldToScreenY` |
 | <a id="zanna-graphics-viewport2d-screentoworldx"></a>`ScreenToWorldX` | `i64(i64)` | `Zanna.Graphics.Viewport2D.ScreenToWorldX` |
 | <a id="zanna-graphics-viewport2d-screentoworldy"></a>`ScreenToWorldY` | `i64(i64)` | `Zanna.Graphics.Viewport2D.ScreenToWorldY` |
-| <a id="zanna-graphics-viewport2d-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Graphics.Viewport2D.New` |
+| <a id="zanna-graphics-viewport2d-new"></a>`New` | `obj<Zanna.Graphics.Viewport2D>(i64,i64,i64,i64)` | `Zanna.Graphics.Viewport2D.New` |
 
 <a id="zanna-graphics-tileset2d"></a>
 ### `Zanna.Graphics.TileSet2D`
@@ -760,8 +760,8 @@ Constructor: `Zanna.Graphics.TileSet2D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-tileset2d-gettilepixels"></a>`GetTilePixels` | `obj(i64)` | `Zanna.Graphics.TileSet2D.GetTilePixels` |
-| <a id="zanna-graphics-tileset2d-new"></a>`New` | `obj(obj,i64,i64)` | `Zanna.Graphics.TileSet2D.New` |
+| <a id="zanna-graphics-tileset2d-gettilepixels"></a>`GetTilePixels` | `obj<Zanna.Graphics.Pixels>(i64)` | `Zanna.Graphics.TileSet2D.GetTilePixels` |
+| <a id="zanna-graphics-tileset2d-new"></a>`New` | `obj<Zanna.Graphics.TileSet2D>(obj,i64,i64)` | `Zanna.Graphics.TileSet2D.New` |
 
 <a id="zanna-graphics-tilelayer2d"></a>
 ### `Zanna.Graphics.TileLayer2D`
@@ -791,7 +791,7 @@ Constructor: `Zanna.Graphics.TileLayer2D.New`
 | <a id="zanna-graphics-tilelayer2d-get"></a>`Get` | `i64(i64,i64)` | `Zanna.Graphics.TileLayer2D.Get` |
 | <a id="zanna-graphics-tilelayer2d-fill"></a>`Fill` | `void(i64)` | `Zanna.Graphics.TileLayer2D.Fill` |
 | <a id="zanna-graphics-tilelayer2d-clear"></a>`Clear` | `void()` | `Zanna.Graphics.TileLayer2D.Clear` |
-| <a id="zanna-graphics-tilelayer2d-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics.TileLayer2D.New` |
+| <a id="zanna-graphics-tilelayer2d-new"></a>`New` | `obj<Zanna.Graphics.TileLayer2D>(i64,i64)` | `Zanna.Graphics.TileLayer2D.New` |
 
 <a id="zanna-graphics-objectlayer2d"></a>
 ### `Zanna.Graphics.ObjectLayer2D`
@@ -821,7 +821,7 @@ Constructor: `Zanna.Graphics.ObjectLayer2D.New`
 | <a id="zanna-graphics-objectlayer2d-getwidth"></a>`GetWidth` | `i64(i64)` | `Zanna.Graphics.ObjectLayer2D.GetWidth` |
 | <a id="zanna-graphics-objectlayer2d-getheight"></a>`GetHeight` | `i64(i64)` | `Zanna.Graphics.ObjectLayer2D.GetHeight` |
 | <a id="zanna-graphics-objectlayer2d-gettype"></a>`GetType` | `i64(i64)` | `Zanna.Graphics.ObjectLayer2D.GetType` |
-| <a id="zanna-graphics-objectlayer2d-new"></a>`New` | `obj(i64)` | `Zanna.Graphics.ObjectLayer2D.New` |
+| <a id="zanna-graphics-objectlayer2d-new"></a>`New` | `obj<Zanna.Graphics.ObjectLayer2D>(i64)` | `Zanna.Graphics.ObjectLayer2D.New` |
 
 <a id="zanna-graphics-autotile2d"></a>
 ### `Zanna.Graphics.AutoTile2D`
@@ -841,7 +841,7 @@ Constructor: `Zanna.Graphics.AutoTile2D.New`
 | <a id="zanna-graphics-autotile2d-setvariant"></a>`SetVariant` | `void(i64,i64)` | `Zanna.Graphics.AutoTile2D.SetVariant` |
 | <a id="zanna-graphics-autotile2d-resolve"></a>`Resolve` | `i64(i64)` | `Zanna.Graphics.AutoTile2D.Resolve` |
 | <a id="zanna-graphics-autotile2d-apply"></a>`Apply` | `void(obj,i64,i64,i64)` | `Zanna.Graphics.AutoTile2D.Apply` |
-| <a id="zanna-graphics-autotile2d-new"></a>`New` | `obj()` | `Zanna.Graphics.AutoTile2D.New` |
+| <a id="zanna-graphics-autotile2d-new"></a>`New` | `obj<Zanna.Graphics.AutoTile2D>()` | `Zanna.Graphics.AutoTile2D.New` |
 
 <a id="zanna-graphics-path2d"></a>
 ### `Zanna.Graphics.Path2D`
@@ -870,7 +870,7 @@ Constructor: `Zanna.Graphics.Path2D.New`
 | <a id="zanna-graphics-path2d-getx"></a>`GetX` | `i64(i64)` | `Zanna.Graphics.Path2D.GetX` |
 | <a id="zanna-graphics-path2d-gety"></a>`GetY` | `i64(i64)` | `Zanna.Graphics.Path2D.GetY` |
 | <a id="zanna-graphics-path2d-drawtopixels"></a>`DrawToPixels` | `void(obj,i64)` | `Zanna.Graphics.Path2D.DrawToPixels` |
-| <a id="zanna-graphics-path2d-new"></a>`New` | `obj(i64)` | `Zanna.Graphics.Path2D.New` |
+| <a id="zanna-graphics-path2d-new"></a>`New` | `obj<Zanna.Graphics.Path2D>(i64)` | `Zanna.Graphics.Path2D.New` |
 
 <a id="zanna-graphics-shaperenderer2d"></a>
 ### `Zanna.Graphics.ShapeRenderer2D`
@@ -893,7 +893,7 @@ Constructor: `Zanna.Graphics.ShapeRenderer2D.New`
 | <a id="zanna-graphics-shaperenderer2d-rect"></a>`Rect` | `void(obj,i64,i64,i64,i64)` | `Zanna.Graphics.ShapeRenderer2D.Rect` |
 | <a id="zanna-graphics-shaperenderer2d-circle"></a>`Circle` | `void(obj,i64,i64,i64)` | `Zanna.Graphics.ShapeRenderer2D.Circle` |
 | <a id="zanna-graphics-shaperenderer2d-path"></a>`Path` | `void(obj,obj)` | `Zanna.Graphics.ShapeRenderer2D.Path` |
-| <a id="zanna-graphics-shaperenderer2d-new"></a>`New` | `obj()` | `Zanna.Graphics.ShapeRenderer2D.New` |
+| <a id="zanna-graphics-shaperenderer2d-new"></a>`New` | `obj<Zanna.Graphics.ShapeRenderer2D>()` | `Zanna.Graphics.ShapeRenderer2D.New` |
 
 <a id="zanna-graphics-textrenderer2d"></a>
 ### `Zanna.Graphics.TextRenderer2D`
@@ -916,7 +916,7 @@ Constructor: `Zanna.Graphics.TextRenderer2D.New`
 | <a id="zanna-graphics-textrenderer2d-measurewidth"></a>`MeasureWidth` | `i64(str)` | `Zanna.Graphics.TextRenderer2D.MeasureWidth` |
 | <a id="zanna-graphics-textrenderer2d-measureheight"></a>`MeasureHeight` | `i64(str)` | `Zanna.Graphics.TextRenderer2D.MeasureHeight` |
 | <a id="zanna-graphics-textrenderer2d-draw"></a>`Draw` | `void(obj,i64,i64,str)` | `Zanna.Graphics.TextRenderer2D.Draw` |
-| <a id="zanna-graphics-textrenderer2d-new"></a>`New` | `obj()` | `Zanna.Graphics.TextRenderer2D.New` |
+| <a id="zanna-graphics-textrenderer2d-new"></a>`New` | `obj<Zanna.Graphics.TextRenderer2D>()` | `Zanna.Graphics.TextRenderer2D.New` |
 
 <a id="zanna-graphics-sdffont"></a>
 ### `Zanna.Graphics.SdfFont`
@@ -933,14 +933,14 @@ Constructor: `Zanna.Graphics.SdfFont.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-graphics-sdffont-bitmapfont"></a>`BitmapFont` | `obj` | read-only |
+| <a id="zanna-graphics-sdffont-bitmapfont"></a>`BitmapFont` | `obj<Zanna.Core.Object>` | read-only |
 | <a id="zanna-graphics-sdffont-spread"></a>`Spread` | `i64` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-sdffont-new"></a>`New` | `obj(obj,i64)` | `Zanna.Graphics.SdfFont.New` |
+| <a id="zanna-graphics-sdffont-new"></a>`New` | `obj<Zanna.Graphics.SdfFont>(obj,i64)` | `Zanna.Graphics.SdfFont.New` |
 
 <a id="zanna-graphics-nineslice2d"></a>
 ### `Zanna.Graphics.NineSlice2D`
@@ -958,7 +958,7 @@ Constructor: `Zanna.Graphics.NineSlice2D.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-graphics-nineslice2d-drawtopixels"></a>`DrawToPixels` | `void(obj,i64,i64,i64,i64)` | `Zanna.Graphics.NineSlice2D.DrawToPixels` |
-| <a id="zanna-graphics-nineslice2d-new"></a>`New` | `obj(obj,i64,i64,i64,i64)` | `Zanna.Graphics.NineSlice2D.New` |
+| <a id="zanna-graphics-nineslice2d-new"></a>`New` | `obj<Zanna.Graphics.NineSlice2D>(obj,i64,i64,i64,i64)` | `Zanna.Graphics.NineSlice2D.New` |
 
 <a id="zanna-graphics-debugdraw2d"></a>
 ### `Zanna.Graphics.DebugDraw2D`
@@ -986,7 +986,7 @@ Constructor: `Zanna.Graphics.DebugDraw2D.New`
 | <a id="zanna-graphics-debugdraw2d-rect"></a>`Rect` | `void(i64,i64,i64,i64,i64)` | `Zanna.Graphics.DebugDraw2D.Rect` |
 | <a id="zanna-graphics-debugdraw2d-circle"></a>`Circle` | `void(i64,i64,i64,i64)` | `Zanna.Graphics.DebugDraw2D.Circle` |
 | <a id="zanna-graphics-debugdraw2d-drawtopixels"></a>`DrawToPixels` | `void(obj)` | `Zanna.Graphics.DebugDraw2D.DrawToPixels` |
-| <a id="zanna-graphics-debugdraw2d-new"></a>`New` | `obj(i64)` | `Zanna.Graphics.DebugDraw2D.New` |
+| <a id="zanna-graphics-debugdraw2d-new"></a>`New` | `obj<Zanna.Graphics.DebugDraw2D>(i64)` | `Zanna.Graphics.DebugDraw2D.New` |
 
 <a id="zanna-graphics-transform2d"></a>
 ### `Zanna.Graphics.Transform2D`
@@ -1020,7 +1020,7 @@ Constructor: `Zanna.Graphics.Transform2D.New`
 | <a id="zanna-graphics-transform2d-translate"></a>`Translate` | `void(i64,i64)` | `Zanna.Graphics.Transform2D.Translate` |
 | <a id="zanna-graphics-transform2d-transformx"></a>`TransformX` | `i64(i64,i64)` | `Zanna.Graphics.Transform2D.TransformX` |
 | <a id="zanna-graphics-transform2d-transformy"></a>`TransformY` | `i64(i64,i64)` | `Zanna.Graphics.Transform2D.TransformY` |
-| <a id="zanna-graphics-transform2d-new"></a>`New` | `obj()` | `Zanna.Graphics.Transform2D.New` |
+| <a id="zanna-graphics-transform2d-new"></a>`New` | `obj<Zanna.Graphics.Transform2D>()` | `Zanna.Graphics.Transform2D.New` |
 
 <a id="zanna-graphics-sampler2d"></a>
 ### `Zanna.Graphics.Sampler2D`
@@ -1045,7 +1045,7 @@ Constructor: `Zanna.Graphics.Sampler2D.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-graphics-sampler2d-applytotexture"></a>`ApplyToTexture` | `void(obj)` | `Zanna.Graphics.Sampler2D.ApplyToTexture` |
-| <a id="zanna-graphics-sampler2d-new"></a>`New` | `obj()` | `Zanna.Graphics.Sampler2D.New` |
+| <a id="zanna-graphics-sampler2d-new"></a>`New` | `obj<Zanna.Graphics.Sampler2D>()` | `Zanna.Graphics.Sampler2D.New` |
 
 <a id="zanna-graphics-blendstate2d"></a>
 ### `Zanna.Graphics.BlendState2D`
@@ -1071,7 +1071,7 @@ Constructor: `Zanna.Graphics.BlendState2D.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-graphics-blendstate2d-applytorenderer"></a>`ApplyToRenderer` | `void(obj)` | `Zanna.Graphics.BlendState2D.ApplyToRenderer` |
-| <a id="zanna-graphics-blendstate2d-new"></a>`New` | `obj()` | `Zanna.Graphics.BlendState2D.New` |
+| <a id="zanna-graphics-blendstate2d-new"></a>`New` | `obj<Zanna.Graphics.BlendState2D>()` | `Zanna.Graphics.BlendState2D.New` |
 
 <a id="zanna-graphics-spriterenderer2d"></a>
 ### `Zanna.Graphics.SpriteRenderer2D`
@@ -1093,7 +1093,7 @@ Constructor: `Zanna.Graphics.SpriteRenderer2D.New`
 | <a id="zanna-graphics-spriterenderer2d-setblendstate"></a>`SetBlendState` | `void(obj)` | `Zanna.Graphics.SpriteRenderer2D.SetBlendState` |
 | <a id="zanna-graphics-spriterenderer2d-drawpixels"></a>`DrawPixels` | `void(obj,obj,i64,i64)` | `Zanna.Graphics.SpriteRenderer2D.DrawPixels` |
 | <a id="zanna-graphics-spriterenderer2d-drawtexture"></a>`DrawTexture` | `void(obj,obj,i64,i64)` | `Zanna.Graphics.SpriteRenderer2D.DrawTexture` |
-| <a id="zanna-graphics-spriterenderer2d-new"></a>`New` | `obj()` | `Zanna.Graphics.SpriteRenderer2D.New` |
+| <a id="zanna-graphics-spriterenderer2d-new"></a>`New` | `obj<Zanna.Graphics.SpriteRenderer2D>()` | `Zanna.Graphics.SpriteRenderer2D.New` |
 
 <a id="zanna-graphics-tilechunkcache2d"></a>
 ### `Zanna.Graphics.TileChunkCache2D`
@@ -1120,7 +1120,7 @@ Constructor: `Zanna.Graphics.TileChunkCache2D.New`
 |---|---|---|
 | <a id="zanna-graphics-tilechunkcache2d-markdirty"></a>`MarkDirty` | `void()` | `Zanna.Graphics.TileChunkCache2D.MarkDirty` |
 | <a id="zanna-graphics-tilechunkcache2d-cleardirty"></a>`ClearDirty` | `void()` | `Zanna.Graphics.TileChunkCache2D.ClearDirty` |
-| <a id="zanna-graphics-tilechunkcache2d-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics.TileChunkCache2D.New` |
+| <a id="zanna-graphics-tilechunkcache2d-new"></a>`New` | `obj<Zanna.Graphics.TileChunkCache2D>(i64,i64)` | `Zanna.Graphics.TileChunkCache2D.New` |
 
 <a id="zanna-graphics-animationclip2d"></a>
 ### `Zanna.Graphics.AnimationClip2D`
@@ -1146,7 +1146,7 @@ Constructor: `Zanna.Graphics.AnimationClip2D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-animationclip2d-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Graphics.AnimationClip2D.New` |
+| <a id="zanna-graphics-animationclip2d-new"></a>`New` | `obj<Zanna.Graphics.AnimationClip2D>(i64,i64,i64,i64)` | `Zanna.Graphics.AnimationClip2D.New` |
 
 <a id="zanna-graphics-animatedsprite2d"></a>
 ### `Zanna.Graphics.AnimatedSprite2D`
@@ -1174,7 +1174,7 @@ Constructor: `Zanna.Graphics.AnimatedSprite2D.New`
 | <a id="zanna-graphics-animatedsprite2d-play"></a>`Play` | `void()` | `Zanna.Graphics.AnimatedSprite2D.Play` |
 | <a id="zanna-graphics-animatedsprite2d-stop"></a>`Stop` | `void()` | `Zanna.Graphics.AnimatedSprite2D.Stop` |
 | <a id="zanna-graphics-animatedsprite2d-update"></a>`Update` | `void(i64)` | `Zanna.Graphics.AnimatedSprite2D.Update` |
-| <a id="zanna-graphics-animatedsprite2d-new"></a>`New` | `obj(obj)` | `Zanna.Graphics.AnimatedSprite2D.New` |
+| <a id="zanna-graphics-animatedsprite2d-new"></a>`New` | `obj<Zanna.Graphics.AnimatedSprite2D>(obj)` | `Zanna.Graphics.AnimatedSprite2D.New` |
 
 <a id="zanna-graphics-textlayout2d"></a>
 ### `Zanna.Graphics.TextLayout2D`
@@ -1198,7 +1198,7 @@ Constructor: `Zanna.Graphics.TextLayout2D.New`
 | <a id="zanna-graphics-textlayout2d-setcolor"></a>`SetColor` | `void(i64)` | `Zanna.Graphics.TextLayout2D.set_Color` |
 | <a id="zanna-graphics-textlayout2d-measurewidth"></a>`MeasureWidth` | `i64(str)` | `Zanna.Graphics.TextLayout2D.MeasureWidth` |
 | <a id="zanna-graphics-textlayout2d-measureheight"></a>`MeasureHeight` | `i64(str)` | `Zanna.Graphics.TextLayout2D.MeasureHeight` |
-| <a id="zanna-graphics-textlayout2d-new"></a>`New` | `obj()` | `Zanna.Graphics.TextLayout2D.New` |
+| <a id="zanna-graphics-textlayout2d-new"></a>`New` | `obj<Zanna.Graphics.TextLayout2D>()` | `Zanna.Graphics.TextLayout2D.New` |
 
 <a id="zanna-graphics-renderpass2d"></a>
 ### `Zanna.Graphics.RenderPass2D`
@@ -1225,7 +1225,7 @@ Constructor: `Zanna.Graphics.RenderPass2D.New`
 | <a id="zanna-graphics-renderpass2d-settarget"></a>`SetTarget` | `void(obj)` | `Zanna.Graphics.RenderPass2D.SetTarget` |
 | <a id="zanna-graphics-renderpass2d-setshader"></a>`SetShader` | `void(obj)` | `Zanna.Graphics.RenderPass2D.SetShader` |
 | <a id="zanna-graphics-renderpass2d-execute"></a>`Execute` | `void()` | `Zanna.Graphics.RenderPass2D.Execute` |
-| <a id="zanna-graphics-renderpass2d-new"></a>`New` | `obj(obj,obj)` | `Zanna.Graphics.RenderPass2D.New` |
+| <a id="zanna-graphics-renderpass2d-new"></a>`New` | `obj<Zanna.Graphics.RenderPass2D>(obj,obj)` | `Zanna.Graphics.RenderPass2D.New` |
 
 <a id="zanna-graphics-rendergraph2d"></a>
 ### `Zanna.Graphics.RenderGraph2D`
@@ -1251,7 +1251,7 @@ Constructor: `Zanna.Graphics.RenderGraph2D.New`
 | <a id="zanna-graphics-rendergraph2d-addpass"></a>`AddPass` | `void(obj)` | `Zanna.Graphics.RenderGraph2D.AddPass` |
 | <a id="zanna-graphics-rendergraph2d-clear"></a>`Clear` | `void()` | `Zanna.Graphics.RenderGraph2D.Clear` |
 | <a id="zanna-graphics-rendergraph2d-execute"></a>`Execute` | `void()` | `Zanna.Graphics.RenderGraph2D.Execute` |
-| <a id="zanna-graphics-rendergraph2d-new"></a>`New` | `obj(i64)` | `Zanna.Graphics.RenderGraph2D.New` |
+| <a id="zanna-graphics-rendergraph2d-new"></a>`New` | `obj<Zanna.Graphics.RenderGraph2D>(i64)` | `Zanna.Graphics.RenderGraph2D.New` |
 
 <a id="zanna-graphics-collisionmask2d"></a>
 ### `Zanna.Graphics.CollisionMask2D`
@@ -1275,11 +1275,11 @@ Constructor: `Zanna.Graphics.CollisionMask2D.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-graphics-collisionmask2d-frompixels"></a>`FromPixels` | `obj(obj,i64)` | `Zanna.Graphics.CollisionMask2D.FromPixels` |
+| <a id="zanna-graphics-collisionmask2d-frompixels"></a>`FromPixels` | `obj<Zanna.Graphics.CollisionMask2D>(obj,i64)` | `Zanna.Graphics.CollisionMask2D.FromPixels` |
 | <a id="zanna-graphics-collisionmask2d-set"></a>`Set` | `void(i64,i64,i64)` | `Zanna.Graphics.CollisionMask2D.Set` |
 | <a id="zanna-graphics-collisionmask2d-get"></a>`Get` | `i64(i64,i64)` | `Zanna.Graphics.CollisionMask2D.Get` |
 | <a id="zanna-graphics-collisionmask2d-overlaps"></a>`Overlaps` | `i1(i64,i64,obj,i64,i64)` | `Zanna.Graphics.CollisionMask2D.Overlaps` |
-| <a id="zanna-graphics-collisionmask2d-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics.CollisionMask2D.New` |
+| <a id="zanna-graphics-collisionmask2d-new"></a>`New` | `obj<Zanna.Graphics.CollisionMask2D>(i64,i64)` | `Zanna.Graphics.CollisionMask2D.New` |
 
 <a id="zanna-graphics-hitbox2d"></a>
 ### `Zanna.Graphics.Hitbox2D`
@@ -1308,7 +1308,7 @@ Constructor: `Zanna.Graphics.Hitbox2D.New`
 | <a id="zanna-graphics-hitbox2d-set"></a>`Set` | `void(i64,i64,i64,i64)` | `Zanna.Graphics.Hitbox2D.Set` |
 | <a id="zanna-graphics-hitbox2d-contains"></a>`Contains` | `i1(i64,i64)` | `Zanna.Graphics.Hitbox2D.Contains` |
 | <a id="zanna-graphics-hitbox2d-intersects"></a>`Intersects` | `i1(obj)` | `Zanna.Graphics.Hitbox2D.Intersects` |
-| <a id="zanna-graphics-hitbox2d-new"></a>`New` | `obj(i64,i64,i64,i64)` | `Zanna.Graphics.Hitbox2D.New` |
+| <a id="zanna-graphics-hitbox2d-new"></a>`New` | `obj<Zanna.Graphics.Hitbox2D>(i64,i64,i64,i64)` | `Zanna.Graphics.Hitbox2D.New` |
 
 <a id="zanna-graphics-palette2d"></a>
 ### `Zanna.Graphics.Palette2D`
@@ -1334,9 +1334,9 @@ Constructor: `Zanna.Graphics.Palette2D.New`
 | <a id="zanna-graphics-palette2d-setcolor"></a>`SetColor` | `void(i64,i64)` | `Zanna.Graphics.Palette2D.SetColor` |
 | <a id="zanna-graphics-palette2d-getcolor"></a>`GetColor` | `i64(i64)` | `Zanna.Graphics.Palette2D.GetColor` |
 | <a id="zanna-graphics-palette2d-getrgba"></a>`GetRgba` | `i64(i64)` | `Zanna.Graphics.Palette2D.GetRgba` |
-| <a id="zanna-graphics-palette2d-apply"></a>`Apply` | `obj(obj)` | `Zanna.Graphics.Palette2D.Apply` |
-| <a id="zanna-graphics-palette2d-applylegacy"></a>`ApplyLegacy` | `obj(obj)` | `Zanna.Graphics.Palette2D.ApplyLegacy` |
-| <a id="zanna-graphics-palette2d-new"></a>`New` | `obj()` | `Zanna.Graphics.Palette2D.New` |
+| <a id="zanna-graphics-palette2d-apply"></a>`Apply` | `obj<Zanna.Graphics.Pixels>(obj)` | `Zanna.Graphics.Palette2D.Apply` |
+| <a id="zanna-graphics-palette2d-applylegacy"></a>`ApplyLegacy` | `obj<Zanna.Graphics.Pixels>(obj)` | `Zanna.Graphics.Palette2D.ApplyLegacy` |
+| <a id="zanna-graphics-palette2d-new"></a>`New` | `obj<Zanna.Graphics.Palette2D>()` | `Zanna.Graphics.Palette2D.New` |
 
 <a id="zanna-graphics-gradient2d"></a>
 ### `Zanna.Graphics.Gradient2D`
@@ -1361,7 +1361,7 @@ Constructor: `Zanna.Graphics.Gradient2D.New`
 | <a id="zanna-graphics-gradient2d-samplergbapercent"></a>`SampleRgbaPercent` | `i64(i64)` | `Zanna.Graphics.Gradient2D.SampleRgbaPercent` |
 | <a id="zanna-graphics-gradient2d-fillhorizontal"></a>`FillHorizontal` | `void(obj)` | `Zanna.Graphics.Gradient2D.FillHorizontal` |
 | <a id="zanna-graphics-gradient2d-fillvertical"></a>`FillVertical` | `void(obj)` | `Zanna.Graphics.Gradient2D.FillVertical` |
-| <a id="zanna-graphics-gradient2d-new"></a>`New` | `obj(i64,i64,i64)` | `Zanna.Graphics.Gradient2D.New` |
+| <a id="zanna-graphics-gradient2d-new"></a>`New` | `obj<Zanna.Graphics.Gradient2D>(i64,i64,i64)` | `Zanna.Graphics.Gradient2D.New` |
 
 <a id="zanna-graphics-camerarig2d"></a>
 ### `Zanna.Graphics.CameraRig2D`
@@ -1393,7 +1393,7 @@ Constructor: `Zanna.Graphics.CameraRig2D.New`
 | <a id="zanna-graphics-camerarig2d-addshake"></a>`AddShake` | `void(i64,i64)` | `Zanna.Graphics.CameraRig2D.AddShake` |
 | <a id="zanna-graphics-camerarig2d-clearshake"></a>`ClearShake` | `void()` | `Zanna.Graphics.CameraRig2D.ClearShake` |
 | <a id="zanna-graphics-camerarig2d-update"></a>`Update` | `void()` | `Zanna.Graphics.CameraRig2D.Update` |
-| <a id="zanna-graphics-camerarig2d-new"></a>`New` | `obj(obj)` | `Zanna.Graphics.CameraRig2D.New` |
+| <a id="zanna-graphics-camerarig2d-new"></a>`New` | `obj<Zanna.Graphics.CameraRig2D>(obj)` | `Zanna.Graphics.CameraRig2D.New` |
 
 <a id="zanna-graphics-texturepackeratlas"></a>
 ### `Zanna.Graphics.TexturePackerAtlas`
@@ -1410,7 +1410,7 @@ Constructor: `Zanna.Graphics.TexturePackerAtlas.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-graphics-texturepackeratlas-atlas"></a>`Atlas` | `obj` | read-only |
+| <a id="zanna-graphics-texturepackeratlas-atlas"></a>`Atlas` | `obj<Zanna.Graphics.TextureAtlas>` | read-only |
 | <a id="zanna-graphics-texturepackeratlas-regioncount"></a>`RegionCount` | `i64` | read-only |
 
 #### Methods
@@ -1419,7 +1419,7 @@ Constructor: `Zanna.Graphics.TexturePackerAtlas.New`
 |---|---|---|
 | <a id="zanna-graphics-texturepackeratlas-add"></a>`Add` | `void(str,i64,i64,i64,i64)` | `Zanna.Graphics.TexturePackerAtlas.Add` |
 | <a id="zanna-graphics-texturepackeratlas-has"></a>`Has` | `i1(str)` | `Zanna.Graphics.TexturePackerAtlas.Has` |
-| <a id="zanna-graphics-texturepackeratlas-new"></a>`New` | `obj(obj)` | `Zanna.Graphics.TexturePackerAtlas.New` |
+| <a id="zanna-graphics-texturepackeratlas-new"></a>`New` | `obj<Zanna.Graphics.TexturePackerAtlas>(obj)` | `Zanna.Graphics.TexturePackerAtlas.New` |
 
 <a id="zanna-graphics-asepriteimporter"></a>
 ### `Zanna.Graphics.AsepriteImporter`
@@ -1444,8 +1444,8 @@ Constructor: `Zanna.Graphics.AsepriteImporter.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-graphics-asepriteimporter-setgrid"></a>`SetGrid` | `void(i64,i64)` | `Zanna.Graphics.AsepriteImporter.SetGrid` |
-| <a id="zanna-graphics-asepriteimporter-toatlas"></a>`ToAtlas` | `obj(obj)` | `Zanna.Graphics.AsepriteImporter.ToAtlas` |
-| <a id="zanna-graphics-asepriteimporter-new"></a>`New` | `obj()` | `Zanna.Graphics.AsepriteImporter.New` |
+| <a id="zanna-graphics-asepriteimporter-toatlas"></a>`ToAtlas` | `obj<Zanna.Graphics.TextureAtlas>(obj)` | `Zanna.Graphics.AsepriteImporter.ToAtlas` |
+| <a id="zanna-graphics-asepriteimporter-new"></a>`New` | `obj<Zanna.Graphics.AsepriteImporter>()` | `Zanna.Graphics.AsepriteImporter.New` |
 
 <a id="zanna-graphics-tiledmaploader"></a>
 ### `Zanna.Graphics.TiledMapLoader`
@@ -1471,12 +1471,12 @@ Constructor: `Zanna.Graphics.TiledMapLoader.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-graphics-tiledmaploader-settilesize"></a>`SetTileSize` | `void(i64,i64)` | `Zanna.Graphics.TiledMapLoader.SetTileSize` |
-| <a id="zanna-graphics-tiledmaploader-newtilemap"></a>`NewTilemap` | `obj(i64,i64)` | `Zanna.Graphics.TiledMapLoader.NewTilemap` |
+| <a id="zanna-graphics-tiledmaploader-newtilemap"></a>`NewTilemap` | `obj<Zanna.Graphics2D.Tilemap>(i64,i64)` | `Zanna.Graphics.TiledMapLoader.NewTilemap` |
 | <a id="zanna-graphics-tiledmaploader-load"></a>`Load` | `obj<Zanna.Graphics2D.Tilemap>(str)` | `Zanna.Graphics.TiledMapLoader.Load` |
 | <a id="zanna-graphics-tiledmaploader-loadresult"></a>`LoadResult` | `obj<Zanna.Result>(str)` | `Zanna.Graphics.TiledMapLoader.LoadResult` |
 | <a id="zanna-graphics-tiledmaploader-loadasset"></a>`LoadAsset` | `obj<Zanna.Graphics2D.Tilemap>(str)` | `Zanna.Graphics.TiledMapLoader.LoadAsset` |
 | <a id="zanna-graphics-tiledmaploader-loadassetresult"></a>`LoadAssetResult` | `obj<Zanna.Result>(str)` | `Zanna.Graphics.TiledMapLoader.LoadAssetResult` |
-| <a id="zanna-graphics-tiledmaploader-new"></a>`New` | `obj()` | `Zanna.Graphics.TiledMapLoader.New` |
+| <a id="zanna-graphics-tiledmaploader-new"></a>`New` | `obj<Zanna.Graphics.TiledMapLoader>()` | `Zanna.Graphics.TiledMapLoader.New` |
 
 <a id="zanna-graphics-spritesheet"></a>
 ### `Zanna.Graphics.SpriteSheet`
@@ -1528,7 +1528,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-videoplayer-duration"></a>`Duration` | `f64` | read-only |
 | <a id="zanna-graphics-videoplayer-position"></a>`Position` | `f64` | read-only |
 | <a id="zanna-graphics-videoplayer-isplaying"></a>`IsPlaying` | `i1` | read-only |
-| <a id="zanna-graphics-videoplayer-frame"></a>`Frame` | `obj` | read-only |
+| <a id="zanna-graphics-videoplayer-frame"></a>`Frame` | `obj<Zanna.Graphics.Pixels>` | read-only |
 
 #### Methods
 
@@ -1540,7 +1540,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-videoplayer-seek"></a>`Seek` | `void(f64)` | `Zanna.Graphics.VideoPlayer.Seek` |
 | <a id="zanna-graphics-videoplayer-update"></a>`Update` | `void(f64)` | `Zanna.Graphics.VideoPlayer.Update` |
 | <a id="zanna-graphics-videoplayer-setvolume"></a>`SetVolume` | `void(f64)` | `Zanna.Graphics.VideoPlayer.SetVolume` |
-| <a id="zanna-graphics-videoplayer-open"></a>`Open` | `obj(str)` | `Zanna.Graphics.VideoPlayer.Open` |
+| <a id="zanna-graphics-videoplayer-open"></a>`Open` | `obj<Zanna.Graphics.VideoPlayer>(str)` | `Zanna.Graphics.VideoPlayer.Open` |
 
 ## Functions
 
@@ -1555,7 +1555,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-canvas-get-height"></a>`Zanna.Graphics.Canvas.get_Height` | `i64(obj)` | `rt_canvas_height` |
 | `Zanna.Graphics.Canvas.KeyHeld` | `i64(obj,i64)` | `rt_canvas_key_held` |
 | `Zanna.Graphics.Canvas.Line` | `void(obj,i64,i64,i64,i64,i64)` | `rt_canvas_line` |
-| `Zanna.Graphics.Canvas.New` | `obj(str,i64,i64)` | `rt_canvas_new` |
+| `Zanna.Graphics.Canvas.New` | `obj<Zanna.Graphics.Canvas>(str,i64,i64)` | `rt_canvas_new` |
 | `Zanna.Graphics.Canvas.Plot` | `void(obj,i64,i64,i64)` | `rt_canvas_plot` |
 | `Zanna.Graphics.Canvas.Poll` | `i64(obj)` | `rt_canvas_poll` |
 | `Zanna.Graphics.Canvas.Ring` | `void(obj,i64,i64,i64,i64)` | `rt_canvas_ring` |
@@ -1684,7 +1684,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Color.GetBlueF` | `f64(i64)` | `rt_color_get_blue_f` |
 | `Zanna.Graphics.Color.Luma` | `f64(i64)` | `rt_color_luma` |
 | `Zanna.Graphics.Pixels.Clear` | `void(obj)` | `rt_pixels_clear` |
-| `Zanna.Graphics.Pixels.Clone` | `obj(obj)` | `rt_pixels_clone` |
+| `Zanna.Graphics.Pixels.Clone` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_clone` |
 | `Zanna.Graphics.Pixels.Copy` | `void(obj,i64,i64,obj,i64,i64,i64,i64)` | `rt_pixels_copy` |
 | `Zanna.Graphics.Pixels.Fill` | `void(obj,i64)` | `rt_pixels_fill` |
 | `Zanna.Graphics.Pixels.FillRgba` | `void(obj,i64)` | `rt_pixels_fill_rgba` |
@@ -1694,15 +1694,15 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Pixels.GetRgba` | `i64(obj,i64,i64)` | `rt_pixels_get_rgba` |
 | `Zanna.Graphics.Pixels.GetColor` | `i64(obj,i64,i64)` | `rt_pixels_get_color` |
 | <a id="zanna-graphics-pixels-get-height"></a>`Zanna.Graphics.Pixels.get_Height` | `i64(obj)` | `rt_pixels_height` |
-| `Zanna.Graphics.Pixels.New` | `obj(i64,i64)` | `rt_pixels_new` |
+| `Zanna.Graphics.Pixels.New` | `obj<Zanna.Graphics.Pixels>(i64,i64)` | `rt_pixels_new` |
 | `Zanna.Graphics.Pixels.Set` | `void(obj,i64,i64,i64)` | `rt_pixels_set` |
 | `Zanna.Graphics.Pixels.SetRgba` | `void(obj,i64,i64,i64)` | `rt_pixels_set_rgba` |
 | `Zanna.Graphics.Pixels.SetColor` | `void(obj,i64,i64,i64)` | `rt_pixels_set_color` |
 | `Zanna.Graphics.Pixels.ToBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_pixels_to_bytes` |
 | <a id="zanna-graphics-pixels-get-width"></a>`Zanna.Graphics.Pixels.get_Width` | `i64(obj)` | `rt_pixels_width` |
-| `Zanna.Graphics.Pixels.LoadBmp` | `obj(str)` | `rt_pixels_load_bmp` |
+| `Zanna.Graphics.Pixels.LoadBmp` | `obj<Zanna.Graphics.Pixels>(str)` | `rt_pixels_load_bmp` |
 | `Zanna.Graphics.Pixels.SaveBmp` | `i64(obj,str)` | `rt_pixels_save_bmp` |
-| `Zanna.Graphics.Pixels.FlipH` | `obj(obj)` | `rt_pixels_flip_h` |
+| `Zanna.Graphics.Pixels.FlipH` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_flip_h` |
 | `Zanna.Graphics.Pixels.TintLuminanceMasked` | `void(obj,i64,f64,i64,i64)` | `rt_pixels_tint_luminance_masked` |
 | `Zanna.Graphics.Pixels.RecolorMasked` | `void(obj,i64,i64,i64)` | `rt_pixels_recolor_masked` |
 | `Zanna.Graphics.Pixels.DilateMasked` | `void(obj,obj,i64)` | `rt_pixels_dilate_masked` |
@@ -1711,21 +1711,21 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Pixels.ColorizeMaskedLinear` | `void(obj,obj,i64,i64,f64,f64)` | `rt_pixels_colorize_masked_linear` |
 | `Zanna.Graphics.Pixels.StampNonZero` | `void(obj,obj)` | `rt_pixels_stamp_nonzero` |
 | `Zanna.Graphics.Pixels.TintMaskedNeutral` | `void(obj,obj,i64,f64,i64,i64,i64)` | `rt_pixels_tint_masked_neutral` |
-| `Zanna.Graphics.Pixels.FlipV` | `obj(obj)` | `rt_pixels_flip_v` |
-| `Zanna.Graphics.Pixels.RotateClockwise` | `obj(obj)` | `rt_pixels_rotate_cw` |
-| `Zanna.Graphics.Pixels.RotateCounterClockwise` | `obj(obj)` | `rt_pixels_rotate_ccw` |
-| `Zanna.Graphics.Pixels.Rotate180` | `obj(obj)` | `rt_pixels_rotate_180` |
-| `Zanna.Graphics.Pixels.Rotate` | `obj(obj,f64)` | `rt_pixels_rotate` |
-| `Zanna.Graphics.Pixels.Scale` | `obj(obj,i64,i64)` | `rt_pixels_scale` |
-| `Zanna.Graphics.Pixels.Invert` | `obj(obj)` | `rt_pixels_invert` |
-| `Zanna.Graphics.Pixels.Grayscale` | `obj(obj)` | `rt_pixels_grayscale` |
-| `Zanna.Graphics.Pixels.Tint` | `obj(obj,i64)` | `rt_pixels_tint` |
-| `Zanna.Graphics.Pixels.Blur` | `obj(obj,i64)` | `rt_pixels_blur` |
-| `Zanna.Graphics.Pixels.Resize` | `obj(obj,i64,i64)` | `rt_pixels_resize` |
-| `Zanna.Graphics.Pixels.LoadPng` | `obj(str)` | `rt_pixels_load_png` |
-| `Zanna.Graphics.Pixels.LoadJpeg` | `obj(str)` | `rt_pixels_load_jpeg` |
-| `Zanna.Graphics.Pixels.LoadGif` | `obj(str)` | `rt_pixels_load_gif` |
-| `Zanna.Graphics.Pixels.Load` | `obj(str)` | `rt_pixels_load` |
+| `Zanna.Graphics.Pixels.FlipV` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_flip_v` |
+| `Zanna.Graphics.Pixels.RotateClockwise` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_rotate_cw` |
+| `Zanna.Graphics.Pixels.RotateCounterClockwise` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_rotate_ccw` |
+| `Zanna.Graphics.Pixels.Rotate180` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_rotate_180` |
+| `Zanna.Graphics.Pixels.Rotate` | `obj<Zanna.Graphics.Pixels>(obj,f64)` | `rt_pixels_rotate` |
+| `Zanna.Graphics.Pixels.Scale` | `obj<Zanna.Graphics.Pixels>(obj,i64,i64)` | `rt_pixels_scale` |
+| `Zanna.Graphics.Pixels.Invert` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_invert` |
+| `Zanna.Graphics.Pixels.Grayscale` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_pixels_grayscale` |
+| `Zanna.Graphics.Pixels.Tint` | `obj<Zanna.Graphics.Pixels>(obj,i64)` | `rt_pixels_tint` |
+| `Zanna.Graphics.Pixels.Blur` | `obj<Zanna.Graphics.Pixels>(obj,i64)` | `rt_pixels_blur` |
+| `Zanna.Graphics.Pixels.Resize` | `obj<Zanna.Graphics.Pixels>(obj,i64,i64)` | `rt_pixels_resize` |
+| `Zanna.Graphics.Pixels.LoadPng` | `obj<Zanna.Graphics.Pixels>(str)` | `rt_pixels_load_png` |
+| `Zanna.Graphics.Pixels.LoadJpeg` | `obj<Zanna.Graphics.Pixels>(str)` | `rt_pixels_load_jpeg` |
+| `Zanna.Graphics.Pixels.LoadGif` | `obj<Zanna.Graphics.Pixels>(str)` | `rt_pixels_load_gif` |
+| `Zanna.Graphics.Pixels.Load` | `obj<Zanna.Graphics.Pixels>(str)` | `rt_pixels_load` |
 | `Zanna.Graphics.Pixels.SavePng` | `i64(obj,str)` | `rt_pixels_save_png` |
 | `Zanna.Graphics.Pixels.SetRgb` | `void(obj,i64,i64,i64)` | `rt_pixels_set_rgb` |
 | `Zanna.Graphics.Pixels.GetRgb` | `i64(obj,i64,i64)` | `rt_pixels_get_rgb` |
@@ -1797,7 +1797,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-sprite-get-flipy"></a>`Zanna.Graphics.Sprite.get_FlipY` | `i1(obj)` | `rt_sprite_get_flip_y` |
 | <a id="zanna-graphics-sprite-set-flipy"></a>`Zanna.Graphics.Sprite.set_FlipY` | `void(obj,i1)` | `rt_sprite_set_flip_y` |
 | `Zanna.Graphics.Sprite.DrawTransformed` | `void(obj,obj,i64,i64,i64,i64,i64,i64,i64)` | `rt_sprite_draw_transformed` |
-| `Zanna.Graphics.SpriteAnimator.New` | `obj()` | `rt_sprite_animator_new` |
+| `Zanna.Graphics.SpriteAnimator.New` | `obj<Zanna.Graphics.SpriteAnimator>()` | `rt_sprite_animator_new` |
 | `Zanna.Graphics.SpriteAnimator.Destroy` | `void(obj)` | `rt_sprite_animator_destroy` |
 | `Zanna.Graphics.SpriteAnimator.AddClip` | `i1(obj,str,i64,i64,i64,i64)` | `rt_sprite_animator_add_clip_str` |
 | `Zanna.Graphics.SpriteAnimator.Play` | `i1(obj,str)` | `rt_sprite_animator_play_str` |
@@ -1805,7 +1805,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.SpriteAnimator.Update` | `void(obj,obj)` | `rt_sprite_animator_update` |
 | <a id="zanna-graphics-spriteanimator-get-isplaying"></a>`Zanna.Graphics.SpriteAnimator.get_IsPlaying` | `i1(obj)` | `rt_sprite_animator_is_playing` |
 | <a id="zanna-graphics-spriteanimator-get-current"></a>`Zanna.Graphics.SpriteAnimator.get_Current` | `str(obj)` | `rt_sprite_animator_get_current_str` |
-| `Zanna.Graphics.Camera.New` | `obj(i64,i64)` | `rt_camera_new` |
+| `Zanna.Graphics.Camera.New` | `obj<Zanna.Graphics.Camera>(i64,i64)` | `rt_camera_new` |
 | <a id="zanna-graphics-camera-get-x"></a>`Zanna.Graphics.Camera.get_X` | `i64(obj)` | `rt_camera_get_x` |
 | <a id="zanna-graphics-camera-set-x"></a>`Zanna.Graphics.Camera.set_X` | `void(obj,i64)` | `rt_camera_set_x` |
 | <a id="zanna-graphics-camera-get-y"></a>`Zanna.Graphics.Camera.get_Y` | `i64(obj)` | `rt_camera_get_y` |
@@ -1834,7 +1834,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Camera.ClearParallax` | `void(obj)` | `rt_camera_clear_parallax` |
 | <a id="zanna-graphics-camera-get-parallaxcount"></a>`Zanna.Graphics.Camera.get_ParallaxCount` | `i64(obj)` | `rt_camera_parallax_count` |
 | `Zanna.Graphics.Camera.DrawParallax` | `i64(obj,obj)` | `rt_camera_draw_parallax` |
-| `Zanna.Graphics.SpriteBatch.New` | `obj(i64)` | `rt_spritebatch_new` |
+| `Zanna.Graphics.SpriteBatch.New` | `obj<Zanna.Graphics.SpriteBatch>(i64)` | `rt_spritebatch_new` |
 | `Zanna.Graphics.SpriteBatch.Begin` | `void(obj)` | `rt_spritebatch_begin` |
 | `Zanna.Graphics.SpriteBatch.End` | `void(obj,obj)` | `rt_spritebatch_end` |
 | `Zanna.Graphics.SpriteBatch.Draw` | `void(obj,obj,i64,i64)` | `rt_spritebatch_draw` |
@@ -1852,37 +1852,37 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.SpriteBatch.DrawAtlas` | `void(obj,obj,str,i64,i64)` | `rt_spritebatch_draw_atlas` |
 | `Zanna.Graphics.SpriteBatch.DrawAtlasScaled` | `void(obj,obj,str,i64,i64,i64)` | `rt_spritebatch_draw_atlas_scaled` |
 | <a id="zanna-graphics-spritebatch-drawatlaswithtransform"></a>`Zanna.Graphics.SpriteBatch.DrawAtlasWithTransform` | `void(obj,obj,str,i64,i64,i64,i64,i64)` | `rt_spritebatch_draw_atlas_ex` |
-| `Zanna.Graphics.TextureAtlas.New` | `obj(obj)` | `rt_texatlas_new` |
-| `Zanna.Graphics.TextureAtlas.LoadGrid` | `obj(obj,i64,i64)` | `rt_texatlas_load_grid` |
+| `Zanna.Graphics.TextureAtlas.New` | `obj<Zanna.Graphics.TextureAtlas>(obj)` | `rt_texatlas_new` |
+| `Zanna.Graphics.TextureAtlas.LoadGrid` | `obj<Zanna.Graphics.TextureAtlas>(obj,i64,i64)` | `rt_texatlas_load_grid` |
 | `Zanna.Graphics.TextureAtlas.Add` | `void(obj,str,i64,i64,i64,i64)` | `rt_texatlas_add` |
 | `Zanna.Graphics.TextureAtlas.Has` | `i1(obj,str)` | `rt_texatlas_has` |
 | `Zanna.Graphics.TextureAtlas.GetX` | `i64(obj,str)` | `rt_texatlas_get_x` |
 | `Zanna.Graphics.TextureAtlas.GetY` | `i64(obj,str)` | `rt_texatlas_get_y` |
 | `Zanna.Graphics.TextureAtlas.GetWidth` | `i64(obj,str)` | `rt_texatlas_get_w` |
 | `Zanna.Graphics.TextureAtlas.GetHeight` | `i64(obj,str)` | `rt_texatlas_get_h` |
-| <a id="zanna-graphics-textureatlas-get-pixels"></a>`Zanna.Graphics.TextureAtlas.get_Pixels` | `obj(obj)` | `rt_texatlas_get_pixels` |
+| <a id="zanna-graphics-textureatlas-get-pixels"></a>`Zanna.Graphics.TextureAtlas.get_Pixels` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_texatlas_get_pixels` |
 | <a id="zanna-graphics-textureatlas-get-regioncount"></a>`Zanna.Graphics.TextureAtlas.get_RegionCount` | `i64(obj)` | `rt_texatlas_region_count` |
-| `Zanna.Graphics.RenderTarget2D.New` | `obj(i64,i64)` | `rt_rendertarget2d_new` |
+| `Zanna.Graphics.RenderTarget2D.New` | `obj<Zanna.Graphics.RenderTarget2D>(i64,i64)` | `rt_rendertarget2d_new` |
 | <a id="zanna-graphics-rendertarget2d-get-width"></a>`Zanna.Graphics.RenderTarget2D.get_Width` | `i64(obj)` | `rt_rendertarget2d_width` |
 | <a id="zanna-graphics-rendertarget2d-get-height"></a>`Zanna.Graphics.RenderTarget2D.get_Height` | `i64(obj)` | `rt_rendertarget2d_height` |
-| <a id="zanna-graphics-rendertarget2d-get-pixels"></a>`Zanna.Graphics.RenderTarget2D.get_Pixels` | `obj(obj)` | `rt_rendertarget2d_get_pixels` |
+| <a id="zanna-graphics-rendertarget2d-get-pixels"></a>`Zanna.Graphics.RenderTarget2D.get_Pixels` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_rendertarget2d_get_pixels` |
 | `Zanna.Graphics.RenderTarget2D.Clear` | `void(obj,i64)` | `rt_rendertarget2d_clear` |
 | `Zanna.Graphics.RenderTarget2D.Resize` | `void(obj,i64,i64)` | `rt_rendertarget2d_resize` |
 | `Zanna.Graphics.RenderTarget2D.DrawPixels` | `void(obj,i64,i64,obj)` | `rt_rendertarget2d_draw_pixels` |
 | `Zanna.Graphics.RenderTarget2D.DrawRegion` | `void(obj,i64,i64,obj,i64,i64,i64,i64)` | `rt_rendertarget2d_draw_region` |
-| `Zanna.Graphics.Texture2D.New` | `obj(obj)` | `rt_texture2d_new` |
-| `Zanna.Graphics.Texture2D.FromFile` | `obj(str)` | `rt_texture2d_from_file` |
+| `Zanna.Graphics.Texture2D.New` | `obj<Zanna.Graphics.Texture2D>(obj)` | `rt_texture2d_new` |
+| `Zanna.Graphics.Texture2D.FromFile` | `obj<Zanna.Graphics.Texture2D>(str)` | `rt_texture2d_from_file` |
 | <a id="zanna-graphics-texture2d-get-width"></a>`Zanna.Graphics.Texture2D.get_Width` | `i64(obj)` | `rt_texture2d_width` |
 | <a id="zanna-graphics-texture2d-get-height"></a>`Zanna.Graphics.Texture2D.get_Height` | `i64(obj)` | `rt_texture2d_height` |
-| <a id="zanna-graphics-texture2d-get-pixels"></a>`Zanna.Graphics.Texture2D.get_Pixels` | `obj(obj)` | `rt_texture2d_get_pixels` |
-| `Zanna.Graphics.Texture2D.ClonePixels` | `obj(obj)` | `rt_texture2d_clone_pixels` |
+| <a id="zanna-graphics-texture2d-get-pixels"></a>`Zanna.Graphics.Texture2D.get_Pixels` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_texture2d_get_pixels` |
+| `Zanna.Graphics.Texture2D.ClonePixels` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_texture2d_clone_pixels` |
 | <a id="zanna-graphics-texture2d-set-filter"></a>`Zanna.Graphics.Texture2D.set_Filter` | `void(obj,i64)` | `rt_texture2d_set_filter` |
 | <a id="zanna-graphics-texture2d-get-filter"></a>`Zanna.Graphics.Texture2D.get_Filter` | `i64(obj)` | `rt_texture2d_get_filter` |
 | <a id="zanna-graphics-texture2d-set-wrap"></a>`Zanna.Graphics.Texture2D.set_Wrap` | `void(obj,i64)` | `rt_texture2d_set_wrap` |
 | <a id="zanna-graphics-texture2d-get-wrap"></a>`Zanna.Graphics.Texture2D.get_Wrap` | `i64(obj)` | `rt_texture2d_get_wrap` |
-| `Zanna.Graphics.GpuTexture2D.New` | `obj(obj)` | `rt_gputexture2d_new` |
-| `Zanna.Graphics.GpuTexture2D.FromFile` | `obj(str)` | `rt_gputexture2d_from_file` |
-| `Zanna.Graphics.Renderer2D.New` | `obj(i64)` | `rt_renderer2d_new` |
+| `Zanna.Graphics.GpuTexture2D.New` | `obj<Zanna.Graphics.GpuTexture2D>(obj)` | `rt_gputexture2d_new` |
+| `Zanna.Graphics.GpuTexture2D.FromFile` | `obj<Zanna.Graphics.GpuTexture2D>(str)` | `rt_gputexture2d_from_file` |
+| `Zanna.Graphics.Renderer2D.New` | `obj<Zanna.Graphics.Renderer2D>(i64)` | `rt_renderer2d_new` |
 | `Zanna.Graphics.Renderer2D.Begin` | `void(obj)` | `rt_renderer2d_begin` |
 | `Zanna.Graphics.Renderer2D.Clear` | `void(obj)` | `rt_renderer2d_clear` |
 | <a id="zanna-graphics-renderer2d-get-count"></a>`Zanna.Graphics.Renderer2D.get_Count` | `i64(obj)` | `rt_renderer2d_count` |
@@ -1898,28 +1898,28 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Renderer2D.DrawRegion` | `void(obj,obj,i64,i64,i64,i64,i64,i64)` | `rt_renderer2d_draw_region` |
 | `Zanna.Graphics.Renderer2D.FlushToTarget` | `void(obj,obj)` | `rt_renderer2d_flush_to_target` |
 | `Zanna.Graphics.Renderer2D.End` | `void(obj,obj)` | `rt_renderer2d_end` |
-| `Zanna.Graphics.Material2D.New` | `obj()` | `rt_material2d_new` |
+| `Zanna.Graphics.Material2D.New` | `obj<Zanna.Graphics.Material2D>()` | `rt_material2d_new` |
 | <a id="zanna-graphics-material2d-set-tint"></a>`Zanna.Graphics.Material2D.set_Tint` | `void(obj,i64)` | `rt_material2d_set_tint` |
 | <a id="zanna-graphics-material2d-get-tint"></a>`Zanna.Graphics.Material2D.get_Tint` | `i64(obj)` | `rt_material2d_get_tint` |
 | <a id="zanna-graphics-material2d-set-alpha"></a>`Zanna.Graphics.Material2D.set_Alpha` | `void(obj,i64)` | `rt_material2d_set_alpha` |
 | <a id="zanna-graphics-material2d-get-alpha"></a>`Zanna.Graphics.Material2D.get_Alpha` | `i64(obj)` | `rt_material2d_get_alpha` |
 | <a id="zanna-graphics-material2d-set-blendmode"></a>`Zanna.Graphics.Material2D.set_BlendMode` | `void(obj,i64)` | `rt_material2d_set_blend_mode` |
 | <a id="zanna-graphics-material2d-get-blendmode"></a>`Zanna.Graphics.Material2D.get_BlendMode` | `i64(obj)` | `rt_material2d_get_blend_mode` |
-| `Zanna.Graphics.Material2D.Apply` | `obj(obj,obj)` | `rt_material2d_apply` |
-| `Zanna.Graphics.Shader2D.New` | `obj(i64)` | `rt_shader2d_new` |
+| `Zanna.Graphics.Material2D.Apply` | `obj<Zanna.Graphics.Pixels>(obj,obj)` | `rt_material2d_apply` |
+| `Zanna.Graphics.Shader2D.New` | `obj<Zanna.Graphics.Shader2D>(i64)` | `rt_shader2d_new` |
 | <a id="zanna-graphics-shader2d-set-effect"></a>`Zanna.Graphics.Shader2D.set_Effect` | `void(obj,i64)` | `rt_shader2d_set_effect` |
 | <a id="zanna-graphics-shader2d-get-effect"></a>`Zanna.Graphics.Shader2D.get_Effect` | `i64(obj)` | `rt_shader2d_get_effect` |
 | <a id="zanna-graphics-shader2d-set-amount"></a>`Zanna.Graphics.Shader2D.set_Amount` | `void(obj,i64)` | `rt_shader2d_set_amount` |
 | <a id="zanna-graphics-shader2d-get-amount"></a>`Zanna.Graphics.Shader2D.get_Amount` | `i64(obj)` | `rt_shader2d_get_amount` |
 | <a id="zanna-graphics-shader2d-set-color"></a>`Zanna.Graphics.Shader2D.set_Color` | `void(obj,i64)` | `rt_shader2d_set_color` |
 | <a id="zanna-graphics-shader2d-get-color"></a>`Zanna.Graphics.Shader2D.get_Color` | `i64(obj)` | `rt_shader2d_get_color` |
-| `Zanna.Graphics.Shader2D.Apply` | `obj(obj,obj)` | `rt_shader2d_apply` |
-| `Zanna.Graphics.PostProcess2D.New` | `obj()` | `rt_postprocess2d_new` |
+| `Zanna.Graphics.Shader2D.Apply` | `obj<Zanna.Graphics.Pixels>(obj,obj)` | `rt_shader2d_apply` |
+| `Zanna.Graphics.PostProcess2D.New` | `obj<Zanna.Graphics.PostProcess2D>()` | `rt_postprocess2d_new` |
 | <a id="zanna-graphics-postprocess2d-set-effect"></a>`Zanna.Graphics.PostProcess2D.set_Effect` | `void(obj,i64)` | `rt_postprocess2d_set_effect` |
 | <a id="zanna-graphics-postprocess2d-set-amount"></a>`Zanna.Graphics.PostProcess2D.set_Amount` | `void(obj,i64)` | `rt_postprocess2d_set_amount` |
 | <a id="zanna-graphics-postprocess2d-set-color"></a>`Zanna.Graphics.PostProcess2D.set_Color` | `void(obj,i64)` | `rt_postprocess2d_set_color` |
-| `Zanna.Graphics.PostProcess2D.Apply` | `obj(obj,obj)` | `rt_postprocess2d_apply` |
-| `Zanna.Graphics.Viewport2D.New` | `obj(i64,i64,i64,i64)` | `rt_viewport2d_new` |
+| `Zanna.Graphics.PostProcess2D.Apply` | `obj<Zanna.Graphics.Pixels>(obj,obj)` | `rt_postprocess2d_apply` |
+| `Zanna.Graphics.Viewport2D.New` | `obj<Zanna.Graphics.Viewport2D>(i64,i64,i64,i64)` | `rt_viewport2d_new` |
 | `Zanna.Graphics.Viewport2D.SetVirtualSize` | `void(obj,i64,i64)` | `rt_viewport2d_set_virtual_size` |
 | `Zanna.Graphics.Viewport2D.SetScreenSize` | `void(obj,i64,i64)` | `rt_viewport2d_set_screen_size` |
 | `Zanna.Graphics.Viewport2D.SetIntegerScaling` | `void(obj,i1)` | `rt_viewport2d_set_integer_scaling` |
@@ -1930,12 +1930,12 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Viewport2D.WorldToScreenY` | `i64(obj,i64)` | `rt_viewport2d_world_to_screen_y` |
 | `Zanna.Graphics.Viewport2D.ScreenToWorldX` | `i64(obj,i64)` | `rt_viewport2d_screen_to_world_x` |
 | `Zanna.Graphics.Viewport2D.ScreenToWorldY` | `i64(obj,i64)` | `rt_viewport2d_screen_to_world_y` |
-| `Zanna.Graphics.TileSet2D.New` | `obj(obj,i64,i64)` | `rt_tileset2d_new` |
+| `Zanna.Graphics.TileSet2D.New` | `obj<Zanna.Graphics.TileSet2D>(obj,i64,i64)` | `rt_tileset2d_new` |
 | <a id="zanna-graphics-tileset2d-get-columns"></a>`Zanna.Graphics.TileSet2D.get_Columns` | `i64(obj)` | `rt_tileset2d_columns` |
 | <a id="zanna-graphics-tileset2d-get-rows"></a>`Zanna.Graphics.TileSet2D.get_Rows` | `i64(obj)` | `rt_tileset2d_rows` |
 | <a id="zanna-graphics-tileset2d-get-tilecount"></a>`Zanna.Graphics.TileSet2D.get_TileCount` | `i64(obj)` | `rt_tileset2d_tile_count` |
-| `Zanna.Graphics.TileSet2D.GetTilePixels` | `obj(obj,i64)` | `rt_tileset2d_get_tile_pixels` |
-| `Zanna.Graphics.TileLayer2D.New` | `obj(i64,i64)` | `rt_tilelayer2d_new` |
+| `Zanna.Graphics.TileSet2D.GetTilePixels` | `obj<Zanna.Graphics.Pixels>(obj,i64)` | `rt_tileset2d_get_tile_pixels` |
+| `Zanna.Graphics.TileLayer2D.New` | `obj<Zanna.Graphics.TileLayer2D>(i64,i64)` | `rt_tilelayer2d_new` |
 | <a id="zanna-graphics-tilelayer2d-get-width"></a>`Zanna.Graphics.TileLayer2D.get_Width` | `i64(obj)` | `rt_tilelayer2d_width` |
 | <a id="zanna-graphics-tilelayer2d-get-height"></a>`Zanna.Graphics.TileLayer2D.get_Height` | `i64(obj)` | `rt_tilelayer2d_height` |
 | `Zanna.Graphics.TileLayer2D.Set` | `void(obj,i64,i64,i64)` | `rt_tilelayer2d_set` |
@@ -1946,7 +1946,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-tilelayer2d-get-visible"></a>`Zanna.Graphics.TileLayer2D.get_Visible` | `i1(obj)` | `rt_tilelayer2d_is_visible` |
 | <a id="zanna-graphics-tilelayer2d-set-opacity"></a>`Zanna.Graphics.TileLayer2D.set_Opacity` | `void(obj,i64)` | `rt_tilelayer2d_set_opacity` |
 | <a id="zanna-graphics-tilelayer2d-get-opacity"></a>`Zanna.Graphics.TileLayer2D.get_Opacity` | `i64(obj)` | `rt_tilelayer2d_get_opacity` |
-| `Zanna.Graphics.ObjectLayer2D.New` | `obj(i64)` | `rt_objectlayer2d_new` |
+| `Zanna.Graphics.ObjectLayer2D.New` | `obj<Zanna.Graphics.ObjectLayer2D>(i64)` | `rt_objectlayer2d_new` |
 | `Zanna.Graphics.ObjectLayer2D.AddRect` | `i64(obj,i64,i64,i64,i64,i64)` | `rt_objectlayer2d_add_rect` |
 | <a id="zanna-graphics-objectlayer2d-get-count"></a>`Zanna.Graphics.ObjectLayer2D.get_Count` | `i64(obj)` | `rt_objectlayer2d_count` |
 | `Zanna.Graphics.ObjectLayer2D.Clear` | `void(obj)` | `rt_objectlayer2d_clear` |
@@ -1955,11 +1955,11 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.ObjectLayer2D.GetWidth` | `i64(obj,i64)` | `rt_objectlayer2d_get_width` |
 | `Zanna.Graphics.ObjectLayer2D.GetHeight` | `i64(obj,i64)` | `rt_objectlayer2d_get_height` |
 | `Zanna.Graphics.ObjectLayer2D.GetType` | `i64(obj,i64)` | `rt_objectlayer2d_get_type` |
-| `Zanna.Graphics.AutoTile2D.New` | `obj()` | `rt_autotile2d_new` |
+| `Zanna.Graphics.AutoTile2D.New` | `obj<Zanna.Graphics.AutoTile2D>()` | `rt_autotile2d_new` |
 | `Zanna.Graphics.AutoTile2D.SetVariant` | `void(obj,i64,i64)` | `rt_autotile2d_set_variant` |
 | `Zanna.Graphics.AutoTile2D.Resolve` | `i64(obj,i64)` | `rt_autotile2d_resolve` |
 | `Zanna.Graphics.AutoTile2D.Apply` | `void(obj,obj,i64,i64,i64)` | `rt_autotile2d_apply` |
-| `Zanna.Graphics.Path2D.New` | `obj(i64)` | `rt_path2d_new` |
+| `Zanna.Graphics.Path2D.New` | `obj<Zanna.Graphics.Path2D>(i64)` | `rt_path2d_new` |
 | `Zanna.Graphics.Path2D.Clear` | `void(obj)` | `rt_path2d_clear` |
 | `Zanna.Graphics.Path2D.MoveTo` | `void(obj,i64,i64)` | `rt_path2d_move_to` |
 | `Zanna.Graphics.Path2D.LineTo` | `void(obj,i64,i64)` | `rt_path2d_line_to` |
@@ -1967,33 +1967,33 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Path2D.GetX` | `i64(obj,i64)` | `rt_path2d_get_x` |
 | `Zanna.Graphics.Path2D.GetY` | `i64(obj,i64)` | `rt_path2d_get_y` |
 | `Zanna.Graphics.Path2D.DrawToPixels` | `void(obj,obj,i64)` | `rt_path2d_draw_to_pixels` |
-| `Zanna.Graphics.ShapeRenderer2D.New` | `obj()` | `rt_shaperenderer2d_new` |
+| `Zanna.Graphics.ShapeRenderer2D.New` | `obj<Zanna.Graphics.ShapeRenderer2D>()` | `rt_shaperenderer2d_new` |
 | `Zanna.Graphics.ShapeRenderer2D.SetStroke` | `void(obj,i64)` | `rt_shaperenderer2d_set_stroke` |
 | `Zanna.Graphics.ShapeRenderer2D.SetFill` | `void(obj,i64)` | `rt_shaperenderer2d_set_fill` |
 | `Zanna.Graphics.ShapeRenderer2D.Line` | `void(obj,obj,i64,i64,i64,i64)` | `rt_shaperenderer2d_line` |
 | `Zanna.Graphics.ShapeRenderer2D.Rect` | `void(obj,obj,i64,i64,i64,i64)` | `rt_shaperenderer2d_rect` |
 | `Zanna.Graphics.ShapeRenderer2D.Circle` | `void(obj,obj,i64,i64,i64)` | `rt_shaperenderer2d_circle` |
 | `Zanna.Graphics.ShapeRenderer2D.Path` | `void(obj,obj,obj)` | `rt_shaperenderer2d_path` |
-| `Zanna.Graphics.TextRenderer2D.New` | `obj()` | `rt_textrenderer2d_new` |
+| `Zanna.Graphics.TextRenderer2D.New` | `obj<Zanna.Graphics.TextRenderer2D>()` | `rt_textrenderer2d_new` |
 | `Zanna.Graphics.TextRenderer2D.SetFont` | `void(obj,obj)` | `rt_textrenderer2d_set_font` |
 | <a id="zanna-graphics-textrenderer2d-set-scale"></a>`Zanna.Graphics.TextRenderer2D.set_Scale` | `void(obj,i64)` | `rt_textrenderer2d_set_scale` |
 | <a id="zanna-graphics-textrenderer2d-set-color"></a>`Zanna.Graphics.TextRenderer2D.set_Color` | `void(obj,i64)` | `rt_textrenderer2d_set_color` |
 | `Zanna.Graphics.TextRenderer2D.MeasureWidth` | `i64(obj,str)` | `rt_textrenderer2d_measure_width` |
 | `Zanna.Graphics.TextRenderer2D.MeasureHeight` | `i64(obj,str)` | `rt_textrenderer2d_measure_height` |
 | `Zanna.Graphics.TextRenderer2D.Draw` | `void(obj,obj,i64,i64,str)` | `rt_textrenderer2d_draw` |
-| `Zanna.Graphics.SdfFont.New` | `obj(obj,i64)` | `rt_sdffont_new` |
-| <a id="zanna-graphics-sdffont-get-bitmapfont"></a>`Zanna.Graphics.SdfFont.get_BitmapFont` | `obj(obj)` | `rt_sdffont_get_bitmap_font` |
+| `Zanna.Graphics.SdfFont.New` | `obj<Zanna.Graphics.SdfFont>(obj,i64)` | `rt_sdffont_new` |
+| <a id="zanna-graphics-sdffont-get-bitmapfont"></a>`Zanna.Graphics.SdfFont.get_BitmapFont` | `obj<Zanna.Core.Object>(obj)` | `rt_sdffont_get_bitmap_font` |
 | <a id="zanna-graphics-sdffont-get-spread"></a>`Zanna.Graphics.SdfFont.get_Spread` | `i64(obj)` | `rt_sdffont_get_spread` |
-| `Zanna.Graphics.NineSlice2D.New` | `obj(obj,i64,i64,i64,i64)` | `rt_nineslice2d_new` |
+| `Zanna.Graphics.NineSlice2D.New` | `obj<Zanna.Graphics.NineSlice2D>(obj,i64,i64,i64,i64)` | `rt_nineslice2d_new` |
 | `Zanna.Graphics.NineSlice2D.DrawToPixels` | `void(obj,obj,i64,i64,i64,i64)` | `rt_nineslice2d_draw_to_pixels` |
-| `Zanna.Graphics.DebugDraw2D.New` | `obj(i64)` | `rt_debugdraw2d_new` |
+| `Zanna.Graphics.DebugDraw2D.New` | `obj<Zanna.Graphics.DebugDraw2D>(i64)` | `rt_debugdraw2d_new` |
 | `Zanna.Graphics.DebugDraw2D.Clear` | `void(obj)` | `rt_debugdraw2d_clear` |
 | <a id="zanna-graphics-debugdraw2d-get-count"></a>`Zanna.Graphics.DebugDraw2D.get_Count` | `i64(obj)` | `rt_debugdraw2d_count` |
 | `Zanna.Graphics.DebugDraw2D.Line` | `void(obj,i64,i64,i64,i64,i64)` | `rt_debugdraw2d_line` |
 | `Zanna.Graphics.DebugDraw2D.Rect` | `void(obj,i64,i64,i64,i64,i64)` | `rt_debugdraw2d_rect` |
 | `Zanna.Graphics.DebugDraw2D.Circle` | `void(obj,i64,i64,i64,i64)` | `rt_debugdraw2d_circle` |
 | `Zanna.Graphics.DebugDraw2D.DrawToPixels` | `void(obj,obj)` | `rt_debugdraw2d_draw_to_pixels` |
-| `Zanna.Graphics.Transform2D.New` | `obj()` | `rt_transform2d_new` |
+| `Zanna.Graphics.Transform2D.New` | `obj<Zanna.Graphics.Transform2D>()` | `rt_transform2d_new` |
 | <a id="zanna-graphics-transform2d-get-x"></a>`Zanna.Graphics.Transform2D.get_X` | `i64(obj)` | `rt_transform2d_get_x` |
 | <a id="zanna-graphics-transform2d-set-x"></a>`Zanna.Graphics.Transform2D.set_X` | `void(obj,i64)` | `rt_transform2d_set_x` |
 | <a id="zanna-graphics-transform2d-get-y"></a>`Zanna.Graphics.Transform2D.get_Y` | `i64(obj)` | `rt_transform2d_get_y` |
@@ -2010,13 +2010,13 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Transform2D.Translate` | `void(obj,i64,i64)` | `rt_transform2d_translate` |
 | `Zanna.Graphics.Transform2D.TransformX` | `i64(obj,i64,i64)` | `rt_transform2d_transform_x` |
 | `Zanna.Graphics.Transform2D.TransformY` | `i64(obj,i64,i64)` | `rt_transform2d_transform_y` |
-| `Zanna.Graphics.Sampler2D.New` | `obj()` | `rt_sampler2d_new` |
+| `Zanna.Graphics.Sampler2D.New` | `obj<Zanna.Graphics.Sampler2D>()` | `rt_sampler2d_new` |
 | <a id="zanna-graphics-sampler2d-set-filter"></a>`Zanna.Graphics.Sampler2D.set_Filter` | `void(obj,i64)` | `rt_sampler2d_set_filter` |
 | <a id="zanna-graphics-sampler2d-get-filter"></a>`Zanna.Graphics.Sampler2D.get_Filter` | `i64(obj)` | `rt_sampler2d_get_filter` |
 | <a id="zanna-graphics-sampler2d-set-wrap"></a>`Zanna.Graphics.Sampler2D.set_Wrap` | `void(obj,i64)` | `rt_sampler2d_set_wrap` |
 | <a id="zanna-graphics-sampler2d-get-wrap"></a>`Zanna.Graphics.Sampler2D.get_Wrap` | `i64(obj)` | `rt_sampler2d_get_wrap` |
 | `Zanna.Graphics.Sampler2D.ApplyToTexture` | `void(obj,obj)` | `rt_sampler2d_apply_to_texture` |
-| `Zanna.Graphics.BlendState2D.New` | `obj()` | `rt_blendstate2d_new` |
+| `Zanna.Graphics.BlendState2D.New` | `obj<Zanna.Graphics.BlendState2D>()` | `rt_blendstate2d_new` |
 | <a id="zanna-graphics-blendstate2d-set-blendmode"></a>`Zanna.Graphics.BlendState2D.set_BlendMode` | `void(obj,i64)` | `rt_blendstate2d_set_blend_mode` |
 | <a id="zanna-graphics-blendstate2d-get-blendmode"></a>`Zanna.Graphics.BlendState2D.get_BlendMode` | `i64(obj)` | `rt_blendstate2d_get_blend_mode` |
 | <a id="zanna-graphics-blendstate2d-set-tint"></a>`Zanna.Graphics.BlendState2D.set_Tint` | `void(obj,i64)` | `rt_blendstate2d_set_tint` |
@@ -2024,31 +2024,31 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-blendstate2d-set-alpha"></a>`Zanna.Graphics.BlendState2D.set_Alpha` | `void(obj,i64)` | `rt_blendstate2d_set_alpha` |
 | <a id="zanna-graphics-blendstate2d-get-alpha"></a>`Zanna.Graphics.BlendState2D.get_Alpha` | `i64(obj)` | `rt_blendstate2d_get_alpha` |
 | `Zanna.Graphics.BlendState2D.ApplyToRenderer` | `void(obj,obj)` | `rt_blendstate2d_apply_to_renderer` |
-| `Zanna.Graphics.SpriteRenderer2D.New` | `obj()` | `rt_spriterenderer2d_new` |
+| `Zanna.Graphics.SpriteRenderer2D.New` | `obj<Zanna.Graphics.SpriteRenderer2D>()` | `rt_spriterenderer2d_new` |
 | `Zanna.Graphics.SpriteRenderer2D.SetMaterial` | `void(obj,obj)` | `rt_spriterenderer2d_set_material` |
 | `Zanna.Graphics.SpriteRenderer2D.SetSampler` | `void(obj,obj)` | `rt_spriterenderer2d_set_sampler` |
 | `Zanna.Graphics.SpriteRenderer2D.SetBlendState` | `void(obj,obj)` | `rt_spriterenderer2d_set_blend_state` |
 | `Zanna.Graphics.SpriteRenderer2D.DrawPixels` | `void(obj,obj,obj,i64,i64)` | `rt_spriterenderer2d_draw_pixels` |
 | `Zanna.Graphics.SpriteRenderer2D.DrawTexture` | `void(obj,obj,obj,i64,i64)` | `rt_spriterenderer2d_draw_texture` |
-| `Zanna.Graphics.TileChunkCache2D.New` | `obj(i64,i64)` | `rt_tilechunkcache2d_new` |
+| `Zanna.Graphics.TileChunkCache2D.New` | `obj<Zanna.Graphics.TileChunkCache2D>(i64,i64)` | `rt_tilechunkcache2d_new` |
 | <a id="zanna-graphics-tilechunkcache2d-get-chunkwidth"></a>`Zanna.Graphics.TileChunkCache2D.get_ChunkWidth` | `i64(obj)` | `rt_tilechunkcache2d_get_chunk_width` |
 | <a id="zanna-graphics-tilechunkcache2d-get-chunkheight"></a>`Zanna.Graphics.TileChunkCache2D.get_ChunkHeight` | `i64(obj)` | `rt_tilechunkcache2d_get_chunk_height` |
 | `Zanna.Graphics.TileChunkCache2D.MarkDirty` | `void(obj)` | `rt_tilechunkcache2d_mark_dirty` |
 | `Zanna.Graphics.TileChunkCache2D.ClearDirty` | `void(obj)` | `rt_tilechunkcache2d_clear_dirty` |
 | <a id="zanna-graphics-tilechunkcache2d-get-dirtycount"></a>`Zanna.Graphics.TileChunkCache2D.get_DirtyCount` | `i64(obj)` | `rt_tilechunkcache2d_get_dirty_count` |
-| `Zanna.Graphics.AnimationClip2D.New` | `obj(i64,i64,i64,i64)` | `rt_animationclip2d_new` |
+| `Zanna.Graphics.AnimationClip2D.New` | `obj<Zanna.Graphics.AnimationClip2D>(i64,i64,i64,i64)` | `rt_animationclip2d_new` |
 | <a id="zanna-graphics-animationclip2d-get-startframe"></a>`Zanna.Graphics.AnimationClip2D.get_StartFrame` | `i64(obj)` | `rt_animationclip2d_get_start_frame` |
 | <a id="zanna-graphics-animationclip2d-get-framecount"></a>`Zanna.Graphics.AnimationClip2D.get_FrameCount` | `i64(obj)` | `rt_animationclip2d_get_frame_count` |
 | <a id="zanna-graphics-animationclip2d-get-framedelayms"></a>`Zanna.Graphics.AnimationClip2D.get_FrameDelayMs` | `i64(obj)` | `rt_animationclip2d_get_frame_delay_ms` |
 | <a id="zanna-graphics-animationclip2d-get-loop"></a>`Zanna.Graphics.AnimationClip2D.get_Loop` | `i1(obj)` | `rt_animationclip2d_get_loop` |
-| `Zanna.Graphics.AnimatedSprite2D.New` | `obj(obj)` | `rt_animatedsprite2d_new` |
+| `Zanna.Graphics.AnimatedSprite2D.New` | `obj<Zanna.Graphics.AnimatedSprite2D>(obj)` | `rt_animatedsprite2d_new` |
 | `Zanna.Graphics.AnimatedSprite2D.SetClip` | `void(obj,obj)` | `rt_animatedsprite2d_set_clip` |
 | `Zanna.Graphics.AnimatedSprite2D.Play` | `void(obj)` | `rt_animatedsprite2d_play` |
 | `Zanna.Graphics.AnimatedSprite2D.Stop` | `void(obj)` | `rt_animatedsprite2d_stop` |
 | `Zanna.Graphics.AnimatedSprite2D.Update` | `void(obj,i64)` | `rt_animatedsprite2d_update` |
 | <a id="zanna-graphics-animatedsprite2d-get-frame"></a>`Zanna.Graphics.AnimatedSprite2D.get_Frame` | `i64(obj)` | `rt_animatedsprite2d_get_frame` |
 | <a id="zanna-graphics-animatedsprite2d-get-isplaying"></a>`Zanna.Graphics.AnimatedSprite2D.get_IsPlaying` | `i1(obj)` | `rt_animatedsprite2d_is_playing` |
-| `Zanna.Graphics.TextLayout2D.New` | `obj()` | `rt_textlayout2d_new` |
+| `Zanna.Graphics.TextLayout2D.New` | `obj<Zanna.Graphics.TextLayout2D>()` | `rt_textlayout2d_new` |
 | `Zanna.Graphics.TextLayout2D.SetFont` | `void(obj,obj)` | `rt_textlayout2d_set_font` |
 | <a id="zanna-graphics-textlayout2d-set-scale"></a>`Zanna.Graphics.TextLayout2D.set_Scale` | `void(obj,i64)` | `rt_textlayout2d_set_scale` |
 | <a id="zanna-graphics-textlayout2d-set-wrapwidth"></a>`Zanna.Graphics.TextLayout2D.set_WrapWidth` | `void(obj,i64)` | `rt_textlayout2d_set_wrap_width` |
@@ -2056,26 +2056,26 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-textlayout2d-set-color"></a>`Zanna.Graphics.TextLayout2D.set_Color` | `void(obj,i64)` | `rt_textlayout2d_set_color` |
 | `Zanna.Graphics.TextLayout2D.MeasureWidth` | `i64(obj,str)` | `rt_textlayout2d_measure_width` |
 | `Zanna.Graphics.TextLayout2D.MeasureHeight` | `i64(obj,str)` | `rt_textlayout2d_measure_height` |
-| `Zanna.Graphics.RenderPass2D.New` | `obj(obj,obj)` | `rt_renderpass2d_new` |
+| `Zanna.Graphics.RenderPass2D.New` | `obj<Zanna.Graphics.RenderPass2D>(obj,obj)` | `rt_renderpass2d_new` |
 | `Zanna.Graphics.RenderPass2D.SetSource` | `void(obj,obj)` | `rt_renderpass2d_set_source` |
 | `Zanna.Graphics.RenderPass2D.SetTarget` | `void(obj,obj)` | `rt_renderpass2d_set_target` |
 | `Zanna.Graphics.RenderPass2D.SetShader` | `void(obj,obj)` | `rt_renderpass2d_set_shader` |
 | <a id="zanna-graphics-renderpass2d-set-isenabled"></a>`Zanna.Graphics.RenderPass2D.set_IsEnabled` | `void(obj,i1)` | `rt_renderpass2d_set_enabled` |
 | <a id="zanna-graphics-renderpass2d-get-isenabled"></a>`Zanna.Graphics.RenderPass2D.get_IsEnabled` | `i1(obj)` | `rt_renderpass2d_get_enabled` |
 | `Zanna.Graphics.RenderPass2D.Execute` | `void(obj)` | `rt_renderpass2d_execute` |
-| `Zanna.Graphics.RenderGraph2D.New` | `obj(i64)` | `rt_rendergraph2d_new` |
+| `Zanna.Graphics.RenderGraph2D.New` | `obj<Zanna.Graphics.RenderGraph2D>(i64)` | `rt_rendergraph2d_new` |
 | `Zanna.Graphics.RenderGraph2D.AddPass` | `void(obj,obj)` | `rt_rendergraph2d_add_pass` |
 | `Zanna.Graphics.RenderGraph2D.Clear` | `void(obj)` | `rt_rendergraph2d_clear` |
 | <a id="zanna-graphics-rendergraph2d-get-count"></a>`Zanna.Graphics.RenderGraph2D.get_Count` | `i64(obj)` | `rt_rendergraph2d_get_count` |
 | `Zanna.Graphics.RenderGraph2D.Execute` | `void(obj)` | `rt_rendergraph2d_execute` |
-| `Zanna.Graphics.CollisionMask2D.New` | `obj(i64,i64)` | `rt_collisionmask2d_new` |
-| `Zanna.Graphics.CollisionMask2D.FromPixels` | `obj(obj,i64)` | `rt_collisionmask2d_from_pixels` |
+| `Zanna.Graphics.CollisionMask2D.New` | `obj<Zanna.Graphics.CollisionMask2D>(i64,i64)` | `rt_collisionmask2d_new` |
+| `Zanna.Graphics.CollisionMask2D.FromPixels` | `obj<Zanna.Graphics.CollisionMask2D>(obj,i64)` | `rt_collisionmask2d_from_pixels` |
 | <a id="zanna-graphics-collisionmask2d-get-width"></a>`Zanna.Graphics.CollisionMask2D.get_Width` | `i64(obj)` | `rt_collisionmask2d_get_width` |
 | <a id="zanna-graphics-collisionmask2d-get-height"></a>`Zanna.Graphics.CollisionMask2D.get_Height` | `i64(obj)` | `rt_collisionmask2d_get_height` |
 | `Zanna.Graphics.CollisionMask2D.Set` | `void(obj,i64,i64,i64)` | `rt_collisionmask2d_set` |
 | `Zanna.Graphics.CollisionMask2D.Get` | `i64(obj,i64,i64)` | `rt_collisionmask2d_get` |
 | `Zanna.Graphics.CollisionMask2D.Overlaps` | `i1(obj,i64,i64,obj,i64,i64)` | `rt_collisionmask2d_overlaps` |
-| `Zanna.Graphics.Hitbox2D.New` | `obj(i64,i64,i64,i64)` | `rt_hitbox2d_new` |
+| `Zanna.Graphics.Hitbox2D.New` | `obj<Zanna.Graphics.Hitbox2D>(i64,i64,i64,i64)` | `rt_hitbox2d_new` |
 | `Zanna.Graphics.Hitbox2D.Set` | `void(obj,i64,i64,i64,i64)` | `rt_hitbox2d_set` |
 | <a id="zanna-graphics-hitbox2d-get-x"></a>`Zanna.Graphics.Hitbox2D.get_X` | `i64(obj)` | `rt_hitbox2d_get_x` |
 | <a id="zanna-graphics-hitbox2d-get-y"></a>`Zanna.Graphics.Hitbox2D.get_Y` | `i64(obj)` | `rt_hitbox2d_get_y` |
@@ -2083,14 +2083,14 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-hitbox2d-get-height"></a>`Zanna.Graphics.Hitbox2D.get_Height` | `i64(obj)` | `rt_hitbox2d_get_height` |
 | `Zanna.Graphics.Hitbox2D.Contains` | `i1(obj,i64,i64)` | `rt_hitbox2d_contains` |
 | `Zanna.Graphics.Hitbox2D.Intersects` | `i1(obj,obj)` | `rt_hitbox2d_intersects` |
-| `Zanna.Graphics.Palette2D.New` | `obj()` | `rt_palette2d_new` |
+| `Zanna.Graphics.Palette2D.New` | `obj<Zanna.Graphics.Palette2D>()` | `rt_palette2d_new` |
 | `Zanna.Graphics.Palette2D.SetColor` | `void(obj,i64,i64)` | `rt_palette2d_set_color` |
 | `Zanna.Graphics.Palette2D.GetColor` | `i64(obj,i64)` | `rt_palette2d_get_color_value` |
 | `Zanna.Graphics.Palette2D.GetRgba` | `i64(obj,i64)` | `rt_palette2d_get_color` |
 | <a id="zanna-graphics-palette2d-get-count"></a>`Zanna.Graphics.Palette2D.get_Count` | `i64(obj)` | `rt_palette2d_get_count` |
-| `Zanna.Graphics.Palette2D.Apply` | `obj(obj,obj)` | `rt_palette2d_apply` |
-| `Zanna.Graphics.Palette2D.ApplyLegacy` | `obj(obj,obj)` | `rt_palette2d_apply_legacy` |
-| `Zanna.Graphics.Gradient2D.New` | `obj(i64,i64,i64)` | `rt_gradient2d_new` |
+| `Zanna.Graphics.Palette2D.Apply` | `obj<Zanna.Graphics.Pixels>(obj,obj)` | `rt_palette2d_apply` |
+| `Zanna.Graphics.Palette2D.ApplyLegacy` | `obj<Zanna.Graphics.Pixels>(obj,obj)` | `rt_palette2d_apply_legacy` |
+| `Zanna.Graphics.Gradient2D.New` | `obj<Zanna.Graphics.Gradient2D>(i64,i64,i64)` | `rt_gradient2d_new` |
 | `Zanna.Graphics.Gradient2D.SetColors` | `void(obj,i64,i64)` | `rt_gradient2d_set_colors` |
 | <a id="zanna-graphics-gradient2d-set-steps"></a>`Zanna.Graphics.Gradient2D.set_Steps` | `void(obj,i64)` | `rt_gradient2d_set_steps` |
 | `Zanna.Graphics.Gradient2D.Sample` | `i64(obj,f64)` | `rt_gradient2d_sample_color_normalized` |
@@ -2099,7 +2099,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Gradient2D.SampleRgbaPercent` | `i64(obj,i64)` | `rt_gradient2d_sample` |
 | `Zanna.Graphics.Gradient2D.FillHorizontal` | `void(obj,obj)` | `rt_gradient2d_fill_horizontal` |
 | `Zanna.Graphics.Gradient2D.FillVertical` | `void(obj,obj)` | `rt_gradient2d_fill_vertical` |
-| `Zanna.Graphics.CameraRig2D.New` | `obj(obj)` | `rt_camerarig2d_new` |
+| `Zanna.Graphics.CameraRig2D.New` | `obj<Zanna.Graphics.CameraRig2D>(obj)` | `rt_camerarig2d_new` |
 | `Zanna.Graphics.CameraRig2D.SetCamera` | `void(obj,obj)` | `rt_camerarig2d_set_camera` |
 | `Zanna.Graphics.CameraRig2D.SetTarget` | `void(obj,i64,i64)` | `rt_camerarig2d_set_target` |
 | `Zanna.Graphics.CameraRig2D.SetSmoothing` | `void(obj,i64)` | `rt_camerarig2d_set_smoothing` |
@@ -2109,26 +2109,26 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.CameraRig2D.Update` | `void(obj)` | `rt_camerarig2d_update` |
 | <a id="zanna-graphics-camerarig2d-get-renderx"></a>`Zanna.Graphics.CameraRig2D.get_RenderX` | `i64(obj)` | `rt_camerarig2d_get_render_x` |
 | <a id="zanna-graphics-camerarig2d-get-rendery"></a>`Zanna.Graphics.CameraRig2D.get_RenderY` | `i64(obj)` | `rt_camerarig2d_get_render_y` |
-| `Zanna.Graphics.TexturePackerAtlas.New` | `obj(obj)` | `rt_texturepackeratlas_new` |
-| <a id="zanna-graphics-texturepackeratlas-get-atlas"></a>`Zanna.Graphics.TexturePackerAtlas.get_Atlas` | `obj(obj)` | `rt_texturepackeratlas_get_atlas` |
+| `Zanna.Graphics.TexturePackerAtlas.New` | `obj<Zanna.Graphics.TexturePackerAtlas>(obj)` | `rt_texturepackeratlas_new` |
+| <a id="zanna-graphics-texturepackeratlas-get-atlas"></a>`Zanna.Graphics.TexturePackerAtlas.get_Atlas` | `obj<Zanna.Graphics.TextureAtlas>(obj)` | `rt_texturepackeratlas_get_atlas` |
 | `Zanna.Graphics.TexturePackerAtlas.Add` | `void(obj,str,i64,i64,i64,i64)` | `rt_texturepackeratlas_add` |
 | `Zanna.Graphics.TexturePackerAtlas.Has` | `i1(obj,str)` | `rt_texturepackeratlas_has` |
 | <a id="zanna-graphics-texturepackeratlas-get-regioncount"></a>`Zanna.Graphics.TexturePackerAtlas.get_RegionCount` | `i64(obj)` | `rt_texturepackeratlas_region_count` |
-| `Zanna.Graphics.AsepriteImporter.New` | `obj()` | `rt_asepriteimporter_new` |
+| `Zanna.Graphics.AsepriteImporter.New` | `obj<Zanna.Graphics.AsepriteImporter>()` | `rt_asepriteimporter_new` |
 | `Zanna.Graphics.AsepriteImporter.SetGrid` | `void(obj,i64,i64)` | `rt_asepriteimporter_set_grid` |
 | <a id="zanna-graphics-asepriteimporter-get-framewidth"></a>`Zanna.Graphics.AsepriteImporter.get_FrameWidth` | `i64(obj)` | `rt_asepriteimporter_get_frame_width` |
 | <a id="zanna-graphics-asepriteimporter-get-frameheight"></a>`Zanna.Graphics.AsepriteImporter.get_FrameHeight` | `i64(obj)` | `rt_asepriteimporter_get_frame_height` |
-| `Zanna.Graphics.AsepriteImporter.ToAtlas` | `obj(obj,obj)` | `rt_asepriteimporter_to_atlas` |
-| `Zanna.Graphics.TiledMapLoader.New` | `obj()` | `rt_tiledmaploader_new` |
+| `Zanna.Graphics.AsepriteImporter.ToAtlas` | `obj<Zanna.Graphics.TextureAtlas>(obj,obj)` | `rt_asepriteimporter_to_atlas` |
+| `Zanna.Graphics.TiledMapLoader.New` | `obj<Zanna.Graphics.TiledMapLoader>()` | `rt_tiledmaploader_new` |
 | `Zanna.Graphics.TiledMapLoader.SetTileSize` | `void(obj,i64,i64)` | `rt_tiledmaploader_set_tile_size` |
 | <a id="zanna-graphics-tiledmaploader-get-tilewidth"></a>`Zanna.Graphics.TiledMapLoader.get_TileWidth` | `i64(obj)` | `rt_tiledmaploader_get_tile_width` |
 | <a id="zanna-graphics-tiledmaploader-get-tileheight"></a>`Zanna.Graphics.TiledMapLoader.get_TileHeight` | `i64(obj)` | `rt_tiledmaploader_get_tile_height` |
-| `Zanna.Graphics.TiledMapLoader.NewTilemap` | `obj(obj,i64,i64)` | `rt_tiledmaploader_new_tilemap` |
+| `Zanna.Graphics.TiledMapLoader.NewTilemap` | `obj<Zanna.Graphics2D.Tilemap>(obj,i64,i64)` | `rt_tiledmaploader_new_tilemap` |
 | `Zanna.Graphics.TiledMapLoader.Load` | `obj<Zanna.Graphics2D.Tilemap>(obj,str)` | `rt_tiledmaploader_load` |
 | `Zanna.Graphics.TiledMapLoader.LoadResult` | `obj<Zanna.Result>(obj,str)` | `rt_tiledmaploader_load_result` |
 | `Zanna.Graphics.TiledMapLoader.LoadAsset` | `obj<Zanna.Graphics2D.Tilemap>(obj,str)` | `rt_tiledmaploader_load_asset` |
 | `Zanna.Graphics.TiledMapLoader.LoadAssetResult` | `obj<Zanna.Result>(obj,str)` | `rt_tiledmaploader_load_asset_result` |
-| `Zanna.Graphics.VideoPlayer.Open` | `obj(str)` | `rt_videoplayer_open` |
+| `Zanna.Graphics.VideoPlayer.Open` | `obj<Zanna.Graphics.VideoPlayer>(str)` | `rt_videoplayer_open` |
 | `Zanna.Graphics.VideoPlayer.Play` | `void(obj)` | `rt_videoplayer_play` |
 | `Zanna.Graphics.VideoPlayer.Pause` | `void(obj)` | `rt_videoplayer_pause` |
 | `Zanna.Graphics.VideoPlayer.Stop` | `void(obj)` | `rt_videoplayer_stop` |
@@ -2140,5 +2140,5 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-videoplayer-get-duration"></a>`Zanna.Graphics.VideoPlayer.get_Duration` | `f64(obj)` | `rt_videoplayer_get_duration` |
 | <a id="zanna-graphics-videoplayer-get-position"></a>`Zanna.Graphics.VideoPlayer.get_Position` | `f64(obj)` | `rt_videoplayer_get_position` |
 | <a id="zanna-graphics-videoplayer-get-isplaying"></a>`Zanna.Graphics.VideoPlayer.get_IsPlaying` | `i1(obj)` | `rt_videoplayer_get_is_playing` |
-| <a id="zanna-graphics-videoplayer-get-frame"></a>`Zanna.Graphics.VideoPlayer.get_Frame` | `obj(obj)` | `rt_videoplayer_get_frame` |
+| <a id="zanna-graphics-videoplayer-get-frame"></a>`Zanna.Graphics.VideoPlayer.get_Frame` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_videoplayer_get_frame` |
 

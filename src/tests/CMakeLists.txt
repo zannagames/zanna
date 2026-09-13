@@ -830,6 +830,26 @@ zanna_add_ctest(smoke_basic_oop
 zanna_add_ctest(smoke_basic_point_ctor
         $<TARGET_FILE:zanna> front basic -run ${CMAKE_CURRENT_SOURCE_DIR}/smoke/basic_point_ctor.bas)
 
+# Small BASIC programs that must compile and run to completion. A program that reads
+# INPUT gets its stdin from <name>.stdin and must print exactly <name>.expect.
+file(GLOB SMOKE_BASIC_PROGRAMS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/smoke/basic/*.bas")
+foreach (smoke_program IN LISTS SMOKE_BASIC_PROGRAMS)
+    get_filename_component(smoke_name "${smoke_program}" NAME_WE)
+    get_filename_component(smoke_dir "${smoke_program}" DIRECTORY)
+    if (EXISTS "${smoke_dir}/${smoke_name}.stdin")
+        zanna_add_ctest(smoke_basic_${smoke_name}
+                ${CMAKE_COMMAND}
+                -DILC=$<TARGET_FILE:zanna>
+                -DBAS_FILE=${smoke_program}
+                -DSTDIN_FILE=${smoke_dir}/${smoke_name}.stdin
+                -DEXPECT_FILE=${smoke_dir}/${smoke_name}.expect
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/basic/semantics/check_expect.cmake)
+    else ()
+        zanna_add_ctest(smoke_basic_${smoke_name}
+                $<TARGET_FILE:zanna> front basic -run "${smoke_program}")
+    endif ()
+endforeach ()
+
 zanna_add_unit_support_tests()
 zanna_add_il_core_tests()
 zanna_add_basic_early_tests()
@@ -990,6 +1010,7 @@ set(ZIA_RUNTIME_TESTS
         test_map_typed
         test_list_sort
         test_bytes_nullbyte
+        test_assets_registry_types
         test_final_const_expr
         test_namespace_length_collision
         test_bugfix_modvar_retain
@@ -1009,6 +1030,29 @@ foreach (test_name IN LISTS ZIA_RUNTIME_TESTS)
     endif ()
 endforeach ()
 
+# ADR 0314: BASIC honours declared runtime result ownership. The native twin
+# lives in e2e/native_run_ownership.cmake.
+add_test(NAME basic_runtime_test_basic_runtime_result_ownership
+        COMMAND $<TARGET_FILE:zbasic> "${ZIA_RUNTIME_TESTS_DIR}/test_basic_runtime_result_ownership.bas"
+        WORKING_DIRECTORY "${ZIA_RUNTIME_TESTS_DIR}")
+set_tests_properties(basic_runtime_test_basic_runtime_result_ownership PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Trap"
+        LABELS "runtime;basic"
+        TIMEOUT 30)
+
+# BASIC class objects: array fields of every element kind are allocated and
+# destroyed with matching helpers, and FUNCTION AS <Class> results keep their
+# class at the call site. The native twin lives in e2e/native_run_ownership.cmake.
+add_test(NAME basic_runtime_test_basic_class_lifetimes
+        COMMAND $<TARGET_FILE:zbasic> "${ZIA_RUNTIME_TESTS_DIR}/test_basic_class_lifetimes.bas"
+        WORKING_DIRECTORY "${ZIA_RUNTIME_TESTS_DIR}")
+set_tests_properties(basic_runtime_test_basic_class_lifetimes PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Trap"
+        LABELS "runtime;basic"
+        TIMEOUT 30)
+
 # Platform services (ADR 0352): the Zia fixture runs on the VM against the fake
 # steam_api redistributable and against a missing one. Native twins live with
 # the other native_run lanes below.
@@ -1027,6 +1071,20 @@ if (TARGET zanna_fake_steam_api)
                 LABELS "runtime;zia"
                 TIMEOUT 60)
     endforeach ()
+
+    # Store depot smoke (ADR 0354): package a Zanna.Services project for the host's
+    # steam-* target with the fake steam_api as the redistributable, then run the
+    # staged executable. Registered here because the fake is defined after the tools tests.
+    zanna_add_ctest(package_steam_depot_smoke
+            ${CMAKE_COMMAND}
+            -DZANNA_BIN=$<TARGET_FILE:zanna>
+            -DFAKE_STEAM_LIBRARY=$<TARGET_FILE:zanna_fake_steam_api>
+            -DTEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/package_steam_depot_smoke
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/SteamDepotPackageSmoke.cmake)
+    set_tests_properties(package_steam_depot_smoke PROPERTIES
+            TIMEOUT 300
+            SKIP_REGULAR_EXPRESSION "Skipping Steam depot smoke")
+    zanna_add_test_labels(package_steam_depot_smoke tools installer zia)
 endif ()
 
 # =============================================================================
@@ -1046,11 +1104,17 @@ foreach (test_file IN LISTS ZIA_RT_API_TEST_FILES)
             TIMEOUT 30)
 endforeach ()
 
-zanna_add_ctest(basic_rt_api_test_scene
-        $<TARGET_FILE:zanna> front basic -run "${ZIA_RT_API_TESTS_DIR}/test_scene.bas")
-set_tests_properties(basic_rt_api_test_scene PROPERTIES
-        LABELS "runtime;basic;rt_api"
-        TIMEOUT 30)
+# BASIC twins of the rt_api fixtures exercise the same runtime surface through the BASIC frontend.
+file(GLOB BASIC_RT_API_TEST_FILES CONFIGURE_DEPENDS "${ZIA_RT_API_TESTS_DIR}/*.bas")
+foreach (test_file IN LISTS BASIC_RT_API_TEST_FILES)
+    get_filename_component(test_name "${test_file}" NAME_WE)
+    zanna_add_ctest(basic_rt_api_${test_name}
+            $<TARGET_FILE:zanna> front basic -run "${test_file}")
+    set_tests_properties(basic_rt_api_${test_name} PROPERTIES
+            LABELS "runtime;basic;rt_api"
+            WORKING_DIRECTORY "${ZIA_RT_API_TESTS_DIR}"
+            TIMEOUT 30)
+endforeach ()
 
 set(ZIA_AUDIT_TESTS_DIR "${CMAKE_SOURCE_DIR}/src/tests/fixtures/zia_audit")
 file(GLOB ZIA_AUDIT_TEST_FILES CONFIGURE_DEPENDS "${ZIA_AUDIT_TESTS_DIR}/*.zia")
@@ -1087,7 +1151,6 @@ set(ZIA_LANG_TESTS_DIR "${CMAKE_SOURCE_DIR}/src/tests/fixtures/zia_runtime")
 # Note: Some tests excluded due to environment requirements:
 # - 04_environment, 17_time_env: require command-line arguments
 # - 07_terminal_input: requires interactive input
-# - 09_math_rnd: requires specific Zanna namespace bindings
 set(ZIA_LANG_TESTS
         01_terminal_math_random
         02_strings
@@ -1095,6 +1158,7 @@ set(ZIA_LANG_TESTS
         05_optionals_match
         06_control_flow
         08_string_length
+        09_math_rnd
         10_for_break_continue
         11_recursion_factorial
         12_list_map_stats

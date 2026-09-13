@@ -1,5 +1,5 @@
 // unionfind_demo.zia - Comprehensive API audit for Zanna.Collections.UnionFind
-// Tests: New, Find, FindRootOption, Union, Connected, Count, SetSize, Reset
+// Tests: New, FindRoot, Union, IsConnected, Count, ComponentSize, Clear
 
 module UnionFindDemo;
 
@@ -16,10 +16,10 @@ func start() {
     var uf = UnionFind.New(6);
     SayInt(uf.Count);       // 6 (each element is its own set)
 
-    // --- Find ---
-    Say("--- Find ---");
-    SayInt(uf.Find(0));     // 0 (own representative)
-    SayInt(uf.Find(3));     // 3 (own representative)
+    // --- FindRoot ---
+    Say("--- FindRoot ---");
+    SayInt(uf.FindRoot(0).UnwrapOrI64(-1));     // 0 (own representative)
+    SayInt(uf.FindRoot(3).UnwrapOrI64(-1));     // 3 (own representative)
     var root = uf.FindRoot(0);
     SayBool(root.IsSome);
     SayInt(root.UnwrapI64()); // 0

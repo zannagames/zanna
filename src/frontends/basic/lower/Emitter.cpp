@@ -25,6 +25,7 @@
 #include "frontends/basic/StringUtils.hpp"
 
 #include <cassert>
+#include <iterator>
 #include <optional>
 #include <string_view>
 #include <unordered_set>
@@ -565,6 +566,38 @@ void Emitter::releaseDeferredTemps() {
 ///          module-level initialization or prior procedures (BUG-063 fix).
 void Emitter::clearDeferredTemps() {
     deferredTemps_.clear();
+}
+
+/// @brief Remove and return every queued deferred release.
+/// @return The queued releases in scheduling order; the queue is left empty.
+std::vector<Emitter::TempRelease> Emitter::takeDeferredTemps() {
+    std::vector<TempRelease> taken;
+    taken.swap(deferredTemps_);
+    return taken;
+}
+
+/// @brief Queue previously taken releases again, ahead of any queued since.
+/// @param temps Releases returned by @ref takeDeferredTemps.
+void Emitter::restoreDeferredTemps(std::vector<TempRelease> temps) {
+    temps.insert(temps.end(),
+                 std::make_move_iterator(deferredTemps_.begin()),
+                 std::make_move_iterator(deferredTemps_.end()));
+    deferredTemps_.swap(temps);
+}
+
+/// @brief Remove a temporary from the deferred-release queue without releasing it.
+/// @details Every queued entry for the temporary is dropped, so no later
+///          @ref releaseDeferredTemps call releases the transferred reference.
+/// @param v Temporary to unqueue.
+/// @return True when @p v was queued.
+bool Emitter::takeDeferredTemp(Value v) {
+    if (v.kind != Value::Kind::Temp)
+        return false;
+    const std::size_t before = deferredTemps_.size();
+    std::erase_if(deferredTemps_, [&](const TempRelease &t) {
+        return t.v.kind == Value::Kind::Temp && t.v.id == v.id;
+    });
+    return deferredTemps_.size() != before;
 }
 
 /// @brief Emits conditional destruction and release for one object symbol.

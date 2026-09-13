@@ -35,7 +35,7 @@ func start() {
     Say("Template child Y = " + toString(Vec3.get_Y(SceneNode.get_Position(templateChild))));
 
     var instRoot = SceneAsset.Instantiate(model);
-    var instChild = SceneNode.FindOption(instRoot, "child").Unwrap();
+    var instChild = SceneNode.Find(instRoot, "child").Unwrap();
     SceneNode.SetPosition(instChild, 9.0, 9.0, 9.0);
     Say("Instance child Y = " + toString(Vec3.get_Y(SceneNode.get_Position(instChild))));
     Say("Template child still Y = " + toString(Vec3.get_Y(SceneNode.get_Position(templateChild))));

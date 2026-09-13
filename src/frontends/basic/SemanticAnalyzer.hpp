@@ -209,6 +209,11 @@ class SemanticAnalyzer {
     /// @return Const reference owned by @ref procReg_.
     const ProcTable &procs() const;
 
+    /// @brief Looks up a procedure signature by exact, canonical or qualified spelling.
+    /// @param name Procedure name as written at a call site.
+    /// @return Registry-owned signature, or null when no procedure has that name.
+    const ProcSignature *lookupProcSignature(std::string_view name) const;
+
     /// @brief Copies canonical namespace imports from the active USING scope.
     /// @return Imported namespace paths in unspecified order; aliases are
     ///         excluded.
@@ -425,10 +430,25 @@ class SemanticAnalyzer {
                                il::support::SourceLoc loc,
                                uint32_t length);
 
+    /// @brief Report an `AS` clause naming a class that does not exist (`B2111`).
+    /// @param typeName Class name as written, simple or dotted.
+    /// @param loc Location of the declaration.
+    /// @return True when the name refers to a known type.
+    bool checkClassTypeName(const std::string &typeName, il::support::SourceLoc loc);
+
     /// @brief Validates assignment to a simple variable.
     /// @param v Mutable destination variable.
     /// @param s Assignment supplying the source value and location.
     void analyzeVarAssignment(VarExpr &v, const LetStmt &s);
+    /// @brief Validates assignment to the active FUNCTION's name, its VB-style result slot.
+    /// @param v Destination naming the active FUNCTION.
+    /// @param s Assignment supplying the source value and location.
+    /// @param resultType Result type the FUNCTION declares.
+    void analyzeFunctionResultAssignment(VarExpr &v, const LetStmt &s, Type resultType);
+    /// @brief Result type of the active FUNCTION.
+    /// @return OBJECT for `AS OBJECT` and class results, otherwise the type its AS clause,
+    ///         name suffix or INTEGER default declares; @c std::nullopt outside a FUNCTION.
+    [[nodiscard]] std::optional<Type> activeFunctionResultType() const;
     /// @brief Validates assignment to an indexed array element.
     /// @param a Mutable indexed destination.
     /// @param s Assignment supplying the source value and location.
@@ -454,6 +474,8 @@ class SemanticAnalyzer {
         Bool,
         /// @brief Array whose elements are integers.
         ArrayInt,
+        /// @brief Array whose elements are floating-point values.
+        ArrayFloat,
         /// @brief Array whose elements are strings.
         ArrayString,
         /// @brief Array whose elements are object references.
@@ -532,6 +554,12 @@ class SemanticAnalyzer {
         /// @param previous Class to restore, or no value when the key was absent.
         void noteObjectClassMutation(const std::string &name, std::optional<std::string> previous);
 
+        /// @brief Records a declared-class baseline on first mutation.
+        /// @param name Exact map key.
+        /// @param previous Declared class to restore, or no value when the key was absent.
+        void noteDeclaredObjectClassMutation(const std::string &name,
+                                             std::optional<std::string> previous);
+
         /// @brief Records an array-metadata baseline on first mutation.
         /// @param name Exact map key.
         /// @param previous Metadata to restore, or no value when absent.
@@ -601,6 +629,8 @@ class SemanticAnalyzer {
         std::vector<VarTypeDelta> varTypeDeltas_;
         /// @brief First-seen object-class baselines.
         std::vector<ObjectClassDelta> objectClassDeltas_;
+        /// @brief First-seen declared-class baselines.
+        std::vector<ObjectClassDelta> declaredObjectClassDeltas_;
         /// @brief First-seen array baselines.
         std::vector<ArrayDelta> arrayDeltas_;
         /// @brief First-seen literal-channel baselines.
@@ -609,6 +639,8 @@ class SemanticAnalyzer {
         std::unordered_set<std::string> trackedVarTypes_;
         /// @brief Keys already represented in @ref objectClassDeltas_.
         std::unordered_set<std::string> trackedObjectClasses_;
+        /// @brief Keys already represented in @ref declaredObjectClassDeltas_.
+        std::unordered_set<std::string> trackedDeclaredObjectClasses_;
         /// @brief Keys already represented in @ref arrayDeltas_.
         std::unordered_set<std::string> trackedArrays_;
         /// @brief Channels already represented in @ref channelDeltas_.
@@ -690,25 +722,25 @@ class SemanticAnalyzer {
     /// @brief Static validation metadata for one builtin argument position.
     struct BuiltinArgSpec {
         /// @brief Whether the argument may be omitted at this position.
-        bool optional{false};         ///< Whether the argument may be omitted.
+        bool optional{false}; ///< Whether the argument may be omitted.
         /// @brief Pointer to static allowed-type storage, or null for none.
         const Type *allowed{nullptr}; ///< Pointer to allowed types array.
         /// @brief Number of readable elements beginning at @ref allowed.
-        std::size_t allowedCount{0};  ///< Number of entries in @ref allowed.
+        std::size_t allowedCount{0}; ///< Number of entries in @ref allowed.
     };
 
     /// @brief Static arity, per-position, and result metadata for a builtin.
     struct BuiltinSignature {
         /// @brief Minimum required argument count.
-        std::size_t requiredArgs{0};              ///< Number of mandatory arguments.
+        std::size_t requiredArgs{0}; ///< Number of mandatory arguments.
         /// @brief Additional arguments accepted beyond the required prefix.
-        std::size_t optionalArgs{0};              ///< Number of optional arguments.
+        std::size_t optionalArgs{0}; ///< Number of optional arguments.
         /// @brief Pointer to per-position static metadata.
         const BuiltinArgSpec *arguments{nullptr}; ///< Per-position argument specs.
         /// @brief Number of readable entries beginning at @ref arguments.
-        std::size_t argumentCount{0};             ///< Total number of entries in @ref arguments.
+        std::size_t argumentCount{0}; ///< Total number of entries in @ref arguments.
         /// @brief Semantic result type for the generic signature path.
-        Type result{Type::Unknown};               ///< Result type reported when checks pass.
+        Type result{Type::Unknown}; ///< Result type reported when checks pass.
     };
 
     /// @brief Pointer-to-member type for builtin-specific validation handlers.
@@ -946,7 +978,7 @@ class SemanticAnalyzer {
     NamespaceRegistry ns_; ///< Registry for declared namespaces and types.
 
     /// @brief File-level USING declarations used to seed resolution.
-    UsingContext usings_;  ///< File-scoped USING imports.
+    UsingContext usings_; ///< File-scoped USING imports.
 
     /// @brief Imports and aliases visible in one namespace-analysis scope.
     struct UsingScope {
@@ -961,10 +993,10 @@ class SemanticAnalyzer {
     };
 
     /// @brief Nested namespace USING scopes; imports may be inherited.
-    std::vector<UsingScope> usingStack_;     ///< Scoped USING contexts (inherit on namespace entry)
+    std::vector<UsingScope> usingStack_; ///< Scoped USING contexts (inherit on namespace entry)
 
     /// @brief Current namespace path segments.
-    std::vector<std::string> nsStack_;       ///< Current namespace path during analysis.
+    std::vector<std::string> nsStack_; ///< Current namespace path during analysis.
 
     /// @brief Resolver created after namespace declaration collection.
     std::unique_ptr<TypeResolver> resolver_; ///< Type resolver (constructed after declare pass).
@@ -988,9 +1020,14 @@ class SemanticAnalyzer {
     /// @brief Qualified class name by resolved object variable.
     std::unordered_map<std::string, std::string> objectClassTypes_;
 
+    /// @brief Class named by `DIM ... AS <Class>`, by resolved variable.
+    /// @details A declared class is the variable's type: assignments never replace or clear
+    ///          the @ref objectClassTypes_ entry of a variable listed here.
+    std::unordered_map<std::string, std::string> declaredObjectClasses_;
+
     /// @brief Shape metadata by resolved array symbol.
     std::unordered_map<std::string, ArrayMetadata>
-        arrays_;                                 ///< Array metadata with extents and total size
+        arrays_; ///< Array metadata with extents and total size
 
     /// @brief Literal file channels currently modeled as open.
     std::unordered_set<long long> openChannels_; ///< Channels opened by literal handles.
@@ -1005,7 +1042,7 @@ class SemanticAnalyzer {
     std::vector<std::string> forStack_; ///< Active FOR loop variables.
 
     /// @brief Active EXIT target kinds, outermost to innermost.
-    std::vector<LoopKind> loopStack_;   ///< Active loop constructs for EXIT validation.
+    std::vector<LoopKind> loopStack_; ///< Active loop constructs for EXIT validation.
 
     /// @brief Lowering-time conversion target keyed by borrowed AST node address.
     std::unordered_map<const Expr *, Type> implicitConversions_;

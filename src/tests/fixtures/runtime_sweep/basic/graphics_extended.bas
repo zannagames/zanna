@@ -142,7 +142,7 @@ Zanna.Core.Diagnostics.Assert(Zanna.Graphics.Color.GetRed(dark) < 200, "Color.Da
 '=============================================================================
 DIM pixels AS Zanna.Graphics.Pixels
 pixels = NEW Zanna.Graphics.Pixels(8, 8)
-pixels.Fill(red)
+pixels.FillColor(red)
 
 ' Test Invert
 DIM inverted AS Zanna.Graphics.Pixels
@@ -151,7 +151,7 @@ Zanna.Core.Diagnostics.AssertEq(inverted.Width, 8, "Pixels.Invert width")
 Zanna.Core.Diagnostics.AssertEq(inverted.Height, 8, "Pixels.Invert height")
 ' Red (255,0,0) inverted should be cyan (0,255,255)
 DIM invColor AS INTEGER
-invColor = inverted.Get(0, 0)
+invColor = inverted.GetColor(0, 0)
 Zanna.Core.Diagnostics.AssertEq(Zanna.Graphics.Color.GetRed(invColor), 0, "Pixels.Invert R")
 Zanna.Core.Diagnostics.AssertEq(Zanna.Graphics.Color.GetGreen(invColor), 255, "Pixels.Invert G")
 Zanna.Core.Diagnostics.AssertEq(Zanna.Graphics.Color.GetBlue(invColor), 255, "Pixels.Invert B")
@@ -161,7 +161,7 @@ DIM gray AS Zanna.Graphics.Pixels
 gray = pixels.Grayscale()
 Zanna.Core.Diagnostics.AssertEq(gray.Width, 8, "Pixels.Grayscale width")
 DIM grayColor AS INTEGER
-grayColor = gray.Get(0, 0)
+grayColor = gray.GetColor(0, 0)
 ' Grayscale of red should have R=G=B
 DIM grayR AS INTEGER
 DIM grayG AS INTEGER
@@ -203,7 +203,7 @@ canvas.Flip()
 '=============================================================================
 DIM spritePixels AS Zanna.Graphics.Pixels
 spritePixels = NEW Zanna.Graphics.Pixels(16, 16)
-spritePixels.Fill(red)
+spritePixels.FillColor(red)
 
 DIM sprite AS Zanna.Graphics.Sprite
 sprite = NEW Zanna.Graphics.Sprite(spritePixels)
@@ -239,12 +239,8 @@ Zanna.Core.Diagnostics.AssertEq(sprite.X, 15, "Sprite.Move X")
 Zanna.Core.Diagnostics.AssertEq(sprite.Y, 25, "Sprite.Move Y")
 
 ' Test Contains
-DIM containsResult AS INTEGER
-containsResult = sprite.Contains(15, 25)
-Zanna.Core.Diagnostics.AssertEq(containsResult, 1, "Sprite.Contains inside")
-
-containsResult = sprite.Contains(0, 0)
-Zanna.Core.Diagnostics.AssertEq(containsResult, 0, "Sprite.Contains outside")
+Zanna.Core.Diagnostics.Assert(sprite.Contains(15, 25), "Sprite.Contains inside")
+Zanna.Core.Diagnostics.Assert(NOT sprite.Contains(0, 0), "Sprite.Contains outside")
 
 ' Test Draw
 sprite.Draw(canvas)

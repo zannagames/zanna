@@ -68,7 +68,7 @@ PRINT "Div((1,2,3) / 2.0) Z: "; vdiv.Z
 ' --- Neg ---
 PRINT "--- Neg ---"
 DIM vneg AS Zanna.Math.Vec3
-vneg = v1.Neg()
+vneg = v1.Negate()
 PRINT "Neg(1,2,3) X: "; vneg.X
 PRINT "Neg(1,2,3) Y: "; vneg.Y
 PRINT "Neg(1,2,3) Z: "; vneg.Z

@@ -5,10 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/zia/test_zia_optional_narrowing.cpp
-// Purpose: Test optional type narrowing after null checks
-// Key invariants: After null check, type should be narrowed in the appropriate branch
-// Links: bugs/sqlzia_bugs.md BUG-003
+// File: src/tests/zia/test_zia_optional_narrowing.cpp
+// Purpose: Test optional type narrowing after null checks, alone and combined with &&, || and !.
+// Key invariants:
+//   - After a null check, the checked value narrows in the branch where it is non-null.
+//   - A combination narrows exactly the values its outcome proves non-null.
+// Ownership/Lifetime:
+//   - Each test owns its source manager and compilation result.
+// Links: src/frontends/zia/Sema_Scope.cpp, docs/languages/zia-reference.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -538,6 +542,97 @@ func start() {
     }
 
     EXPECT_TRUE(result.succeeded());
+}
+
+/// @brief Null checks combined with `&&`, `||` and `!` narrow every value they prove non-null.
+/// @details `a != null && b != null` narrows both in the then-branch; `a == null || b == null`
+///          narrows both in the else-branch and after an early return; a negated disjunction
+///          narrows like the conjunction; and a later `&&` operand sees the earlier checks.
+TEST(ZiaOptionalNarrowing, LogicalCombinationsOfNullChecksNarrowEachValue) {
+    const std::string src = R"(
+module Test;
+
+class Row {
+    expose Integer v;
+    expose func init(x: Integer) { v = x; }
+    expose func getValue() -> Integer { return v; }
+}
+
+func pick(i: Integer) -> Row? {
+    if i > 0 { return new Row(i); }
+    return null;
+}
+
+func sum(a: Row?, b: Row?) -> Integer {
+    if a == null || b == null {
+        return -1;
+    }
+    return a.getValue() + b.getValue();
+}
+
+func start() {
+    var a = pick(1);
+    var b = pick(2);
+    if a != null && b != null {
+        var copy = a;
+        Zanna.Terminal.SayInt(copy.getValue() + b.getValue());
+    }
+    if !(a == null || b == null) {
+        Zanna.Terminal.SayInt(b.getValue());
+    }
+    if a == null || b == null {
+        Zanna.Terminal.Say("missing");
+    } else {
+        Zanna.Terminal.SayInt(a.getValue() * b.getValue());
+    }
+    if a != null && a.getValue() > 0 && b != null && b.getValue() > 1 {
+        Zanna.Terminal.SayInt(sum(a, b));
+    }
+}
+)";
+
+    SourceManager sm;
+    CompilerInput input{.source = src, .path = "logical_null_narrow.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+
+    if (!result.succeeded()) {
+        std::cerr << "Diagnostics for LogicalCombinationsOfNullChecksNarrowEachValue:\n";
+        for (const auto &d : result.diagnostics.diagnostics()) {
+            std::cerr << "  [" << (d.severity == Severity::Error ? "ERROR" : "WARN") << "] "
+                      << d.message << "\n";
+        }
+    }
+
+    ASSERT_TRUE(result.succeeded());
+    auto verified = il::verify::Verifier::verify(result.module);
+    EXPECT_TRUE(verified.hasValue());
+}
+
+/// @brief A disjunction that holds proves nothing, so neither value narrows in its then-branch.
+TEST(ZiaOptionalNarrowing, DisjunctionThenBranchDoesNotNarrow) {
+    const std::string src = R"(
+module Test;
+
+class Row {
+    expose Integer v;
+    expose func init(x: Integer) { v = x; }
+}
+
+func start() {
+    var a: Row? = null;
+    var b: Row? = new Row(2);
+    if a != null || b != null {
+        Zanna.Terminal.SayInt(a.v);
+    }
+}
+)";
+
+    SourceManager sm;
+    CompilerInput input{.source = src, .path = "disjunction_no_narrow.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+    EXPECT_FALSE(result.succeeded());
 }
 
 } // namespace

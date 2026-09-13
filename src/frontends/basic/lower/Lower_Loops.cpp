@@ -524,6 +524,9 @@ void Lowerer::lowerFor(const ForStmt &stmt) {
 
     // Store initial value to loop variable
     emitStore(Type(Type::Kind::I64), ctrlSlot, start.value);
+    // The bounds are evaluated once; release their temporaries before the body, whose
+    // statement boundaries would otherwise release them on every iteration.
+    releaseDeferredTemps();
 
     // Emit the loop using the resolved pointer for the control variable
     CtrlState state = emitFor(stmt, ctrlSlot, end, step);

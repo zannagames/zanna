@@ -767,6 +767,14 @@ class Parser {
     /// @return Resolved BASIC type, defaults to I64 on mismatch.
     Type parseTypeKeyword();
 
+    /// @brief Map a primitive type name written after AS to its type.
+    /// @details INTEGER, INT, LONG and I64 name the 64-bit integer; DOUBLE, FLOAT, SINGLE
+    ///          and F64 the double; STRING the string; BOOLEAN and BOOL the boolean.
+    ///          Matching ignores case.
+    /// @param name Type name as written.
+    /// @return The primitive type, or std::nullopt when @p name is not primitive (a class).
+    [[nodiscard]] static std::optional<Type> primitiveTypeFromName(std::string_view name);
+
     /// @brief Parse an optional BASIC return type following a FUNCTION header.
     /// @return Parsed BASIC type; returns Unknown when no recognised annotation is present.
     BasicType parseBasicType();

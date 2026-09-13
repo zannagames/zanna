@@ -6,13 +6,16 @@
 #===----------------------------------------------------------------------===#
 #
 # File: src/tests/tools/PackageCliTests.cmake
-# Purpose: Exercise package and install-package command-line contracts.
+# Purpose: Exercise package and install-package command-line contracts,
+#          including store depot (steam-*) dry runs and diagnostics, and the
+#          pack groups every package lists (ADR 0355).
 #
 # Key invariants: Unsafe or ambiguous packaging arguments fail without output.
 #
 # Ownership/Lifetime: Test artifacts remain under TEST_WORK_DIR.
 #
-# Links: cmd_package.cpp, cmd_install_package.cpp
+# Links: cmd_package.cpp, cmd_install_package.cpp, StoreDepotBuilder.hpp,
+#        docs/adr/0354-store-depot-packaging.md
 #
 #===----------------------------------------------------------------------===#
 
@@ -617,3 +620,225 @@ endif ()
 if (NOT _install_bad_thumb_err MATCHES "SHA-1 thumbprint")
     message(FATAL_ERROR "install-package bad thumbprint diagnostic did not mention SHA-1\nstdout:\n${_install_bad_thumb_out}\nstderr:\n${_install_bad_thumb_err}")
 endif ()
+
+# ---------------------------------------------------------------------------
+# Store depot targets (ADR 0354). Dry runs need no executable or redistributable
+# binary, so these contracts run on every host.
+# ---------------------------------------------------------------------------
+
+function(_expect_contains haystack needle context)
+    string(FIND "${haystack}" "${needle}" _pos)
+    if (_pos EQUAL -1)
+        message(FATAL_ERROR "${context}: expected to find '${needle}' in:\n${haystack}")
+    endif ()
+endfunction()
+
+set(_steam_project "${TEST_WORK_DIR}/steam-project")
+file(MAKE_DIRECTORY "${_steam_project}/data")
+file(WRITE "${_steam_project}/main.zia" "func start() {}\n")
+file(WRITE "${_steam_project}/data/readme.txt" "hello\n")
+file(WRITE "${_steam_project}/zanna.project"
+        "project steamdepot
+version 2.0.0
+lang zia
+entry main.zia
+package-name \"Steam Depot\"
+asset data data
+steam-app-id 480
+steam-depot linux 482
+steam-depot macos 483
+steam-build-description \"Release candidate\"
+steam-set-live beta
+")
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_steam_project}" --target steam-linux --arch x64
+                --dry-run --json -o "${TEST_WORK_DIR}/steam-root"
+        RESULT_VARIABLE _steam_json_rv
+        OUTPUT_VARIABLE _steam_json_out
+        ERROR_VARIABLE _steam_json_err)
+if (NOT _steam_json_rv EQUAL 0)
+    message(FATAL_ERROR "steam-linux JSON dry-run should succeed\nstdout:\n${_steam_json_out}\nstderr:\n${_steam_json_err}")
+endif ()
+foreach (_needle
+        "\"target\": \"steam-linux\""
+        "\"steam\": {"
+        "\"appId\": \"480\""
+        "\"platform\": \"linux\""
+        "\"depotId\": \"482\""
+        "\"launch\": \"steamdepot\""
+        "\"redistributable\": null"
+        "\"buildDescription\": \"Release candidate\""
+        "\"setLive\": \"beta\""
+        "scripts/app_build_480.vdf\""
+        "manifests/linux.json\""
+        "\"usesProvider\": null")
+    _expect_contains("${_steam_json_out}" "${_needle}" "steam-linux JSON dry-run")
+endforeach ()
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_steam_project}" --target steam-macos --dry-run
+                -o "${TEST_WORK_DIR}/steam-root"
+        RESULT_VARIABLE _steam_text_rv
+        OUTPUT_VARIABLE _steam_text_out
+        ERROR_VARIABLE _steam_text_err)
+if (NOT _steam_text_rv EQUAL 0)
+    message(FATAL_ERROR "steam-macos dry-run should succeed\nstdout:\n${_steam_text_out}\nstderr:\n${_steam_text_err}")
+endif ()
+foreach (_needle
+        "Steam depot: 483 (macos)"
+        "Steam launch path: Steam Depot.app"
+        "Steam entitlements: com.apple.security.cs.disable-library-validation com.apple.security.cs.allow-dyld-environment-variables")
+    _expect_contains("${_steam_text_out}" "${_needle}" "steam-macos dry-run")
+endforeach ()
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_steam_project}" --target steam-windows --arch arm64 --dry-run
+        RESULT_VARIABLE _steam_arm_rv
+        OUTPUT_VARIABLE _steam_arm_out
+        ERROR_VARIABLE _steam_arm_err)
+if (_steam_arm_rv EQUAL 0)
+    message(FATAL_ERROR "steam-windows arm64 dry-run should fail")
+endif ()
+_expect_contains("${_steam_arm_err}"
+        "Steam Windows depots are x64-only: Valve ships no Windows arm64 Steamworks redistributable"
+        "steam-windows arm64")
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_steam_project}" --target steam-linux --arch x64 --dry-run
+                --steam-redist "${TEST_WORK_DIR}/no-such-sdk"
+        RESULT_VARIABLE _steam_redist_rv
+        OUTPUT_VARIABLE _steam_redist_out
+        ERROR_VARIABLE _steam_redist_err)
+if (_steam_redist_rv EQUAL 0)
+    message(FATAL_ERROR "steam-linux dry-run with a missing redistributable should fail")
+endif ()
+_expect_contains("${_steam_redist_err}" "Steam redistributable not found: expected " "missing redistributable")
+_expect_contains("${_steam_redist_err}" "(from --steam-redist '" "missing redistributable origin")
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_steam_project}" --target tarball --dry-run
+                --steam-redist "${TEST_WORK_DIR}/no-such-sdk"
+        RESULT_VARIABLE _steam_wrong_target_rv
+        OUTPUT_VARIABLE _steam_wrong_target_out
+        ERROR_VARIABLE _steam_wrong_target_err)
+if (_steam_wrong_target_rv EQUAL 0)
+    message(FATAL_ERROR "--steam-redist with a non-Steam target should fail")
+endif ()
+_expect_contains("${_steam_wrong_target_err}"
+        "--steam-redist applies only to --target steam-windows, steam-macos, or steam-linux"
+        "--steam-redist target check")
+
+set(_steam_no_app "${TEST_WORK_DIR}/steam-no-app")
+file(MAKE_DIRECTORY "${_steam_no_app}")
+file(WRITE "${_steam_no_app}/main.zia" "func start() {}\n")
+file(WRITE "${_steam_no_app}/zanna.project"
+        "project steamnoapp
+version 1.0.0
+lang zia
+entry main.zia
+")
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_steam_no_app}" --target steam-linux --arch x64 --dry-run
+        RESULT_VARIABLE _steam_no_app_rv
+        OUTPUT_VARIABLE _steam_no_app_out
+        ERROR_VARIABLE _steam_no_app_err)
+if (_steam_no_app_rv EQUAL 0)
+    message(FATAL_ERROR "steam-linux dry-run without steam-app-id should fail")
+endif ()
+_expect_contains("${_steam_no_app_err}" "Steam depot packaging requires steam-app-id in zanna.project"
+        "missing steam-app-id")
+
+set(_steam_bad_branch "${TEST_WORK_DIR}/steam-bad-branch")
+file(MAKE_DIRECTORY "${_steam_bad_branch}")
+file(WRITE "${_steam_bad_branch}/main.zia" "func start() {}\n")
+file(WRITE "${_steam_bad_branch}/zanna.project"
+        "project steambadbranch
+version 1.0.0
+lang zia
+entry main.zia
+steam-app-id 480
+steam-set-live default
+")
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_steam_bad_branch}" --target steam-linux --arch x64 --dry-run
+        RESULT_VARIABLE _steam_bad_branch_rv
+        OUTPUT_VARIABLE _steam_bad_branch_out
+        ERROR_VARIABLE _steam_bad_branch_err)
+if (_steam_bad_branch_rv EQUAL 0)
+    message(FATAL_ERROR "steam-set-live default should be rejected")
+endif ()
+_expect_contains("${_steam_bad_branch_err}"
+        "steam-set-live cannot be 'default': Steam sets the default branch live only through the App Admin panel"
+        "steam-set-live default")
+
+# A host's secondary native formats (dmg on macOS, linux-bundle on Linux) compile their
+# own payload: the host check compares operating systems, not target names. A project
+# that fails to compile proves the command got past that check without packaging anything.
+if (CMAKE_HOST_APPLE)
+    set(_host_family_target dmg)
+elseif (CMAKE_HOST_UNIX)
+    set(_host_family_target linux-bundle)
+endif ()
+if (DEFINED _host_family_target)
+    set(_host_family_project "${TEST_WORK_DIR}/host-family-project")
+    file(MAKE_DIRECTORY "${_host_family_project}")
+    file(WRITE "${_host_family_project}/main.zia" "func start() {\n    var x: Integer = \"text\";\n}\n")
+    file(WRITE "${_host_family_project}/zanna.project"
+            "project hostfamily
+version 1.0.0
+lang zia
+entry main.zia
+")
+    execute_process(
+            COMMAND "${ZANNA_BIN}" package "${_host_family_project}" --target ${_host_family_target}
+                    -o "${TEST_WORK_DIR}/host-family-output"
+            RESULT_VARIABLE _host_family_rv
+            OUTPUT_VARIABLE _host_family_out
+            ERROR_VARIABLE _host_family_err)
+    if (_host_family_rv EQUAL 0)
+        message(FATAL_ERROR "packaging a project that does not compile should fail")
+    endif ()
+    string(FIND "${_host_family_err}" "requires --executable" _host_family_pos)
+    if (NOT _host_family_pos EQUAL -1)
+        message(FATAL_ERROR "--target ${_host_family_target} refused to compile on its own host\nstderr:\n${_host_family_err}")
+    endif ()
+    _expect_contains("${_host_family_err}" "error: compilation failed" "host-family compile")
+endif ()
+
+# ---------------------------------------------------------------------------
+# Pack groups travel with every package (ADR 0355): dry runs name the files.
+# ---------------------------------------------------------------------------
+
+set(_packs_project "${TEST_WORK_DIR}/packs-project")
+file(MAKE_DIRECTORY "${_packs_project}/levels")
+file(WRITE "${_packs_project}/main.zia" "func start() {}\n")
+file(WRITE "${_packs_project}/levels/one.txt" "level one\n")
+file(WRITE "${_packs_project}/zanna.project"
+        "project packsproject
+version 1.0.0
+lang zia
+entry main.zia
+pack-compressed Levels levels
+")
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_packs_project}" --target tarball --dry-run --json
+        RESULT_VARIABLE _packs_json_rv
+        OUTPUT_VARIABLE _packs_json_out
+        ERROR_VARIABLE _packs_json_err)
+if (NOT _packs_json_rv EQUAL 0)
+    message(FATAL_ERROR "pack dry-run should succeed\nstdout:\n${_packs_json_out}\nstderr:\n${_packs_json_err}")
+endif ()
+_expect_contains("${_packs_json_out}" "\"packs\": [{\"group\":\"Levels\",\"file\":\"packsproject-levels.zpak\"}]"
+        "pack dry-run JSON")
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_packs_project}" --target linux --dry-run
+        RESULT_VARIABLE _packs_text_rv
+        OUTPUT_VARIABLE _packs_text_out
+        ERROR_VARIABLE _packs_text_err)
+if (NOT _packs_text_rv EQUAL 0)
+    message(FATAL_ERROR "pack text dry-run should succeed\nstdout:\n${_packs_text_out}\nstderr:\n${_packs_text_err}")
+endif ()
+_expect_contains("${_packs_text_out}" "  Pack: Levels -> packsproject-levels.zpak" "pack dry-run text")

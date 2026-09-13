@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-09-01
+last-verified: 2026-09-13
 ---
 
 # Zanna Defect Audit — 2026-09-01
@@ -38,11 +38,11 @@ unreadable from their own class).
 | 14 | Zia parser | Low | Documented `Error.type` accessor is unusable (`type` is a reserved word) |
 | 15 | Zia frontend | High | Static fields are unreadable from inside their own class (`V3000 ... reached lowering`) |
 | 16 | BASIC frontend | Low | `ME` is accepted inside a `STATIC SUB` instead of being rejected |
-| 17 | BASIC frontend | High | Fields on a class declared inside a `NAMESPACE` are inaccessible |
+| 17 | BASIC frontend | High | Fields on a class declared inside a `NAMESPACE` are inaccessible — fixed 2026-09-13 |
 | 18 | BASIC frontend | Medium | `USING` inside a `NAMESPACE` block is accepted but produces broken IL |
 | 19 | BASIC frontend | Medium | Aliased `USING X = Ns` works for types but not for procedure calls |
-| 20 | BASIC frontend | Medium | False-positive `B3001 index out of bounds` on the highest valid literal index |
-| 21 | BASIC frontend | High | A namespaced class gets no implicit default constructor |
+| 20 | BASIC frontend | Medium | False-positive `B3001 index out of bounds` on the highest valid literal index — fixed 2026-09-13 |
+| 21 | BASIC frontend | High | A namespaced class gets no implicit default constructor — fixed 2026-09-13 |
 | 22 | BASIC frontend | High | `RESUME`, `RESUME NEXT`, and `RESUME <label>` are unimplemented (lower to `trap`) |
 | 23 | IL verifier | Medium | Verifier accepts a function whose entry block omits the signature's parameters |
 | 24 | Zia lowering | High | Managed local + early `return` + `try`/`catch` emits IL that violates SSA dominance |
@@ -435,6 +435,13 @@ The program compiles and runs, printing `0` for `ME.X`.
 
 **Severity:** High — namespaced classes cannot carry data.
 
+**Status:** Fixed 2026-09-13. The shared BASIC AST walker never descended into a
+`NAMESPACE` block, so the class-layout pass never saw the class: it had no fields,
+no class registration, and `NEW` allocated 8 bytes. The walker now visits
+namespace bodies, `NEW` resolves the layout by qualified name, and inherited
+fields are found through the qualified class. Covered by
+`basic_namespace_class_objects`.
+
 ```basic
 NAMESPACE App.Types
   CLASS Widget
@@ -526,6 +533,12 @@ expressions fail.
 
 **Severity:** Medium — a correct program is flagged.
 
+**Status:** Fixed 2026-09-13. The check on array *element assignments* compared
+the index with `>=` against the inclusive upper bound; reads already used `>`.
+Both now treat the bound as inclusive. Covered by
+`basic_semantics_array_upper_bound_and_float_elements_ok` (no warning at the
+bound) and `basic_semantics_array_write_out_of_bounds` (warning one past it).
+
 `DIM A(n)` allocates the **inclusive** range `0..n`. `UBOUND` agrees, and both a
 literal and a variable index of `n` work at runtime. But the compile-time bounds
 check treats the array as having `n` elements, so a *literal* top index warns:
@@ -556,6 +569,13 @@ also described the bound as exclusive; corrected.)
 ## 21. A namespaced class gets no implicit default constructor
 
 **Severity:** High.
+
+**Status:** Fixed 2026-09-13. The constructor pass looked the class up by its bare
+name, but classes are indexed by qualified name. It now uses the qualified name.
+The original repro's `WIDTH AS I64` field also failed for an unrelated reason:
+`I64` was not recognised as a type name and declared a reference to a class
+named `I64`. `AS I64` and `AS F64` are now primitive types. Covered by
+`basic_namespace_class_objects`.
 
 ```basic
 NAMESPACE Graphics.Rendering

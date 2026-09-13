@@ -103,6 +103,7 @@ void ProcedureLowering::collectProcedureSignatures(const Program &prog) {
                     ? il::core::Type(il::core::Type::Kind::Ptr)
                     : lowerer.functionRetTypeFromHint(fn->name, fn->explicitRetType);
             auto sig = buildSig(retTy, fn->params);
+            sig.returnClassQName = JoinDots(fn->explicitClassRetQname);
             registerSig(fn->name, fn->qualifiedName, std::move(sig));
         } else if (auto *sub = as<const SubDecl>(*decl)) {
             auto sig = buildSig(il::core::Type(il::core::Type::Kind::Void), sub->params);
@@ -128,6 +129,7 @@ void ProcedureLowering::collectProcedureSignatures(const Program &prog) {
                             ? il::core::Type(il::core::Type::Kind::Ptr)
                             : lowerer.functionRetTypeFromHint(fn.name, fn.explicitRetType);
                     auto sig = buildSig(retTy, fn.params);
+                    sig.returnClassQName = JoinDots(fn.explicitClassRetQname);
                     registerSig(fn.name, fn.qualifiedName, std::move(sig));
                     break;
                 }

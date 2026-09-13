@@ -68,7 +68,7 @@ PRINT r.Capacity  ' 3 (capacity unchanged)
 ' --- NewDefault (default capacity) ---
 PRINT "--- NewDefault ---"
 DIM rd AS OBJECT
-rd = Zanna.Collections.Ring.New()
+rd = Zanna.Collections.Ring.NewDefault()
 PRINT rd.IsEmpty   ' 1
 rd.Push(Zanna.Core.Box.I64(1))
 PRINT rd.Count       ' 1

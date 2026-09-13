@@ -262,10 +262,7 @@ std::optional<Lowerer::RVal> Lowerer::tryLowerStaticMethodCall(const MethodCallE
                     Value result = retTy.kind == Type::Kind::Void
                                        ? (emitCall(info->target, args), Value::constInt(0))
                                        : emitCallRet(retTy, info->target, args);
-                    if (retTy.kind == Type::Kind::Str)
-                        deferReleaseStr(result);
-                    else if (retTy.kind == Type::Kind::Ptr)
-                        deferReleaseObj(result);
+                    deferReleaseRuntimeResult(result, retTy, info->target);
                     return RVal{result,
                                 retTy.kind == Type::Kind::Void ? Type(Type::Kind::I64) : retTy};
                 }
@@ -380,10 +377,7 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
             Value result = retTy.kind == Type::Kind::Void
                                ? (emitCall(info->target, args), Value::constInt(0))
                                : emitCallRet(retTy, info->target, args);
-            if (retTy.kind == Type::Kind::Str)
-                deferReleaseStr(result);
-            else if (retTy.kind == Type::Kind::Ptr)
-                deferReleaseObj(result);
+            deferReleaseRuntimeResult(result, retTy, info->target);
             return {result, retTy.kind == Type::Kind::Void ? Type(Type::Kind::I64) : retTy};
         }
 
@@ -421,10 +415,7 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
                 Value result = retTy.kind == Type::Kind::Void
                                    ? (emitCall(info->target, args), Value::constInt(0))
                                    : emitCallRet(retTy, info->target, args);
-                if (retTy.kind == Type::Kind::Str)
-                    deferReleaseStr(result);
-                else if (retTy.kind == Type::Kind::Ptr)
-                    deferReleaseObj(result);
+                deferReleaseRuntimeResult(result, retTy, info->target);
                 return {result, retTy.kind == Type::Kind::Void ? Type(Type::Kind::I64) : retTy};
             }
             // As a last resort, special-case common Object methods to canonical targets
@@ -457,6 +448,36 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
     }
 
     std::string className = resolveObjectClass(*expr.base);
+
+    // A receiver declared with an interface type dispatches through that interface's itable.
+    const InterfaceInfo *receiverInterface = nullptr;
+    if (!className.empty()) {
+        receiverInterface = oopIndex_.findInterface(qualify(className));
+        if (!receiverInterface)
+            receiverInterface = oopIndex_.findInterface(className);
+    }
+
+    // A receiver whose class is unknown (an OBJECT variable or parameter, a collection element,
+    // an untyped runtime result) has no method to call beyond Zanna.Core.Object's, which were
+    // tried above. Without this check the call would be dropped or would name a procedure that
+    // does not exist. BASE calls and `(x AS Interface).M()` resolve their target below.
+    const auto *receiverVar = as<const VarExpr>(*expr.base);
+    const bool isBaseCall = receiverVar && receiverVar->name == "BASE";
+    const bool receiverClassKnown =
+        !className.empty() && oopIndex_.findClass(qualify(className)) != nullptr;
+    if (!receiverClassKnown && !receiverInterface && !isBaseCall && !as<const AsExpr>(*expr.base)) {
+        if (auto *em = diagnosticEmitter()) {
+            std::string msg = "cannot call '" + expr.method +
+                              "' on an OBJECT whose class is unknown; assign the value to a "
+                              "variable declared AS its class first";
+            em->emit(il::support::Severity::Error,
+                     "E_NO_SUCH_METHOD",
+                     expr.loc,
+                     static_cast<uint32_t>(expr.method.size()),
+                     std::move(msg));
+        }
+        return {Value::constInt(0), Type(Type::Kind::I64)};
+    }
     // Compute the instance (self) argument. For BASE-qualified calls, use ME.
     Value selfArg;
     if (const auto *v = as<const VarExpr>(*expr.base); v && v->name == "BASE") {
@@ -567,7 +588,8 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
     std::string selectedName = expr.method;
     // BUG-OOP-002/003 fix: Track declaring class for inherited methods
     std::string declaringClass = qc;
-    if (!qc.empty()) {
+    // Interface receivers have no class overloads; they dispatch through the itable below.
+    if (!qc.empty() && !receiverInterface) {
         if (auto resolved = sem::resolveMethodOverload(oopIndex_,
                                                        qc,
                                                        expr.method,
@@ -596,22 +618,16 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
     /// @brief Attempts interface-slot dispatch for an `AS`-qualified receiver.
     /// @return Lowered result when interface dispatch applies; otherwise `std::nullopt`.
     auto tryInterfaceDispatch = [&]() -> std::optional<RVal> {
-        const AsExpr *asBase = as<const AsExpr>(*expr.base);
-        if (!asBase)
-            return std::nullopt;
-        // Build dotted name for interface and locate InterfaceInfo
-        std::string dotted;
-        for (size_t i = 0; i < asBase->typeName.size(); ++i) {
-            if (i)
-                dotted.push_back('.');
-            dotted += asBase->typeName[i];
-        }
-        const InterfaceInfo *iface = nullptr;
-        for (const auto &p : oopIndex_.interfacesByQname()) {
-            if (p.first == dotted) {
-                iface = &p.second;
-                break;
+        const InterfaceInfo *iface = receiverInterface;
+        if (const AsExpr *asBase = as<const AsExpr>(*expr.base)) {
+            // Build dotted name for interface and locate InterfaceInfo
+            std::string dotted;
+            for (size_t i = 0; i < asBase->typeName.size(); ++i) {
+                if (i)
+                    dotted.push_back('.');
+                dotted += asBase->typeName[i];
             }
+            iface = oopIndex_.findInterface(dotted);
         }
         if (!iface)
             return std::nullopt;
@@ -620,7 +636,7 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
         std::size_t userArity = expr.args.size();
         for (std::size_t idx = 0; idx < iface->slots.size(); ++idx) {
             const auto &sig = iface->slots[idx];
-            if (sig.name != expr.method)
+            if (!string_utils::iequals(sig.name, expr.method))
                 continue;
             if (sig.paramTypes.size() == userArity) {
                 slotIndex = static_cast<int>(idx);
@@ -634,8 +650,18 @@ Lowerer::RVal Lowerer::lowerMethodCallExpr(const MethodCallExpr &expr) {
             return std::nullopt;
 
         // Lookup itable, load function pointer at slot, and call.indirect
-        // Ensure runtime extern is declared for itable lookup
-        if (builder) {
+        // Declare the itable lookup extern once per module; a second interface call would
+        // otherwise add a duplicate and abort the IR builder.
+        bool itableLookupDeclared = false;
+        if (mod) {
+            for (const auto &ext : mod->externs) {
+                if (ext.name == "rt_itable_lookup") {
+                    itableLookupDeclared = true;
+                    break;
+                }
+            }
+        }
+        if (builder && !itableLookupDeclared) {
             if (const auto *desc = il::runtime::findRuntimeDescriptor("rt_itable_lookup"))
                 builder->addExtern(
                     std::string(desc->name), desc->signature.retType, desc->signature.paramTypes);

@@ -29,13 +29,6 @@
 ' COVER: Zanna.IO.Compress.Inflate
 ' COVER: Zanna.IO.Compress.InflateStr
 
-SUB FillBytes(s AS STRING, b AS Zanna.IO.BinaryBuffer)
-    DIM i AS INTEGER
-    FOR i = 0 TO s.Length - 1
-        b.WriteByte(Zanna.String.Asc(Zanna.String.MidLen(s, i + 1, 1)))
-    NEXT i
-END SUB
-
 DIM cwd AS STRING
 cwd = Zanna.IO.Dir.Current()
 DIM base AS STRING
@@ -49,12 +42,8 @@ DIM notePath AS STRING
 notePath = Zanna.IO.Path.Join(base, "note.txt")
 Zanna.IO.File.WriteAllText(notePath, "note")
 
-DIM dataBytes AS Zanna.IO.BinaryBuffer
-dataBytes = Zanna.IO.BinaryBuffer.NewCapacity(4)
-dataBytes.WriteByte(1)
-dataBytes.WriteByte(2)
-dataBytes.WriteByte(3)
-dataBytes.WriteByte(4)
+DIM dataBytes AS Zanna.Collections.Bytes
+dataBytes = Zanna.Collections.Bytes.FromHex("01020304")
 
 DIM archivePath AS STRING
 archivePath = Zanna.IO.Path.Join(base, "test.zip")
@@ -78,7 +67,7 @@ names = arc2.Names
 Zanna.Core.Diagnostics.Assert(names.Count >= 3, "zip.names")
 Zanna.Core.Diagnostics.Assert(arc2.Has("hello.txt"), "zip.has")
 Zanna.Core.Diagnostics.AssertEqStr(arc2.ReadStr("hello.txt"), "hi", "zip.readstr")
-DIM bin AS Zanna.IO.BinaryBuffer
+DIM bin AS Zanna.Collections.Bytes
 bin = arc2.Read("data.bin")
 Zanna.Core.Diagnostics.AssertEq(bin.Length, 4, "zip.read")
 DIM info AS Zanna.Collections.Map
@@ -97,7 +86,7 @@ extractedNote = Zanna.IO.Path.Join(base, "note_extracted.txt")
 arc2.Extract("note.txt", extractedNote)
 Zanna.Core.Diagnostics.Assert(Zanna.IO.File.Exists(extractedNote), "zip.extract")
 
-DIM arcBytes AS Zanna.IO.BinaryBuffer
+DIM arcBytes AS Zanna.Collections.Bytes
 arcBytes = Zanna.IO.File.ReadAllBytes(archivePath)
 Zanna.Core.Diagnostics.Assert(Zanna.IO.Archive.IsZipBytes(arcBytes), "zip.iszipbytes")
 DIM arc3 AS Zanna.IO.Archive
@@ -106,41 +95,40 @@ Zanna.Core.Diagnostics.AssertEqStr(arc3.ReadStr("hello.txt"), "hi", "zip.frombyt
 
 DIM text AS STRING
 text = "The quick brown fox jumps over the lazy dog."
-DIM textBytes AS Zanna.IO.BinaryBuffer
-textBytes = Zanna.IO.BinaryBuffer.NewCapacity(text.Length)
-FillBytes(text, textBytes)
+DIM textBytes AS Zanna.Collections.Bytes
+textBytes = Zanna.Collections.Bytes.FromStr(text)
 
-DIM gz AS Zanna.IO.BinaryBuffer
+DIM gz AS Zanna.Collections.Bytes
 gz = Zanna.IO.Compress.Gzip(textBytes)
-DIM gun AS Zanna.IO.BinaryBuffer
+DIM gun AS Zanna.Collections.Bytes
 gun = Zanna.IO.Compress.Gunzip(gz)
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(gun.ToBytes()), Zanna.Collections.Bytes.ToHex(textBytes.ToBytes()), "gzip")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(gun), Zanna.Collections.Bytes.ToHex(textBytes), "gzip")
 
-DIM gz2 AS Zanna.IO.BinaryBuffer
+DIM gz2 AS Zanna.Collections.Bytes
 gz2 = Zanna.IO.Compress.GzipLvl(textBytes, 9)
-DIM gun2 AS Zanna.IO.BinaryBuffer
+DIM gun2 AS Zanna.Collections.Bytes
 gun2 = Zanna.IO.Compress.Gunzip(gz2)
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(gun2.ToBytes()), Zanna.Collections.Bytes.ToHex(textBytes.ToBytes()), "gzip.lvl")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(gun2), Zanna.Collections.Bytes.ToHex(textBytes), "gzip.lvl")
 
-DIM def AS Zanna.IO.BinaryBuffer
+DIM def AS Zanna.Collections.Bytes
 def = Zanna.IO.Compress.Deflate(textBytes)
-DIM inf AS Zanna.IO.BinaryBuffer
+DIM inf AS Zanna.Collections.Bytes
 inf = Zanna.IO.Compress.Inflate(def)
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(inf.ToBytes()), Zanna.Collections.Bytes.ToHex(textBytes.ToBytes()), "deflate")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(inf), Zanna.Collections.Bytes.ToHex(textBytes), "deflate")
 
-DIM def2 AS Zanna.IO.BinaryBuffer
+DIM def2 AS Zanna.Collections.Bytes
 def2 = Zanna.IO.Compress.DeflateLvl(textBytes, 9)
-DIM inf2 AS Zanna.IO.BinaryBuffer
+DIM inf2 AS Zanna.Collections.Bytes
 inf2 = Zanna.IO.Compress.Inflate(def2)
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(inf2.ToBytes()), Zanna.Collections.Bytes.ToHex(textBytes.ToBytes()), "deflate.lvl")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToHex(inf2), Zanna.Collections.Bytes.ToHex(textBytes), "deflate.lvl")
 
-DIM gzStr AS Zanna.IO.BinaryBuffer
+DIM gzStr AS Zanna.Collections.Bytes
 gzStr = Zanna.IO.Compress.GzipStr(text)
 DIM gunStr AS STRING
 gunStr = Zanna.IO.Compress.GunzipStr(gzStr)
 Zanna.Core.Diagnostics.AssertEqStr(gunStr, text, "gzipstr")
 
-DIM defStr AS Zanna.IO.BinaryBuffer
+DIM defStr AS Zanna.Collections.Bytes
 defStr = Zanna.IO.Compress.DeflateStr(text)
 DIM infStr AS STRING
 infStr = Zanna.IO.Compress.InflateStr(defStr)

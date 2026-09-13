@@ -7,16 +7,23 @@
 //
 // File: src/il/runtime/defs/services/services.def
 // Purpose: Registry rows and class metadata for Zanna.Services, the
-//          provider-neutral platform services layer (Steam first).
+//          provider-neutral platform services layer (Steam first): the
+//          platform core, player progress (achievements, stats, leaderboards),
+//          platform UI (presence, overlay, text input), and cloud storage.
 // Key invariants:
 //   - Every C symbol uses the rt_services_ prefix so native links select the
 //     zanna_rt_services component archive.
 //   - Reference-returning rows declare ownership (ADR 0314); every class has
 //     authored summary and details documentation (ADR 0101).
-//   - Constant ordinals match rt_services.h and rt_steam.h and never change.
+//   - Constant ordinals match rt_services.h, rt_services_progress.h,
+//     rt_services_social.h, and rt_steam.h and never change.
 // Ownership/Lifetime: Declarative metadata consumed by rtgen.
 // Links: docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        docs/adr/0353-platform-services-player-features.md,
 //        src/runtime/services/rt_services.h,
+//        src/runtime/services/rt_services_progress.h,
+//        src/runtime/services/rt_services_social.h,
+//        src/runtime/services/rt_services_cloud.h,
 //        src/runtime/services/steam/rt_steam.h,
 //        docs/zannalib/services.md
 //
@@ -48,6 +55,7 @@ RT_FUNC(ServicesPlatformEventResultCode,   rt_services_platform_get_event_result
 RT_FUNC(ServicesPlatformEventText,         rt_services_platform_get_event_text,        "Zanna.Services.Platform.get_EventText",         "str()", owned)
 RT_FUNC(ServicesPlatformEventValue,        rt_services_platform_get_event_value,       "Zanna.Services.Platform.get_EventValue",        "i64()")
 RT_FUNC(ServicesPlatformEventFlag,         rt_services_platform_get_event_flag,        "Zanna.Services.Platform.get_EventFlag",         "i1()")
+RT_FUNC(ServicesPlatformEventTotal,        rt_services_platform_get_event_total,       "Zanna.Services.Platform.get_EventTotal",        "i64()")
 RT_FUNC(ServicesPlatformDroppedEvents,     rt_services_platform_get_dropped_events,    "Zanna.Services.Platform.get_DroppedEvents",     "i64()")
 
 //=============================================================================
@@ -59,7 +67,85 @@ RT_FUNC(ServicesRequestIsDone,             rt_services_request_get_is_done,     
 RT_FUNC(ServicesRequestSucceeded,          rt_services_request_get_succeeded,          "Zanna.Services.Request.get_Succeeded",          "i1(obj)")
 RT_FUNC(ServicesRequestResultCode,         rt_services_request_get_result_code,        "Zanna.Services.Request.get_ResultCode",         "i64(obj)")
 RT_FUNC(ServicesRequestValue,              rt_services_request_get_value,              "Zanna.Services.Request.get_Value",              "i64(obj)")
+RT_FUNC(ServicesRequestFlag,               rt_services_request_get_flag,               "Zanna.Services.Request.get_Flag",               "i1(obj)")
+RT_FUNC(ServicesRequestText,               rt_services_request_get_text,               "Zanna.Services.Request.get_Text",               "str(obj)", owned)
 RT_FUNC(ServicesRequestError,              rt_services_request_get_error,              "Zanna.Services.Request.get_Error",              "str(obj)", owned)
+RT_FUNC(ServicesRequestEntryCount,         rt_services_request_get_entry_count,        "Zanna.Services.Request.get_EntryCount",         "i64(obj)")
+RT_FUNC(ServicesRequestEntryRank,          rt_services_request_entry_rank,             "Zanna.Services.Request.EntryRank",              "i64(obj,i64)")
+RT_FUNC(ServicesRequestEntryScore,         rt_services_request_entry_score,            "Zanna.Services.Request.EntryScore",             "i64(obj,i64)")
+RT_FUNC(ServicesRequestEntryUserId,        rt_services_request_entry_user_id,          "Zanna.Services.Request.EntryUserId",            "str(obj,i64)", owned)
+RT_FUNC(ServicesRequestEntryUserName,      rt_services_request_entry_user_name,        "Zanna.Services.Request.EntryUserName",          "str(obj,i64)", owned)
+
+//=============================================================================
+// SERVICES - ACHIEVEMENTS (Zanna.Services.Achievements)
+//=============================================================================
+
+RT_FUNC(ServicesAchievementsUnlock,        rt_services_achievements_unlock,            "Zanna.Services.Achievements.Unlock",            "i1(str)")
+RT_FUNC(ServicesAchievementsClear,         rt_services_achievements_clear,             "Zanna.Services.Achievements.Clear",             "i1(str)")
+RT_FUNC(ServicesAchievementsIsUnlocked,    rt_services_achievements_is_unlocked,       "Zanna.Services.Achievements.IsUnlocked",        "i1(str)")
+RT_FUNC(ServicesAchievementsUnlockTime,    rt_services_achievements_unlock_time,       "Zanna.Services.Achievements.UnlockTime",        "i64(str)")
+RT_FUNC(ServicesAchievementsIndicateProgress, rt_services_achievements_indicate_progress, "Zanna.Services.Achievements.IndicateProgress", "i1(str,i64,i64)")
+RT_FUNC(ServicesAchievementsCount,         rt_services_achievements_get_count,         "Zanna.Services.Achievements.get_Count",         "i64()")
+RT_FUNC(ServicesAchievementsIdAt,          rt_services_achievements_id_at,             "Zanna.Services.Achievements.IdAt",              "str(i64)", owned)
+RT_FUNC(ServicesAchievementsDisplayName,   rt_services_achievements_display_name,      "Zanna.Services.Achievements.DisplayName",       "str(str)", owned)
+RT_FUNC(ServicesAchievementsDescription,   rt_services_achievements_description,       "Zanna.Services.Achievements.Description",       "str(str)", owned)
+RT_FUNC(ServicesAchievementsIsHidden,      rt_services_achievements_is_hidden,         "Zanna.Services.Achievements.IsHidden",          "i1(str)")
+
+//=============================================================================
+// SERVICES - STATS (Zanna.Services.Stats)
+//=============================================================================
+
+RT_FUNC(ServicesStatsGetInt,               rt_services_stats_get_int,                  "Zanna.Services.Stats.GetInt",                   "i64(str)")
+RT_FUNC(ServicesStatsSetInt,               rt_services_stats_set_int,                  "Zanna.Services.Stats.SetInt",                   "i1(str,i64)")
+RT_FUNC(ServicesStatsGetFloat,             rt_services_stats_get_float,                "Zanna.Services.Stats.GetFloat",                 "f64(str)")
+RT_FUNC(ServicesStatsSetFloat,             rt_services_stats_set_float,                "Zanna.Services.Stats.SetFloat",                 "i1(str,f64)")
+RT_FUNC(ServicesStatsUpdateAverageRate,    rt_services_stats_update_average_rate,      "Zanna.Services.Stats.UpdateAverageRate",        "i1(str,f64,f64)")
+RT_FUNC(ServicesStatsStore,                rt_services_stats_store,                    "Zanna.Services.Stats.Store",                    "i1()")
+RT_FUNC(ServicesStatsResetAll,             rt_services_stats_reset_all,                "Zanna.Services.Stats.ResetAll",                 "i1(i1)")
+
+//=============================================================================
+// SERVICES - LEADERBOARDS (Zanna.Services.Leaderboards)
+//=============================================================================
+
+RT_FUNC(ServicesLeaderboardsFind,          rt_services_leaderboards_find,              "Zanna.Services.Leaderboards.Find",              "obj<Zanna.Services.Request>(str)", owned)
+RT_FUNC(ServicesLeaderboardsFindOrCreate,  rt_services_leaderboards_find_or_create,    "Zanna.Services.Leaderboards.FindOrCreate",      "obj<Zanna.Services.Request>(str,i64,i64)", owned)
+RT_FUNC(ServicesLeaderboardsUpload,        rt_services_leaderboards_upload,            "Zanna.Services.Leaderboards.Upload",            "obj<Zanna.Services.Request>(str,i64,i1)", owned)
+RT_FUNC(ServicesLeaderboardsDownload,      rt_services_leaderboards_download,          "Zanna.Services.Leaderboards.Download",          "obj<Zanna.Services.Request>(str,i64,i64,i64)", owned)
+
+//=============================================================================
+// SERVICES - PRESENCE, OVERLAY, TEXT INPUT
+//=============================================================================
+
+RT_FUNC(ServicesPresenceSet,               rt_services_presence_set,                   "Zanna.Services.Presence.Set",                   "i1(str,str)")
+RT_FUNC(ServicesPresenceClear,             rt_services_presence_clear,                 "Zanna.Services.Presence.Clear",                 "void()")
+
+RT_FUNC(ServicesOverlayIsEnabled,          rt_services_overlay_get_is_enabled,         "Zanna.Services.Overlay.get_IsEnabled",          "i1()")
+RT_FUNC(ServicesOverlayOpen,               rt_services_overlay_open,                   "Zanna.Services.Overlay.Open",                   "i1(i64)")
+RT_FUNC(ServicesOverlayOpenWebPage,        rt_services_overlay_open_web_page,          "Zanna.Services.Overlay.OpenWebPage",            "i1(str,i1)")
+RT_FUNC(ServicesOverlayOpenStore,          rt_services_overlay_open_store,             "Zanna.Services.Overlay.OpenStore",              "i1(str,i1)")
+RT_FUNC(ServicesOverlaySetNotificationPosition, rt_services_overlay_set_notification_position, "Zanna.Services.Overlay.SetNotificationPosition", "i1(i64)")
+RT_FUNC(ServicesOverlaySetNotificationInset, rt_services_overlay_set_notification_inset, "Zanna.Services.Overlay.SetNotificationInset",  "i1(i64,i64)")
+
+RT_FUNC(ServicesOnScreenKeyboardShowFloating, rt_services_on_screen_keyboard_show_floating, "Zanna.Services.OnScreenKeyboard.ShowFloating",         "i1(i64,i64,i64,i64,i64)")
+RT_FUNC(ServicesOnScreenKeyboardDismissFloating, rt_services_on_screen_keyboard_dismiss_floating, "Zanna.Services.OnScreenKeyboard.DismissFloating",      "i1()")
+RT_FUNC(ServicesOnScreenKeyboardRequestText, rt_services_on_screen_keyboard_request_text, "Zanna.Services.OnScreenKeyboard.RequestText",          "obj<Zanna.Services.Request>(str,str,i64,i64)", owned)
+
+//=============================================================================
+// SERVICES - CLOUD (Zanna.Services.Cloud)
+//=============================================================================
+
+RT_FUNC(ServicesCloudIsEnabled,            rt_services_cloud_get_is_enabled,           "Zanna.Services.Cloud.get_IsEnabled",            "i1()")
+RT_FUNC(ServicesCloudWrite,                rt_services_cloud_write,                    "Zanna.Services.Cloud.Write",                    "i1(str,obj<Zanna.Collections.Bytes>)")
+RT_FUNC(ServicesCloudRead,                 rt_services_cloud_read,                     "Zanna.Services.Cloud.Read",                     "obj<Zanna.Result>(str)", owned)
+RT_FUNC(ServicesCloudExists,               rt_services_cloud_exists,                   "Zanna.Services.Cloud.Exists",                   "i1(str)")
+RT_FUNC(ServicesCloudDelete,               rt_services_cloud_delete,                   "Zanna.Services.Cloud.Delete",                   "i1(str)")
+RT_FUNC(ServicesCloudSize,                 rt_services_cloud_size,                     "Zanna.Services.Cloud.Size",                     "i64(str)")
+RT_FUNC(ServicesCloudTimestamp,            rt_services_cloud_timestamp,                "Zanna.Services.Cloud.Timestamp",                "i64(str)")
+RT_FUNC(ServicesCloudFiles,                rt_services_cloud_files,                    "Zanna.Services.Cloud.Files",                    "seq<str>()", owned)
+RT_FUNC(ServicesCloudQuotaTotal,           rt_services_cloud_get_quota_total,          "Zanna.Services.Cloud.get_QuotaTotal",           "i64()")
+RT_FUNC(ServicesCloudQuotaAvailable,       rt_services_cloud_get_quota_available,      "Zanna.Services.Cloud.get_QuotaAvailable",       "i64()")
+RT_FUNC(ServicesCloudBeginBatch,           rt_services_cloud_begin_batch,              "Zanna.Services.Cloud.BeginBatch",               "i1()")
+RT_FUNC(ServicesCloudEndBatch,             rt_services_cloud_end_batch,                "Zanna.Services.Cloud.EndBatch",                 "i1()")
 
 //=============================================================================
 // SERVICES - STEAM EXTENSION (Zanna.Services.Steam)
@@ -95,13 +181,57 @@ RT_FUNC(ServicesEventKindOverlayChanged,   rt_services_event_kind_overlay_change
 RT_FUNC(ServicesEventKindDlcInstalled,     rt_services_event_kind_dlc_installed,       "Zanna.Services.EventKind.get_DlcInstalled",     "i64()")
 RT_FUNC(ServicesEventKindLaunchParametersChanged, rt_services_event_kind_launch_parameters_changed, "Zanna.Services.EventKind.get_LaunchParametersChanged", "i64()")
 RT_FUNC(ServicesEventKindServiceShutdown,  rt_services_event_kind_service_shutdown,    "Zanna.Services.EventKind.get_ServiceShutdown",  "i64()")
+RT_FUNC(ServicesEventKindStatsStored,      rt_services_event_kind_stats_stored,        "Zanna.Services.EventKind.get_StatsStored",      "i64()")
+RT_FUNC(ServicesEventKindAchievementStored, rt_services_event_kind_achievement_stored, "Zanna.Services.EventKind.get_AchievementStored", "i64()")
+RT_FUNC(ServicesEventKindTextInputDismissed, rt_services_event_kind_text_input_dismissed, "Zanna.Services.EventKind.get_TextInputDismissed", "i64()")
 
 RT_FUNC(ServicesFeatureIdentity,           rt_services_feature_identity,               "Zanna.Services.Feature.get_Identity",            "i64()")
 RT_FUNC(ServicesFeatureLicensing,          rt_services_feature_licensing,              "Zanna.Services.Feature.get_Licensing",          "i64()")
 RT_FUNC(ServicesFeatureLanguage,           rt_services_feature_language,               "Zanna.Services.Feature.get_Language",           "i64()")
 RT_FUNC(ServicesFeaturePlayerCount,        rt_services_feature_player_count,           "Zanna.Services.Feature.get_PlayerCount",        "i64()")
+RT_FUNC(ServicesFeatureAchievements,       rt_services_feature_achievements,           "Zanna.Services.Feature.get_Achievements",       "i64()")
+RT_FUNC(ServicesFeatureStats,              rt_services_feature_stats,                  "Zanna.Services.Feature.get_Stats",              "i64()")
+RT_FUNC(ServicesFeatureLeaderboards,       rt_services_feature_leaderboards,           "Zanna.Services.Feature.get_Leaderboards",       "i64()")
+RT_FUNC(ServicesFeaturePresence,           rt_services_feature_presence,               "Zanna.Services.Feature.get_Presence",           "i64()")
+RT_FUNC(ServicesFeatureOverlay,            rt_services_feature_overlay,                "Zanna.Services.Feature.get_Overlay",            "i64()")
+RT_FUNC(ServicesFeatureTextInput,          rt_services_feature_text_input,             "Zanna.Services.Feature.get_TextInput",          "i64()")
+RT_FUNC(ServicesFeatureCloud,              rt_services_feature_cloud,                  "Zanna.Services.Feature.get_Cloud",              "i64()")
 
 RT_FUNC(ServicesRequestKindPlayerCount,    rt_services_request_kind_player_count,      "Zanna.Services.RequestKind.get_PlayerCount",    "i64()")
+RT_FUNC(ServicesRequestKindLeaderboardFind, rt_services_request_kind_leaderboard_find, "Zanna.Services.RequestKind.get_LeaderboardFind", "i64()")
+RT_FUNC(ServicesRequestKindLeaderboardUpload, rt_services_request_kind_leaderboard_upload, "Zanna.Services.RequestKind.get_LeaderboardUpload", "i64()")
+RT_FUNC(ServicesRequestKindLeaderboardDownload, rt_services_request_kind_leaderboard_download, "Zanna.Services.RequestKind.get_LeaderboardDownload", "i64()")
+RT_FUNC(ServicesRequestKindTextInput,      rt_services_request_kind_text_input,        "Zanna.Services.RequestKind.get_TextInput",      "i64()")
+
+RT_FUNC(ServicesLeaderboardScopeGlobal,    rt_services_leaderboard_scope_global,       "Zanna.Services.LeaderboardScope.get_Global",    "i64()")
+RT_FUNC(ServicesLeaderboardScopeAroundUser, rt_services_leaderboard_scope_around_user, "Zanna.Services.LeaderboardScope.get_AroundUser", "i64()")
+RT_FUNC(ServicesLeaderboardScopeFriends,   rt_services_leaderboard_scope_friends,      "Zanna.Services.LeaderboardScope.get_Friends",   "i64()")
+
+RT_FUNC(ServicesLeaderboardSortAscending,  rt_services_leaderboard_sort_ascending,     "Zanna.Services.LeaderboardSort.get_Ascending",  "i64()")
+RT_FUNC(ServicesLeaderboardSortDescending, rt_services_leaderboard_sort_descending,    "Zanna.Services.LeaderboardSort.get_Descending", "i64()")
+
+RT_FUNC(ServicesLeaderboardDisplayNumeric, rt_services_leaderboard_display_numeric,    "Zanna.Services.LeaderboardDisplay.get_Numeric", "i64()")
+RT_FUNC(ServicesLeaderboardDisplaySeconds, rt_services_leaderboard_display_seconds,    "Zanna.Services.LeaderboardDisplay.get_Seconds", "i64()")
+RT_FUNC(ServicesLeaderboardDisplayMilliseconds, rt_services_leaderboard_display_milliseconds, "Zanna.Services.LeaderboardDisplay.get_Milliseconds", "i64()")
+
+RT_FUNC(ServicesOverlayPageFriends,        rt_services_overlay_page_friends,           "Zanna.Services.OverlayPage.get_Friends",        "i64()")
+RT_FUNC(ServicesOverlayPageCommunity,      rt_services_overlay_page_community,         "Zanna.Services.OverlayPage.get_Community",      "i64()")
+RT_FUNC(ServicesOverlayPagePlayers,        rt_services_overlay_page_players,           "Zanna.Services.OverlayPage.get_Players",        "i64()")
+RT_FUNC(ServicesOverlayPageSettings,       rt_services_overlay_page_settings,          "Zanna.Services.OverlayPage.get_Settings",       "i64()")
+RT_FUNC(ServicesOverlayPageOfficialGroup,  rt_services_overlay_page_official_group,    "Zanna.Services.OverlayPage.get_OfficialGroup",  "i64()")
+RT_FUNC(ServicesOverlayPageStats,          rt_services_overlay_page_stats,             "Zanna.Services.OverlayPage.get_Stats",          "i64()")
+RT_FUNC(ServicesOverlayPageAchievements,   rt_services_overlay_page_achievements,      "Zanna.Services.OverlayPage.get_Achievements",   "i64()")
+
+RT_FUNC(ServicesNotificationPositionTopLeft, rt_services_notification_position_top_left, "Zanna.Services.NotificationPosition.get_TopLeft", "i64()")
+RT_FUNC(ServicesNotificationPositionTopRight, rt_services_notification_position_top_right, "Zanna.Services.NotificationPosition.get_TopRight", "i64()")
+RT_FUNC(ServicesNotificationPositionBottomLeft, rt_services_notification_position_bottom_left, "Zanna.Services.NotificationPosition.get_BottomLeft", "i64()")
+RT_FUNC(ServicesNotificationPositionBottomRight, rt_services_notification_position_bottom_right, "Zanna.Services.NotificationPosition.get_BottomRight", "i64()")
+
+RT_FUNC(ServicesTextInputModeSingleLine,   rt_services_text_input_mode_single_line,    "Zanna.Services.TextInputMode.get_SingleLine",   "i64()")
+RT_FUNC(ServicesTextInputModeMultiLine,    rt_services_text_input_mode_multi_line,     "Zanna.Services.TextInputMode.get_MultiLine",    "i64()")
+RT_FUNC(ServicesTextInputModeEmail,        rt_services_text_input_mode_email,          "Zanna.Services.TextInputMode.get_Email",        "i64()")
+RT_FUNC(ServicesTextInputModeNumeric,      rt_services_text_input_mode_numeric,        "Zanna.Services.TextInputMode.get_Numeric",      "i64()")
+RT_FUNC(ServicesTextInputModePassword,     rt_services_text_input_mode_password,       "Zanna.Services.TextInputMode.get_Password",     "i64()")
 
 RT_FUNC(ServicesSteamHardwareUnknown,      rt_services_steam_hardware_unknown,         "Zanna.Services.SteamHardware.get_Unknown",      "i64()")
 RT_FUNC(ServicesSteamHardwareNone,         rt_services_steam_hardware_none,            "Zanna.Services.SteamHardware.get_None",         "i64()")
@@ -121,11 +251,13 @@ RT_FUNC(ServicesSteamHardwareSteamFrame,   rt_services_steam_hardware_steam_fram
 /// `Zanna.Services.Status` code. While a provider is started, `Canvas.Poll` and `Canvas3D.Poll`
 /// pump it every frame (call `Update` in loops without a canvas). Drain events with `PollEvent`,
 /// which returns a `Zanna.Services.EventKind` and exposes the payload through `EventResultCode`,
-/// `EventText`, `EventValue`, and `EventFlag`.
+/// `EventText`, `EventValue`, `EventTotal`, and `EventFlag`.
 ///
 /// When no provider is started (no Steam client, no redistributable, or a non-Steam build) every
 /// query returns an empty string, `0`, or `false` and never traps, so one build runs everywhere.
-/// Stateful members must be called on the main thread. Call `Shutdown` on the quit path.
+/// Stateful members must be called on the main thread. Call `Shutdown` on the quit path. The
+/// player features live in `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`,
+/// `TextInput`, and `Cloud`.
 RT_CLASS_BEGIN("Zanna.Services.Platform", ServicesPlatform, "none", none)
     RT_PROP("IsAvailable", "i1", ServicesPlatformIsAvailable, none)
     RT_PROP("Status", "i64", ServicesPlatformStatus, none)
@@ -139,6 +271,7 @@ RT_CLASS_BEGIN("Zanna.Services.Platform", ServicesPlatform, "none", none)
     RT_PROP("EventResultCode", "i64", ServicesPlatformEventResultCode, none)
     RT_PROP("EventText", "str", ServicesPlatformEventText, none)
     RT_PROP("EventValue", "i64", ServicesPlatformEventValue, none)
+    RT_PROP("EventTotal", "i64", ServicesPlatformEventTotal, none)
     RT_PROP("EventFlag", "i1", ServicesPlatformEventFlag, none)
     RT_PROP("DroppedEvents", "i64", ServicesPlatformDroppedEvents, none)
     RT_METHOD("Init", "obj<Zanna.Result>(str,str)", ServicesPlatformInit)
@@ -155,17 +288,175 @@ RT_CLASS_END()
 /// @summary Tracks one non-blocking platform services request.
 /// @details
 /// `Zanna.Services.Request` objects are returned by request methods such as
-/// `Platform.RequestPlayerCount`. A request completes during a later provider pump; poll `IsDone`
-/// across frames rather than waiting. `Succeeded`, `ResultCode`, and `Value` describe the result,
-/// and `Error` holds the failure message. Requests that cannot start are returned already
-/// completed as failed, and `Platform.Shutdown` cancels outstanding requests.
+/// `Platform.RequestPlayerCount`, `Leaderboards.Download`, and `OnScreenKeyboard.RequestText`.
+/// A request completes during a later provider pump; poll `IsDone` across frames rather than
+/// waiting.
+/// `Succeeded`, `ResultCode`, `Value`, `Flag`, and `Text` describe the result (their meaning
+/// depends on `Kind`), and `Error` holds the failure message. Leaderboard downloads also carry
+/// entries: `EntryCount`, then `EntryRank(i)`, `EntryScore(i)`, `EntryUserId(i)`, and
+/// `EntryUserName(i)` for `i` in `0..EntryCount-1` (other indexes trap). Requests that cannot start
+/// are returned already completed as failed, and `Platform.Shutdown` cancels outstanding requests.
 RT_CLASS_BEGIN("Zanna.Services.Request", ServicesRequest, "obj", none)
     RT_PROP("Kind", "i64", ServicesRequestKind, none)
     RT_PROP("IsDone", "i1", ServicesRequestIsDone, none)
     RT_PROP("Succeeded", "i1", ServicesRequestSucceeded, none)
     RT_PROP("ResultCode", "i64", ServicesRequestResultCode, none)
     RT_PROP("Value", "i64", ServicesRequestValue, none)
+    RT_PROP("Flag", "i1", ServicesRequestFlag, none)
+    RT_PROP("Text", "str", ServicesRequestText, none)
     RT_PROP("Error", "str", ServicesRequestError, none)
+    RT_PROP("EntryCount", "i64", ServicesRequestEntryCount, none)
+    RT_METHOD("EntryRank", "i64(i64)", ServicesRequestEntryRank)
+    RT_METHOD("EntryScore", "i64(i64)", ServicesRequestEntryScore)
+    RT_METHOD("EntryUserId", "str(i64)", ServicesRequestEntryUserId)
+    RT_METHOD("EntryUserName", "str(i64)", ServicesRequestEntryUserName)
+RT_CLASS_END()
+
+/// @summary Unlocks and inspects the game's platform achievements.
+/// @details
+/// `Zanna.Services.Achievements` addresses achievements by the API id defined with the platform
+/// (for Steam, in the Steamworks app admin). `Unlock` changes the achievement locally; call
+/// `Stats.Store` soon afterwards to commit it and show the unlock notification.
+/// `IndicateProgress(id, current, maximum)` shows a progress notification without unlocking.
+/// `IsUnlocked`, `UnlockTime` (Unix seconds), `DisplayName`, `Description`, and `IsHidden` read the
+/// achievement, and `Count` with `IdAt(index)` enumerates them. `Clear` relocks an achievement for
+/// testing.
+///
+/// Without a provider that supports achievements every member returns `false`, `0`, or `""`. An
+/// empty id traps. A rejected call returns `false` and `Platform.Diagnostics` explains why.
+RT_CLASS_BEGIN("Zanna.Services.Achievements", ServicesAchievements, "none", none)
+    RT_PROP("Count", "i64", ServicesAchievementsCount, none)
+    RT_METHOD("Unlock", "i1(str)", ServicesAchievementsUnlock)
+    RT_METHOD("Clear", "i1(str)", ServicesAchievementsClear)
+    RT_METHOD("IsUnlocked", "i1(str)", ServicesAchievementsIsUnlocked)
+    RT_METHOD("UnlockTime", "i64(str)", ServicesAchievementsUnlockTime)
+    RT_METHOD("IndicateProgress", "i1(str,i64,i64)", ServicesAchievementsIndicateProgress)
+    RT_METHOD("IdAt", "str(i64)", ServicesAchievementsIdAt)
+    RT_METHOD("DisplayName", "str(str)", ServicesAchievementsDisplayName)
+    RT_METHOD("Description", "str(str)", ServicesAchievementsDescription)
+    RT_METHOD("IsHidden", "i1(str)", ServicesAchievementsIsHidden)
+RT_CLASS_END()
+
+/// @summary Reads, updates, and commits the player's platform stats.
+/// @details
+/// `Zanna.Services.Stats` addresses stats by the API name defined with the platform. `GetInt` and
+/// `SetInt` work on integer stats, `GetFloat` and `SetFloat` on floating-point stats, and
+/// `UpdateAverageRate(name, count, seconds)` adds a session to an average-rate stat. Changes are
+/// local until `Store` commits them together with achievement unlocks; the result arrives as
+/// `EventKind.StatsStored`. Platforms rate-limit commits, so store at natural break points such as
+/// the end of a game rather than every frame. `ResetAll` clears stats (and optionally
+/// achievements) for testing.
+///
+/// Without a provider that supports stats every member returns `false` or `0`. An empty name traps;
+/// values a provider cannot store (Steam: outside int32 or float32, or non-finite) return `false`
+/// with a diagnostic.
+RT_CLASS_BEGIN("Zanna.Services.Stats", ServicesStats, "none", none)
+    RT_METHOD("GetInt", "i64(str)", ServicesStatsGetInt)
+    RT_METHOD("SetInt", "i1(str,i64)", ServicesStatsSetInt)
+    RT_METHOD("GetFloat", "f64(str)", ServicesStatsGetFloat)
+    RT_METHOD("SetFloat", "i1(str,f64)", ServicesStatsSetFloat)
+    RT_METHOD("UpdateAverageRate", "i1(str,f64,f64)", ServicesStatsUpdateAverageRate)
+    RT_METHOD("Store", "i1()", ServicesStatsStore)
+    RT_METHOD("ResetAll", "i1(i1)", ServicesStatsResetAll)
+RT_CLASS_END()
+
+/// @summary Finds leaderboards, uploads scores, and downloads ranked entries by board name.
+/// @details
+/// `Zanna.Services.Leaderboards` starts non-blocking `Zanna.Services.Request` operations addressed
+/// by leaderboard name. `Find(name)` checks that a board exists (`Value` holds its entry count) and
+/// `FindOrCreate(name, sort, display)` creates a missing board with `LeaderboardSort` and
+/// `LeaderboardDisplay` values. `Upload(name, score, keepBest)` stores the player's score; `Value`
+/// holds the new global rank and `Flag` whether the stored score changed.
+/// `Download(name, scope, start, end)` fetches up to 100 entries with a `LeaderboardScope`:
+/// `Global` ranks `start..end` (from 1), `AroundUser` offsets such as `-4..5`, or `Friends`
+/// (range ignored); read them with `Request.EntryRank`, `EntryScore`, `EntryUserId`, and
+/// `EntryUserName`, and `Value` holds the board's total entry count.
+///
+/// An empty name, an unknown constant, or an impossible download range traps. Without a provider
+/// that supports leaderboards the request completes as failed.
+RT_CLASS_BEGIN("Zanna.Services.Leaderboards", ServicesLeaderboards, "none", none)
+    RT_METHOD("Find", "obj<Zanna.Services.Request>(str)", ServicesLeaderboardsFind)
+    RT_METHOD("FindOrCreate", "obj<Zanna.Services.Request>(str,i64,i64)", ServicesLeaderboardsFindOrCreate)
+    RT_METHOD("Upload", "obj<Zanna.Services.Request>(str,i64,i1)", ServicesLeaderboardsUpload)
+    RT_METHOD("Download", "obj<Zanna.Services.Request>(str,i64,i64,i64)", ServicesLeaderboardsDownload)
+RT_CLASS_END()
+
+/// @summary Publishes what the player is doing to their friends.
+/// @details
+/// `Zanna.Services.Presence` sets rich presence key/value pairs for the signed-in user.
+/// `Set(key, value)` publishes one pair and an empty value removes the key; `Clear` removes every
+/// key. Keys and their meaning are provider-defined: on Steam, `status` is plain text shown in some
+/// views and `steam_display` names a localization token configured for the app. Without a provider
+/// that supports presence both members do nothing and `Set` returns `false`; an empty key traps.
+RT_CLASS_BEGIN("Zanna.Services.Presence", ServicesPresence, "none", none)
+    RT_METHOD("Set", "i1(str,str)", ServicesPresenceSet)
+    RT_METHOD("Clear", "void()", ServicesPresenceClear)
+RT_CLASS_END()
+
+/// @summary Opens the platform's in-game overlay and positions its notifications.
+/// @details
+/// `Zanna.Services.Overlay` controls the platform overlay drawn over the game. `IsEnabled` reports
+/// whether it is attached right now (it can take a few seconds after startup). `Open(page)` shows an
+/// `OverlayPage`, `OpenWebPage(url, modal)` opens the overlay browser, and
+/// `OpenStore(productId, addToCart)` opens a store page (on Steam the product id is a decimal app
+/// id, and a malformed one traps). `SetNotificationPosition` and `SetNotificationInset` move
+/// notifications such as achievement unlocks away from the game's HUD.
+///
+/// The desktop overlay needs GPU presentation (`Canvas3D` or `World3D`). Members return `true` when
+/// the request reached the platform and `false` without a provider that supports the overlay.
+RT_CLASS_BEGIN("Zanna.Services.Overlay", ServicesOverlay, "none", none)
+    RT_PROP("IsEnabled", "i1", ServicesOverlayIsEnabled, none)
+    RT_METHOD("Open", "i1(i64)", ServicesOverlayOpen)
+    RT_METHOD("OpenWebPage", "i1(str,i1)", ServicesOverlayOpenWebPage)
+    RT_METHOD("OpenStore", "i1(str,i1)", ServicesOverlayOpenStore)
+    RT_METHOD("SetNotificationPosition", "i1(i64)", ServicesOverlaySetNotificationPosition)
+    RT_METHOD("SetNotificationInset", "i1(i64,i64)", ServicesOverlaySetNotificationInset)
+RT_CLASS_END()
+
+/// @summary Shows platform on-screen keyboards for controller-only devices.
+/// @details
+/// `Zanna.Services.OnScreenKeyboard` brings up text entry on devices without a keyboard, such as
+/// Steam Deck. `ShowFloating(mode, x, y, width, height)` opens a floating keyboard beside the
+/// game's own text field (given in window pixels) whose keys arrive as ordinary keyboard input;
+/// `EventKind.TextInputDismissed` reports when it closes and `DismissFloating` closes it early.
+/// `RequestText(prompt, initialText, maxLength, mode)` opens full-screen text entry and returns a
+/// `Zanna.Services.Request` that completes with the submitted text in `Text` (cancelling fails the
+/// request). Modes are `TextInputMode` values.
+///
+/// On a desktop without a controller-oriented shell the keyboards are unavailable: `ShowFloating`
+/// returns `false` and `RequestText` fails. Unknown modes and a `maxLength` outside `1..4096` trap.
+RT_CLASS_BEGIN("Zanna.Services.OnScreenKeyboard", ServicesOnScreenKeyboard, "none", none)
+    RT_METHOD("ShowFloating", "i1(i64,i64,i64,i64,i64)", ServicesOnScreenKeyboardShowFloating)
+    RT_METHOD("DismissFloating", "i1()", ServicesOnScreenKeyboardDismissFloating)
+    RT_METHOD("RequestText", "obj<Zanna.Services.Request>(str,str,i64,i64)", ServicesOnScreenKeyboardRequestText)
+RT_CLASS_END()
+
+/// @summary Stores per-user files that the platform synchronizes across devices.
+/// @details
+/// `Zanna.Services.Cloud` reads and writes whole files in the platform's cloud storage for the
+/// signed-in user. `Write(name, bytes)` creates or replaces a file, `Read(name)` returns a
+/// `Zanna.Result` holding `Bytes` or an error message, and `Exists`, `Delete`, `Size`,
+/// `Timestamp`, and `Files` manage what is stored. `IsEnabled` is `true` only when both the user and
+/// the app have cloud storage enabled, and `QuotaTotal` and `QuotaAvailable` report space in bytes.
+/// Wrap the writes and deletes of one save in `BeginBatch` and `EndBatch` so the platform never
+/// synchronizes half of it. Operations work against the platform's local copy; it uploads on its
+/// own schedule.
+///
+/// Games whose saves already live under `Zanna.IO.Path.DataDir` can instead use platform
+/// synchronization configured outside the game (Steam Auto-Cloud). An empty file name traps.
+RT_CLASS_BEGIN("Zanna.Services.Cloud", ServicesCloud, "none", none)
+    RT_PROP("IsEnabled", "i1", ServicesCloudIsEnabled, none)
+    RT_PROP("QuotaTotal", "i64", ServicesCloudQuotaTotal, none)
+    RT_PROP("QuotaAvailable", "i64", ServicesCloudQuotaAvailable, none)
+    RT_METHOD("Write", "i1(str,obj<Zanna.Collections.Bytes>)", ServicesCloudWrite)
+    RT_METHOD("Read", "obj<Zanna.Result>(str)", ServicesCloudRead)
+    RT_METHOD("Exists", "i1(str)", ServicesCloudExists)
+    RT_METHOD("Delete", "i1(str)", ServicesCloudDelete)
+    RT_METHOD("Size", "i64(str)", ServicesCloudSize)
+    RT_METHOD("Timestamp", "i64(str)", ServicesCloudTimestamp)
+    RT_METHOD("Files", "seq<str>()", ServicesCloudFiles)
+    RT_METHOD("BeginBatch", "i1()", ServicesCloudBeginBatch)
+    RT_METHOD("EndBatch", "i1()", ServicesCloudEndBatch)
 RT_CLASS_END()
 
 /// @summary Exposes Steam-only capabilities of the platform services layer.
@@ -217,7 +508,11 @@ RT_CLASS_END()
 /// platform overlay opening (EventFlag true) or closing; pause single-player games while it is
 /// open. `DlcInstalled` carries the DLC id in EventText and EventValue,
 /// `LaunchParametersChanged` reports a relaunch with new parameters, and `ServiceShutdown` asks
-/// the game to save and shut the provider down. `None` means the queue is empty.
+/// the game to save and shut the provider down. `StatsStored` reports the result of
+/// `Stats.Store` (EventFlag is true on success, EventResultCode holds the provider result).
+/// `AchievementStored` reports a stored unlock (EventFlag true) or progress notification
+/// (EventValue out of EventTotal) with the achievement id in EventText. `TextInputDismissed`
+/// reports that the floating keyboard closed. `None` means the queue is empty.
 RT_CLASS_BEGIN("Zanna.Services.EventKind", ServicesEventKind, "none", none)
     RT_PROP("None", "i64", ServicesEventKindNone, none)
     RT_PROP("ServiceConnected", "i64", ServicesEventKindServiceConnected, none)
@@ -227,28 +522,116 @@ RT_CLASS_BEGIN("Zanna.Services.EventKind", ServicesEventKind, "none", none)
     RT_PROP("DlcInstalled", "i64", ServicesEventKindDlcInstalled, none)
     RT_PROP("LaunchParametersChanged", "i64", ServicesEventKindLaunchParametersChanged, none)
     RT_PROP("ServiceShutdown", "i64", ServicesEventKindServiceShutdown, none)
+    RT_PROP("StatsStored", "i64", ServicesEventKindStatsStored, none)
+    RT_PROP("AchievementStored", "i64", ServicesEventKindAchievementStored, none)
+    RT_PROP("TextInputDismissed", "i64", ServicesEventKindTextInputDismissed, none)
 RT_CLASS_END()
 
 /// @summary Defines platform services feature identifiers for Platform.HasFeature.
 /// @details
 /// `Zanna.Services.Feature` values ask whether the active provider can serve a group of members
 /// right now: `Identity` (UserId, UserName, IsOnline), `Licensing` (IsLicensed, IsDlcInstalled),
-/// `Language`, and `PlayerCount` (RequestPlayerCount). A feature can be unavailable even while a
-/// provider is started, for example when an older redistributable lacks an interface;
-/// `Platform.Diagnostics` then explains why.
+/// `Language`, `PlayerCount` (RequestPlayerCount), and one value per feature class:
+/// `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`, `TextInput`, and `Cloud`. A
+/// feature can be unavailable even while a provider is started, for example when an older
+/// redistributable lacks an interface; `Platform.Diagnostics` then explains why.
 RT_CLASS_BEGIN("Zanna.Services.Feature", ServicesFeature, "none", none)
     RT_PROP("Identity", "i64", ServicesFeatureIdentity, none)
     RT_PROP("Licensing", "i64", ServicesFeatureLicensing, none)
     RT_PROP("Language", "i64", ServicesFeatureLanguage, none)
     RT_PROP("PlayerCount", "i64", ServicesFeaturePlayerCount, none)
+    RT_PROP("Achievements", "i64", ServicesFeatureAchievements, none)
+    RT_PROP("Stats", "i64", ServicesFeatureStats, none)
+    RT_PROP("Leaderboards", "i64", ServicesFeatureLeaderboards, none)
+    RT_PROP("Presence", "i64", ServicesFeaturePresence, none)
+    RT_PROP("Overlay", "i64", ServicesFeatureOverlay, none)
+    RT_PROP("TextInput", "i64", ServicesFeatureTextInput, none)
+    RT_PROP("Cloud", "i64", ServicesFeatureCloud, none)
 RT_CLASS_END()
 
 /// @summary Defines platform services request kinds reported by Request.Kind.
 /// @details
 /// `Zanna.Services.RequestKind` identifies what a `Zanna.Services.Request` asked for. `PlayerCount`
-/// requests the number of players currently running the game; its `Value` holds the count.
+/// requests the number of players currently running the game (`Value` holds the count).
+/// `LeaderboardFind`, `LeaderboardUpload`, and `LeaderboardDownload` come from
+/// `Zanna.Services.Leaderboards`, and `TextInput` from `OnScreenKeyboard.RequestText` (`Text`
+/// holds the submitted text).
 RT_CLASS_BEGIN("Zanna.Services.RequestKind", ServicesRequestKind, "none", none)
     RT_PROP("PlayerCount", "i64", ServicesRequestKindPlayerCount, none)
+    RT_PROP("LeaderboardFind", "i64", ServicesRequestKindLeaderboardFind, none)
+    RT_PROP("LeaderboardUpload", "i64", ServicesRequestKindLeaderboardUpload, none)
+    RT_PROP("LeaderboardDownload", "i64", ServicesRequestKindLeaderboardDownload, none)
+    RT_PROP("TextInput", "i64", ServicesRequestKindTextInput, none)
+RT_CLASS_END()
+
+/// @summary Defines which leaderboard entries Leaderboards.Download fetches.
+/// @details
+/// `Zanna.Services.LeaderboardScope` values select a download range: `Global` treats start and end
+/// as absolute ranks from 1, `AroundUser` treats them as offsets from the player's own rank (for
+/// example -4..5 fetches the player and nearby entries), and `Friends` fetches the player and their
+/// friends and ignores the range.
+RT_CLASS_BEGIN("Zanna.Services.LeaderboardScope", ServicesLeaderboardScope, "none", none)
+    RT_PROP("Global", "i64", ServicesLeaderboardScopeGlobal, none)
+    RT_PROP("AroundUser", "i64", ServicesLeaderboardScopeAroundUser, none)
+    RT_PROP("Friends", "i64", ServicesLeaderboardScopeFriends, none)
+RT_CLASS_END()
+
+/// @summary Defines how a leaderboard created by Leaderboards.FindOrCreate ranks scores.
+/// @details
+/// `Zanna.Services.LeaderboardSort` values choose the ranking order: `Ascending` ranks the lowest
+/// score first (times, strokes) and `Descending` ranks the highest score first (points).
+RT_CLASS_BEGIN("Zanna.Services.LeaderboardSort", ServicesLeaderboardSort, "none", none)
+    RT_PROP("Ascending", "i64", ServicesLeaderboardSortAscending, none)
+    RT_PROP("Descending", "i64", ServicesLeaderboardSortDescending, none)
+RT_CLASS_END()
+
+/// @summary Defines how the platform displays scores of a leaderboard created by FindOrCreate.
+/// @details
+/// `Zanna.Services.LeaderboardDisplay` values tell the platform how to format scores in its own
+/// views: `Numeric` for plain numbers, `Seconds` and `Milliseconds` for times.
+RT_CLASS_BEGIN("Zanna.Services.LeaderboardDisplay", ServicesLeaderboardDisplay, "none", none)
+    RT_PROP("Numeric", "i64", ServicesLeaderboardDisplayNumeric, none)
+    RT_PROP("Seconds", "i64", ServicesLeaderboardDisplaySeconds, none)
+    RT_PROP("Milliseconds", "i64", ServicesLeaderboardDisplayMilliseconds, none)
+RT_CLASS_END()
+
+/// @summary Defines the overlay pages Overlay.Open can show.
+/// @details
+/// `Zanna.Services.OverlayPage` values name overlay pages: `Friends`, `Community`, `Players`
+/// (people recently played with), `Settings`, `OfficialGroup` (the game's official group),
+/// `Stats`, and `Achievements` (the player's stats and achievements for this game).
+RT_CLASS_BEGIN("Zanna.Services.OverlayPage", ServicesOverlayPage, "none", none)
+    RT_PROP("Friends", "i64", ServicesOverlayPageFriends, none)
+    RT_PROP("Community", "i64", ServicesOverlayPageCommunity, none)
+    RT_PROP("Players", "i64", ServicesOverlayPagePlayers, none)
+    RT_PROP("Settings", "i64", ServicesOverlayPageSettings, none)
+    RT_PROP("OfficialGroup", "i64", ServicesOverlayPageOfficialGroup, none)
+    RT_PROP("Stats", "i64", ServicesOverlayPageStats, none)
+    RT_PROP("Achievements", "i64", ServicesOverlayPageAchievements, none)
+RT_CLASS_END()
+
+/// @summary Defines the screen corners for Overlay.SetNotificationPosition.
+/// @details
+/// `Zanna.Services.NotificationPosition` values choose where overlay notifications such as
+/// achievement unlocks appear: `TopLeft`, `TopRight`, `BottomLeft`, or `BottomRight`.
+RT_CLASS_BEGIN("Zanna.Services.NotificationPosition", ServicesNotificationPosition, "none", none)
+    RT_PROP("TopLeft", "i64", ServicesNotificationPositionTopLeft, none)
+    RT_PROP("TopRight", "i64", ServicesNotificationPositionTopRight, none)
+    RT_PROP("BottomLeft", "i64", ServicesNotificationPositionBottomLeft, none)
+    RT_PROP("BottomRight", "i64", ServicesNotificationPositionBottomRight, none)
+RT_CLASS_END()
+
+/// @summary Defines on-screen keyboard layouts for Zanna.Services.OnScreenKeyboard.
+/// @details
+/// `Zanna.Services.TextInputMode` values choose the keyboard: `SingleLine` (Enter finishes),
+/// `MultiLine` (the player closes the keyboard), `Email`, `Numeric`, and `Password` (masked entry
+/// for full-screen text input; the floating keyboard uses `SingleLine` instead).
+RT_CLASS_BEGIN("Zanna.Services.TextInputMode", ServicesTextInputMode, "none", none)
+    RT_PROP("SingleLine", "i64", ServicesTextInputModeSingleLine, none)
+    RT_PROP("MultiLine", "i64", ServicesTextInputModeMultiLine, none)
+    RT_PROP("Email", "i64", ServicesTextInputModeEmail, none)
+    RT_PROP("Numeric", "i64", ServicesTextInputModeNumeric, none)
+    RT_PROP("Password", "i64", ServicesTextInputModePassword, none)
 RT_CLASS_END()
 
 /// @summary Defines Steam hardware identifiers reported by Steam.HardwareType.

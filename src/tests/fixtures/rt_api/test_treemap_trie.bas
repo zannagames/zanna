@@ -10,7 +10,7 @@ PRINT "tm has banana: "; tm.Has("banana")
 PRINT "tm first: "; tm.First()
 PRINT "tm last: "; tm.Last()
 PRINT "tm floor blueberry: "; tm.Floor("blueberry")
-PRINT "tm ceil blueberry: "; tm.Ceil("blueberry")
+PRINT "tm ceil blueberry: "; tm.Ceiling("blueberry")
 tm.Remove("apple")
 PRINT "tm len after remove: "; tm.Count
 
@@ -41,15 +41,15 @@ PRINT "ss has apple: "; ss.Has("apple")
 PRINT "ss at 1: "; ss.At(1)
 PRINT "ss indexof banana: "; ss.IndexOf("banana")
 PRINT "ss floor blueberry: "; ss.Floor("blueberry")
-PRINT "ss ceil blueberry: "; ss.Ceil("blueberry")
+PRINT "ss ceil blueberry: "; ss.Ceiling("blueberry")
 ss.Remove("apple")
 PRINT "ss len after drop: "; ss.Count
 
 DIM bm AS Zanna.Collections.BiMap
 bm = Zanna.Collections.BiMap.New()
 PRINT "bm empty: "; bm.IsEmpty
-bm.Put("one", "1")
-bm.Put("two", "2")
+bm.Set("one", "1")
+bm.Set("two", "2")
 PRINT "bm len: "; bm.Count
 PRINT "bm getbykey one: "; bm.GetByKey("one")
 PRINT "bm getbyvalue 2: "; bm.GetByValue("2")

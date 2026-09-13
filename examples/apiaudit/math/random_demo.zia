@@ -65,8 +65,6 @@ func start() {
     SayBool(Random.Chance(0.0));
     Say("Random.Chance(0.5):");
     SayBool(Random.Chance(0.5));
-    Say("Random.ChanceInt(0.5) [compat 0/1]:");
-    SayInt(Random.ChanceInt(0.5));
 
     // --- Gaussian ---
     Say("--- Gaussian ---");

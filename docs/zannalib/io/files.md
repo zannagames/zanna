@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-09-01
+last-verified: 2026-09-13
 ---
 
 # Files & Directories
@@ -40,7 +40,7 @@ File system operations.
 | `WriteAllLines(path, lines)`  | `Void(String, Seq(String))` | Atomically writes a sequence of strings as lines; traps on I/O errors            |
 | `Append(path, text)`          | `Void(String, String)` | Appends text to a file; traps on I/O errors                                               |
 | `AppendLine(path, text)`      | `Void(String, String)` | Appends text followed by `\n` to a file in one atomic write (creates if missing)          |
-| `ReadAllLines(path)`          | `Seq(String)`          | Reads file as a sequence of lines; strips `\n`, `\r`, or `\r\n` terminators (traps on I/O errors) |
+| `ReadAllLines(path)`          | `Seq(String)`          | Reads file as a sequence of lines; strips `\n`, `\r`, or `\r\n` terminators, and a terminator at the end of the file adds no empty line, so it reads back what `WriteAllLines` wrote (traps on I/O errors) |
 | `Modified(path)`              | `Integer(String)`      | Returns regular-file modification time as Unix timestamp, or -1 if missing or not a file  |
 | `Touch(path)`                 | `Void(String)`         | Creates a missing file or updates an existing regular file's modification time (traps on a directory) |
 

@@ -924,6 +924,60 @@ func start() {
     fs::remove_all(tempRoot);
 }
 
+/// @brief A name exported by two bound modules is reported as ambiguous, and qualifying it works.
+TEST(ZiaBinds, NameExportedByTwoBoundModulesIsAmbiguous) {
+    const fs::path tempRoot = fs::temp_directory_path() / "zia_bind_tests" /
+                              std::to_string(static_cast<unsigned long long>(::getpid()));
+    const fs::path dir = tempRoot / "ambiguous_export";
+    writeFile(
+        dir, "moda.zia", "module ModA;\n\nfunc helper(x: Integer) -> Integer { return x + 1; }\n");
+    writeFile(
+        dir, "modb.zia", "module ModB;\n\nfunc helper(x: Integer) -> Integer { return x + 2; }\n");
+
+    const std::string ambiguousSource = R"(
+module Main;
+bind "./moda";
+bind "./modb";
+
+func start() {
+    Zanna.Terminal.SayInt(helper(1));
+}
+)";
+    const fs::path ambiguousPath = writeFile(dir, "ambiguous.zia", ambiguousSource);
+    SourceManager sm;
+    const std::string ambiguousPathStr = ambiguousPath.string();
+    CompilerInput ambiguousInput{.source = ambiguousSource, .path = ambiguousPathStr};
+    CompilerOptions opts{};
+    auto ambiguous = compile(ambiguousInput, opts, sm);
+    EXPECT_FALSE(ambiguous.succeeded());
+    bool sawAmbiguity = false;
+    for (const auto &d : ambiguous.diagnostics.diagnostics()) {
+        if (d.message.find("Ambiguous identifier 'helper': exported by 'ModA' and 'ModB'") !=
+            std::string::npos)
+            sawAmbiguity = true;
+        EXPECT_EQ(d.message.find("Undefined identifier"), std::string::npos);
+    }
+    EXPECT_TRUE(sawAmbiguity);
+
+    const std::string qualifiedSource = R"(
+module Main;
+bind "./moda";
+bind "./modb";
+
+func start() {
+    Zanna.Terminal.SayInt(ModA.helper(1) + ModB.helper(1));
+}
+)";
+    const fs::path qualifiedPath = writeFile(dir, "qualified.zia", qualifiedSource);
+    SourceManager sm2;
+    const std::string qualifiedPathStr = qualifiedPath.string();
+    CompilerInput qualifiedInput{.source = qualifiedSource, .path = qualifiedPathStr};
+    auto qualified = compile(qualifiedInput, opts, sm2);
+    EXPECT_TRUE(qualified.succeeded());
+
+    fs::remove_all(tempRoot);
+}
+
 } // namespace
 
 int main() {

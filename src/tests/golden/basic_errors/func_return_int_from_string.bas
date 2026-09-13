@@ -1,0 +1,6 @@
+REM A $-suffixed FUNCTION returns STRING, so RETURN of a number is B4010.
+FUNCTION WORD$()
+    RETURN 42
+END FUNCTION
+PRINT WORD$()
+END

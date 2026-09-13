@@ -12,7 +12,7 @@ PRINT "tmppath nonempty: "; (LEN(tmppath) > 0)
 
 DIM tmppfx AS STRING
 tmppfx = Zanna.IO.TempFile.PathWithPrefix("vtest")
-PRINT "tmppfx has prefix: "; Zanna.String.Has(tmppfx, "vtest")
+PRINT "tmppfx has prefix: "; Zanna.String.Contains(tmppfx, "vtest")
 
 DIM tmpext AS STRING
 tmpext = Zanna.IO.TempFile.PathWithExt("vtest", ".txt")
@@ -38,7 +38,7 @@ PRINT "after append: "; content
 ' --- File: appendline ---
 Zanna.IO.File.AppendLine(testfile, "line2")
 content = Zanna.IO.File.ReadAllText(testfile)
-PRINT "content has line2: "; Zanna.String.Has(content, "line2")
+PRINT "content has line2: "; Zanna.String.Contains(content, "line2")
 
 ' --- File: copy ---
 DIM copyfile AS STRING

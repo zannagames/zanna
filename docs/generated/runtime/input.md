@@ -298,7 +298,7 @@ operations including `Clear`, `Define`, `DefineAxis`, `Exists`.
 | <a id="zanna-input-action-strength"></a>`Strength` | `f64(str)` | `Zanna.Input.Action.Strength` |
 | <a id="zanna-input-action-axis"></a>`Axis` | `f64(str)` | `Zanna.Input.Action.Axis` |
 | <a id="zanna-input-action-axisraw"></a>`AxisRaw` | `f64(str)` | `Zanna.Input.Action.AxisRaw` |
-| <a id="zanna-input-action-list"></a>`List` | `obj()` | `Zanna.Input.Action.List` |
+| <a id="zanna-input-action-list"></a>`List` | `seq<str>()` | `Zanna.Input.Action.List` |
 | <a id="zanna-input-action-bindingsstr"></a>`BindingsStr` | `str(str)` | `Zanna.Input.Action.BindingsStr` |
 | <a id="zanna-input-action-bindingcount"></a>`BindingCount` | `i64(str)` | `Zanna.Input.Action.BindingCount` |
 | <a id="zanna-input-action-keyboundto"></a>`KeyBoundTo` | `str(i64)` | `Zanna.Input.Action.KeyBoundTo` |
@@ -363,7 +363,7 @@ Constructor: `Zanna.Input.Manager.New`
 | <a id="zanna-input-manager-padrighty"></a>`PadRightY` | `f64(i64)` | `Zanna.Input.Manager.PadRightY` |
 | <a id="zanna-input-manager-padlefttrigger"></a>`PadLeftTrigger` | `f64(i64)` | `Zanna.Input.Manager.PadLeftTrigger` |
 | <a id="zanna-input-manager-padrighttrigger"></a>`PadRightTrigger` | `f64(i64)` | `Zanna.Input.Manager.PadRightTrigger` |
-| <a id="zanna-input-manager-new"></a>`New` | `obj()` | `Zanna.Input.Manager.New` |
+| <a id="zanna-input-manager-new"></a>`New` | `obj<Zanna.Input.Manager>()` | `Zanna.Input.Manager.New` |
 | <a id="zanna-input-manager-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Input.Manager.Destroy` |
 
 <a id="zanna-input-keychord"></a>
@@ -395,7 +395,7 @@ Constructor: `Zanna.Input.KeyChord.New`
 | <a id="zanna-input-keychord-remove"></a>`Remove` | `i1(str)` | `Zanna.Input.KeyChord.Remove` |
 | <a id="zanna-input-keychord-triggered"></a>`Triggered` | `i1(str)` | `Zanna.Input.KeyChord.Triggered` |
 | <a id="zanna-input-keychord-update"></a>`Update` | `void()` | `Zanna.Input.KeyChord.Update` |
-| <a id="zanna-input-keychord-new"></a>`New` | `obj()` | `Zanna.Input.KeyChord.New` |
+| <a id="zanna-input-keychord-new"></a>`New` | `obj<Zanna.Input.KeyChord>()` | `Zanna.Input.KeyChord.New` |
 
 ## Functions
 
@@ -604,7 +604,7 @@ Constructor: `Zanna.Input.KeyChord.New`
 | `Zanna.Input.Action.Strength` | `f64(str)` | `rt_action_strength` |
 | `Zanna.Input.Action.Axis` | `f64(str)` | `rt_action_axis` |
 | `Zanna.Input.Action.AxisRaw` | `f64(str)` | `rt_action_axis_raw` |
-| `Zanna.Input.Action.List` | `obj()` | `rt_action_list` |
+| `Zanna.Input.Action.List` | `seq<str>()` | `rt_action_list` |
 | `Zanna.Input.Action.BindingsStr` | `str(str)` | `rt_action_bindings_str` |
 | `Zanna.Input.Action.BindingCount` | `i64(str)` | `rt_action_binding_count` |
 | `Zanna.Input.Action.KeyBoundTo` | `str(i64)` | `rt_action_key_bound_to` |
@@ -619,7 +619,7 @@ Constructor: `Zanna.Input.KeyChord.New`
 | <a id="zanna-input-action-get-axisrighty"></a>`Zanna.Input.Action.get_AxisRightY` | `i64()` | `rt_action_axis_right_y` |
 | <a id="zanna-input-action-get-axislefttrigger"></a>`Zanna.Input.Action.get_AxisLeftTrigger` | `i64()` | `rt_action_axis_left_trigger` |
 | <a id="zanna-input-action-get-axisrighttrigger"></a>`Zanna.Input.Action.get_AxisRightTrigger` | `i64()` | `rt_action_axis_right_trigger` |
-| `Zanna.Input.Manager.New` | `obj()` | `rt_inputmgr_new` |
+| `Zanna.Input.Manager.New` | `obj<Zanna.Input.Manager>()` | `rt_inputmgr_new` |
 | `Zanna.Input.Manager.Destroy` | `void(obj)` | `rt_inputmgr_destroy` |
 | `Zanna.Input.Manager.Update` | `void(obj)` | `rt_inputmgr_update` |
 | `Zanna.Input.Manager.KeyPressed` | `i1(obj,i64)` | `rt_inputmgr_key_pressed` |
@@ -656,7 +656,7 @@ Constructor: `Zanna.Input.KeyChord.New`
 | <a id="zanna-input-manager-get-cancel"></a>`Zanna.Input.Manager.get_Cancel` | `i1(obj)` | `rt_inputmgr_cancel` |
 | <a id="zanna-input-manager-get-axisx"></a>`Zanna.Input.Manager.get_AxisX` | `f64(obj)` | `rt_inputmgr_axis_x` |
 | <a id="zanna-input-manager-get-axisy"></a>`Zanna.Input.Manager.get_AxisY` | `f64(obj)` | `rt_inputmgr_axis_y` |
-| `Zanna.Input.KeyChord.New` | `obj()` | `rt_keychord_new` |
+| `Zanna.Input.KeyChord.New` | `obj<Zanna.Input.KeyChord>()` | `rt_keychord_new` |
 | `Zanna.Input.KeyChord.Define` | `void(obj,str,obj)` | `rt_keychord_define` |
 | `Zanna.Input.KeyChord.DefineCombo` | `void(obj,str,obj,i64)` | `rt_keychord_define_combo` |
 | `Zanna.Input.KeyChord.Update` | `void(obj)` | `rt_keychord_update` |

@@ -15,7 +15,7 @@ func start() {
 
     // --- New ---
     Say("--- New ---");
-    var tm = TreeMap.New();
+    var tm = SortedMap.New();
     SayInt(tm.Count);       // 0
     SayBool(tm.IsEmpty);  // 1
 
@@ -53,9 +53,9 @@ func start() {
     // --- Floor / Ceil ---
     Say("--- Floor / Ceil ---");
     Say(tm.Floor("cat"));         // banana (largest <= "cat")
-    Say(tm.Ceil("cat"));          // cherry (smallest >= "cat")
+    Say(tm.Ceiling("cat"));          // cherry (smallest >= "cat")
     Say(tm.Floor("apple"));       // apple (exact match)
-    Say(tm.Ceil("date"));         // date (exact match)
+    Say(tm.Ceiling("date"));         // date (exact match)
     Say(tm.Floor("aaa"));         // empty (nothing <= "aaa")
 
     // --- Keys (sorted order) ---

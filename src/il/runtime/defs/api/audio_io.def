@@ -96,6 +96,7 @@ RT_FUNC(AudioSetGroupDucking, rt_audio_set_group_ducking, "Zanna.Audio.Mixer.Set
 //=============================================================================
 
 RT_FUNC(MusicLoad, rt_music_load, "Zanna.Audio.Music.Load", "obj<Zanna.Audio.Music>(str)", owned)
+RT_FUNC(MusicLoadAsset, rt_music_load_asset, "Zanna.Audio.Music.LoadAsset", "obj<Zanna.Audio.Music>(str)", owned)
 RT_FUNC(MusicDestroy,     rt_music_destroy,      "Zanna.Audio.Music.Destroy",     "void(obj<Zanna.Audio.Music>)")
 RT_FUNC(MusicPlay,        rt_music_play,         "Zanna.Audio.Music.Play",        "void(obj<Zanna.Audio.Music>,i64)")
 RT_FUNC(MusicStop,        rt_music_stop,         "Zanna.Audio.Music.Stop",        "void(obj<Zanna.Audio.Music>)")
@@ -203,11 +204,11 @@ RT_FUNC(PathDataDir, rt_path_data_dir, "Zanna.IO.Path.DataDir", "str(str)", owne
 RT_FUNC(PathFindUpward, rt_path_find_upward, "Zanna.IO.Path.FindUpward", "str(str,str,i64)", owned)
 RT_FUNC(PathResolveDataRoot, rt_path_resolve_data_root, "Zanna.IO.Path.ResolveDataRoot", "str(str,str)", owned)
 
-RT_FUNC(AssetLoad, rt_asset_load, "Zanna.IO.Assets.Load", "obj(str)", owned)
-RT_FUNC(AssetLoadBytes, rt_asset_load_bytes, "Zanna.IO.Assets.LoadBytes", "obj(str)", owned)
+RT_FUNC(AssetLoad, rt_asset_load, "Zanna.IO.Assets.Load", "obj<Zanna.Core.Object>(str)", owned)
+RT_FUNC(AssetLoadBytes, rt_asset_load_bytes, "Zanna.IO.Assets.LoadBytes", "obj<Zanna.Collections.Bytes>(str)", owned)
 RT_FUNC(AssetExists,    rt_asset_exists,     "Zanna.IO.Assets.Exists",    "i1(str)")
 RT_FUNC(AssetSize,      rt_asset_size,       "Zanna.IO.Assets.SizeBytes",      "i64(str)")
-RT_FUNC(AssetList, rt_asset_list, "Zanna.IO.Assets.List", "obj()", owned)
+RT_FUNC(AssetList, rt_asset_list, "Zanna.IO.Assets.List", "seq<str>()", owned)
 RT_FUNC(AssetMount,     rt_asset_mount,      "Zanna.IO.Assets.Mount",     "i64(str)")
 RT_FUNC(AssetUnmount,   rt_asset_unmount,    "Zanna.IO.Assets.Unmount",   "i64(str)")
 RT_FUNC(AssetResolverResolve, rt_asset_resolver_resolve, "Zanna.Assets.Resolver.Resolve", "obj<Zanna.Collections.Map>(str,str,str,str)", owned)
@@ -216,7 +217,7 @@ RT_FUNC(WorkspaceFileIndexEnumerate, rt_workspace_file_index_enumerate, "Zanna.W
 RT_FUNC(WorkspaceFileIndexPage, rt_workspace_file_index_page, "Zanna.Workspace.FileIndex.Page", "obj<Zanna.Collections.Map>(str,str,str,i1,i64,i64)", owned)
 RT_FUNC(WorkspaceFileIndexStatus, rt_workspace_file_index_status, "Zanna.Workspace.FileIndex.Status", "obj<Zanna.Collections.Map>(str,str,str,i1)", owned)
 RT_FUNC(WorkspaceFileIndexShouldIgnore, rt_workspace_file_index_should_ignore, "Zanna.Workspace.FileIndex.ShouldIgnore", "i1(str,str,str)")
-RT_FUNC(WorkspaceFileIndexCursorNew, rt_workspace_file_index_cursor_new, "Zanna.Workspace.FileIndexCursor.New", "obj(str,str,str,i1)", owned)
+RT_FUNC(WorkspaceFileIndexCursorNew, rt_workspace_file_index_cursor_new, "Zanna.Workspace.FileIndexCursor.New", "obj<Zanna.Workspace.FileIndexCursor>(str,str,str,i1)", owned)
 RT_FUNC(WorkspaceFileIndexCursorIsValid, rt_workspace_file_index_cursor_is_valid, "Zanna.Workspace.FileIndexCursor.IsValid", "i1(obj)")
 RT_FUNC(WorkspaceFileIndexCursorGeneration, rt_workspace_file_index_cursor_generation, "Zanna.Workspace.FileIndexCursor.Generation", "i64(obj)")
 RT_FUNC(WorkspaceFileIndexCursorNext, rt_workspace_file_index_cursor_next, "Zanna.Workspace.FileIndexCursor.Next", "obj<Zanna.Collections.Map>(obj,i64)", owned)
@@ -246,14 +247,18 @@ RT_FUNC(WorkspacePreparedEditDestroy, rt_workspace_edit_prepared_destroy, "Zanna
 
 /// @summary Provides Assets constants and static operations for filesystem and stream workflows.
 /// @details
-/// `Zanna.IO.Assets` is a static runtime surface and does not require an instance. Its public
-/// Its public surface exposes operations including `Load`, `LoadBytes`, `Exists`, `SizeBytes`.
+/// `Zanna.IO.Assets` is a static runtime surface and does not require an instance. `Load` decodes
+/// an asset by extension (`Pixels` for images, `Sound` for audio, `Bytes` otherwise) and returns
+/// it as a `Zanna.Core.Object`, so narrow the result with `as`, for example
+/// `Assets.Load("hero.png") as Zanna.Graphics.Pixels`. `LoadBytes` returns raw `Bytes`, `List`
+/// returns the names in the embedded archive and mounted packs, and `Mount` and `Unmount` manage
+/// pack files.
 RT_CLASS_BEGIN("Zanna.IO.Assets", Assets, "none", none)
-    RT_METHOD("Load",      "obj(str)",     AssetLoad)
-    RT_METHOD("LoadBytes", "obj(str)",     AssetLoadBytes)
+    RT_METHOD("Load",      "obj<Zanna.Core.Object>(str)", AssetLoad)
+    RT_METHOD("LoadBytes", "obj<Zanna.Collections.Bytes>(str)", AssetLoadBytes)
     RT_METHOD("Exists",    "i1(str)",      AssetExists)
     RT_METHOD("SizeBytes",      "i64(str)",     AssetSize)
-    RT_METHOD("List",      "obj()",        AssetList)
+    RT_METHOD("List",      "seq<str>()",   AssetList)
     RT_METHOD("Mount",     "i64(str)",     AssetMount)
     RT_METHOD("Unmount",   "i64(str)",     AssetUnmount)
 RT_CLASS_END()
@@ -282,7 +287,7 @@ RT_CLASS_END()
 /// `Zanna.Workspace.FileIndexCursor` retains one traversal until `Destroy`; callers use
 /// `Generation` to reject pages from an obsolete cursor after resetting discovery.
 RT_CLASS_BEGIN("Zanna.Workspace.FileIndexCursor", WorkspaceFileIndexCursor, "none", WorkspaceFileIndexCursorNew)
-    RT_METHOD("New",        "obj(str,str,str,i1)",                        WorkspaceFileIndexCursorNew)
+    RT_METHOD("New",        "obj<Zanna.Workspace.FileIndexCursor>(str,str,str,i1)",                        WorkspaceFileIndexCursorNew)
     RT_METHOD("IsValid",    "i1(obj)",                                   WorkspaceFileIndexCursorIsValid)
     RT_METHOD("Generation", "i64(obj)",                                  WorkspaceFileIndexCursorGeneration)
     RT_METHOD("Next",       "obj<Zanna.Collections.Map>(obj,i64)",       WorkspaceFileIndexCursorNext)
@@ -342,7 +347,7 @@ RT_CLASS_END()
 RT_FUNC(BinFileClose,     rt_binfile_close,      "Zanna.IO.BinFile.Close",      "void(obj)")
 RT_FUNC(BinFileEof,       rt_binfile_eof,        "Zanna.IO.BinFile.get_Eof",    "i1(obj)")
 RT_FUNC(BinFileFlush,     rt_binfile_flush,      "Zanna.IO.BinFile.Flush",      "void(obj)")
-RT_FUNC(BinFileOpen, rt_binfile_open, "Zanna.IO.BinFile.Open", "obj(str,str)", owned)
+RT_FUNC(BinFileOpen, rt_binfile_open, "Zanna.IO.BinFile.Open", "obj<Zanna.IO.BinFile>(str,str)", owned)
 RT_FUNC(BinFilePos,       rt_binfile_pos,        "Zanna.IO.BinFile.get_Position",    "i64(obj)")
 RT_FUNC(BinFileRead,      rt_binfile_read,       "Zanna.IO.BinFile.Read",       "i64(obj,obj,i64,i64)")
 RT_FUNC(BinFileReadByte,  rt_binfile_read_byte,  "Zanna.IO.BinFile.ReadByte",   "i64(obj)")
@@ -355,9 +360,9 @@ RT_FUNC(BinFileWriteByte, rt_binfile_write_byte, "Zanna.IO.BinFile.WriteByte",  
 // IO - MEMSTREAM
 //=============================================================================
 
-RT_FUNC(MemStreamNew, rt_memstream_new, "Zanna.IO.MemStream.New", "obj()", owned)
-RT_FUNC(MemStreamNewCapacity, rt_memstream_new_capacity, "Zanna.IO.MemStream.NewCapacity", "obj(i64)", owned)
-RT_FUNC(MemStreamFromBytes, rt_memstream_from_bytes, "Zanna.IO.MemStream.FromBytes", "obj(obj)", owned)
+RT_FUNC(MemStreamNew, rt_memstream_new, "Zanna.IO.MemStream.New", "obj<Zanna.IO.MemStream>()", owned)
+RT_FUNC(MemStreamNewCapacity, rt_memstream_new_capacity, "Zanna.IO.MemStream.NewCapacity", "obj<Zanna.IO.MemStream>(i64)", owned)
+RT_FUNC(MemStreamFromBytes, rt_memstream_from_bytes, "Zanna.IO.MemStream.FromBytes", "obj<Zanna.IO.MemStream>(obj)", owned)
 RT_FUNC(MemStreamGetPos,      rt_memstream_get_pos,      "Zanna.IO.MemStream.get_Position",      "i64(obj)")
 RT_FUNC(MemStreamSetPos,      rt_memstream_set_pos,      "Zanna.IO.MemStream.set_Position",      "void(obj,i64)")
 RT_FUNC(MemStreamGetLen,      rt_memstream_get_len,      "Zanna.IO.MemStream.get_Length",      "i64(obj)")
@@ -380,11 +385,11 @@ RT_FUNC(MemStreamReadF32,     rt_memstream_read_f32,     "Zanna.IO.MemStream.Rea
 RT_FUNC(MemStreamWriteF32,    rt_memstream_write_f32,    "Zanna.IO.MemStream.WriteF32",     "void(obj,f64)")
 RT_FUNC(MemStreamReadF64,     rt_memstream_read_f64,     "Zanna.IO.MemStream.ReadF64",      "f64(obj)")
 RT_FUNC(MemStreamWriteF64,    rt_memstream_write_f64,    "Zanna.IO.MemStream.WriteF64",     "void(obj,f64)")
-RT_FUNC(MemStreamReadBytes, rt_memstream_read_bytes, "Zanna.IO.MemStream.ReadBytes", "obj(obj,i64)", owned)
+RT_FUNC(MemStreamReadBytes, rt_memstream_read_bytes, "Zanna.IO.MemStream.ReadBytes", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
 RT_FUNC(MemStreamWriteBytes,  rt_memstream_write_bytes,  "Zanna.IO.MemStream.WriteBytes",   "void(obj,obj)")
 RT_FUNC(MemStreamReadStr, rt_memstream_read_str, "Zanna.IO.MemStream.ReadStr", "str(obj,i64)", owned)
 RT_FUNC(MemStreamWriteStr,    rt_memstream_write_str,    "Zanna.IO.MemStream.WriteStr",     "void(obj,str)")
-RT_FUNC(MemStreamToBytes, rt_memstream_to_bytes, "Zanna.IO.MemStream.ToBytes", "obj(obj)", owned)
+RT_FUNC(MemStreamToBytes, rt_memstream_to_bytes, "Zanna.IO.MemStream.ToBytes", "obj<Zanna.Collections.Bytes>(obj)", owned)
 RT_FUNC(MemStreamClear,       rt_memstream_clear,        "Zanna.IO.MemStream.Clear",        "void(obj)")
 RT_FUNC(MemStreamSeek,        rt_memstream_seek,         "Zanna.IO.MemStream.Seek",         "void(obj,i64)")
 RT_FUNC(MemStreamSkip,        rt_memstream_skip,         "Zanna.IO.MemStream.Skip",         "void(obj,i64)")
@@ -393,9 +398,9 @@ RT_FUNC(MemStreamSkip,        rt_memstream_skip,         "Zanna.IO.MemStream.Ski
 // IO - BINARYBUFFER
 //=============================================================================
 
-RT_FUNC(BinBufNew, rt_binbuf_new, "Zanna.IO.BinaryBuffer.New", "obj()", owned)
-RT_FUNC(BinBufNewCapacity, rt_binbuf_new_cap, "Zanna.IO.BinaryBuffer.NewCapacity", "obj(i64)", owned)
-RT_FUNC(BinBufFromBytes, rt_binbuf_from_bytes, "Zanna.IO.BinaryBuffer.FromBytes", "obj(obj)", owned)
+RT_FUNC(BinBufNew, rt_binbuf_new, "Zanna.IO.BinaryBuffer.New", "obj<Zanna.IO.BinaryBuffer>()", owned)
+RT_FUNC(BinBufNewCapacity, rt_binbuf_new_cap, "Zanna.IO.BinaryBuffer.NewCapacity", "obj<Zanna.IO.BinaryBuffer>(i64)", owned)
+RT_FUNC(BinBufFromBytes, rt_binbuf_from_bytes, "Zanna.IO.BinaryBuffer.FromBytes", "obj<Zanna.IO.BinaryBuffer>(obj)", owned)
 RT_FUNC(BinBufWriteByte,  rt_binbuf_write_byte,   "Zanna.IO.BinaryBuffer.WriteByte",   "void(obj,i64)")
 RT_FUNC(BinBufWriteI16LE, rt_binbuf_write_i16le,  "Zanna.IO.BinaryBuffer.WriteI16LittleEndian",  "void(obj,i64)")
 RT_FUNC(BinBufWriteI16BE, rt_binbuf_write_i16be,  "Zanna.IO.BinaryBuffer.WriteI16BigEndian",  "void(obj,i64)")
@@ -421,29 +426,29 @@ RT_FUNC(BinBufReadU32BE,  rt_binbuf_read_u32be,   "Zanna.IO.BinaryBuffer.ReadU32
 RT_FUNC(BinBufReadI64LE,  rt_binbuf_read_i64le,   "Zanna.IO.BinaryBuffer.ReadI64LittleEndian",   "i64(obj)")
 RT_FUNC(BinBufReadI64BE,  rt_binbuf_read_i64be,   "Zanna.IO.BinaryBuffer.ReadI64BigEndian",   "i64(obj)")
 RT_FUNC(BinBufReadStr, rt_binbuf_read_str, "Zanna.IO.BinaryBuffer.ReadStr", "str(obj)", owned)
-RT_FUNC(BinBufReadBytes, rt_binbuf_read_bytes, "Zanna.IO.BinaryBuffer.ReadBytes", "obj(obj,i64)", owned)
+RT_FUNC(BinBufReadBytes, rt_binbuf_read_bytes, "Zanna.IO.BinaryBuffer.ReadBytes", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
 RT_FUNC(BinBufGetPos,     rt_binbuf_get_position, "Zanna.IO.BinaryBuffer.get_Position",     "i64(obj)")
 RT_FUNC(BinBufSetPos,     rt_binbuf_set_position, "Zanna.IO.BinaryBuffer.set_Position",     "void(obj,i64)")
 RT_FUNC(BinBufGetLen,     rt_binbuf_get_len,      "Zanna.IO.BinaryBuffer.get_Length",     "i64(obj)")
-RT_FUNC(BinBufToBytes, rt_binbuf_to_bytes, "Zanna.IO.BinaryBuffer.ToBytes", "obj(obj)", owned)
+RT_FUNC(BinBufToBytes, rt_binbuf_to_bytes, "Zanna.IO.BinaryBuffer.ToBytes", "obj<Zanna.Collections.Bytes>(obj)", owned)
 RT_FUNC(BinBufReset,      rt_binbuf_reset,        "Zanna.IO.BinaryBuffer.Reset",       "void(obj)")
 
 //=============================================================================
 // IO - STREAM (UNIFIED INTERFACE)
 //=============================================================================
 
-RT_FUNC(StreamOpenFile, rt_stream_open_file, "Zanna.IO.Stream.OpenFile", "obj(str,str)", owned)
-RT_FUNC(StreamOpenMemory, rt_stream_open_memory, "Zanna.IO.Stream.OpenMemory", "obj()", owned)
-RT_FUNC(StreamOpenBytes, rt_stream_open_bytes, "Zanna.IO.Stream.OpenBytes", "obj(obj)", owned)
-RT_FUNC(StreamFromBinFile, rt_stream_from_binfile, "Zanna.IO.Stream.FromBinFile", "obj(obj)", owned)
-RT_FUNC(StreamFromMemStream, rt_stream_from_memstream, "Zanna.IO.Stream.FromMemStream", "obj(obj)", owned)
+RT_FUNC(StreamOpenFile, rt_stream_open_file, "Zanna.IO.Stream.OpenFile", "obj<Zanna.IO.Stream>(str,str)", owned)
+RT_FUNC(StreamOpenMemory, rt_stream_open_memory, "Zanna.IO.Stream.OpenMemory", "obj<Zanna.IO.Stream>()", owned)
+RT_FUNC(StreamOpenBytes, rt_stream_open_bytes, "Zanna.IO.Stream.OpenBytes", "obj<Zanna.IO.Stream>(obj)", owned)
+RT_FUNC(StreamFromBinFile, rt_stream_from_binfile, "Zanna.IO.Stream.FromBinFile", "obj<Zanna.IO.Stream>(obj)", owned)
+RT_FUNC(StreamFromMemStream, rt_stream_from_memstream, "Zanna.IO.Stream.FromMemStream", "obj<Zanna.IO.Stream>(obj)", owned)
 RT_FUNC(StreamGetType,       rt_stream_get_type,        "Zanna.IO.Stream.get_Type",      "i64(obj)")
 RT_FUNC(StreamGetPos,        rt_stream_get_pos,         "Zanna.IO.Stream.get_Position",       "i64(obj)")
 RT_FUNC(StreamSetPos,        rt_stream_set_pos,         "Zanna.IO.Stream.set_Position",       "void(obj,i64)")
 RT_FUNC(StreamGetLen,        rt_stream_get_len,         "Zanna.IO.Stream.get_Length",       "i64(obj)")
 RT_FUNC(StreamIsEof,         rt_stream_is_eof,          "Zanna.IO.Stream.get_Eof",       "i1(obj)")
-RT_FUNC(StreamRead, rt_stream_read, "Zanna.IO.Stream.Read", "obj(obj,i64)", owned)
-RT_FUNC(StreamReadAll, rt_stream_read_all, "Zanna.IO.Stream.ReadAll", "obj(obj)", owned)
+RT_FUNC(StreamRead, rt_stream_read, "Zanna.IO.Stream.Read", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
+RT_FUNC(StreamReadAll, rt_stream_read_all, "Zanna.IO.Stream.ReadAll", "obj<Zanna.Collections.Bytes>(obj)", owned)
 RT_FUNC(StreamWrite,         rt_stream_write,           "Zanna.IO.Stream.Write",         "void(obj,obj)")
 RT_FUNC(StreamReadByte,      rt_stream_read_byte,       "Zanna.IO.Stream.ReadByte",      "i64(obj)")
 RT_FUNC(StreamWriteByte,     rt_stream_write_byte,      "Zanna.IO.Stream.WriteByte",     "void(obj,i64)")
@@ -451,7 +456,7 @@ RT_FUNC(StreamFlush,         rt_stream_flush,           "Zanna.IO.Stream.Flush",
 RT_FUNC(StreamClose,         rt_stream_close,           "Zanna.IO.Stream.Close",         "void(obj)")
 RT_FUNC(StreamAsBinFile, rt_stream_as_binfile, "Zanna.IO.Stream.AsBinFile", "obj<Zanna.IO.BinFile>(obj)", owned)
 RT_FUNC(StreamAsMemStream, rt_stream_as_memstream, "Zanna.IO.Stream.AsMemStream", "obj<Zanna.IO.MemStream>(obj)", owned)
-RT_FUNC(StreamToBytes, rt_stream_to_bytes, "Zanna.IO.Stream.ToBytes", "obj(obj)", owned)
+RT_FUNC(StreamToBytes, rt_stream_to_bytes, "Zanna.IO.Stream.ToBytes", "obj<Zanna.Collections.Bytes>(obj)", owned)
 
 //=============================================================================
 // IO - LINEREADER
@@ -459,7 +464,7 @@ RT_FUNC(StreamToBytes, rt_stream_to_bytes, "Zanna.IO.Stream.ToBytes", "obj(obj)"
 
 RT_FUNC(LineReaderClose,    rt_linereader_close,     "Zanna.IO.LineReader.Close",     "void(obj)")
 RT_FUNC(LineReaderEof,      rt_linereader_eof,       "Zanna.IO.LineReader.get_Eof",   "i1(obj)")
-RT_FUNC(LineReaderOpen, rt_linereader_open, "Zanna.IO.LineReader.Open", "obj(str)", owned)
+RT_FUNC(LineReaderOpen, rt_linereader_open, "Zanna.IO.LineReader.Open", "obj<Zanna.IO.LineReader>(str)", owned)
 RT_FUNC(LineReaderPeekChar, rt_linereader_peek_char, "Zanna.IO.LineReader.PeekChar",  "i64(obj)")
 RT_FUNC(LineReaderRead, rt_linereader_read, "Zanna.IO.LineReader.Read", "str(obj)", owned)
 RT_FUNC(LineReaderReadAll, rt_linereader_read_all, "Zanna.IO.LineReader.ReadAll", "str(obj)", owned)
@@ -469,11 +474,11 @@ RT_FUNC(LineReaderReadChar, rt_linereader_read_char, "Zanna.IO.LineReader.ReadCh
 // IO - LINEWRITER
 //=============================================================================
 
-RT_FUNC(LineWriterAppend, rt_linewriter_append, "Zanna.IO.LineWriter.Append", "obj(str)", owned)
+RT_FUNC(LineWriterAppend, rt_linewriter_append, "Zanna.IO.LineWriter.Append", "obj<Zanna.IO.LineWriter>(str)", owned)
 RT_FUNC(LineWriterClose,      rt_linewriter_close,       "Zanna.IO.LineWriter.Close",       "void(obj)")
 RT_FUNC(LineWriterFlush,      rt_linewriter_flush,       "Zanna.IO.LineWriter.Flush",       "void(obj)")
 RT_FUNC(LineWriterNewLine, rt_linewriter_newline, "Zanna.IO.LineWriter.get_NewLine", "str(obj)", owned)
-RT_FUNC(LineWriterOpen, rt_linewriter_open, "Zanna.IO.LineWriter.Open", "obj(str)", owned)
+RT_FUNC(LineWriterOpen, rt_linewriter_open, "Zanna.IO.LineWriter.Open", "obj<Zanna.IO.LineWriter>(str)", owned)
 RT_FUNC(LineWriterSetNewLine, rt_linewriter_set_newline, "Zanna.IO.LineWriter.set_NewLine", "void(obj,str)")
 RT_FUNC(LineWriterWrite,      rt_linewriter_write,       "Zanna.IO.LineWriter.Write",       "void(obj,str)")
 RT_FUNC(LineWriterWriteChar,  rt_linewriter_write_char,  "Zanna.IO.LineWriter.WriteChar",   "void(obj,i64)")
@@ -483,7 +488,7 @@ RT_FUNC(LineWriterWriteLn,    rt_linewriter_write_ln,    "Zanna.IO.LineWriter.Wr
 // IO - SAVEDATA
 //=============================================================================
 
-RT_FUNC(SaveDataNew, rt_savedata_new, "Zanna.IO.SaveData.New", "obj(str)", owned)
+RT_FUNC(SaveDataNew, rt_savedata_new, "Zanna.IO.SaveData.New", "obj<Zanna.IO.SaveData>(str)", owned)
 RT_FUNC(SaveDataSetInt,    rt_savedata_set_int,    "Zanna.IO.SaveData.SetInt",     "void(obj,str,i64)")
 RT_FUNC(SaveDataSetString, rt_savedata_set_string, "Zanna.IO.SaveData.SetString",  "void(obj,str,str)")
 RT_FUNC(SaveDataGetInt,    rt_savedata_get_int,    "Zanna.IO.SaveData.GetInt",     "i64(obj,str,i64)")
@@ -500,7 +505,7 @@ RT_FUNC(SaveDataGetPath, rt_savedata_get_path, "Zanna.IO.SaveData.get_Path", "st
 // IO - WATCHER
 //=============================================================================
 
-RT_FUNC(WatcherNew, rt_watcher_new, "Zanna.IO.Watcher.New", "obj(str)", owned)
+RT_FUNC(WatcherNew, rt_watcher_new, "Zanna.IO.Watcher.New", "obj<Zanna.IO.Watcher>(str)", owned)
 RT_FUNC(WatcherPath, rt_watcher_get_path, "Zanna.IO.Watcher.get_Path", "str(obj)", owned)
 RT_FUNC(WatcherIsWatching, rt_watcher_get_is_watching, "Zanna.IO.Watcher.get_IsWatching", "i1(obj)")
 RT_FUNC(WatcherStart,      rt_watcher_start,         "Zanna.IO.Watcher.Start",          "void(obj)")
@@ -523,15 +528,15 @@ RT_FUNC(WatcherEventOverflow, rt_watcher_event_overflow, "Zanna.IO.Watcher.get_E
 // IO - COMPRESS
 //=============================================================================
 
-RT_FUNC(CompressDeflate, rt_compress_deflate, "Zanna.IO.Compress.Deflate", "obj(obj)", owned)
-RT_FUNC(CompressDeflateLvl, rt_compress_deflate_lvl, "Zanna.IO.Compress.DeflateLvl", "obj(obj,i64)", owned)
-RT_FUNC(CompressInflate, rt_compress_inflate, "Zanna.IO.Compress.Inflate", "obj(obj)", owned)
-RT_FUNC(CompressGzip, rt_compress_gzip, "Zanna.IO.Compress.Gzip", "obj(obj)", owned)
-RT_FUNC(CompressGzipLvl, rt_compress_gzip_lvl, "Zanna.IO.Compress.GzipLvl", "obj(obj,i64)", owned)
-RT_FUNC(CompressGunzip, rt_compress_gunzip, "Zanna.IO.Compress.Gunzip", "obj(obj)", owned)
-RT_FUNC(CompressDeflateStr, rt_compress_deflate_str, "Zanna.IO.Compress.DeflateStr", "obj(str)", owned)
+RT_FUNC(CompressDeflate, rt_compress_deflate, "Zanna.IO.Compress.Deflate", "obj<Zanna.Collections.Bytes>(obj)", owned)
+RT_FUNC(CompressDeflateLvl, rt_compress_deflate_lvl, "Zanna.IO.Compress.DeflateLvl", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
+RT_FUNC(CompressInflate, rt_compress_inflate, "Zanna.IO.Compress.Inflate", "obj<Zanna.Collections.Bytes>(obj)", owned)
+RT_FUNC(CompressGzip, rt_compress_gzip, "Zanna.IO.Compress.Gzip", "obj<Zanna.Collections.Bytes>(obj)", owned)
+RT_FUNC(CompressGzipLvl, rt_compress_gzip_lvl, "Zanna.IO.Compress.GzipLvl", "obj<Zanna.Collections.Bytes>(obj,i64)", owned)
+RT_FUNC(CompressGunzip, rt_compress_gunzip, "Zanna.IO.Compress.Gunzip", "obj<Zanna.Collections.Bytes>(obj)", owned)
+RT_FUNC(CompressDeflateStr, rt_compress_deflate_str, "Zanna.IO.Compress.DeflateStr", "obj<Zanna.Collections.Bytes>(str)", owned)
 RT_FUNC(CompressInflateStr, rt_compress_inflate_str, "Zanna.IO.Compress.InflateStr", "str(obj)", owned)
-RT_FUNC(CompressGzipStr, rt_compress_gzip_str, "Zanna.IO.Compress.GzipStr", "obj(str)", owned)
+RT_FUNC(CompressGzipStr, rt_compress_gzip_str, "Zanna.IO.Compress.GzipStr", "obj<Zanna.Collections.Bytes>(str)", owned)
 RT_FUNC(CompressGunzipStr, rt_compress_gunzip_str, "Zanna.IO.Compress.GunzipStr", "str(obj)", owned)
 
 //=============================================================================

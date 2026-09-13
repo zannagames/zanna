@@ -293,13 +293,15 @@ void SemanticAnalyzer::analyzeResume(const Resume &stmt) {
     sem::analyzeResume(*this, stmt);
 }
 
-/// @brief Validates RETURN control context and declared scalar result category.
+/// @brief Validates RETURN control context and the FUNCTION's scalar result type.
 /// @details The shared checker handles procedure versus top-level GOSUB return
 ///          semantics and may mutate @c isGosubReturn or clear an active error
-///          handler. A present value is always visited. For an active FUNCTION
-///          with an explicit int/float/string return type, only string-versus-
-///          numeric category mismatches emit warning `B4010`; unknown and
-///          int/float differences are tolerated here.
+///          handler. A present value is always visited. Inside a FUNCTION with a
+///          scalar result (declared by AS, by name suffix, or the INTEGER default),
+///          a string returned from a numeric or boolean result, anything but a string
+///          from a string result, or a FLOAT from a BOOLEAN result is error `B4010`.
+///          Other numeric and boolean values convert to the result type when the
+///          RETURN is lowered.
 /// @param stmt Mutable RETURN statement and optional value.
 void SemanticAnalyzer::analyzeReturn(ReturnStmt &stmt) {
     sem::analyzeReturn(*this, stmt);
@@ -311,26 +313,16 @@ void SemanticAnalyzer::analyzeReturn(ReturnStmt &stmt) {
     // object-returning functions where we can't check type compatibility.
     auto valueType = visitExpr(*stmt.value);
 
-    if (!activeFunction_ || activeFunctionExplicitRet_ == BasicType::Unknown)
+    auto expected = activeFunctionResultType();
+    if (!expected || valueType == Type::Unknown)
         return;
 
-    auto expected = semantic_analyzer_detail::semanticTypeFromBasic(activeFunctionExplicitRet_);
-    if (!expected)
-        return;
-    if (valueType == Type::Unknown)
-        return;
-
-    const bool expectString = *expected == Type::String;
-    const bool expectNumeric = semantic_analyzer_detail::isNumericSemanticType(*expected);
-    const bool valueIsString = valueType == Type::String;
-    const bool valueIsNumeric = semantic_analyzer_detail::isNumericSemanticType(valueType);
-
-    if ((expectString && valueIsNumeric) || (expectNumeric && valueIsString)) {
+    if (!semantic_analyzer_detail::functionResultAccepts(*expected, valueType)) {
         std::string msg = "RETURN expression type ";
         msg += semantic_analyzer_detail::semanticTypeName(valueType);
-        msg += " does not match declared AS ";
+        msg += " does not match FUNCTION result type ";
         msg += semantic_analyzer_detail::semanticTypeName(*expected);
-        de.emit(il::support::Severity::Warning, "B4010", stmt.value->loc, 1, std::move(msg));
+        de.emit(il::support::Severity::Error, "B4010", stmt.value->loc, 1, std::move(msg));
     }
 }
 

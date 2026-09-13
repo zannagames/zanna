@@ -1,6 +1,6 @@
 ' test_env_machine.bas — Zanna.System.Environment + Zanna.System.Machine
 PRINT Zanna.System.Machine.get_Os()
-PRINT Zanna.System.Machine.get_OsVer()
+PRINT Zanna.System.Machine.get_OsVersion()
 PRINT Zanna.System.Machine.get_User()
 PRINT Zanna.System.Machine.get_Home()
 PRINT Zanna.System.Machine.get_Cores()

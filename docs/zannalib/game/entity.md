@@ -1,14 +1,14 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-13
 ---
 
 # Zanna.Game.Entity
 
 `Entity` is a lightweight 2D position, velocity, health, and tile-collision handle. Position and
-velocity use centipixels (1/100 pixel); width and height use whole pixels. Its constructor is a
-legacy function-namespace entry, so use the fully qualified name.
+velocity use centipixels (1/100 pixel); width and height use whole pixels. Construct one with
+`Zanna.Game.Entity.New(x, y, width, height)` or `new Zanna.Game.Entity(x, y, width, height)`.
 
 ## Construction and properties
 
@@ -50,9 +50,9 @@ module EntityExample;
 
 func start() {
     var enemy = Zanna.Game.Entity.New(10000, 5000, 24, 16);
-    enemy.set_Health(3);
-    enemy.set_VelocityX(100);
+    enemy.Health = 3;
+    enemy.VelocityX = 100;
     enemy.UpdatePhysics(null, 78, 1350, 16);
-    Zanna.Terminal.SayInt(enemy.get_X());
+    Zanna.Terminal.SayInt(enemy.X);
 }
 ```

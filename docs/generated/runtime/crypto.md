@@ -20,7 +20,7 @@ Its public surface exposes operations including `EncryptAuth`, `DecryptAuth`,
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-crypto-aes-encryptauth"></a>`EncryptAuth` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `Zanna.Crypto.Aes.EncryptAuth` |
-| <a id="zanna-crypto-aes-decryptauth"></a>`DecryptAuth` | `obj(obj,obj,obj)` | `Zanna.Crypto.Aes.DecryptAuth` |
+| <a id="zanna-crypto-aes-decryptauth"></a>`DecryptAuth` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `Zanna.Crypto.Aes.DecryptAuth` |
 | <a id="zanna-crypto-aes-decryptauthresult"></a>`DecryptAuthResult` | `obj<Zanna.Result>(obj,obj,obj)` | `Zanna.Crypto.Aes.DecryptAuthResult` |
 | <a id="zanna-crypto-aes-trydecryptauth"></a>`TryDecryptAuth` | `obj<Zanna.Option>(obj,obj,obj)` | `Zanna.Crypto.Aes.TryDecryptAuth` |
 | <a id="zanna-crypto-aes-encryptstr"></a>`EncryptStr` | `obj<Zanna.Collections.Bytes>(str,str)` | `Zanna.Crypto.Aes.EncryptStr` |
@@ -41,8 +41,8 @@ Its public surface exposes operations including `EncryptCbc`, `DecryptCbc`,
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-crypto-legacy-aes-encryptcbc"></a>`EncryptCbc` | `obj(obj,obj,obj)` | `Zanna.Crypto.Legacy.Aes.EncryptCbc` |
-| <a id="zanna-crypto-legacy-aes-decryptcbc"></a>`DecryptCbc` | `obj(obj,obj,obj)` | `Zanna.Crypto.Legacy.Aes.DecryptCbc` |
+| <a id="zanna-crypto-legacy-aes-encryptcbc"></a>`EncryptCbc` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `Zanna.Crypto.Legacy.Aes.EncryptCbc` |
+| <a id="zanna-crypto-legacy-aes-decryptcbc"></a>`DecryptCbc` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `Zanna.Crypto.Legacy.Aes.DecryptCbc` |
 | <a id="zanna-crypto-legacy-aes-decryptcbcresult"></a>`DecryptCbcResult` | `obj<Zanna.Result>(obj,obj,obj)` | `Zanna.Crypto.Legacy.Aes.DecryptCbcResult` |
 | <a id="zanna-crypto-legacy-aes-trydecryptcbc"></a>`TryDecryptCbc` | `obj<Zanna.Option>(obj,obj,obj)` | `Zanna.Crypto.Legacy.Aes.TryDecryptCbc` |
 
@@ -106,9 +106,9 @@ construct the class directly. Its public surface exposes operations including `P
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-crypto-keyderive-pbkdf2sha256"></a>`Pbkdf2Sha256` | `obj(str,obj,i64,i64)` | `Zanna.Crypto.KeyDerive.Pbkdf2Sha256` |
+| <a id="zanna-crypto-keyderive-pbkdf2sha256"></a>`Pbkdf2Sha256` | `obj<Zanna.Collections.Bytes>(str,obj,i64,i64)` | `Zanna.Crypto.KeyDerive.Pbkdf2Sha256` |
 | <a id="zanna-crypto-keyderive-pbkdf2sha256encoded"></a>`Pbkdf2Sha256Encoded` | `str(str,obj,i64,i64)` | `Zanna.Crypto.KeyDerive.Pbkdf2Sha256Encoded` |
-| <a id="zanna-crypto-keyderive-scrypt"></a>`Scrypt` | `obj(str,obj,i64,i64,i64,i64)` | `Zanna.Crypto.KeyDerive.Scrypt` |
+| <a id="zanna-crypto-keyderive-scrypt"></a>`Scrypt` | `obj<Zanna.Collections.Bytes>(str,obj,i64,i64,i64,i64)` | `Zanna.Crypto.KeyDerive.Scrypt` |
 | <a id="zanna-crypto-keyderive-scryptencoded"></a>`ScryptEncoded` | `str(str,obj,i64,i64,i64,i64)` | `Zanna.Crypto.KeyDerive.ScryptEncoded` |
 
 <a id="zanna-crypto-password"></a>
@@ -179,23 +179,23 @@ construct the class directly. Its public surface exposes operations including `E
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-crypto-cipher-encrypt"></a>`Encrypt` | `obj<Zanna.Collections.Bytes>(obj,str)` | `Zanna.Crypto.Cipher.Encrypt` |
-| <a id="zanna-crypto-cipher-decrypt"></a>`Decrypt` | `obj(obj,str)` | `Zanna.Crypto.Cipher.Decrypt` |
+| <a id="zanna-crypto-cipher-decrypt"></a>`Decrypt` | `obj<Zanna.Collections.Bytes>(obj,str)` | `Zanna.Crypto.Cipher.Decrypt` |
 | <a id="zanna-crypto-cipher-decryptresult"></a>`DecryptResult` | `obj<Zanna.Result>(obj,str)` | `Zanna.Crypto.Cipher.DecryptResult` |
 | <a id="zanna-crypto-cipher-trydecrypt"></a>`TryDecrypt` | `obj<Zanna.Option>(obj,str)` | `Zanna.Crypto.Cipher.TryDecrypt` |
 | <a id="zanna-crypto-cipher-encryptaad"></a>`EncryptAad` | `obj<Zanna.Collections.Bytes>(obj,str,obj)` | `Zanna.Crypto.Cipher.EncryptAad` |
-| <a id="zanna-crypto-cipher-decryptaad"></a>`DecryptAad` | `obj(obj,str,obj)` | `Zanna.Crypto.Cipher.DecryptAad` |
+| <a id="zanna-crypto-cipher-decryptaad"></a>`DecryptAad` | `obj<Zanna.Collections.Bytes>(obj,str,obj)` | `Zanna.Crypto.Cipher.DecryptAad` |
 | <a id="zanna-crypto-cipher-decryptaadresult"></a>`DecryptAadResult` | `obj<Zanna.Result>(obj,str,obj)` | `Zanna.Crypto.Cipher.DecryptAadResult` |
 | <a id="zanna-crypto-cipher-trydecryptaad"></a>`TryDecryptAad` | `obj<Zanna.Option>(obj,str,obj)` | `Zanna.Crypto.Cipher.TryDecryptAad` |
 | <a id="zanna-crypto-cipher-encryptwithkey"></a>`EncryptWithKey` | `obj<Zanna.Collections.Bytes>(obj,obj)` | `Zanna.Crypto.Cipher.EncryptWithKey` |
-| <a id="zanna-crypto-cipher-decryptwithkey"></a>`DecryptWithKey` | `obj(obj,obj)` | `Zanna.Crypto.Cipher.DecryptWithKey` |
+| <a id="zanna-crypto-cipher-decryptwithkey"></a>`DecryptWithKey` | `obj<Zanna.Collections.Bytes>(obj,obj)` | `Zanna.Crypto.Cipher.DecryptWithKey` |
 | <a id="zanna-crypto-cipher-decryptwithkeyresult"></a>`DecryptWithKeyResult` | `obj<Zanna.Result>(obj,obj)` | `Zanna.Crypto.Cipher.DecryptWithKeyResult` |
 | <a id="zanna-crypto-cipher-trydecryptwithkey"></a>`TryDecryptWithKey` | `obj<Zanna.Option>(obj,obj)` | `Zanna.Crypto.Cipher.TryDecryptWithKey` |
 | <a id="zanna-crypto-cipher-encryptwithkeyaad"></a>`EncryptWithKeyAad` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `Zanna.Crypto.Cipher.EncryptWithKeyAad` |
-| <a id="zanna-crypto-cipher-decryptwithkeyaad"></a>`DecryptWithKeyAad` | `obj(obj,obj,obj)` | `Zanna.Crypto.Cipher.DecryptWithKeyAad` |
+| <a id="zanna-crypto-cipher-decryptwithkeyaad"></a>`DecryptWithKeyAad` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `Zanna.Crypto.Cipher.DecryptWithKeyAad` |
 | <a id="zanna-crypto-cipher-decryptwithkeyaadresult"></a>`DecryptWithKeyAadResult` | `obj<Zanna.Result>(obj,obj,obj)` | `Zanna.Crypto.Cipher.DecryptWithKeyAadResult` |
 | <a id="zanna-crypto-cipher-trydecryptwithkeyaad"></a>`TryDecryptWithKeyAad` | `obj<Zanna.Option>(obj,obj,obj)` | `Zanna.Crypto.Cipher.TryDecryptWithKeyAad` |
 | <a id="zanna-crypto-cipher-generatekey"></a>`GenerateKey` | `obj<Zanna.Collections.Bytes>()` | `Zanna.Crypto.Cipher.GenerateKey` |
-| <a id="zanna-crypto-cipher-derivekey"></a>`DeriveKey` | `obj(str,obj)` | `Zanna.Crypto.Cipher.DeriveKey` |
+| <a id="zanna-crypto-cipher-derivekey"></a>`DeriveKey` | `obj<Zanna.Collections.Bytes>(str,obj)` | `Zanna.Crypto.Cipher.DeriveKey` |
 
 <a id="zanna-crypto-tls"></a>
 ### `Zanna.Crypto.Tls`
@@ -220,15 +220,15 @@ construct the class directly. Its public surface exposes properties such as `Hos
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-crypto-tls-connect"></a>`Connect` | `obj(str,i64)` | `Zanna.Crypto.Tls.Connect` |
+| <a id="zanna-crypto-tls-connect"></a>`Connect` | `obj<Zanna.Crypto.Tls>(str,i64)` | `Zanna.Crypto.Tls.Connect` |
 | <a id="zanna-crypto-tls-connectresult"></a>`ConnectResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Crypto.Tls.ConnectResult` |
-| <a id="zanna-crypto-tls-connectfor"></a>`ConnectFor` | `obj(str,i64,i64)` | `Zanna.Crypto.Tls.ConnectFor` |
+| <a id="zanna-crypto-tls-connectfor"></a>`ConnectFor` | `obj<Zanna.Crypto.Tls>(str,i64,i64)` | `Zanna.Crypto.Tls.ConnectFor` |
 | <a id="zanna-crypto-tls-connectforresult"></a>`ConnectForResult` | `obj<Zanna.Result>(str,i64,i64)` | `Zanna.Crypto.Tls.ConnectForResult` |
-| <a id="zanna-crypto-tls-connectoptions"></a>`ConnectOptions` | `obj(str,i64,str,str,i1,i64)` | `Zanna.Crypto.Tls.ConnectOptions` |
+| <a id="zanna-crypto-tls-connectoptions"></a>`ConnectOptions` | `obj<Zanna.Crypto.Tls>(str,i64,str,str,i1,i64)` | `Zanna.Crypto.Tls.ConnectOptions` |
 | <a id="zanna-crypto-tls-connectoptionsresult"></a>`ConnectOptionsResult` | `obj<Zanna.Result>(str,i64,str,str,i1,i64)` | `Zanna.Crypto.Tls.ConnectOptionsResult` |
 | <a id="zanna-crypto-tls-send"></a>`Send` | `i64(obj)` | `Zanna.Crypto.Tls.Send` |
 | <a id="zanna-crypto-tls-sendstr"></a>`SendStr` | `i64(str)` | `Zanna.Crypto.Tls.SendStr` |
-| <a id="zanna-crypto-tls-recv"></a>`Recv` | `obj(i64)` | `Zanna.Crypto.Tls.Recv` |
+| <a id="zanna-crypto-tls-recv"></a>`Recv` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.Crypto.Tls.Recv` |
 | <a id="zanna-crypto-tls-recvstr"></a>`RecvStr` | `str(i64)` | `Zanna.Crypto.Tls.RecvStr` |
 | <a id="zanna-crypto-tls-recvline"></a>`RecvLine` | `str()` | `Zanna.Crypto.Tls.RecvLine` |
 | <a id="zanna-crypto-tls-close"></a>`Close` | `void()` | `Zanna.Crypto.Tls.Close` |
@@ -256,9 +256,9 @@ construct the class directly. Its public surface exposes properties such as `Hos
 | `Zanna.Crypto.Hash.NonCryptoFast` | `i64(str)` | `rt_hash_fast` |
 | `Zanna.Crypto.Hash.NonCryptoFastBytes` | `i64(obj)` | `rt_hash_fast_bytes` |
 | `Zanna.Crypto.Hash.NonCryptoFastInt` | `i64(i64)` | `rt_hash_fast_int` |
-| `Zanna.Crypto.KeyDerive.Pbkdf2Sha256` | `obj(str,obj,i64,i64)` | `rt_keyderive_pbkdf2_sha256` |
+| `Zanna.Crypto.KeyDerive.Pbkdf2Sha256` | `obj<Zanna.Collections.Bytes>(str,obj,i64,i64)` | `rt_keyderive_pbkdf2_sha256` |
 | `Zanna.Crypto.KeyDerive.Pbkdf2Sha256Encoded` | `str(str,obj,i64,i64)` | `rt_keyderive_pbkdf2_sha256_str` |
-| `Zanna.Crypto.KeyDerive.Scrypt` | `obj(str,obj,i64,i64,i64,i64)` | `rt_keyderive_scrypt_sha256` |
+| `Zanna.Crypto.KeyDerive.Scrypt` | `obj<Zanna.Collections.Bytes>(str,obj,i64,i64,i64,i64)` | `rt_keyderive_scrypt_sha256` |
 | `Zanna.Crypto.KeyDerive.ScryptEncoded` | `str(str,obj,i64,i64,i64,i64)` | `rt_keyderive_scrypt_sha256_str` |
 | `Zanna.Crypto.SecureRandom.Bytes` | `obj<Zanna.Collections.Bytes>(i64)` | `rt_crypto_rand_bytes` |
 | `Zanna.Crypto.SecureRandom.Int` | `i64(i64,i64)` | `rt_crypto_rand_int` |
@@ -267,29 +267,29 @@ construct the class directly. Its public surface exposes properties such as `Hos
 | `Zanna.Crypto.Compliance.IsApprovedModeForProcess` | `i1()` | `rt_crypto_module_is_approved_mode_zanna` |
 | `Zanna.Crypto.Compliance.Status` | `str()` | `rt_crypto_module_status_text` |
 | `Zanna.Crypto.Cipher.Encrypt` | `obj<Zanna.Collections.Bytes>(obj,str)` | `rt_cipher_encrypt` |
-| `Zanna.Crypto.Cipher.Decrypt` | `obj(obj,str)` | `rt_cipher_decrypt` |
+| `Zanna.Crypto.Cipher.Decrypt` | `obj<Zanna.Collections.Bytes>(obj,str)` | `rt_cipher_decrypt` |
 | `Zanna.Crypto.Cipher.DecryptResult` | `obj<Zanna.Result>(obj,str)` | `rt_cipher_decrypt_result` |
 | `Zanna.Crypto.Cipher.TryDecrypt` | `obj<Zanna.Option>(obj,str)` | `rt_cipher_try_decrypt` |
 | `Zanna.Crypto.Cipher.EncryptAad` | `obj<Zanna.Collections.Bytes>(obj,str,obj)` | `rt_cipher_encrypt_aad` |
-| `Zanna.Crypto.Cipher.DecryptAad` | `obj(obj,str,obj)` | `rt_cipher_decrypt_aad` |
+| `Zanna.Crypto.Cipher.DecryptAad` | `obj<Zanna.Collections.Bytes>(obj,str,obj)` | `rt_cipher_decrypt_aad` |
 | `Zanna.Crypto.Cipher.DecryptAadResult` | `obj<Zanna.Result>(obj,str,obj)` | `rt_cipher_decrypt_aad_result` |
 | `Zanna.Crypto.Cipher.TryDecryptAad` | `obj<Zanna.Option>(obj,str,obj)` | `rt_cipher_try_decrypt_aad` |
 | `Zanna.Crypto.Cipher.EncryptWithKey` | `obj<Zanna.Collections.Bytes>(obj,obj)` | `rt_cipher_encrypt_with_key` |
-| `Zanna.Crypto.Cipher.DecryptWithKey` | `obj(obj,obj)` | `rt_cipher_decrypt_with_key` |
+| `Zanna.Crypto.Cipher.DecryptWithKey` | `obj<Zanna.Collections.Bytes>(obj,obj)` | `rt_cipher_decrypt_with_key` |
 | `Zanna.Crypto.Cipher.DecryptWithKeyResult` | `obj<Zanna.Result>(obj,obj)` | `rt_cipher_decrypt_with_key_result` |
 | `Zanna.Crypto.Cipher.TryDecryptWithKey` | `obj<Zanna.Option>(obj,obj)` | `rt_cipher_try_decrypt_with_key` |
 | `Zanna.Crypto.Cipher.EncryptWithKeyAad` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `rt_cipher_encrypt_with_key_aad` |
-| `Zanna.Crypto.Cipher.DecryptWithKeyAad` | `obj(obj,obj,obj)` | `rt_cipher_decrypt_with_key_aad` |
+| `Zanna.Crypto.Cipher.DecryptWithKeyAad` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `rt_cipher_decrypt_with_key_aad` |
 | `Zanna.Crypto.Cipher.DecryptWithKeyAadResult` | `obj<Zanna.Result>(obj,obj,obj)` | `rt_cipher_decrypt_with_key_aad_result` |
 | `Zanna.Crypto.Cipher.TryDecryptWithKeyAad` | `obj<Zanna.Option>(obj,obj,obj)` | `rt_cipher_try_decrypt_with_key_aad` |
 | `Zanna.Crypto.Cipher.GenerateKey` | `obj<Zanna.Collections.Bytes>()` | `rt_cipher_generate_key` |
-| `Zanna.Crypto.Cipher.DeriveKey` | `obj(str,obj)` | `rt_cipher_derive_key` |
-| `Zanna.Crypto.Legacy.Aes.EncryptCbc` | `obj(obj,obj,obj)` | `rt_aes_encrypt` |
-| `Zanna.Crypto.Legacy.Aes.DecryptCbc` | `obj(obj,obj,obj)` | `rt_aes_decrypt` |
+| `Zanna.Crypto.Cipher.DeriveKey` | `obj<Zanna.Collections.Bytes>(str,obj)` | `rt_cipher_derive_key` |
+| `Zanna.Crypto.Legacy.Aes.EncryptCbc` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `rt_aes_encrypt` |
+| `Zanna.Crypto.Legacy.Aes.DecryptCbc` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `rt_aes_decrypt` |
 | `Zanna.Crypto.Legacy.Aes.DecryptCbcResult` | `obj<Zanna.Result>(obj,obj,obj)` | `rt_aes_decrypt_result` |
 | `Zanna.Crypto.Legacy.Aes.TryDecryptCbc` | `obj<Zanna.Option>(obj,obj,obj)` | `rt_aes_try_decrypt` |
 | `Zanna.Crypto.Aes.EncryptAuth` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `rt_aes_encrypt_auth` |
-| `Zanna.Crypto.Aes.DecryptAuth` | `obj(obj,obj,obj)` | `rt_aes_decrypt_auth` |
+| `Zanna.Crypto.Aes.DecryptAuth` | `obj<Zanna.Collections.Bytes>(obj,obj,obj)` | `rt_aes_decrypt_auth` |
 | `Zanna.Crypto.Aes.DecryptAuthResult` | `obj<Zanna.Result>(obj,obj,obj)` | `rt_aes_decrypt_auth_result` |
 | `Zanna.Crypto.Aes.TryDecryptAuth` | `obj<Zanna.Option>(obj,obj,obj)` | `rt_aes_try_decrypt_auth` |
 | `Zanna.Crypto.Aes.EncryptStr` | `obj<Zanna.Collections.Bytes>(str,str)` | `rt_aes_encrypt_str` |
@@ -302,11 +302,11 @@ construct the class directly. Its public surface exposes properties such as `Hos
 | `Zanna.Crypto.Password.HashScryptParams` | `str(str,i64,i64,i64)` | `rt_password_hash_scrypt_params` |
 | `Zanna.Crypto.Password.Verify` | `i1(str,str)` | `rt_password_verify` |
 | `Zanna.Crypto.Password.NeedsRehash` | `i1(str)` | `rt_password_needs_rehash` |
-| `Zanna.Crypto.Tls.Connect` | `obj(str,i64)` | `rt_zanna_tls_connect` |
+| `Zanna.Crypto.Tls.Connect` | `obj<Zanna.Crypto.Tls>(str,i64)` | `rt_zanna_tls_connect` |
 | `Zanna.Crypto.Tls.ConnectResult` | `obj<Zanna.Result>(str,i64)` | `rt_zanna_tls_connect_result` |
-| `Zanna.Crypto.Tls.ConnectFor` | `obj(str,i64,i64)` | `rt_zanna_tls_connect_for` |
+| `Zanna.Crypto.Tls.ConnectFor` | `obj<Zanna.Crypto.Tls>(str,i64,i64)` | `rt_zanna_tls_connect_for` |
 | `Zanna.Crypto.Tls.ConnectForResult` | `obj<Zanna.Result>(str,i64,i64)` | `rt_zanna_tls_connect_for_result` |
-| `Zanna.Crypto.Tls.ConnectOptions` | `obj(str,i64,str,str,i1,i64)` | `rt_zanna_tls_connect_options` |
+| `Zanna.Crypto.Tls.ConnectOptions` | `obj<Zanna.Crypto.Tls>(str,i64,str,str,i1,i64)` | `rt_zanna_tls_connect_options` |
 | `Zanna.Crypto.Tls.ConnectOptionsResult` | `obj<Zanna.Result>(str,i64,str,str,i1,i64)` | `rt_zanna_tls_connect_options_result` |
 | <a id="zanna-crypto-tls-get-host"></a>`Zanna.Crypto.Tls.get_Host` | `str(obj)` | `rt_zanna_tls_host` |
 | <a id="zanna-crypto-tls-get-port"></a>`Zanna.Crypto.Tls.get_Port` | `i64(obj)` | `rt_zanna_tls_port` |
@@ -314,7 +314,7 @@ construct the class directly. Its public surface exposes properties such as `Hos
 | <a id="zanna-crypto-tls-get-isopen"></a>`Zanna.Crypto.Tls.get_IsOpen` | `i1(obj)` | `rt_zanna_tls_is_open` |
 | `Zanna.Crypto.Tls.Send` | `i64(obj,obj)` | `rt_zanna_tls_send` |
 | `Zanna.Crypto.Tls.SendStr` | `i64(obj,str)` | `rt_zanna_tls_send_str` |
-| `Zanna.Crypto.Tls.Recv` | `obj(obj,i64)` | `rt_zanna_tls_recv` |
+| `Zanna.Crypto.Tls.Recv` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_zanna_tls_recv` |
 | `Zanna.Crypto.Tls.RecvStr` | `str(obj,i64)` | `rt_zanna_tls_recv_str` |
 | `Zanna.Crypto.Tls.Close` | `void(obj)` | `rt_zanna_tls_close` |
 | `Zanna.Crypto.Tls.RecvLine` | `str(obj)` | `rt_zanna_tls_recv_line` |

@@ -1563,6 +1563,23 @@ class Sema {
                              bool &isNotNull,
                              TypeRef *checkedType = nullptr);
 
+    /// @brief Collect the optional values a condition proves non-null.
+    /// @details `x != null` proves `x` when true and `x == null` proves it when false;
+    ///          `a && b` proves the facts of both operands when true, `a || b` those of both
+    ///          operands when false, and `!a` swaps the outcome.
+    /// @param cond Condition expression.
+    /// @param whenTrue Outcome of @p cond on the path being analyzed.
+    /// @param facts Receives each narrowing key with the non-optional type it narrows to.
+    void collectNonNullFacts(Expr *cond,
+                             bool whenTrue,
+                             std::vector<std::pair<std::string, TypeRef>> &facts);
+
+    /// @brief Open one narrowing scope holding every fact @p cond proves on a path.
+    /// @param cond Condition expression.
+    /// @param whenTrue Outcome of @p cond on the path being analyzed.
+    /// @return True when a scope was opened; the caller pops it after the path.
+    bool pushConditionNarrowing(Expr *cond, bool whenTrue);
+
     /// @brief Build a stable key for expressions supported by flow narrowing.
     /// @param expr Expression to key, such as `x`, `self.field`, or `obj.field`.
     /// @return Empty string when the expression is not safe to narrow.

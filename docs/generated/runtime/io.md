@@ -11,18 +11,22 @@
 
 Provides Assets constants and static operations for filesystem and stream workflows.
 
-`Zanna.IO.Assets` is a static runtime surface and does not require an instance. Its public
-Its public surface exposes operations including `Load`, `LoadBytes`, `Exists`, `SizeBytes`.
+`Zanna.IO.Assets` is a static runtime surface and does not require an instance. `Load` decodes
+an asset by extension (`Pixels` for images, `Sound` for audio, `Bytes` otherwise) and returns
+it as a `Zanna.Core.Object`, so narrow the result with `as`, for example
+`Assets.Load("hero.png") as Zanna.Graphics.Pixels`. `LoadBytes` returns raw `Bytes`, `List`
+returns the names in the embedded archive and mounted packs, and `Mount` and `Unmount` manage
+pack files.
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-assets-load"></a>`Load` | `obj(str)` | `Zanna.IO.Assets.Load` |
-| <a id="zanna-io-assets-loadbytes"></a>`LoadBytes` | `obj(str)` | `Zanna.IO.Assets.LoadBytes` |
+| <a id="zanna-io-assets-load"></a>`Load` | `obj<Zanna.Core.Object>(str)` | `Zanna.IO.Assets.Load` |
+| <a id="zanna-io-assets-loadbytes"></a>`LoadBytes` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.IO.Assets.LoadBytes` |
 | <a id="zanna-io-assets-exists"></a>`Exists` | `i1(str)` | `Zanna.IO.Assets.Exists` |
 | <a id="zanna-io-assets-sizebytes"></a>`SizeBytes` | `i64(str)` | `Zanna.IO.Assets.SizeBytes` |
-| <a id="zanna-io-assets-list"></a>`List` | `obj()` | `Zanna.IO.Assets.List` |
+| <a id="zanna-io-assets-list"></a>`List` | `seq<str>()` | `Zanna.IO.Assets.List` |
 | <a id="zanna-io-assets-mount"></a>`Mount` | `i64(str)` | `Zanna.IO.Assets.Mount` |
 | <a id="zanna-io-assets-unmount"></a>`Unmount` | `i64(str)` | `Zanna.IO.Assets.Unmount` |
 
@@ -179,7 +183,7 @@ construct the class directly. Its public surface exposes properties such as `Eof
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-binfile-open"></a>`Open` | `obj(str,str)` | `Zanna.IO.BinFile.Open` |
+| <a id="zanna-io-binfile-open"></a>`Open` | `obj<Zanna.IO.BinFile>(str,str)` | `Zanna.IO.BinFile.Open` |
 | <a id="zanna-io-binfile-close"></a>`Close` | `void()` | `Zanna.IO.BinFile.Close` |
 | <a id="zanna-io-binfile-flush"></a>`Flush` | `void()` | `Zanna.IO.BinFile.Flush` |
 | <a id="zanna-io-binfile-read"></a>`Read` | `i64(obj,i64,i64)` | `Zanna.IO.BinFile.Read` |
@@ -230,17 +234,17 @@ Constructor: `Zanna.IO.MemStream.New`
 | <a id="zanna-io-memstream-writef32"></a>`WriteF32` | `void(f64)` | `Zanna.IO.MemStream.WriteF32` |
 | <a id="zanna-io-memstream-readf64"></a>`ReadF64` | `f64()` | `Zanna.IO.MemStream.ReadF64` |
 | <a id="zanna-io-memstream-writef64"></a>`WriteF64` | `void(f64)` | `Zanna.IO.MemStream.WriteF64` |
-| <a id="zanna-io-memstream-readbytes"></a>`ReadBytes` | `obj(i64)` | `Zanna.IO.MemStream.ReadBytes` |
+| <a id="zanna-io-memstream-readbytes"></a>`ReadBytes` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.IO.MemStream.ReadBytes` |
 | <a id="zanna-io-memstream-writebytes"></a>`WriteBytes` | `void(obj)` | `Zanna.IO.MemStream.WriteBytes` |
 | <a id="zanna-io-memstream-readstr"></a>`ReadStr` | `str(i64)` | `Zanna.IO.MemStream.ReadStr` |
 | <a id="zanna-io-memstream-writestr"></a>`WriteStr` | `void(str)` | `Zanna.IO.MemStream.WriteStr` |
-| <a id="zanna-io-memstream-tobytes"></a>`ToBytes` | `obj()` | `Zanna.IO.MemStream.ToBytes` |
+| <a id="zanna-io-memstream-tobytes"></a>`ToBytes` | `obj<Zanna.Collections.Bytes>()` | `Zanna.IO.MemStream.ToBytes` |
 | <a id="zanna-io-memstream-clear"></a>`Clear` | `void()` | `Zanna.IO.MemStream.Clear` |
 | <a id="zanna-io-memstream-seek"></a>`Seek` | `void(i64)` | `Zanna.IO.MemStream.Seek` |
 | <a id="zanna-io-memstream-skip"></a>`Skip` | `void(i64)` | `Zanna.IO.MemStream.Skip` |
-| <a id="zanna-io-memstream-new"></a>`New` | `obj()` | `Zanna.IO.MemStream.New` |
-| <a id="zanna-io-memstream-newcapacity"></a>`NewCapacity` | `obj(i64)` | `Zanna.IO.MemStream.NewCapacity` |
-| <a id="zanna-io-memstream-frombytes"></a>`FromBytes` | `obj(obj)` | `Zanna.IO.MemStream.FromBytes` |
+| <a id="zanna-io-memstream-new"></a>`New` | `obj<Zanna.IO.MemStream>()` | `Zanna.IO.MemStream.New` |
+| <a id="zanna-io-memstream-newcapacity"></a>`NewCapacity` | `obj<Zanna.IO.MemStream>(i64)` | `Zanna.IO.MemStream.NewCapacity` |
+| <a id="zanna-io-memstream-frombytes"></a>`FromBytes` | `obj<Zanna.IO.MemStream>(obj)` | `Zanna.IO.MemStream.FromBytes` |
 
 <a id="zanna-io-binarybuffer"></a>
 ### `Zanna.IO.BinaryBuffer`
@@ -265,8 +269,8 @@ Constructor: `Zanna.IO.BinaryBuffer.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-binarybuffer-newcapacity"></a>`NewCapacity` | `obj(i64)` | `Zanna.IO.BinaryBuffer.NewCapacity` |
-| <a id="zanna-io-binarybuffer-frombytes"></a>`FromBytes` | `obj(obj)` | `Zanna.IO.BinaryBuffer.FromBytes` |
+| <a id="zanna-io-binarybuffer-newcapacity"></a>`NewCapacity` | `obj<Zanna.IO.BinaryBuffer>(i64)` | `Zanna.IO.BinaryBuffer.NewCapacity` |
+| <a id="zanna-io-binarybuffer-frombytes"></a>`FromBytes` | `obj<Zanna.IO.BinaryBuffer>(obj)` | `Zanna.IO.BinaryBuffer.FromBytes` |
 | <a id="zanna-io-binarybuffer-writebyte"></a>`WriteByte` | `void(i64)` | `Zanna.IO.BinaryBuffer.WriteByte` |
 | <a id="zanna-io-binarybuffer-writei16littleendian"></a>`WriteI16LittleEndian` | `void(i64)` | `Zanna.IO.BinaryBuffer.WriteI16LittleEndian` |
 | <a id="zanna-io-binarybuffer-writei16bigendian"></a>`WriteI16BigEndian` | `void(i64)` | `Zanna.IO.BinaryBuffer.WriteI16BigEndian` |
@@ -292,10 +296,10 @@ Constructor: `Zanna.IO.BinaryBuffer.New`
 | <a id="zanna-io-binarybuffer-readi64littleendian"></a>`ReadI64LittleEndian` | `i64()` | `Zanna.IO.BinaryBuffer.ReadI64LittleEndian` |
 | <a id="zanna-io-binarybuffer-readi64bigendian"></a>`ReadI64BigEndian` | `i64()` | `Zanna.IO.BinaryBuffer.ReadI64BigEndian` |
 | <a id="zanna-io-binarybuffer-readstr"></a>`ReadStr` | `str()` | `Zanna.IO.BinaryBuffer.ReadStr` |
-| <a id="zanna-io-binarybuffer-readbytes"></a>`ReadBytes` | `obj(i64)` | `Zanna.IO.BinaryBuffer.ReadBytes` |
-| <a id="zanna-io-binarybuffer-tobytes"></a>`ToBytes` | `obj()` | `Zanna.IO.BinaryBuffer.ToBytes` |
+| <a id="zanna-io-binarybuffer-readbytes"></a>`ReadBytes` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.IO.BinaryBuffer.ReadBytes` |
+| <a id="zanna-io-binarybuffer-tobytes"></a>`ToBytes` | `obj<Zanna.Collections.Bytes>()` | `Zanna.IO.BinaryBuffer.ToBytes` |
 | <a id="zanna-io-binarybuffer-reset"></a>`Reset` | `void()` | `Zanna.IO.BinaryBuffer.Reset` |
-| <a id="zanna-io-binarybuffer-new"></a>`New` | `obj()` | `Zanna.IO.BinaryBuffer.New` |
+| <a id="zanna-io-binarybuffer-new"></a>`New` | `obj<Zanna.IO.BinaryBuffer>()` | `Zanna.IO.BinaryBuffer.New` |
 
 <a id="zanna-io-stream"></a>
 ### `Zanna.IO.Stream`
@@ -320,13 +324,13 @@ construct the class directly. Its public surface exposes properties such as `Typ
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-stream-openfile"></a>`OpenFile` | `obj(str,str)` | `Zanna.IO.Stream.OpenFile` |
-| <a id="zanna-io-stream-openmemory"></a>`OpenMemory` | `obj()` | `Zanna.IO.Stream.OpenMemory` |
-| <a id="zanna-io-stream-openbytes"></a>`OpenBytes` | `obj(obj)` | `Zanna.IO.Stream.OpenBytes` |
-| <a id="zanna-io-stream-frombinfile"></a>`FromBinFile` | `obj(obj)` | `Zanna.IO.Stream.FromBinFile` |
-| <a id="zanna-io-stream-frommemstream"></a>`FromMemStream` | `obj(obj)` | `Zanna.IO.Stream.FromMemStream` |
-| <a id="zanna-io-stream-read"></a>`Read` | `obj(i64)` | `Zanna.IO.Stream.Read` |
-| <a id="zanna-io-stream-readall"></a>`ReadAll` | `obj()` | `Zanna.IO.Stream.ReadAll` |
+| <a id="zanna-io-stream-openfile"></a>`OpenFile` | `obj<Zanna.IO.Stream>(str,str)` | `Zanna.IO.Stream.OpenFile` |
+| <a id="zanna-io-stream-openmemory"></a>`OpenMemory` | `obj<Zanna.IO.Stream>()` | `Zanna.IO.Stream.OpenMemory` |
+| <a id="zanna-io-stream-openbytes"></a>`OpenBytes` | `obj<Zanna.IO.Stream>(obj)` | `Zanna.IO.Stream.OpenBytes` |
+| <a id="zanna-io-stream-frombinfile"></a>`FromBinFile` | `obj<Zanna.IO.Stream>(obj)` | `Zanna.IO.Stream.FromBinFile` |
+| <a id="zanna-io-stream-frommemstream"></a>`FromMemStream` | `obj<Zanna.IO.Stream>(obj)` | `Zanna.IO.Stream.FromMemStream` |
+| <a id="zanna-io-stream-read"></a>`Read` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.IO.Stream.Read` |
+| <a id="zanna-io-stream-readall"></a>`ReadAll` | `obj<Zanna.Collections.Bytes>()` | `Zanna.IO.Stream.ReadAll` |
 | <a id="zanna-io-stream-write"></a>`Write` | `void(obj)` | `Zanna.IO.Stream.Write` |
 | <a id="zanna-io-stream-readbyte"></a>`ReadByte` | `i64()` | `Zanna.IO.Stream.ReadByte` |
 | <a id="zanna-io-stream-writebyte"></a>`WriteByte` | `void(i64)` | `Zanna.IO.Stream.WriteByte` |
@@ -334,7 +338,7 @@ construct the class directly. Its public surface exposes properties such as `Typ
 | <a id="zanna-io-stream-close"></a>`Close` | `void()` | `Zanna.IO.Stream.Close` |
 | <a id="zanna-io-stream-asbinfile"></a>`AsBinFile` | `obj<Zanna.IO.BinFile>()` | `Zanna.IO.Stream.AsBinFile` |
 | <a id="zanna-io-stream-asmemstream"></a>`AsMemStream` | `obj<Zanna.IO.MemStream>()` | `Zanna.IO.Stream.AsMemStream` |
-| <a id="zanna-io-stream-tobytes"></a>`ToBytes` | `obj()` | `Zanna.IO.Stream.ToBytes` |
+| <a id="zanna-io-stream-tobytes"></a>`ToBytes` | `obj<Zanna.Collections.Bytes>()` | `Zanna.IO.Stream.ToBytes` |
 
 <a id="zanna-io-linereader"></a>
 ### `Zanna.IO.LineReader`
@@ -355,7 +359,7 @@ operations including `Open`, `Close`, `PeekChar`, `Read`.
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-linereader-open"></a>`Open` | `obj(str)` | `Zanna.IO.LineReader.Open` |
+| <a id="zanna-io-linereader-open"></a>`Open` | `obj<Zanna.IO.LineReader>(str)` | `Zanna.IO.LineReader.Open` |
 | <a id="zanna-io-linereader-close"></a>`Close` | `void()` | `Zanna.IO.LineReader.Close` |
 | <a id="zanna-io-linereader-peekchar"></a>`PeekChar` | `i64()` | `Zanna.IO.LineReader.PeekChar` |
 | <a id="zanna-io-linereader-read"></a>`Read` | `str()` | `Zanna.IO.LineReader.Read` |
@@ -381,8 +385,8 @@ operations including `Open`, `Append`, `Close`, `Flush`.
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-linewriter-open"></a>`Open` | `obj(str)` | `Zanna.IO.LineWriter.Open` |
-| <a id="zanna-io-linewriter-append"></a>`Append` | `obj(str)` | `Zanna.IO.LineWriter.Append` |
+| <a id="zanna-io-linewriter-open"></a>`Open` | `obj<Zanna.IO.LineWriter>(str)` | `Zanna.IO.LineWriter.Open` |
+| <a id="zanna-io-linewriter-append"></a>`Append` | `obj<Zanna.IO.LineWriter>(str)` | `Zanna.IO.LineWriter.Append` |
 | <a id="zanna-io-linewriter-close"></a>`Close` | `void()` | `Zanna.IO.LineWriter.Close` |
 | <a id="zanna-io-linewriter-flush"></a>`Flush` | `void()` | `Zanna.IO.LineWriter.Flush` |
 | <a id="zanna-io-linewriter-write"></a>`Write` | `void(str)` | `Zanna.IO.LineWriter.Write` |
@@ -420,7 +424,7 @@ Constructor: `Zanna.IO.SaveData.New`
 | <a id="zanna-io-savedata-haskey"></a>`HasKey` | `i1(str)` | `Zanna.IO.SaveData.HasKey` |
 | <a id="zanna-io-savedata-remove"></a>`Remove` | `i1(str)` | `Zanna.IO.SaveData.Remove` |
 | <a id="zanna-io-savedata-clear"></a>`Clear` | `void()` | `Zanna.IO.SaveData.Clear` |
-| <a id="zanna-io-savedata-new"></a>`New` | `obj(str)` | `Zanna.IO.SaveData.New` |
+| <a id="zanna-io-savedata-new"></a>`New` | `obj<Zanna.IO.SaveData>(str)` | `Zanna.IO.SaveData.New` |
 
 <a id="zanna-io-watcher"></a>
 ### `Zanna.IO.Watcher`
@@ -459,7 +463,7 @@ Constructor: `Zanna.IO.Watcher.New`
 | <a id="zanna-io-watcher-eventnewpath"></a>`EventNewPath` | `str()` | `Zanna.IO.Watcher.EventNewPath` |
 | <a id="zanna-io-watcher-eventtype"></a>`EventType` | `i64()` | `Zanna.IO.Watcher.EventType` |
 | <a id="zanna-io-watcher-eventoverflowcount"></a>`EventOverflowCount` | `i64()` | `Zanna.IO.Watcher.EventOverflowCount` |
-| <a id="zanna-io-watcher-new"></a>`New` | `obj(str)` | `Zanna.IO.Watcher.New` |
+| <a id="zanna-io-watcher-new"></a>`New` | `obj<Zanna.IO.Watcher>(str)` | `Zanna.IO.Watcher.New` |
 
 <a id="zanna-io-compress"></a>
 ### `Zanna.IO.Compress`
@@ -474,15 +478,15 @@ construct the class directly. Its public surface exposes operations including `D
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-compress-deflate"></a>`Deflate` | `obj(obj)` | `Zanna.IO.Compress.Deflate` |
-| <a id="zanna-io-compress-deflatelvl"></a>`DeflateLvl` | `obj(obj,i64)` | `Zanna.IO.Compress.DeflateLvl` |
-| <a id="zanna-io-compress-inflate"></a>`Inflate` | `obj(obj)` | `Zanna.IO.Compress.Inflate` |
-| <a id="zanna-io-compress-gzip"></a>`Gzip` | `obj(obj)` | `Zanna.IO.Compress.Gzip` |
-| <a id="zanna-io-compress-gziplvl"></a>`GzipLvl` | `obj(obj,i64)` | `Zanna.IO.Compress.GzipLvl` |
-| <a id="zanna-io-compress-gunzip"></a>`Gunzip` | `obj(obj)` | `Zanna.IO.Compress.Gunzip` |
-| <a id="zanna-io-compress-deflatestr"></a>`DeflateStr` | `obj(str)` | `Zanna.IO.Compress.DeflateStr` |
+| <a id="zanna-io-compress-deflate"></a>`Deflate` | `obj<Zanna.Collections.Bytes>(obj)` | `Zanna.IO.Compress.Deflate` |
+| <a id="zanna-io-compress-deflatelvl"></a>`DeflateLvl` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `Zanna.IO.Compress.DeflateLvl` |
+| <a id="zanna-io-compress-inflate"></a>`Inflate` | `obj<Zanna.Collections.Bytes>(obj)` | `Zanna.IO.Compress.Inflate` |
+| <a id="zanna-io-compress-gzip"></a>`Gzip` | `obj<Zanna.Collections.Bytes>(obj)` | `Zanna.IO.Compress.Gzip` |
+| <a id="zanna-io-compress-gziplvl"></a>`GzipLvl` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `Zanna.IO.Compress.GzipLvl` |
+| <a id="zanna-io-compress-gunzip"></a>`Gunzip` | `obj<Zanna.Collections.Bytes>(obj)` | `Zanna.IO.Compress.Gunzip` |
+| <a id="zanna-io-compress-deflatestr"></a>`DeflateStr` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.IO.Compress.DeflateStr` |
 | <a id="zanna-io-compress-inflatestr"></a>`InflateStr` | `str(obj)` | `Zanna.IO.Compress.InflateStr` |
-| <a id="zanna-io-compress-gzipstr"></a>`GzipStr` | `obj(str)` | `Zanna.IO.Compress.GzipStr` |
+| <a id="zanna-io-compress-gzipstr"></a>`GzipStr` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.IO.Compress.GzipStr` |
 | <a id="zanna-io-compress-gunzipstr"></a>`GunzipStr` | `str(obj)` | `Zanna.IO.Compress.GunzipStr` |
 
 <a id="zanna-io-archive"></a>
@@ -500,21 +504,21 @@ construct the class directly. Its public surface exposes properties such as `Pat
 |---|---|---|
 | <a id="zanna-io-archive-path"></a>`Path` | `str` | read-only |
 | <a id="zanna-io-archive-count"></a>`Count` | `i64` | read-only |
-| <a id="zanna-io-archive-names"></a>`Names` | `obj` | read-only |
+| <a id="zanna-io-archive-names"></a>`Names` | `seq<str>` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-io-archive-open"></a>`Open` | `obj(str)` | `Zanna.IO.Archive.Open` |
-| <a id="zanna-io-archive-create"></a>`Create` | `obj(str)` | `Zanna.IO.Archive.Create` |
-| <a id="zanna-io-archive-frombytes"></a>`FromBytes` | `obj(obj)` | `Zanna.IO.Archive.FromBytes` |
+| <a id="zanna-io-archive-open"></a>`Open` | `obj<Zanna.IO.Archive>(str)` | `Zanna.IO.Archive.Open` |
+| <a id="zanna-io-archive-create"></a>`Create` | `obj<Zanna.IO.Archive>(str)` | `Zanna.IO.Archive.Create` |
+| <a id="zanna-io-archive-frombytes"></a>`FromBytes` | `obj<Zanna.IO.Archive>(obj)` | `Zanna.IO.Archive.FromBytes` |
 | <a id="zanna-io-archive-has"></a>`Has` | `i1(str)` | `Zanna.IO.Archive.Has` |
-| <a id="zanna-io-archive-read"></a>`Read` | `obj(str)` | `Zanna.IO.Archive.Read` |
+| <a id="zanna-io-archive-read"></a>`Read` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.IO.Archive.Read` |
 | <a id="zanna-io-archive-readstr"></a>`ReadStr` | `str(str)` | `Zanna.IO.Archive.ReadStr` |
 | <a id="zanna-io-archive-extract"></a>`Extract` | `void(str,str)` | `Zanna.IO.Archive.Extract` |
 | <a id="zanna-io-archive-extractall"></a>`ExtractAll` | `void(str)` | `Zanna.IO.Archive.ExtractAll` |
-| <a id="zanna-io-archive-info"></a>`Info` | `obj(str)` | `Zanna.IO.Archive.Info` |
+| <a id="zanna-io-archive-info"></a>`Info` | `obj<Zanna.Collections.Map>(str)` | `Zanna.IO.Archive.Info` |
 | <a id="zanna-io-archive-add"></a>`Add` | `void(str,obj)` | `Zanna.IO.Archive.Add` |
 | <a id="zanna-io-archive-addstr"></a>`AddStr` | `void(str,str)` | `Zanna.IO.Archive.AddStr` |
 | <a id="zanna-io-archive-addfile"></a>`AddFile` | `void(str,str)` | `Zanna.IO.Archive.AddFile` |
@@ -609,17 +613,17 @@ callers decide when it is safe to delete the persistent marker itself.
 | `Zanna.IO.Path.DataDir` | `str(str)` | `rt_path_data_dir` |
 | `Zanna.IO.Path.FindUpward` | `str(str,str,i64)` | `rt_path_find_upward` |
 | `Zanna.IO.Path.ResolveDataRoot` | `str(str,str)` | `rt_path_resolve_data_root` |
-| `Zanna.IO.Assets.Load` | `obj(str)` | `rt_asset_load` |
-| `Zanna.IO.Assets.LoadBytes` | `obj(str)` | `rt_asset_load_bytes` |
+| `Zanna.IO.Assets.Load` | `obj<Zanna.Core.Object>(str)` | `rt_asset_load` |
+| `Zanna.IO.Assets.LoadBytes` | `obj<Zanna.Collections.Bytes>(str)` | `rt_asset_load_bytes` |
 | `Zanna.IO.Assets.Exists` | `i1(str)` | `rt_asset_exists` |
 | `Zanna.IO.Assets.SizeBytes` | `i64(str)` | `rt_asset_size` |
-| `Zanna.IO.Assets.List` | `obj()` | `rt_asset_list` |
+| `Zanna.IO.Assets.List` | `seq<str>()` | `rt_asset_list` |
 | `Zanna.IO.Assets.Mount` | `i64(str)` | `rt_asset_mount` |
 | `Zanna.IO.Assets.Unmount` | `i64(str)` | `rt_asset_unmount` |
 | `Zanna.IO.BinFile.Close` | `void(obj)` | `rt_binfile_close` |
 | <a id="zanna-io-binfile-get-eof"></a>`Zanna.IO.BinFile.get_Eof` | `i1(obj)` | `rt_binfile_eof` |
 | `Zanna.IO.BinFile.Flush` | `void(obj)` | `rt_binfile_flush` |
-| `Zanna.IO.BinFile.Open` | `obj(str,str)` | `rt_binfile_open` |
+| `Zanna.IO.BinFile.Open` | `obj<Zanna.IO.BinFile>(str,str)` | `rt_binfile_open` |
 | <a id="zanna-io-binfile-get-position"></a>`Zanna.IO.BinFile.get_Position` | `i64(obj)` | `rt_binfile_pos` |
 | `Zanna.IO.BinFile.Read` | `i64(obj,obj,i64,i64)` | `rt_binfile_read` |
 | `Zanna.IO.BinFile.ReadByte` | `i64(obj)` | `rt_binfile_read_byte` |
@@ -627,9 +631,9 @@ callers decide when it is safe to delete the persistent marker itself.
 | <a id="zanna-io-binfile-get-sizebytes"></a>`Zanna.IO.BinFile.get_SizeBytes` | `i64(obj)` | `rt_binfile_size` |
 | `Zanna.IO.BinFile.Write` | `void(obj,obj,i64,i64)` | `rt_binfile_write` |
 | `Zanna.IO.BinFile.WriteByte` | `void(obj,i64)` | `rt_binfile_write_byte` |
-| `Zanna.IO.MemStream.New` | `obj()` | `rt_memstream_new` |
-| `Zanna.IO.MemStream.NewCapacity` | `obj(i64)` | `rt_memstream_new_capacity` |
-| `Zanna.IO.MemStream.FromBytes` | `obj(obj)` | `rt_memstream_from_bytes` |
+| `Zanna.IO.MemStream.New` | `obj<Zanna.IO.MemStream>()` | `rt_memstream_new` |
+| `Zanna.IO.MemStream.NewCapacity` | `obj<Zanna.IO.MemStream>(i64)` | `rt_memstream_new_capacity` |
+| `Zanna.IO.MemStream.FromBytes` | `obj<Zanna.IO.MemStream>(obj)` | `rt_memstream_from_bytes` |
 | <a id="zanna-io-memstream-get-position"></a>`Zanna.IO.MemStream.get_Position` | `i64(obj)` | `rt_memstream_get_pos` |
 | <a id="zanna-io-memstream-set-position"></a>`Zanna.IO.MemStream.set_Position` | `void(obj,i64)` | `rt_memstream_set_pos` |
 | <a id="zanna-io-memstream-get-length"></a>`Zanna.IO.MemStream.get_Length` | `i64(obj)` | `rt_memstream_get_len` |
@@ -652,17 +656,17 @@ callers decide when it is safe to delete the persistent marker itself.
 | `Zanna.IO.MemStream.WriteF32` | `void(obj,f64)` | `rt_memstream_write_f32` |
 | `Zanna.IO.MemStream.ReadF64` | `f64(obj)` | `rt_memstream_read_f64` |
 | `Zanna.IO.MemStream.WriteF64` | `void(obj,f64)` | `rt_memstream_write_f64` |
-| `Zanna.IO.MemStream.ReadBytes` | `obj(obj,i64)` | `rt_memstream_read_bytes` |
+| `Zanna.IO.MemStream.ReadBytes` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_memstream_read_bytes` |
 | `Zanna.IO.MemStream.WriteBytes` | `void(obj,obj)` | `rt_memstream_write_bytes` |
 | `Zanna.IO.MemStream.ReadStr` | `str(obj,i64)` | `rt_memstream_read_str` |
 | `Zanna.IO.MemStream.WriteStr` | `void(obj,str)` | `rt_memstream_write_str` |
-| `Zanna.IO.MemStream.ToBytes` | `obj(obj)` | `rt_memstream_to_bytes` |
+| `Zanna.IO.MemStream.ToBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_memstream_to_bytes` |
 | `Zanna.IO.MemStream.Clear` | `void(obj)` | `rt_memstream_clear` |
 | `Zanna.IO.MemStream.Seek` | `void(obj,i64)` | `rt_memstream_seek` |
 | `Zanna.IO.MemStream.Skip` | `void(obj,i64)` | `rt_memstream_skip` |
-| `Zanna.IO.BinaryBuffer.New` | `obj()` | `rt_binbuf_new` |
-| `Zanna.IO.BinaryBuffer.NewCapacity` | `obj(i64)` | `rt_binbuf_new_cap` |
-| `Zanna.IO.BinaryBuffer.FromBytes` | `obj(obj)` | `rt_binbuf_from_bytes` |
+| `Zanna.IO.BinaryBuffer.New` | `obj<Zanna.IO.BinaryBuffer>()` | `rt_binbuf_new` |
+| `Zanna.IO.BinaryBuffer.NewCapacity` | `obj<Zanna.IO.BinaryBuffer>(i64)` | `rt_binbuf_new_cap` |
+| `Zanna.IO.BinaryBuffer.FromBytes` | `obj<Zanna.IO.BinaryBuffer>(obj)` | `rt_binbuf_from_bytes` |
 | `Zanna.IO.BinaryBuffer.WriteByte` | `void(obj,i64)` | `rt_binbuf_write_byte` |
 | `Zanna.IO.BinaryBuffer.WriteI16LittleEndian` | `void(obj,i64)` | `rt_binbuf_write_i16le` |
 | `Zanna.IO.BinaryBuffer.WriteI16BigEndian` | `void(obj,i64)` | `rt_binbuf_write_i16be` |
@@ -688,24 +692,24 @@ callers decide when it is safe to delete the persistent marker itself.
 | `Zanna.IO.BinaryBuffer.ReadI64LittleEndian` | `i64(obj)` | `rt_binbuf_read_i64le` |
 | `Zanna.IO.BinaryBuffer.ReadI64BigEndian` | `i64(obj)` | `rt_binbuf_read_i64be` |
 | `Zanna.IO.BinaryBuffer.ReadStr` | `str(obj)` | `rt_binbuf_read_str` |
-| `Zanna.IO.BinaryBuffer.ReadBytes` | `obj(obj,i64)` | `rt_binbuf_read_bytes` |
+| `Zanna.IO.BinaryBuffer.ReadBytes` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_binbuf_read_bytes` |
 | <a id="zanna-io-binarybuffer-get-position"></a>`Zanna.IO.BinaryBuffer.get_Position` | `i64(obj)` | `rt_binbuf_get_position` |
 | <a id="zanna-io-binarybuffer-set-position"></a>`Zanna.IO.BinaryBuffer.set_Position` | `void(obj,i64)` | `rt_binbuf_set_position` |
 | <a id="zanna-io-binarybuffer-get-length"></a>`Zanna.IO.BinaryBuffer.get_Length` | `i64(obj)` | `rt_binbuf_get_len` |
-| `Zanna.IO.BinaryBuffer.ToBytes` | `obj(obj)` | `rt_binbuf_to_bytes` |
+| `Zanna.IO.BinaryBuffer.ToBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_binbuf_to_bytes` |
 | `Zanna.IO.BinaryBuffer.Reset` | `void(obj)` | `rt_binbuf_reset` |
-| `Zanna.IO.Stream.OpenFile` | `obj(str,str)` | `rt_stream_open_file` |
-| `Zanna.IO.Stream.OpenMemory` | `obj()` | `rt_stream_open_memory` |
-| `Zanna.IO.Stream.OpenBytes` | `obj(obj)` | `rt_stream_open_bytes` |
-| `Zanna.IO.Stream.FromBinFile` | `obj(obj)` | `rt_stream_from_binfile` |
-| `Zanna.IO.Stream.FromMemStream` | `obj(obj)` | `rt_stream_from_memstream` |
+| `Zanna.IO.Stream.OpenFile` | `obj<Zanna.IO.Stream>(str,str)` | `rt_stream_open_file` |
+| `Zanna.IO.Stream.OpenMemory` | `obj<Zanna.IO.Stream>()` | `rt_stream_open_memory` |
+| `Zanna.IO.Stream.OpenBytes` | `obj<Zanna.IO.Stream>(obj)` | `rt_stream_open_bytes` |
+| `Zanna.IO.Stream.FromBinFile` | `obj<Zanna.IO.Stream>(obj)` | `rt_stream_from_binfile` |
+| `Zanna.IO.Stream.FromMemStream` | `obj<Zanna.IO.Stream>(obj)` | `rt_stream_from_memstream` |
 | <a id="zanna-io-stream-get-type"></a>`Zanna.IO.Stream.get_Type` | `i64(obj)` | `rt_stream_get_type` |
 | <a id="zanna-io-stream-get-position"></a>`Zanna.IO.Stream.get_Position` | `i64(obj)` | `rt_stream_get_pos` |
 | <a id="zanna-io-stream-set-position"></a>`Zanna.IO.Stream.set_Position` | `void(obj,i64)` | `rt_stream_set_pos` |
 | <a id="zanna-io-stream-get-length"></a>`Zanna.IO.Stream.get_Length` | `i64(obj)` | `rt_stream_get_len` |
 | <a id="zanna-io-stream-get-eof"></a>`Zanna.IO.Stream.get_Eof` | `i1(obj)` | `rt_stream_is_eof` |
-| `Zanna.IO.Stream.Read` | `obj(obj,i64)` | `rt_stream_read` |
-| `Zanna.IO.Stream.ReadAll` | `obj(obj)` | `rt_stream_read_all` |
+| `Zanna.IO.Stream.Read` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_stream_read` |
+| `Zanna.IO.Stream.ReadAll` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_stream_read_all` |
 | `Zanna.IO.Stream.Write` | `void(obj,obj)` | `rt_stream_write` |
 | `Zanna.IO.Stream.ReadByte` | `i64(obj)` | `rt_stream_read_byte` |
 | `Zanna.IO.Stream.WriteByte` | `void(obj,i64)` | `rt_stream_write_byte` |
@@ -713,24 +717,24 @@ callers decide when it is safe to delete the persistent marker itself.
 | `Zanna.IO.Stream.Close` | `void(obj)` | `rt_stream_close` |
 | `Zanna.IO.Stream.AsBinFile` | `obj<Zanna.IO.BinFile>(obj)` | `rt_stream_as_binfile` |
 | `Zanna.IO.Stream.AsMemStream` | `obj<Zanna.IO.MemStream>(obj)` | `rt_stream_as_memstream` |
-| `Zanna.IO.Stream.ToBytes` | `obj(obj)` | `rt_stream_to_bytes` |
+| `Zanna.IO.Stream.ToBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_stream_to_bytes` |
 | `Zanna.IO.LineReader.Close` | `void(obj)` | `rt_linereader_close` |
 | <a id="zanna-io-linereader-get-eof"></a>`Zanna.IO.LineReader.get_Eof` | `i1(obj)` | `rt_linereader_eof` |
-| `Zanna.IO.LineReader.Open` | `obj(str)` | `rt_linereader_open` |
+| `Zanna.IO.LineReader.Open` | `obj<Zanna.IO.LineReader>(str)` | `rt_linereader_open` |
 | `Zanna.IO.LineReader.PeekChar` | `i64(obj)` | `rt_linereader_peek_char` |
 | `Zanna.IO.LineReader.Read` | `str(obj)` | `rt_linereader_read` |
 | `Zanna.IO.LineReader.ReadAll` | `str(obj)` | `rt_linereader_read_all` |
 | `Zanna.IO.LineReader.ReadChar` | `i64(obj)` | `rt_linereader_read_char` |
-| `Zanna.IO.LineWriter.Append` | `obj(str)` | `rt_linewriter_append` |
+| `Zanna.IO.LineWriter.Append` | `obj<Zanna.IO.LineWriter>(str)` | `rt_linewriter_append` |
 | `Zanna.IO.LineWriter.Close` | `void(obj)` | `rt_linewriter_close` |
 | `Zanna.IO.LineWriter.Flush` | `void(obj)` | `rt_linewriter_flush` |
 | <a id="zanna-io-linewriter-get-newline"></a>`Zanna.IO.LineWriter.get_NewLine` | `str(obj)` | `rt_linewriter_newline` |
-| `Zanna.IO.LineWriter.Open` | `obj(str)` | `rt_linewriter_open` |
+| `Zanna.IO.LineWriter.Open` | `obj<Zanna.IO.LineWriter>(str)` | `rt_linewriter_open` |
 | <a id="zanna-io-linewriter-set-newline"></a>`Zanna.IO.LineWriter.set_NewLine` | `void(obj,str)` | `rt_linewriter_set_newline` |
 | `Zanna.IO.LineWriter.Write` | `void(obj,str)` | `rt_linewriter_write` |
 | `Zanna.IO.LineWriter.WriteChar` | `void(obj,i64)` | `rt_linewriter_write_char` |
 | `Zanna.IO.LineWriter.WriteLine` | `void(obj,str)` | `rt_linewriter_write_ln` |
-| `Zanna.IO.SaveData.New` | `obj(str)` | `rt_savedata_new` |
+| `Zanna.IO.SaveData.New` | `obj<Zanna.IO.SaveData>(str)` | `rt_savedata_new` |
 | `Zanna.IO.SaveData.SetInt` | `void(obj,str,i64)` | `rt_savedata_set_int` |
 | `Zanna.IO.SaveData.SetString` | `void(obj,str,str)` | `rt_savedata_set_string` |
 | `Zanna.IO.SaveData.GetInt` | `i64(obj,str,i64)` | `rt_savedata_get_int` |
@@ -742,7 +746,7 @@ callers decide when it is safe to delete the persistent marker itself.
 | `Zanna.IO.SaveData.Clear` | `void(obj)` | `rt_savedata_clear` |
 | <a id="zanna-io-savedata-get-count"></a>`Zanna.IO.SaveData.get_Count` | `i64(obj)` | `rt_savedata_count` |
 | <a id="zanna-io-savedata-get-path"></a>`Zanna.IO.SaveData.get_Path` | `str(obj)` | `rt_savedata_get_path` |
-| `Zanna.IO.Watcher.New` | `obj(str)` | `rt_watcher_new` |
+| `Zanna.IO.Watcher.New` | `obj<Zanna.IO.Watcher>(str)` | `rt_watcher_new` |
 | <a id="zanna-io-watcher-get-path"></a>`Zanna.IO.Watcher.get_Path` | `str(obj)` | `rt_watcher_get_path` |
 | <a id="zanna-io-watcher-get-iswatching"></a>`Zanna.IO.Watcher.get_IsWatching` | `i1(obj)` | `rt_watcher_get_is_watching` |
 | `Zanna.IO.Watcher.Start` | `void(obj)` | `rt_watcher_start` |
@@ -760,28 +764,28 @@ callers decide when it is safe to delete the persistent marker itself.
 | <a id="zanna-io-watcher-get-eventdeleted"></a>`Zanna.IO.Watcher.get_EventDeleted` | `i64(obj)` | `rt_watcher_event_deleted` |
 | <a id="zanna-io-watcher-get-eventrenamed"></a>`Zanna.IO.Watcher.get_EventRenamed` | `i64(obj)` | `rt_watcher_event_renamed` |
 | <a id="zanna-io-watcher-get-eventoverflow"></a>`Zanna.IO.Watcher.get_EventOverflow` | `i64(obj)` | `rt_watcher_event_overflow` |
-| `Zanna.IO.Compress.Deflate` | `obj(obj)` | `rt_compress_deflate` |
-| `Zanna.IO.Compress.DeflateLvl` | `obj(obj,i64)` | `rt_compress_deflate_lvl` |
-| `Zanna.IO.Compress.Inflate` | `obj(obj)` | `rt_compress_inflate` |
-| `Zanna.IO.Compress.Gzip` | `obj(obj)` | `rt_compress_gzip` |
-| `Zanna.IO.Compress.GzipLvl` | `obj(obj,i64)` | `rt_compress_gzip_lvl` |
-| `Zanna.IO.Compress.Gunzip` | `obj(obj)` | `rt_compress_gunzip` |
-| `Zanna.IO.Compress.DeflateStr` | `obj(str)` | `rt_compress_deflate_str` |
+| `Zanna.IO.Compress.Deflate` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_compress_deflate` |
+| `Zanna.IO.Compress.DeflateLvl` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_compress_deflate_lvl` |
+| `Zanna.IO.Compress.Inflate` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_compress_inflate` |
+| `Zanna.IO.Compress.Gzip` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_compress_gzip` |
+| `Zanna.IO.Compress.GzipLvl` | `obj<Zanna.Collections.Bytes>(obj,i64)` | `rt_compress_gzip_lvl` |
+| `Zanna.IO.Compress.Gunzip` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_compress_gunzip` |
+| `Zanna.IO.Compress.DeflateStr` | `obj<Zanna.Collections.Bytes>(str)` | `rt_compress_deflate_str` |
 | `Zanna.IO.Compress.InflateStr` | `str(obj)` | `rt_compress_inflate_str` |
-| `Zanna.IO.Compress.GzipStr` | `obj(str)` | `rt_compress_gzip_str` |
+| `Zanna.IO.Compress.GzipStr` | `obj<Zanna.Collections.Bytes>(str)` | `rt_compress_gzip_str` |
 | `Zanna.IO.Compress.GunzipStr` | `str(obj)` | `rt_compress_gunzip_str` |
-| `Zanna.IO.Archive.Open` | `obj(str)` | `rt_archive_open` |
-| `Zanna.IO.Archive.Create` | `obj(str)` | `rt_archive_create` |
-| `Zanna.IO.Archive.FromBytes` | `obj(obj)` | `rt_archive_from_bytes` |
+| `Zanna.IO.Archive.Open` | `obj<Zanna.IO.Archive>(str)` | `rt_archive_open` |
+| `Zanna.IO.Archive.Create` | `obj<Zanna.IO.Archive>(str)` | `rt_archive_create` |
+| `Zanna.IO.Archive.FromBytes` | `obj<Zanna.IO.Archive>(obj)` | `rt_archive_from_bytes` |
 | <a id="zanna-io-archive-get-path"></a>`Zanna.IO.Archive.get_Path` | `str(obj)` | `rt_archive_path` |
 | <a id="zanna-io-archive-get-count"></a>`Zanna.IO.Archive.get_Count` | `i64(obj)` | `rt_archive_count` |
-| <a id="zanna-io-archive-get-names"></a>`Zanna.IO.Archive.get_Names` | `obj(obj)` | `rt_archive_names` |
+| <a id="zanna-io-archive-get-names"></a>`Zanna.IO.Archive.get_Names` | `seq<str>(obj)` | `rt_archive_names` |
 | `Zanna.IO.Archive.Has` | `i1(obj,str)` | `rt_archive_has` |
-| `Zanna.IO.Archive.Read` | `obj(obj,str)` | `rt_archive_read` |
+| `Zanna.IO.Archive.Read` | `obj<Zanna.Collections.Bytes>(obj,str)` | `rt_archive_read` |
 | `Zanna.IO.Archive.ReadStr` | `str(obj,str)` | `rt_archive_read_str` |
 | `Zanna.IO.Archive.Extract` | `void(obj,str,str)` | `rt_archive_extract` |
 | `Zanna.IO.Archive.ExtractAll` | `void(obj,str)` | `rt_archive_extract_all` |
-| `Zanna.IO.Archive.Info` | `obj(obj,str)` | `rt_archive_info` |
+| `Zanna.IO.Archive.Info` | `obj<Zanna.Collections.Map>(obj,str)` | `rt_archive_info` |
 | `Zanna.IO.Archive.Add` | `void(obj,str,obj)` | `rt_archive_add` |
 | `Zanna.IO.Archive.AddStr` | `void(obj,str,str)` | `rt_archive_add_str` |
 | `Zanna.IO.Archive.AddFile` | `void(obj,str,str)` | `rt_archive_add_file` |

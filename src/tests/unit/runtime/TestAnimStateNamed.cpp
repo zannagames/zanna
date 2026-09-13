@@ -24,7 +24,7 @@ void rt_animstate_add_named(
 void rt_animstate_play(void *asm_, void *name);
 void rt_animstate_update(void *asm_);
 void rt_animstate_clear_flags(void *asm_);
-void *rt_animstate_current_name(void *asm_);
+rt_string rt_animstate_current_name(void *asm_);
 int64_t rt_animstate_current_frame(void *asm_);
 int8_t rt_animstate_just_entered(void *asm_);
 void rt_animstate_set_event_frame(void *asm_, int64_t frame);
@@ -57,9 +57,9 @@ TEST(AnimStateNamed, GetStateName) {
     void *sm = rt_animstate_new();
     rt_animstate_add_named(sm, (void *)rt_const_cstr("jump"), 8, 10, 4, 0);
     rt_animstate_set_initial(sm, 0);
-    void *name = rt_animstate_current_name(sm);
+    rt_string name = rt_animstate_current_name(sm);
     ASSERT_TRUE(name != nullptr);
-    const char *cname = rt_string_cstr((rt_string)name);
+    const char *cname = rt_string_cstr(name);
     EXPECT_EQ(strcmp(cname, "jump"), 0);
 }
 

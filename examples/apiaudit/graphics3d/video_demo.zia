@@ -34,7 +34,7 @@ func start() {
     Say("Playing...");
 
     var frameCount = 0;
-    while (Canvas.get_ShouldClose(canvas) == 0) {
+    while (not Canvas.get_ShouldClose(canvas)) {
         Canvas.Poll(canvas);
         if (Keyboard.WasPressed(Key.Escape)) { break; }
 
@@ -52,7 +52,7 @@ func start() {
         Canvas.Flip(canvas);
 
         // Check if video ended
-        if (VideoPlayer.get_IsPlaying(player) == 0 && frameCount > 10) {
+        if (not VideoPlayer.get_IsPlaying(player) && frameCount > 10) {
             Say("Video finished, restarting...");
             VideoPlayer.Stop(player);
             VideoPlayer.Play(player);

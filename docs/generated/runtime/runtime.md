@@ -23,7 +23,7 @@ construct the class directly. Its public surface exposes operations including `R
 | <a id="zanna-runtime-unsafe-release"></a>`Release` | `i64(obj)` | `Zanna.Runtime.Unsafe.Release` |
 | <a id="zanna-runtime-unsafe-retainstr"></a>`RetainStr` | `void(str)` | `Zanna.Runtime.Unsafe.RetainStr` |
 | <a id="zanna-runtime-unsafe-releasestr"></a>`ReleaseStr` | `i64(str)` | `Zanna.Runtime.Unsafe.ReleaseStr` |
-| <a id="zanna-runtime-unsafe-valuetype"></a>`ValueType` | `obj(i64)` | `Zanna.Runtime.Unsafe.ValueType` |
+| <a id="zanna-runtime-unsafe-valuetype"></a>`ValueType` | `obj<Zanna.Core.Object>(i64)` | `Zanna.Runtime.Unsafe.ValueType` |
 | <a id="zanna-runtime-unsafe-valuetypeaddfield"></a>`ValueTypeAddField` | `void(obj,i64,i64,i1)` | `Zanna.Runtime.Unsafe.ValueTypeAddField` |
 | <a id="zanna-runtime-unsafe-setthrowmsg"></a>`SetThrowMsg` | `void(str)` | `Zanna.Runtime.Unsafe.SetThrowMsg` |
 | <a id="zanna-runtime-unsafe-clearthrowmsg"></a>`ClearThrowMsg` | `void()` | `Zanna.Runtime.Unsafe.ClearThrowMsg` |
@@ -58,7 +58,7 @@ construct the class directly. Its public surface exposes operations including `C
 | `Zanna.Runtime.Unsafe.Release` | `i64(obj)` | `rt_memory_release` |
 | `Zanna.Runtime.Unsafe.RetainStr` | `void(str)` | `rt_memory_retain_str` |
 | `Zanna.Runtime.Unsafe.ReleaseStr` | `i64(str)` | `rt_memory_release_str` |
-| `Zanna.Runtime.Unsafe.ValueType` | `obj(i64)` | `rt_box_value_type` |
+| `Zanna.Runtime.Unsafe.ValueType` | `obj<Zanna.Core.Object>(i64)` | `rt_box_value_type` |
 | `Zanna.Runtime.Unsafe.ValueTypeAddField` | `void(obj,i64,i64,i1)` | `rt_box_value_type_add_field` |
 | `Zanna.Runtime.Unsafe.SetThrowMsg` | `void(str)` | `rt_throw_msg_set` |
 | `Zanna.Runtime.Unsafe.ClearThrowMsg` | `void()` | `rt_throw_msg_clear` |

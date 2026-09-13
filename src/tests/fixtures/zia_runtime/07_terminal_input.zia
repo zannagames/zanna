@@ -4,10 +4,11 @@ bind "./_support";
 
 // EXPECT_OUT: RESULT: ok
 // EXPECT_TTY_INPUT: hello\nZ
-// COVER: Zanna.Terminal.ReadLine
-// COVER: Zanna.Terminal.GetKey
+// COVER: Zanna.Terminal.TryReadLine
+// COVER: Zanna.Terminal.ReadKey
 
-func start() {    var line = Zanna.Terminal.TryReadLine() ?? "";
+func start() {
+    var line = Zanna.Terminal.TryReadLine().UnwrapOrStr("");
     assertEqStr(line, "hello", "readline");
 
     var key = Zanna.Terminal.ReadKey();

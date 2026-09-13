@@ -19,7 +19,7 @@ func start() {
     // --- get_OsVer ---
     Say("--- get_OsVer ---");
     Say("OSVer:");
-    Say(Machine.get_OsVer());
+    Say(Machine.get_OsVersion());
 
     // --- get_Cores ---
     Say("--- get_Cores ---");
@@ -29,12 +29,12 @@ func start() {
     // --- get_MemTotal ---
     Say("--- get_MemTotal ---");
     Say("MemTotal (bytes):");
-    SayInt(Machine.get_MemTotal());
+    SayInt(Machine.get_MemoryTotal());
 
     // --- get_MemFree ---
     Say("--- get_MemFree ---");
     Say("MemFree (bytes):");
-    SayInt(Machine.get_MemFree());
+    SayInt(Machine.get_MemoryFree());
 
     // --- get_Endian ---
     Say("--- get_Endian ---");
@@ -59,7 +59,7 @@ func start() {
     // --- get_Temp ---
     Say("--- get_Temp ---");
     Say("Temp:");
-    Say(Machine.get_Temp());
+    Say(Machine.get_TempDir());
 
     Say("=== Machine Demo Complete ===");
 }

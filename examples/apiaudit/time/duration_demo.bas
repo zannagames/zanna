@@ -42,7 +42,7 @@ PRINT "FromDays(1): "; dy
 ' --- Create ---
 PRINT "--- Create ---"
 DIM cx AS INTEGER
-cx = Zanna.Time.Duration.Create(1, 2, 30, 15, 500)
+cx = Zanna.Time.Duration.FromParts(1, 2, 30, 15, 500)
 PRINT "Create(1,2,30,15,500): "; cx
 
 ' --- Zero ---
@@ -76,15 +76,15 @@ PRINT "Div(90s,2) TotalSec: "; Zanna.Time.Duration.TotalSeconds(Zanna.Time.Durat
 ' --- Abs / Neg ---
 PRINT "--- Abs / Neg ---"
 DIM negD AS INTEGER
-negD = Zanna.Time.Duration.Neg(sec)
+negD = Zanna.Time.Duration.Negate(sec)
 PRINT "Neg(90s) TotalMillis: "; Zanna.Time.Duration.TotalMillis(negD)
 PRINT "Abs(neg) TotalSec: "; Zanna.Time.Duration.TotalSeconds(Zanna.Time.Duration.Abs(negD))
 
 ' --- Cmp ---
 PRINT "--- Cmp ---"
-PRINT "Cmp(90s,5m): "; Zanna.Time.Duration.Cmp(sec, mn)
-PRINT "Cmp(5m,90s): "; Zanna.Time.Duration.Cmp(mn, sec)
-PRINT "Cmp(90s,90s): "; Zanna.Time.Duration.Cmp(sec, sec)
+PRINT "Cmp(90s,5m): "; Zanna.Time.Duration.Compare(sec, mn)
+PRINT "Cmp(5m,90s): "; Zanna.Time.Duration.Compare(mn, sec)
+PRINT "Cmp(90s,90s): "; Zanna.Time.Duration.Compare(sec, sec)
 
 ' --- ToString / ToISO ---
 PRINT "--- ToString / ToISO ---"

@@ -15,24 +15,22 @@ func start() {
 
     // --- Find ---
     Say("--- Find ---");
-    Say(Pat.Find("abc123def", "[0-9]+"));
-    Say(Pat.Find("Hello World", "[A-Z][a-z]+"));
-    var found = Pat.FindOption("abc123def", "[0-9]+");
+    Say(Pat.Find("Hello World", "[A-Z][a-z]+").UnwrapStr());
+    var found = Pat.Find("abc123def", "[0-9]+");
     SayBool(found.IsSome);
     Say(found.UnwrapStr());
-    SayBool(Pat.FindOption("abcdef", "[0-9]+").IsNone);
+    SayBool(Pat.Find("abcdef", "[0-9]+").IsNone);
 
     // --- FindFrom ---
     Say("--- FindFrom ---");
-    Say(Pat.FindFrom("abc123def456", "[0-9]+", 6));
     var foundFrom = Pat.FindFrom("abc123def456", "[0-9]+", 6);
     SayBool(foundFrom.IsSome);
     Say(foundFrom.UnwrapStr());
 
     // --- FindPos ---
     Say("--- FindPos ---");
-    SayInt(Pat.FindPos("abc123def", "[0-9]+"));
-    SayInt(Pat.FindPos("abcdef", "[0-9]+"));
+    SayInt(Pat.FindPos("abc123def", "[0-9]+").UnwrapOrI64(-1));
+    SayInt(Pat.FindPos("abcdef", "[0-9]+").UnwrapOrI64(-1));
     var foundPos = Pat.FindPos("abc123def", "[0-9]+");
     SayBool(foundPos.IsSome);
     SayInt(foundPos.UnwrapI64());

@@ -16,6 +16,9 @@
 //   - FHS paths: /usr/bin/<exec>, /usr/share/<name>/<assets>,
 //     /usr/share/applications/<name>.desktop,
 //     /usr/share/icons/hicolor/<NxN>/apps/<name>.png.
+//   - With .zpak packs the executable is /usr/lib/<name>/<exec> beside them and
+//     /usr/bin/<exec> links to it, because the runtime mounts packs from the
+//     executable's resolved directory (ADR 0355).
 //
 // Ownership/Lifetime:
 //   - Single-use builder.
@@ -64,7 +67,7 @@ namespace {
 
 /// @brief Track a data file for md5sums generation.
 struct DataFile {
-    std::string installPath; ///< Sanitized package-relative destination, such as `usr/bin/hello`.
+    std::string installPath;   ///< Sanitized package-relative destination, such as `usr/bin/hello`.
     std::vector<uint8_t> data; ///< Regular-file payload bytes; empty for links/directories.
     uint32_t mode{0644};       ///< Unix permission bits stored in the archive.
     bool symlink{false};       ///< Whether this entry represents a symbolic link.
@@ -1745,6 +1748,31 @@ std::string toolchainAppRunScript() {
            "exec \"$appdir/bin/zanna\" \"$@\"\n";
 }
 
+/// @brief Return the self-extracting bundle AppRun launcher script for an application.
+/// @details The bundle extractor refuses a symbolic-link entry point, so the entry is a
+///          script that executes `usr/bin/<exe>` (itself a link to `usr/lib/<pkg>/<exe>`
+///          when the application ships packs).
+/// @param exeName Normalized executable name.
+/// @return POSIX shell script text installed as executable `AppRun`.
+std::string appBundleAppRunScript(const std::string &exeName) {
+    return "#!/bin/sh\n"
+           "set -eu\n"
+           "self=$0\n"
+           "case \"$self\" in /*) appdir=$(dirname -- \"$self\") ;;\n"
+           "  *) appdir=$(CDPATH= cd -- \"$(dirname -- \"$self\")\" && pwd) ;;\n"
+           "esac\n"
+           "exec \"$appdir/usr/bin/\"" +
+           shellSingleQuote(exeName) + " \"$@\"\n";
+}
+
+/// @brief File name of a generated pack as it appears in a package payload.
+/// @param packPath UTF-8 path of the generated `.zpak` file.
+/// @return Leaf name with forward slashes.
+std::string packPayloadName(const std::string &packPath) {
+    return zanna::filesystem::genericPathToUtf8(
+        zanna::filesystem::pathFromUtf8(packPath).filename());
+}
+
 /// @brief Validate all install paths in `dataFiles` are normalized and unique.
 /// Throws on path traversal, duplicate paths, or non-normalized separators.
 /// @param dataFiles Payload entries to validate.
@@ -1901,9 +1929,21 @@ static std::vector<DataFile> collectAppLinuxDataFiles(const LinuxBuildParams &pa
     const auto &pkg = params.pkgConfig;
     std::vector<DataFile> dataFiles;
 
-    // The executable
+    // The executable. The runtime mounts packs from the executable's resolved directory, and
+    // packs do not belong in usr/bin, so an application with packs installs its executable
+    // beside them in usr/lib/<pkg> and links it from usr/bin (ADR 0355).
     auto execData = readFile(params.executablePath);
-    dataFiles.emplace_back("usr/bin/" + exeName, std::move(execData), 0755);
+    if (params.packFiles.empty()) {
+        dataFiles.emplace_back("usr/bin/" + exeName, std::move(execData), 0755);
+    } else {
+        const std::string libDir = "usr/lib/" + pkgName;
+        dataFiles.push_back(DataFile::dir(libDir));
+        dataFiles.emplace_back(libDir + "/" + exeName, std::move(execData), 0755);
+        dataFiles.push_back(
+            DataFile::link("usr/bin/" + exeName, "../lib/" + pkgName + "/" + exeName));
+        for (const auto &pack : params.packFiles)
+            dataFiles.emplace_back(libDir + "/" + packPayloadName(pack), readFile(pack), 0644);
+    }
 
     // Assets
     for (const auto &asset : pkg.assets) {
@@ -2313,6 +2353,12 @@ void buildTarball(const LinuxBuildParams &params) {
         }
     }
 
+    // Packs beside the executable; install.sh copies them with the rest of the tree (ADR 0355).
+    for (const auto &pack : params.packFiles) {
+        const auto packData = readFile(pack);
+        tar.addFile(topDir + packPayloadName(pack), packData.data(), packData.size(), 0644);
+    }
+
     const std::string readme = appTarballReadme(displayName, version, exeName, pkg);
     tar.addFile(topDir + "README.install",
                 reinterpret_cast<const uint8_t *>(readme.data()),
@@ -2375,12 +2421,25 @@ void buildAppImage(const LinuxBuildParams &params) {
 
     TarWriter tar;
     tar.addDirectory("./", 0755);
-    // Entry point: AppRun -> usr/bin/<exe>, matching the toolchain bundle layout.
-    tar.addSymlink("AppRun", "usr/bin/" + exeName);
+    // Entry point: an AppRun script that executes usr/bin/<exe>. The extractor refuses a
+    // symbolic-link entry point, so AppRun cannot simply link to the executable.
+    tar.addFileString("AppRun", appBundleAppRunScript(exeName), 0755);
 
-    // Application executable.
+    // Application executable, beside its packs in usr/lib/<pkg> when it has any (ADR 0355):
+    // the runtime mounts packs from the executable's resolved directory.
     auto execData = readFile(params.executablePath);
-    tar.addFile("usr/bin/" + exeName, execData.data(), execData.size(), 0755);
+    if (params.packFiles.empty()) {
+        tar.addFile("usr/bin/" + exeName, execData.data(), execData.size(), 0755);
+    } else {
+        const std::string libDir = "usr/lib/" + pkgName;
+        tar.addFile(libDir + "/" + exeName, execData.data(), execData.size(), 0755);
+        tar.addSymlink("usr/bin/" + exeName, "../lib/" + pkgName + "/" + exeName);
+        for (const auto &pack : params.packFiles) {
+            const auto packData = readFile(pack);
+            tar.addFile(
+                libDir + "/" + packPayloadName(pack), packData.data(), packData.size(), 0644);
+        }
+    }
 
     // Bundled assets under usr/share/<pkg>/ (mirrors the .deb layout).
     const std::string assetBase = "usr/share/" + pkgName;

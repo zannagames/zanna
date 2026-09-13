@@ -35,10 +35,10 @@ SUB Worker()
 END SUB
 
 ' Start worker threads
-DIM threads(NUM_THREADS) AS OBJECT
+DIM threads(NUM_THREADS) AS Zanna.Threads.Thread
 DIM t AS INTEGER
 FOR t = 1 TO NUM_THREADS
-    DIM th AS OBJECT
+    DIM th AS Zanna.Threads.Thread
     th = Zanna.Threads.Thread.Start(ADDRESSOF Worker, NOTHING)
     threads(t) = th
     PRINT "Started thread "; threads(t).Id

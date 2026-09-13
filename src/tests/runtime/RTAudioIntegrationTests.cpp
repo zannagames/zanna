@@ -760,6 +760,94 @@ static void test_sound_load_asset_from_mounted_pack() {
     remove(wav_path);
 }
 
+static void test_music_load_asset_streams_from_mounted_pack() {
+    const char *pack_path = "/tmp/zanna_test_music_load_asset.zpak";
+    const char *wav_path = "/tmp/zanna_test_music_load_asset.wav";
+    if (!write_test_wav_frames(wav_path, 22050, 22050)) {
+        ASSERT(1, "could not write temp WAV file (skip Music.LoadAsset pack test)");
+        return;
+    }
+    std::vector<uint8_t> wav_bytes;
+    if (!read_file_bytes(wav_path, wav_bytes) || wav_bytes.empty()) {
+        ASSERT(1, "could not read temp WAV file (skip Music.LoadAsset pack test)");
+        remove(wav_path);
+        return;
+    }
+
+    zanna::asset::ZpakWriter writer;
+    writer.addEntry("music/pack.wav", wav_bytes.data(), wav_bytes.size(), false);
+    writer.addEntry("music/tone.mp3",
+                    zanna_test_mp3::kMp3ToneMpeg1Stereo48k,
+                    zanna_test_mp3::kMp3ToneMpeg1Stereo48kSize,
+                    false);
+    // Compressed entries inflate through the same loader.
+    writer.addEntry("music/tone_deflated.mp3",
+                    zanna_test_mp3::kMp3ToneMpeg1Stereo48k,
+                    zanna_test_mp3::kMp3ToneMpeg1Stereo48kSize,
+                    true);
+    std::string err;
+    if (!writer.writeToFile(pack_path, err) || rt_asset_mount(make_str(pack_path)) != 1) {
+        ASSERT(1, "could not write or mount ZPAK file (skip Music.LoadAsset pack test)");
+        remove(pack_path);
+        remove(wav_path);
+        return;
+    }
+
+    void *from_file = rt_music_load(make_str(wav_path));
+    if (!from_file) {
+        ASSERT(1, "music load unavailable in environment (skip Music.LoadAsset pack test)");
+        rt_asset_unmount(make_str(pack_path));
+        remove(pack_path);
+        remove(wav_path);
+        return;
+    }
+
+    void *wav = rt_music_load_asset(make_str("asset://music/pack.wav"));
+    ASSERT(wav != NULL, "Music.LoadAsset opens a WAV entry from a mounted pack");
+    if (wav) {
+        ASSERT(rt_music_get_duration(wav) == rt_music_get_duration(from_file),
+               "packed WAV music reports the same duration as the file stream");
+        rt_music_seek(wav, 500);
+        int64_t pos_ms = rt_music_get_position(wav);
+        ASSERT(pos_ms >= 450 && pos_ms <= 550, "packed WAV music seeks like a file stream");
+        rt_music_destroy(wav);
+    }
+    rt_music_destroy(from_file);
+
+    // 44 frames x 1152 samples at 48 kHz = 1056 ms.
+    const char *mp3_names[] = {"music/tone.mp3", "music/tone_deflated.mp3"};
+    for (const char *name : mp3_names) {
+        void *mp3 = rt_music_load_asset(make_str(name));
+        ASSERT(mp3 != NULL, "Music.LoadAsset opens an MP3 entry from a mounted pack");
+        if (!mp3)
+            continue;
+        int64_t duration_ms = rt_music_get_duration(mp3);
+        ASSERT(duration_ms >= 1040 && duration_ms <= 1072,
+               "packed MP3 music duration covers every decoded frame");
+        rt_music_set_volume(mp3, 5);
+        rt_music_play(mp3, /*loop=*/0);
+        int64_t max_pos_ms = 0;
+        for (int i = 0; i < 40 && max_pos_ms <= 250; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            int64_t pos = rt_music_get_position(mp3);
+            if (pos > max_pos_ms)
+                max_pos_ms = pos;
+        }
+        ASSERT(max_pos_ms > 250 || rt_audio_is_available() == 0,
+               "packed MP3 music advances while playing");
+        rt_music_stop(mp3);
+        rt_music_destroy(mp3);
+    }
+
+    ASSERT(rt_music_load_asset(make_str("music/missing.mp3")) == NULL,
+           "Music.LoadAsset returns null for a missing asset");
+    ASSERT(rt_music_load_asset(NULL) == NULL, "Music.LoadAsset returns null for a null name");
+
+    rt_asset_unmount(make_str(pack_path));
+    remove(pack_path);
+    remove(wav_path);
+}
+
 static void test_destroy_loaded_handles_after_shutdown() {
     const char *path = "/tmp/zanna_test_destroy_after_shutdown.wav";
     if (!write_test_wav_frames(path, 44100, 128)) {
@@ -1591,6 +1679,7 @@ int main() {
     test_wav_extreme_sample_rate();
     test_wav_valid_sample_rate();
     test_sound_load_asset_from_mounted_pack();
+    test_music_load_asset_streams_from_mounted_pack();
     test_destroy_loaded_handles_after_shutdown();
     test_default_sound_play_survives_sfx_group_changes();
     test_music_load_real_mp3_reports_duration();

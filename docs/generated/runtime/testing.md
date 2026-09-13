@@ -40,7 +40,7 @@ Constructor: `Zanna.Testing.Suite.New`
 | <a id="zanna-testing-suite-note"></a>`Note` | `void(str)` | `Zanna.Testing.Suite.Note` |
 | <a id="zanna-testing-suite-report"></a>`Report` | `i1()` | `Zanna.Testing.Suite.Report` |
 | <a id="zanna-testing-suite-exitcode"></a>`ExitCode` | `i64()` | `Zanna.Testing.Suite.ExitCode` |
-| <a id="zanna-testing-suite-new"></a>`New` | `obj(str)` | `Zanna.Testing.Suite.New` |
+| <a id="zanna-testing-suite-new"></a>`New` | `obj<Zanna.Testing.Suite>(str)` | `Zanna.Testing.Suite.New` |
 
 <a id="zanna-testing-golden"></a>
 ### `Zanna.Testing.Golden`
@@ -62,7 +62,7 @@ must not read as a pass.
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Testing.Suite.New` | `obj(str)` | `rt_testing_suite_new` |
+| `Zanna.Testing.Suite.New` | `obj<Zanna.Testing.Suite>(str)` | `rt_testing_suite_new` |
 | `Zanna.Testing.Suite.Check` | `i1(obj,i1,str)` | `rt_testing_check` |
 | `Zanna.Testing.Suite.EqInt` | `i1(obj,i64,i64,str)` | `rt_testing_eq_int` |
 | `Zanna.Testing.Suite.EqStr` | `i1(obj,str,str,str)` | `rt_testing_eq_str` |

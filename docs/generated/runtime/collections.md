@@ -28,7 +28,7 @@ Constructor: `Zanna.Collections.Bytes.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-collections-bytes-clone"></a>`Clone` | `obj()` | `Zanna.Collections.Bytes.Clone` |
+| <a id="zanna-collections-bytes-clone"></a>`Clone` | `obj<Zanna.Collections.Bytes>()` | `Zanna.Collections.Bytes.Clone` |
 | <a id="zanna-collections-bytes-copy"></a>`Copy` | `void(i64,obj,i64,i64)` | `Zanna.Collections.Bytes.Copy` |
 | <a id="zanna-collections-bytes-fill"></a>`Fill` | `void(i64)` | `Zanna.Collections.Bytes.Fill` |
 | <a id="zanna-collections-bytes-find"></a>`Find` | `obj<Zanna.Option>(i64)` | `Zanna.Collections.Bytes.Find` |
@@ -40,7 +40,7 @@ Constructor: `Zanna.Collections.Bytes.New`
 | <a id="zanna-collections-bytes-readi64bigendian"></a>`ReadI64BigEndian` | `i64(i64)` | `Zanna.Collections.Bytes.ReadI64BigEndian` |
 | <a id="zanna-collections-bytes-readi64littleendian"></a>`ReadI64LittleEndian` | `i64(i64)` | `Zanna.Collections.Bytes.ReadI64LittleEndian` |
 | <a id="zanna-collections-bytes-set"></a>`Set` | `void(i64,i64)` | `Zanna.Collections.Bytes.Set` |
-| <a id="zanna-collections-bytes-slice"></a>`Slice` | `obj(i64,i64)` | `Zanna.Collections.Bytes.Slice` |
+| <a id="zanna-collections-bytes-slice"></a>`Slice` | `obj<Zanna.Collections.Bytes>(i64,i64)` | `Zanna.Collections.Bytes.Slice` |
 | <a id="zanna-collections-bytes-tobase64"></a>`ToBase64` | `str()` | `Zanna.Collections.Bytes.ToBase64` |
 | <a id="zanna-collections-bytes-tohex"></a>`ToHex` | `str()` | `Zanna.Collections.Bytes.ToHex` |
 | <a id="zanna-collections-bytes-tostr"></a>`ToStr` | `str()` | `Zanna.Collections.Bytes.ToStr` |
@@ -50,10 +50,10 @@ Constructor: `Zanna.Collections.Bytes.New`
 | <a id="zanna-collections-bytes-writei32littleendian"></a>`WriteI32LittleEndian` | `void(i64,i64)` | `Zanna.Collections.Bytes.WriteI32LittleEndian` |
 | <a id="zanna-collections-bytes-writei64bigendian"></a>`WriteI64BigEndian` | `void(i64,i64)` | `Zanna.Collections.Bytes.WriteI64BigEndian` |
 | <a id="zanna-collections-bytes-writei64littleendian"></a>`WriteI64LittleEndian` | `void(i64,i64)` | `Zanna.Collections.Bytes.WriteI64LittleEndian` |
-| <a id="zanna-collections-bytes-new"></a>`New` | `obj(i64)` | `Zanna.Collections.Bytes.New` |
-| <a id="zanna-collections-bytes-frombase64"></a>`FromBase64` | `obj(str)` | `Zanna.Collections.Bytes.FromBase64` |
-| <a id="zanna-collections-bytes-fromhex"></a>`FromHex` | `obj(str)` | `Zanna.Collections.Bytes.FromHex` |
-| <a id="zanna-collections-bytes-fromstr"></a>`FromStr` | `obj(str)` | `Zanna.Collections.Bytes.FromStr` |
+| <a id="zanna-collections-bytes-new"></a>`New` | `obj<Zanna.Collections.Bytes>(i64)` | `Zanna.Collections.Bytes.New` |
+| <a id="zanna-collections-bytes-frombase64"></a>`FromBase64` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Collections.Bytes.FromBase64` |
+| <a id="zanna-collections-bytes-fromhex"></a>`FromHex` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Collections.Bytes.FromHex` |
+| <a id="zanna-collections-bytes-fromstr"></a>`FromStr` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Collections.Bytes.FromStr` |
 
 <a id="zanna-collections-f64buffer"></a>
 ### `Zanna.Collections.F64Buffer`
@@ -91,7 +91,7 @@ Constructor: `Zanna.Collections.F64Buffer.New`
 | <a id="zanna-collections-f64buffer-max"></a>`Max` | `f64()` | `Zanna.Collections.F64Buffer.Max` |
 | <a id="zanna-collections-f64buffer-tolist"></a>`ToList` | `obj<Zanna.Collections.List>()` | `Zanna.Collections.F64Buffer.ToList` |
 | <a id="zanna-collections-f64buffer-toseq"></a>`ToSeq` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.F64Buffer.ToSeq` |
-| <a id="zanna-collections-f64buffer-new"></a>`New` | `obj(i64)` | `Zanna.Collections.F64Buffer.New` |
+| <a id="zanna-collections-f64buffer-new"></a>`New` | `obj<Zanna.Collections.F64Buffer>(i64)` | `Zanna.Collections.F64Buffer.New` |
 
 <a id="zanna-collections-i64buffer"></a>
 ### `Zanna.Collections.I64Buffer`
@@ -129,7 +129,7 @@ Constructor: `Zanna.Collections.I64Buffer.New`
 | <a id="zanna-collections-i64buffer-max"></a>`Max` | `i64()` | `Zanna.Collections.I64Buffer.Max` |
 | <a id="zanna-collections-i64buffer-tolist"></a>`ToList` | `obj<Zanna.Collections.List>()` | `Zanna.Collections.I64Buffer.ToList` |
 | <a id="zanna-collections-i64buffer-toseq"></a>`ToSeq` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.I64Buffer.ToSeq` |
-| <a id="zanna-collections-i64buffer-new"></a>`New` | `obj(i64)` | `Zanna.Collections.I64Buffer.New` |
+| <a id="zanna-collections-i64buffer-new"></a>`New` | `obj<Zanna.Collections.I64Buffer>(i64)` | `Zanna.Collections.I64Buffer.New` |
 
 <a id="zanna-collections-bimap"></a>
 ### `Zanna.Collections.BiMap`
@@ -163,7 +163,7 @@ Constructor: `Zanna.Collections.BiMap.New`
 | <a id="zanna-collections-bimap-removebykey"></a>`RemoveByKey` | `i1(str)` | `Zanna.Collections.BiMap.RemoveByKey` |
 | <a id="zanna-collections-bimap-removebyvalue"></a>`RemoveByValue` | `i1(str)` | `Zanna.Collections.BiMap.RemoveByValue` |
 | <a id="zanna-collections-bimap-values"></a>`Values` | `seq<str>()` | `Zanna.Collections.BiMap.Values` |
-| <a id="zanna-collections-bimap-new"></a>`New` | `obj()` | `Zanna.Collections.BiMap.New` |
+| <a id="zanna-collections-bimap-new"></a>`New` | `obj<Zanna.Collections.BiMap>()` | `Zanna.Collections.BiMap.New` |
 
 <a id="zanna-collections-bitset"></a>
 ### `Zanna.Collections.BitSet`
@@ -188,18 +188,18 @@ Constructor: `Zanna.Collections.BitSet.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-collections-bitset-and"></a>`And` | `obj(obj)` | `Zanna.Collections.BitSet.And` |
+| <a id="zanna-collections-bitset-and"></a>`And` | `obj<Zanna.Collections.BitSet>(obj)` | `Zanna.Collections.BitSet.And` |
 | <a id="zanna-collections-bitset-clearbit"></a>`ClearBit` | `void(i64)` | `Zanna.Collections.BitSet.ClearBit` |
 | <a id="zanna-collections-bitset-clear"></a>`Clear` | `void()` | `Zanna.Collections.BitSet.Clear` |
 | <a id="zanna-collections-bitset-getbit"></a>`GetBit` | `i1(i64)` | `Zanna.Collections.BitSet.GetBit` |
-| <a id="zanna-collections-bitset-not"></a>`Not` | `obj()` | `Zanna.Collections.BitSet.Not` |
-| <a id="zanna-collections-bitset-or"></a>`Or` | `obj(obj)` | `Zanna.Collections.BitSet.Or` |
+| <a id="zanna-collections-bitset-not"></a>`Not` | `obj<Zanna.Collections.BitSet>()` | `Zanna.Collections.BitSet.Not` |
+| <a id="zanna-collections-bitset-or"></a>`Or` | `obj<Zanna.Collections.BitSet>(obj)` | `Zanna.Collections.BitSet.Or` |
 | <a id="zanna-collections-bitset-setbit"></a>`SetBit` | `void(i64)` | `Zanna.Collections.BitSet.SetBit` |
 | <a id="zanna-collections-bitset-setall"></a>`SetAll` | `void()` | `Zanna.Collections.BitSet.SetAll` |
 | <a id="zanna-collections-bitset-togglebit"></a>`ToggleBit` | `void(i64)` | `Zanna.Collections.BitSet.ToggleBit` |
 | <a id="zanna-collections-bitset-tostring"></a>`ToString` | `str()` | `Zanna.Collections.BitSet.ToString` |
-| <a id="zanna-collections-bitset-xor"></a>`Xor` | `obj(obj)` | `Zanna.Collections.BitSet.Xor` |
-| <a id="zanna-collections-bitset-new"></a>`New` | `obj(i64)` | `Zanna.Collections.BitSet.New` |
+| <a id="zanna-collections-bitset-xor"></a>`Xor` | `obj<Zanna.Collections.BitSet>(obj)` | `Zanna.Collections.BitSet.Xor` |
+| <a id="zanna-collections-bitset-new"></a>`New` | `obj<Zanna.Collections.BitSet>(i64)` | `Zanna.Collections.BitSet.New` |
 
 <a id="zanna-collections-bloomfilter"></a>
 ### `Zanna.Collections.BloomFilter`
@@ -227,7 +227,7 @@ Constructor: `Zanna.Collections.BloomFilter.New`
 | <a id="zanna-collections-bloomfilter-falsepositiverate"></a>`FalsePositiveRate` | `f64()` | `Zanna.Collections.BloomFilter.FalsePositiveRate` |
 | <a id="zanna-collections-bloomfilter-merge"></a>`Merge` | `i64(obj)` | `Zanna.Collections.BloomFilter.Merge` |
 | <a id="zanna-collections-bloomfilter-mightcontain"></a>`MightContain` | `i1(str)` | `Zanna.Collections.BloomFilter.MightContain` |
-| <a id="zanna-collections-bloomfilter-new"></a>`New` | `obj(i64,f64)` | `Zanna.Collections.BloomFilter.New` |
+| <a id="zanna-collections-bloomfilter-new"></a>`New` | `obj<Zanna.Collections.BloomFilter>(i64,f64)` | `Zanna.Collections.BloomFilter.New` |
 
 <a id="zanna-collections-unionfind"></a>
 ### `Zanna.Collections.UnionFind`
@@ -255,7 +255,7 @@ Constructor: `Zanna.Collections.UnionFind.New`
 | <a id="zanna-collections-unionfind-clear"></a>`Clear` | `void()` | `Zanna.Collections.UnionFind.Clear` |
 | <a id="zanna-collections-unionfind-componentsize"></a>`ComponentSize` | `i64(i64)` | `Zanna.Collections.UnionFind.ComponentSize` |
 | <a id="zanna-collections-unionfind-union"></a>`Union` | `i64(i64,i64)` | `Zanna.Collections.UnionFind.Union` |
-| <a id="zanna-collections-unionfind-new"></a>`New` | `obj(i64)` | `Zanna.Collections.UnionFind.New` |
+| <a id="zanna-collections-unionfind-new"></a>`New` | `obj<Zanna.Collections.UnionFind>(i64)` | `Zanna.Collections.UnionFind.New` |
 
 <a id="zanna-collections-orderedmap"></a>
 ### `Zanna.Collections.OrderedMap`
@@ -287,7 +287,7 @@ Constructor: `Zanna.Collections.OrderedMap.New`
 | <a id="zanna-collections-orderedmap-remove"></a>`Remove` | `i1(str)` | `Zanna.Collections.OrderedMap.Remove` |
 | <a id="zanna-collections-orderedmap-set"></a>`Set` | `void(str,obj)` | `Zanna.Collections.OrderedMap.Set` |
 | <a id="zanna-collections-orderedmap-values"></a>`Values` | `seq<obj>()` | `Zanna.Collections.OrderedMap.Values` |
-| <a id="zanna-collections-orderedmap-new"></a>`New` | `obj()` | `Zanna.Collections.OrderedMap.New` |
+| <a id="zanna-collections-orderedmap-new"></a>`New` | `obj<Zanna.Collections.OrderedMap>()` | `Zanna.Collections.OrderedMap.New` |
 
 <a id="zanna-collections-defaultmap"></a>
 ### `Zanna.Collections.DefaultMap`
@@ -318,7 +318,7 @@ Constructor: `Zanna.Collections.DefaultMap.New`
 | <a id="zanna-collections-defaultmap-keys"></a>`Keys` | `seq<str>()` | `Zanna.Collections.DefaultMap.Keys` |
 | <a id="zanna-collections-defaultmap-remove"></a>`Remove` | `i1(str)` | `Zanna.Collections.DefaultMap.Remove` |
 | <a id="zanna-collections-defaultmap-set"></a>`Set` | `void(str,obj)` | `Zanna.Collections.DefaultMap.Set` |
-| <a id="zanna-collections-defaultmap-new"></a>`New` | `obj(obj)` | `Zanna.Collections.DefaultMap.New` |
+| <a id="zanna-collections-defaultmap-new"></a>`New` | `obj<Zanna.Collections.DefaultMap>(obj)` | `Zanna.Collections.DefaultMap.New` |
 
 <a id="zanna-collections-frozenset"></a>
 ### `Zanna.Collections.FrozenSet`
@@ -408,7 +408,7 @@ Constructor: `Zanna.Collections.SparseArray.New`
 | <a id="zanna-collections-sparsearray-remove"></a>`Remove` | `i1(i64)` | `Zanna.Collections.SparseArray.Remove` |
 | <a id="zanna-collections-sparsearray-set"></a>`Set` | `void(i64,obj)` | `Zanna.Collections.SparseArray.Set` |
 | <a id="zanna-collections-sparsearray-values"></a>`Values` | `seq<obj>()` | `Zanna.Collections.SparseArray.Values` |
-| <a id="zanna-collections-sparsearray-new"></a>`New` | `obj()` | `Zanna.Collections.SparseArray.New` |
+| <a id="zanna-collections-sparsearray-new"></a>`New` | `obj<Zanna.Collections.SparseArray>()` | `Zanna.Collections.SparseArray.New` |
 
 <a id="zanna-collections-weakmap"></a>
 ### `Zanna.Collections.WeakMap`
@@ -439,7 +439,7 @@ Constructor: `Zanna.Collections.WeakMap.New`
 | <a id="zanna-collections-weakmap-keys"></a>`Keys` | `seq<str>()` | `Zanna.Collections.WeakMap.Keys` |
 | <a id="zanna-collections-weakmap-remove"></a>`Remove` | `i1(str)` | `Zanna.Collections.WeakMap.Remove` |
 | <a id="zanna-collections-weakmap-set"></a>`Set` | `void(str,obj)` | `Zanna.Collections.WeakMap.Set` |
-| <a id="zanna-collections-weakmap-new"></a>`New` | `obj()` | `Zanna.Collections.WeakMap.New` |
+| <a id="zanna-collections-weakmap-new"></a>`New` | `obj<Zanna.Collections.WeakMap>()` | `Zanna.Collections.WeakMap.New` |
 
 <a id="zanna-collections-stringset"></a>
 ### `Zanna.Collections.StringSet`
@@ -473,7 +473,7 @@ Constructor: `Zanna.Collections.StringSet.New`
 | <a id="zanna-collections-stringset-union"></a>`Union` | `obj<Zanna.Collections.StringSet>(obj)` | `Zanna.Collections.StringSet.Union` |
 | <a id="zanna-collections-stringset-toseq"></a>`ToSeq` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.StringSet.ToSeq` |
 | <a id="zanna-collections-stringset-toset"></a>`ToSet` | `obj<Zanna.Collections.Set>()` | `Zanna.Collections.StringSet.ToSet` |
-| <a id="zanna-collections-stringset-new"></a>`New` | `obj()` | `Zanna.Collections.StringSet.New` |
+| <a id="zanna-collections-stringset-new"></a>`New` | `obj<Zanna.Collections.StringSet>()` | `Zanna.Collections.StringSet.New` |
 
 <a id="zanna-collections-countmap"></a>
 ### `Zanna.Collections.CountMap`
@@ -508,7 +508,7 @@ Constructor: `Zanna.Collections.CountMap.New`
 | <a id="zanna-collections-countmap-mostcommon"></a>`MostCommon` | `seq<str>(i64)` | `Zanna.Collections.CountMap.MostCommon` |
 | <a id="zanna-collections-countmap-remove"></a>`Remove` | `i1(str)` | `Zanna.Collections.CountMap.Remove` |
 | <a id="zanna-collections-countmap-set"></a>`Set` | `void(str,i64)` | `Zanna.Collections.CountMap.Set` |
-| <a id="zanna-collections-countmap-new"></a>`New` | `obj()` | `Zanna.Collections.CountMap.New` |
+| <a id="zanna-collections-countmap-new"></a>`New` | `obj<Zanna.Collections.CountMap>()` | `Zanna.Collections.CountMap.New` |
 
 <a id="zanna-collections-set"></a>
 ### `Zanna.Collections.Set`
@@ -545,7 +545,7 @@ Constructor: `Zanna.Collections.Set.New`
 | <a id="zanna-collections-set-add"></a>`Add` | `i1(obj)` | `Zanna.Collections.Set.Add` |
 | <a id="zanna-collections-set-toseq"></a>`ToSeq` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.Set.ToSeq` |
 | <a id="zanna-collections-set-tolist"></a>`ToList` | `obj<Zanna.Collections.List>()` | `Zanna.Collections.Set.ToList` |
-| <a id="zanna-collections-set-new"></a>`New` | `obj()` | `Zanna.Collections.Set.New` |
+| <a id="zanna-collections-set-new"></a>`New` | `obj<Zanna.Collections.Set>()` | `Zanna.Collections.Set.New` |
 
 <a id="zanna-collections-sortedset"></a>
 ### `Zanna.Collections.SortedSet`
@@ -585,11 +585,11 @@ Constructor: `Zanna.Collections.SortedSet.New`
 | <a id="zanna-collections-sortedset-range"></a>`Range` | `seq<str>(str,str)` | `Zanna.Collections.SortedSet.Range` |
 | <a id="zanna-collections-sortedset-take"></a>`Take` | `seq<str>(i64)` | `Zanna.Collections.SortedSet.Take` |
 | <a id="zanna-collections-sortedset-skip"></a>`Skip` | `seq<str>(i64)` | `Zanna.Collections.SortedSet.Skip` |
-| <a id="zanna-collections-sortedset-union"></a>`Union` | `obj(obj)` | `Zanna.Collections.SortedSet.Union` |
-| <a id="zanna-collections-sortedset-intersect"></a>`Intersect` | `obj(obj)` | `Zanna.Collections.SortedSet.Intersect` |
-| <a id="zanna-collections-sortedset-difference"></a>`Difference` | `obj(obj)` | `Zanna.Collections.SortedSet.Difference` |
+| <a id="zanna-collections-sortedset-union"></a>`Union` | `obj<Zanna.Collections.SortedSet>(obj)` | `Zanna.Collections.SortedSet.Union` |
+| <a id="zanna-collections-sortedset-intersect"></a>`Intersect` | `obj<Zanna.Collections.SortedSet>(obj)` | `Zanna.Collections.SortedSet.Intersect` |
+| <a id="zanna-collections-sortedset-difference"></a>`Difference` | `obj<Zanna.Collections.SortedSet>(obj)` | `Zanna.Collections.SortedSet.Difference` |
 | <a id="zanna-collections-sortedset-issubset"></a>`IsSubset` | `i1(obj)` | `Zanna.Collections.SortedSet.IsSubset` |
-| <a id="zanna-collections-sortedset-new"></a>`New` | `obj()` | `Zanna.Collections.SortedSet.New` |
+| <a id="zanna-collections-sortedset-new"></a>`New` | `obj<Zanna.Collections.SortedSet>()` | `Zanna.Collections.SortedSet.New` |
 
 <a id="zanna-collections-list"></a>
 ### `Zanna.Collections.List`
@@ -635,7 +635,7 @@ Constructor: `Zanna.Collections.List.New`
 | <a id="zanna-collections-list-toset"></a>`ToSet` | `obj<Zanna.Collections.Set>()` | `Zanna.Collections.List.ToSet` |
 | <a id="zanna-collections-list-tostack"></a>`ToStack` | `obj<Zanna.Collections.Stack>()` | `Zanna.Collections.List.ToStack` |
 | <a id="zanna-collections-list-toqueue"></a>`ToQueue` | `obj<Zanna.Collections.Queue>()` | `Zanna.Collections.List.ToQueue` |
-| <a id="zanna-collections-list-new"></a>`New` | `obj()` | `Zanna.Collections.List.New` |
+| <a id="zanna-collections-list-new"></a>`New` | `obj<Zanna.Collections.List>()` | `Zanna.Collections.List.New` |
 | <a id="zanna-collections-list-find"></a>`Find` | `i64(obj,obj)` | `Zanna.Collections.List.Find` |
 
 <a id="zanna-collections-lrucache"></a>
@@ -670,7 +670,7 @@ Constructor: `Zanna.Collections.LruCache.New`
 | <a id="zanna-collections-lrucache-remove"></a>`Remove` | `i1(str)` | `Zanna.Collections.LruCache.Remove` |
 | <a id="zanna-collections-lrucache-removeoldest"></a>`RemoveOldest` | `i1()` | `Zanna.Collections.LruCache.RemoveOldest` |
 | <a id="zanna-collections-lrucache-values"></a>`Values` | `seq<obj>()` | `Zanna.Collections.LruCache.Values` |
-| <a id="zanna-collections-lrucache-new"></a>`New` | `obj(i64)` | `Zanna.Collections.LruCache.New` |
+| <a id="zanna-collections-lrucache-new"></a>`New` | `obj<Zanna.Collections.LruCache>(i64)` | `Zanna.Collections.LruCache.New` |
 
 <a id="zanna-collections-map"></a>
 ### `Zanna.Collections.Map`
@@ -718,7 +718,7 @@ Constructor: `Zanna.Collections.Map.New`
 | <a id="zanna-collections-map-getboolor"></a>`GetBoolOr` | `i1(str,i1)` | `Zanna.Collections.Map.GetBoolOr` |
 | <a id="zanna-collections-map-setstr"></a>`SetStr` | `void(str,str)` | `Zanna.Collections.Map.SetStr` |
 | <a id="zanna-collections-map-getstr"></a>`GetStr` | `str(str)` | `Zanna.Collections.Map.GetStr` |
-| <a id="zanna-collections-map-new"></a>`New` | `obj()` | `Zanna.Collections.Map.New` |
+| <a id="zanna-collections-map-new"></a>`New` | `obj<Zanna.Collections.Map>()` | `Zanna.Collections.Map.New` |
 | <a id="zanna-collections-map-getoptstr"></a>`GetOptStr` | `str(obj,str)` | `Zanna.Collections.Map.GetOptStr` |
 
 <a id="zanna-collections-intmap"></a>
@@ -753,7 +753,7 @@ Constructor: `Zanna.Collections.IntMap.New`
 | <a id="zanna-collections-intmap-trim"></a>`Trim` | `i1()` | `Zanna.Collections.IntMap.Trim` |
 | <a id="zanna-collections-intmap-keys"></a>`Keys` | `seq<obj>()` | `Zanna.Collections.IntMap.Keys` |
 | <a id="zanna-collections-intmap-values"></a>`Values` | `seq<obj>()` | `Zanna.Collections.IntMap.Values` |
-| <a id="zanna-collections-intmap-new"></a>`New` | `obj()` | `Zanna.Collections.IntMap.New` |
+| <a id="zanna-collections-intmap-new"></a>`New` | `obj<Zanna.Collections.IntMap>()` | `Zanna.Collections.IntMap.New` |
 
 <a id="zanna-collections-multimap"></a>
 ### `Zanna.Collections.MultiMap`
@@ -781,13 +781,13 @@ Constructor: `Zanna.Collections.MultiMap.New`
 |---|---|---|
 | <a id="zanna-collections-multimap-clear"></a>`Clear` | `void()` | `Zanna.Collections.MultiMap.Clear` |
 | <a id="zanna-collections-multimap-countfor"></a>`CountFor` | `i64(str)` | `Zanna.Collections.MultiMap.CountFor` |
-| <a id="zanna-collections-multimap-get"></a>`Get` | `obj(str)` | `Zanna.Collections.MultiMap.Get` |
+| <a id="zanna-collections-multimap-get"></a>`Get` | `seq<obj>(str)` | `Zanna.Collections.MultiMap.Get` |
 | <a id="zanna-collections-multimap-getfirst"></a>`GetFirst` | `obj(str)` | `Zanna.Collections.MultiMap.GetFirst` |
 | <a id="zanna-collections-multimap-has"></a>`Has` | `i1(str)` | `Zanna.Collections.MultiMap.Has` |
 | <a id="zanna-collections-multimap-keys"></a>`Keys` | `seq<str>()` | `Zanna.Collections.MultiMap.Keys` |
 | <a id="zanna-collections-multimap-add"></a>`Add` | `void(str,obj)` | `Zanna.Collections.MultiMap.Add` |
 | <a id="zanna-collections-multimap-removeall"></a>`RemoveAll` | `i1(str)` | `Zanna.Collections.MultiMap.RemoveAll` |
-| <a id="zanna-collections-multimap-new"></a>`New` | `obj()` | `Zanna.Collections.MultiMap.New` |
+| <a id="zanna-collections-multimap-new"></a>`New` | `obj<Zanna.Collections.MultiMap>()` | `Zanna.Collections.MultiMap.New` |
 
 <a id="zanna-collections-queue"></a>
 ### `Zanna.Collections.Queue`
@@ -821,7 +821,7 @@ Constructor: `Zanna.Collections.Queue.New`
 | <a id="zanna-collections-queue-tolist"></a>`ToList` | `obj<Zanna.Collections.List>()` | `Zanna.Collections.Queue.ToList` |
 | <a id="zanna-collections-queue-toseq"></a>`ToSeq` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.Queue.ToSeq` |
 | <a id="zanna-collections-queue-trypop"></a>`TryPop` | `obj<Zanna.Option>()` | `Zanna.Collections.Queue.TryPop` |
-| <a id="zanna-collections-queue-new"></a>`New` | `obj()` | `Zanna.Collections.Queue.New` |
+| <a id="zanna-collections-queue-new"></a>`New` | `obj<Zanna.Collections.Queue>()` | `Zanna.Collections.Queue.New` |
 
 <a id="zanna-collections-heap"></a>
 ### `Zanna.Collections.Heap`
@@ -853,8 +853,8 @@ Constructor: `Zanna.Collections.Heap.New`
 | <a id="zanna-collections-heap-toseq"></a>`ToSeq` | `seq<obj>()` | `Zanna.Collections.Heap.ToSeq` |
 | <a id="zanna-collections-heap-trypeek"></a>`TryPeek` | `obj<Zanna.Option>()` | `Zanna.Collections.Heap.TryPeek` |
 | <a id="zanna-collections-heap-trypop"></a>`TryPop` | `obj<Zanna.Option>()` | `Zanna.Collections.Heap.TryPop` |
-| <a id="zanna-collections-heap-new"></a>`New` | `obj()` | `Zanna.Collections.Heap.New` |
-| <a id="zanna-collections-heap-newmax"></a>`NewMax` | `obj(i1)` | `Zanna.Collections.Heap.NewMax` |
+| <a id="zanna-collections-heap-new"></a>`New` | `obj<Zanna.Collections.Heap>()` | `Zanna.Collections.Heap.New` |
+| <a id="zanna-collections-heap-newmax"></a>`NewMax` | `obj<Zanna.Collections.Heap>(i1)` | `Zanna.Collections.Heap.NewMax` |
 
 <a id="zanna-collections-ring"></a>
 ### `Zanna.Collections.Ring`
@@ -893,8 +893,8 @@ Constructor: `Zanna.Collections.Ring.New`
 | <a id="zanna-collections-ring-reverse"></a>`Reverse` | `void()` | `Zanna.Collections.Ring.Reverse` |
 | <a id="zanna-collections-ring-setownselements"></a>`SetOwnsElements` | `void(i1)` | `Zanna.Collections.Ring.SetOwnsElements` |
 | <a id="zanna-collections-ring-toseq"></a>`ToSeq` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.Ring.ToSeq` |
-| <a id="zanna-collections-ring-new"></a>`New` | `obj(i64)` | `Zanna.Collections.Ring.New` |
-| <a id="zanna-collections-ring-newdefault"></a>`NewDefault` | `obj()` | `Zanna.Collections.Ring.NewDefault` |
+| <a id="zanna-collections-ring-new"></a>`New` | `obj<Zanna.Collections.Ring>(i64)` | `Zanna.Collections.Ring.New` |
+| <a id="zanna-collections-ring-newdefault"></a>`NewDefault` | `obj<Zanna.Collections.Ring>()` | `Zanna.Collections.Ring.NewDefault` |
 
 <a id="zanna-collections-seq"></a>
 ### `Zanna.Collections.Seq`
@@ -995,7 +995,7 @@ Constructor: `Zanna.Collections.Stack.New`
 | <a id="zanna-collections-stack-tolist"></a>`ToList` | `obj<Zanna.Collections.List>()` | `Zanna.Collections.Stack.ToList` |
 | <a id="zanna-collections-stack-toseq"></a>`ToSeq` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.Stack.ToSeq` |
 | <a id="zanna-collections-stack-trypop"></a>`TryPop` | `obj<Zanna.Option>()` | `Zanna.Collections.Stack.TryPop` |
-| <a id="zanna-collections-stack-new"></a>`New` | `obj()` | `Zanna.Collections.Stack.New` |
+| <a id="zanna-collections-stack-new"></a>`New` | `obj<Zanna.Collections.Stack>()` | `Zanna.Collections.Stack.New` |
 
 <a id="zanna-collections-iterator"></a>
 ### `Zanna.Collections.Iterator`
@@ -1023,14 +1023,14 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-collections-iterator-reset"></a>`Reset` | `void()` | `Zanna.Collections.Iterator.Reset` |
 | <a id="zanna-collections-iterator-toseq"></a>`ToSeq` | `seq<obj>()` | `Zanna.Collections.Iterator.ToSeq` |
 | <a id="zanna-collections-iterator-skip"></a>`Skip` | `i64(i64)` | `Zanna.Collections.Iterator.Skip` |
-| <a id="zanna-collections-iterator-fromseq"></a>`FromSeq` | `obj(obj)` | `Zanna.Collections.Iterator.FromSeq` |
-| <a id="zanna-collections-iterator-fromlist"></a>`FromList` | `obj(obj)` | `Zanna.Collections.Iterator.FromList` |
-| <a id="zanna-collections-iterator-fromdeque"></a>`FromDeque` | `obj(obj)` | `Zanna.Collections.Iterator.FromDeque` |
-| <a id="zanna-collections-iterator-frommapkeys"></a>`FromMapKeys` | `obj(obj)` | `Zanna.Collections.Iterator.FromMapKeys` |
-| <a id="zanna-collections-iterator-frommapvalues"></a>`FromMapValues` | `obj(obj)` | `Zanna.Collections.Iterator.FromMapValues` |
-| <a id="zanna-collections-iterator-fromset"></a>`FromSet` | `obj(obj)` | `Zanna.Collections.Iterator.FromSet` |
-| <a id="zanna-collections-iterator-fromstack"></a>`FromStack` | `obj(obj)` | `Zanna.Collections.Iterator.FromStack` |
-| <a id="zanna-collections-iterator-fromring"></a>`FromRing` | `obj(obj)` | `Zanna.Collections.Iterator.FromRing` |
+| <a id="zanna-collections-iterator-fromseq"></a>`FromSeq` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromSeq` |
+| <a id="zanna-collections-iterator-fromlist"></a>`FromList` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromList` |
+| <a id="zanna-collections-iterator-fromdeque"></a>`FromDeque` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromDeque` |
+| <a id="zanna-collections-iterator-frommapkeys"></a>`FromMapKeys` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromMapKeys` |
+| <a id="zanna-collections-iterator-frommapvalues"></a>`FromMapValues` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromMapValues` |
+| <a id="zanna-collections-iterator-fromset"></a>`FromSet` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromSet` |
+| <a id="zanna-collections-iterator-fromstack"></a>`FromStack` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromStack` |
+| <a id="zanna-collections-iterator-fromring"></a>`FromRing` | `obj<Zanna.Collections.Iterator>(obj)` | `Zanna.Collections.Iterator.FromRing` |
 
 <a id="zanna-collections-sortedmap"></a>
 ### `Zanna.Collections.SortedMap`
@@ -1065,7 +1065,7 @@ Constructor: `Zanna.Collections.SortedMap.New`
 | <a id="zanna-collections-sortedmap-last"></a>`Last` | `str()` | `Zanna.Collections.SortedMap.Last` |
 | <a id="zanna-collections-sortedmap-set"></a>`Set` | `void(str,obj)` | `Zanna.Collections.SortedMap.Set` |
 | <a id="zanna-collections-sortedmap-values"></a>`Values` | `seq<obj>()` | `Zanna.Collections.SortedMap.Values` |
-| <a id="zanna-collections-sortedmap-new"></a>`New` | `obj()` | `Zanna.Collections.SortedMap.New` |
+| <a id="zanna-collections-sortedmap-new"></a>`New` | `obj<Zanna.Collections.SortedMap>()` | `Zanna.Collections.SortedMap.New` |
 
 <a id="zanna-collections-trie"></a>
 ### `Zanna.Collections.Trie`
@@ -1090,7 +1090,7 @@ Constructor: `Zanna.Collections.Trie.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-collections-trie-clear"></a>`Clear` | `void()` | `Zanna.Collections.Trie.Clear` |
-| <a id="zanna-collections-trie-clone"></a>`Clone` | `obj()` | `Zanna.Collections.Trie.Clone` |
+| <a id="zanna-collections-trie-clone"></a>`Clone` | `obj<Zanna.Collections.Trie>()` | `Zanna.Collections.Trie.Clone` |
 | <a id="zanna-collections-trie-get"></a>`Get` | `obj(str)` | `Zanna.Collections.Trie.Get` |
 | <a id="zanna-collections-trie-has"></a>`Has` | `i1(str)` | `Zanna.Collections.Trie.Has` |
 | <a id="zanna-collections-trie-hasprefix"></a>`HasPrefix` | `i1(str)` | `Zanna.Collections.Trie.HasPrefix` |
@@ -1100,7 +1100,7 @@ Constructor: `Zanna.Collections.Trie.New`
 | <a id="zanna-collections-trie-set"></a>`Set` | `void(str,obj)` | `Zanna.Collections.Trie.Set` |
 | <a id="zanna-collections-trie-remove"></a>`Remove` | `i1(str)` | `Zanna.Collections.Trie.Remove` |
 | <a id="zanna-collections-trie-withprefix"></a>`WithPrefix` | `seq<str>(str)` | `Zanna.Collections.Trie.WithPrefix` |
-| <a id="zanna-collections-trie-new"></a>`New` | `obj()` | `Zanna.Collections.Trie.New` |
+| <a id="zanna-collections-trie-new"></a>`New` | `obj<Zanna.Collections.Trie>()` | `Zanna.Collections.Trie.New` |
 
 <a id="zanna-collections-deque"></a>
 ### `Zanna.Collections.Deque`
@@ -1142,43 +1142,43 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-deque-trypopfront"></a>`TryPopFront` | `obj<Zanna.Option>()` | `Zanna.Collections.Deque.TryPopFront` |
 | <a id="zanna-collections-deque-trypopback"></a>`TryPopBack` | `obj<Zanna.Option>()` | `Zanna.Collections.Deque.TryPopBack` |
 | <a id="zanna-collections-deque-tolist"></a>`ToList` | `obj<Zanna.Collections.List>()` | `Zanna.Collections.Deque.ToList` |
-| <a id="zanna-collections-deque-new"></a>`New` | `obj()` | `Zanna.Collections.Deque.New` |
-| <a id="zanna-collections-deque-withcapacity"></a>`WithCapacity` | `obj(i64)` | `Zanna.Collections.Deque.WithCapacity` |
+| <a id="zanna-collections-deque-new"></a>`New` | `obj<Zanna.Collections.Deque>()` | `Zanna.Collections.Deque.New` |
+| <a id="zanna-collections-deque-withcapacity"></a>`WithCapacity` | `obj<Zanna.Collections.Deque>(i64)` | `Zanna.Collections.Deque.WithCapacity` |
 
 ## Functions
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| `Zanna.Collections.BitSet.And` | `obj(obj,obj)` | `rt_bitset_and` |
+| `Zanna.Collections.BitSet.And` | `obj<Zanna.Collections.BitSet>(obj,obj)` | `rt_bitset_and` |
 | `Zanna.Collections.BitSet.ClearBit` | `void(obj,i64)` | `rt_bitset_clear` |
 | `Zanna.Collections.BitSet.Clear` | `void(obj)` | `rt_bitset_clear_all` |
 | `Zanna.Collections.BitSet.GetBit` | `i1(obj,i64)` | `rt_bitset_get` |
 | <a id="zanna-collections-bitset-get-isempty"></a>`Zanna.Collections.BitSet.get_IsEmpty` | `i1(obj)` | `rt_bitset_is_empty` |
 | <a id="zanna-collections-bitset-get-length"></a>`Zanna.Collections.BitSet.get_Length` | `i64(obj)` | `rt_bitset_len` |
 | <a id="zanna-collections-bitset-get-count"></a>`Zanna.Collections.BitSet.get_Count` | `i64(obj)` | `rt_bitset_count` |
-| `Zanna.Collections.BitSet.New` | `obj(i64)` | `rt_bitset_new` |
-| `Zanna.Collections.BitSet.Not` | `obj(obj)` | `rt_bitset_not` |
-| `Zanna.Collections.BitSet.Or` | `obj(obj,obj)` | `rt_bitset_or` |
+| `Zanna.Collections.BitSet.New` | `obj<Zanna.Collections.BitSet>(i64)` | `rt_bitset_new` |
+| `Zanna.Collections.BitSet.Not` | `obj<Zanna.Collections.BitSet>(obj)` | `rt_bitset_not` |
+| `Zanna.Collections.BitSet.Or` | `obj<Zanna.Collections.BitSet>(obj,obj)` | `rt_bitset_or` |
 | `Zanna.Collections.BitSet.SetBit` | `void(obj,i64)` | `rt_bitset_set` |
 | `Zanna.Collections.BitSet.SetAll` | `void(obj)` | `rt_bitset_set_all` |
 | `Zanna.Collections.BitSet.ToggleBit` | `void(obj,i64)` | `rt_bitset_toggle` |
 | `Zanna.Collections.BitSet.ToString` | `str(obj)` | `rt_bitset_to_string` |
-| `Zanna.Collections.BitSet.Xor` | `obj(obj,obj)` | `rt_bitset_xor` |
-| `Zanna.Collections.BloomFilter.New` | `obj(i64,f64)` | `rt_bloomfilter_new` |
+| `Zanna.Collections.BitSet.Xor` | `obj<Zanna.Collections.BitSet>(obj,obj)` | `rt_bitset_xor` |
+| `Zanna.Collections.BloomFilter.New` | `obj<Zanna.Collections.BloomFilter>(i64,f64)` | `rt_bloomfilter_new` |
 | `Zanna.Collections.BloomFilter.Add` | `void(obj,str)` | `rt_bloomfilter_add` |
 | `Zanna.Collections.BloomFilter.MightContain` | `i1(obj,str)` | `rt_bloomfilter_might_contain` |
 | <a id="zanna-collections-bloomfilter-get-count"></a>`Zanna.Collections.BloomFilter.get_Count` | `i64(obj)` | `rt_bloomfilter_count` |
 | `Zanna.Collections.BloomFilter.FalsePositiveRate` | `f64(obj)` | `rt_bloomfilter_fpr` |
 | `Zanna.Collections.BloomFilter.Clear` | `void(obj)` | `rt_bloomfilter_clear` |
 | `Zanna.Collections.BloomFilter.Merge` | `i64(obj,obj)` | `rt_bloomfilter_merge` |
-| `Zanna.Collections.UnionFind.New` | `obj(i64)` | `rt_unionfind_new` |
+| `Zanna.Collections.UnionFind.New` | `obj<Zanna.Collections.UnionFind>(i64)` | `rt_unionfind_new` |
 | `Zanna.Collections.UnionFind.FindRoot` | `obj<Zanna.Option>(obj,i64)` | `rt_unionfind_find_root_option` |
 | `Zanna.Collections.UnionFind.Union` | `i64(obj,i64,i64)` | `rt_unionfind_union` |
 | `Zanna.Collections.UnionFind.Clear` | `void(obj)` | `rt_unionfind_reset` |
 | `Zanna.Collections.UnionFind.IsConnected` | `i1(obj,i64,i64)` | `rt_unionfind_connected` |
 | <a id="zanna-collections-unionfind-get-count"></a>`Zanna.Collections.UnionFind.get_Count` | `i64(obj)` | `rt_unionfind_count` |
 | `Zanna.Collections.UnionFind.ComponentSize` | `i64(obj,i64)` | `rt_unionfind_set_size` |
-| `Zanna.Collections.OrderedMap.New` | `obj()` | `rt_orderedmap_new` |
+| `Zanna.Collections.OrderedMap.New` | `obj<Zanna.Collections.OrderedMap>()` | `rt_orderedmap_new` |
 | <a id="zanna-collections-orderedmap-get-count"></a>`Zanna.Collections.OrderedMap.get_Count` | `i64(obj)` | `rt_orderedmap_len` |
 | <a id="zanna-collections-orderedmap-get-isempty"></a>`Zanna.Collections.OrderedMap.get_IsEmpty` | `i1(obj)` | `rt_orderedmap_is_empty` |
 | `Zanna.Collections.OrderedMap.Set` | `void(obj,str,obj)` | `rt_orderedmap_set` |
@@ -1189,19 +1189,19 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.OrderedMap.Values` | `seq<obj>(obj)` | `rt_orderedmap_values` |
 | `Zanna.Collections.OrderedMap.KeyAt` | `str(obj,i64)` | `rt_orderedmap_key_at` |
 | `Zanna.Collections.OrderedMap.Clear` | `void(obj)` | `rt_orderedmap_clear` |
-| `Zanna.Collections.Bytes.Clone` | `obj(obj)` | `rt_bytes_clone` |
+| `Zanna.Collections.Bytes.Clone` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_bytes_clone` |
 | `Zanna.Collections.Bytes.Copy` | `void(obj,i64,obj,i64,i64)` | `rt_bytes_copy` |
 | `Zanna.Collections.Bytes.Fill` | `void(obj,i64)` | `rt_bytes_fill` |
 | `Zanna.Collections.Bytes.Find` | `obj<Zanna.Option>(obj,i64)` | `rt_bytes_find_option` |
-| `Zanna.Collections.Bytes.FromBase64` | `obj(str)` | `rt_bytes_from_base64` |
-| `Zanna.Collections.Bytes.FromHex` | `obj(str)` | `rt_bytes_from_hex` |
-| `Zanna.Collections.Bytes.FromStr` | `obj(str)` | `rt_bytes_from_str` |
+| `Zanna.Collections.Bytes.FromBase64` | `obj<Zanna.Collections.Bytes>(str)` | `rt_bytes_from_base64` |
+| `Zanna.Collections.Bytes.FromHex` | `obj<Zanna.Collections.Bytes>(str)` | `rt_bytes_from_hex` |
+| `Zanna.Collections.Bytes.FromStr` | `obj<Zanna.Collections.Bytes>(str)` | `rt_bytes_from_str` |
 | `Zanna.Collections.Bytes.Get` | `i64(obj,i64)` | `rt_bytes_get` |
 | <a id="zanna-collections-bytes-get-isempty"></a>`Zanna.Collections.Bytes.get_IsEmpty` | `i1(obj)` | `rt_bytes_is_empty` |
 | <a id="zanna-collections-bytes-get-length"></a>`Zanna.Collections.Bytes.get_Length` | `i64(obj)` | `rt_bytes_len` |
-| `Zanna.Collections.Bytes.New` | `obj(i64)` | `rt_bytes_new` |
+| `Zanna.Collections.Bytes.New` | `obj<Zanna.Collections.Bytes>(i64)` | `rt_bytes_new` |
 | `Zanna.Collections.Bytes.Set` | `void(obj,i64,i64)` | `rt_bytes_set` |
-| `Zanna.Collections.Bytes.Slice` | `obj(obj,i64,i64)` | `rt_bytes_slice` |
+| `Zanna.Collections.Bytes.Slice` | `obj<Zanna.Collections.Bytes>(obj,i64,i64)` | `rt_bytes_slice` |
 | `Zanna.Collections.Bytes.ToBase64` | `str(obj)` | `rt_bytes_to_base64` |
 | `Zanna.Collections.Bytes.ToHex` | `str(obj)` | `rt_bytes_to_hex` |
 | `Zanna.Collections.Bytes.ToStr` | `str(obj)` | `rt_bytes_to_str` |
@@ -1217,8 +1217,8 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Bytes.WriteI32BigEndian` | `void(obj,i64,i64)` | `rt_bytes_write_i32be` |
 | `Zanna.Collections.Bytes.WriteI64LittleEndian` | `void(obj,i64,i64)` | `rt_bytes_write_i64le` |
 | `Zanna.Collections.Bytes.WriteI64BigEndian` | `void(obj,i64,i64)` | `rt_bytes_write_i64be` |
-| `Zanna.Collections.F64Buffer.New` | `obj(i64)` | `rt_f64buf_new` |
-| `Zanna.Collections.F64Buffer.FromSeq` | `obj(obj)` | `rt_f64buf_from_seq` |
+| `Zanna.Collections.F64Buffer.New` | `obj<Zanna.Collections.F64Buffer>(i64)` | `rt_f64buf_new` |
+| `Zanna.Collections.F64Buffer.FromSeq` | `obj<Zanna.Collections.F64Buffer>(obj)` | `rt_f64buf_from_seq` |
 | <a id="zanna-collections-f64buffer-get-length"></a>`Zanna.Collections.F64Buffer.get_Length` | `i64(obj)` | `rt_f64buf_len` |
 | `Zanna.Collections.F64Buffer.Get` | `f64(obj,i64)` | `rt_f64buf_get` |
 | `Zanna.Collections.F64Buffer.Set` | `void(obj,i64,f64)` | `rt_f64buf_set` |
@@ -1234,8 +1234,8 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.F64Buffer.Max` | `f64(obj)` | `rt_f64buf_max` |
 | `Zanna.Collections.F64Buffer.ToList` | `obj<Zanna.Collections.List>(obj)` | `rt_f64buf_to_list` |
 | `Zanna.Collections.F64Buffer.ToSeq` | `obj<Zanna.Collections.Seq>(obj)` | `rt_f64buf_to_seq` |
-| `Zanna.Collections.I64Buffer.New` | `obj(i64)` | `rt_i64buf_new` |
-| `Zanna.Collections.I64Buffer.FromSeq` | `obj(obj)` | `rt_i64buf_from_seq` |
+| `Zanna.Collections.I64Buffer.New` | `obj<Zanna.Collections.I64Buffer>(i64)` | `rt_i64buf_new` |
+| `Zanna.Collections.I64Buffer.FromSeq` | `obj<Zanna.Collections.I64Buffer>(obj)` | `rt_i64buf_from_seq` |
 | <a id="zanna-collections-i64buffer-get-length"></a>`Zanna.Collections.I64Buffer.get_Length` | `i64(obj)` | `rt_i64buf_len` |
 | `Zanna.Collections.I64Buffer.Get` | `i64(obj,i64)` | `rt_i64buf_get` |
 | `Zanna.Collections.I64Buffer.Set` | `void(obj,i64,i64)` | `rt_i64buf_set` |
@@ -1281,12 +1281,12 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-stringset-get-isempty"></a>`Zanna.Collections.StringSet.get_IsEmpty` | `i1(obj)` | `rt_bag_is_empty` |
 | <a id="zanna-collections-stringset-get-count"></a>`Zanna.Collections.StringSet.get_Count` | `i64(obj)` | `rt_bag_len` |
 | `Zanna.Collections.StringSet.Union` | `obj<Zanna.Collections.StringSet>(obj,obj)` | `rt_bag_union` |
-| `Zanna.Collections.StringSet.New` | `obj()` | `rt_bag_new` |
+| `Zanna.Collections.StringSet.New` | `obj<Zanna.Collections.StringSet>()` | `rt_bag_new` |
 | `Zanna.Collections.StringSet.Add` | `i1(obj,str)` | `rt_bag_add` |
 | `Zanna.Collections.StringSet.Clone` | `obj<Zanna.Collections.StringSet>(obj)` | `rt_bag_clone` |
 | `Zanna.Collections.StringSet.ToSeq` | `obj<Zanna.Collections.Seq>(obj)` | `rt_bag_to_seq` |
 | `Zanna.Collections.StringSet.ToSet` | `obj<Zanna.Collections.Set>(obj)` | `rt_bag_to_set` |
-| `Zanna.Collections.SparseArray.New` | `obj()` | `rt_sparse_new` |
+| `Zanna.Collections.SparseArray.New` | `obj<Zanna.Collections.SparseArray>()` | `rt_sparse_new` |
 | <a id="zanna-collections-sparsearray-get-count"></a>`Zanna.Collections.SparseArray.get_Count` | `i64(obj)` | `rt_sparse_len` |
 | `Zanna.Collections.SparseArray.Get` | `obj(obj,i64)` | `rt_sparse_get` |
 | `Zanna.Collections.SparseArray.Set` | `void(obj,i64,obj)` | `rt_sparse_set` |
@@ -1295,7 +1295,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.SparseArray.Indices` | `seq<obj>(obj)` | `rt_sparse_indices` |
 | `Zanna.Collections.SparseArray.Values` | `seq<obj>(obj)` | `rt_sparse_values` |
 | `Zanna.Collections.SparseArray.Clear` | `void(obj)` | `rt_sparse_clear` |
-| `Zanna.Collections.WeakMap.New` | `obj()` | `rt_weakmap_new` |
+| `Zanna.Collections.WeakMap.New` | `obj<Zanna.Collections.WeakMap>()` | `rt_weakmap_new` |
 | <a id="zanna-collections-weakmap-get-count"></a>`Zanna.Collections.WeakMap.get_Count` | `i64(obj)` | `rt_weakmap_len` |
 | <a id="zanna-collections-weakmap-get-isempty"></a>`Zanna.Collections.WeakMap.get_IsEmpty` | `i1(obj)` | `rt_weakmap_is_empty` |
 | `Zanna.Collections.WeakMap.Set` | `void(obj,str,obj)` | `rt_weakmap_set` |
@@ -1316,7 +1316,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Set.IsSuperset` | `i1(obj,obj)` | `rt_set_is_superset` |
 | <a id="zanna-collections-set-get-count"></a>`Zanna.Collections.Set.get_Count` | `i64(obj)` | `rt_set_len` |
 | `Zanna.Collections.Set.Union` | `obj<Zanna.Collections.Set>(obj,obj)` | `rt_set_union` |
-| `Zanna.Collections.Set.New` | `obj()` | `rt_set_new` |
+| `Zanna.Collections.Set.New` | `obj<Zanna.Collections.Set>()` | `rt_set_new` |
 | `Zanna.Collections.Set.Add` | `i1(obj,obj)` | `rt_set_add` |
 | `Zanna.Collections.Set.Clone` | `obj<Zanna.Collections.Set>(obj)` | `rt_set_clone` |
 | `Zanna.Collections.Set.ToSeq` | `obj<Zanna.Collections.Seq>(obj)` | `rt_set_to_seq` |
@@ -1328,7 +1328,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.List.Get` | `obj(obj,i64)` | `rt_list_get` |
 | `Zanna.Collections.List.Has` | `i1(obj,obj)` | `rt_list_has` |
 | `Zanna.Collections.List.Insert` | `void(obj,i64,obj)` | `rt_list_insert` |
-| `Zanna.Collections.List.New` | `obj()` | `rt_list_new` |
+| `Zanna.Collections.List.New` | `obj<Zanna.Collections.List>()` | `rt_list_new` |
 | `Zanna.Collections.List.Remove` | `i1(obj,obj)` | `rt_list_remove` |
 | `Zanna.Collections.List.RemoveAt` | `void(obj,i64)` | `rt_list_remove_at` |
 | `Zanna.Collections.List.Set` | `void(obj,i64,obj)` | `rt_list_set` |
@@ -1353,7 +1353,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-lrucache-get-isempty"></a>`Zanna.Collections.LruCache.get_IsEmpty` | `i1(obj)` | `rt_lrucache_is_empty` |
 | `Zanna.Collections.LruCache.Keys` | `seq<str>(obj)` | `rt_lrucache_keys` |
 | <a id="zanna-collections-lrucache-get-count"></a>`Zanna.Collections.LruCache.get_Count` | `i64(obj)` | `rt_lrucache_len` |
-| `Zanna.Collections.LruCache.New` | `obj(i64)` | `rt_lrucache_new` |
+| `Zanna.Collections.LruCache.New` | `obj<Zanna.Collections.LruCache>(i64)` | `rt_lrucache_new` |
 | `Zanna.Collections.LruCache.Peek` | `obj(obj,str)` | `rt_lrucache_peek` |
 | `Zanna.Collections.LruCache.Set` | `void(obj,str,obj)` | `rt_lrucache_put` |
 | `Zanna.Collections.LruCache.Remove` | `i1(obj,str)` | `rt_lrucache_remove` |
@@ -1361,7 +1361,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.LruCache.Values` | `seq<obj>(obj)` | `rt_lrucache_values` |
 | `Zanna.Collections.Map.Clear` | `void(obj)` | `rt_map_clear` |
 | `Zanna.Collections.Map.Trim` | `i1(obj)` | `rt_map_trim` |
-| `Zanna.Collections.BiMap.New` | `obj()` | `rt_bimap_new` |
+| `Zanna.Collections.BiMap.New` | `obj<Zanna.Collections.BiMap>()` | `rt_bimap_new` |
 | <a id="zanna-collections-bimap-get-count"></a>`Zanna.Collections.BiMap.get_Count` | `i64(obj)` | `rt_bimap_len` |
 | <a id="zanna-collections-bimap-get-isempty"></a>`Zanna.Collections.BiMap.get_IsEmpty` | `i1(obj)` | `rt_bimap_is_empty` |
 | `Zanna.Collections.BiMap.Set` | `void(obj,str,str)` | `rt_bimap_put` |
@@ -1374,7 +1374,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.BiMap.Keys` | `seq<str>(obj)` | `rt_bimap_keys` |
 | `Zanna.Collections.BiMap.Values` | `seq<str>(obj)` | `rt_bimap_values` |
 | `Zanna.Collections.BiMap.Clear` | `void(obj)` | `rt_bimap_clear` |
-| `Zanna.Collections.CountMap.New` | `obj()` | `rt_countmap_new` |
+| `Zanna.Collections.CountMap.New` | `obj<Zanna.Collections.CountMap>()` | `rt_countmap_new` |
 | <a id="zanna-collections-countmap-get-count"></a>`Zanna.Collections.CountMap.get_Count` | `i64(obj)` | `rt_countmap_len` |
 | <a id="zanna-collections-countmap-get-isempty"></a>`Zanna.Collections.CountMap.get_IsEmpty` | `i1(obj)` | `rt_countmap_is_empty` |
 | `Zanna.Collections.CountMap.Increment` | `i64(obj,str)` | `rt_countmap_inc` |
@@ -1397,7 +1397,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-multimap-get-keycount"></a>`Zanna.Collections.MultiMap.get_KeyCount` | `i64(obj)` | `rt_multimap_key_count` |
 | `Zanna.Collections.MultiMap.Keys` | `seq<str>(obj)` | `rt_multimap_keys` |
 | <a id="zanna-collections-multimap-get-count"></a>`Zanna.Collections.MultiMap.get_Count` | `i64(obj)` | `rt_multimap_len` |
-| `Zanna.Collections.MultiMap.New` | `obj()` | `rt_multimap_new` |
+| `Zanna.Collections.MultiMap.New` | `obj<Zanna.Collections.MultiMap>()` | `rt_multimap_new` |
 | `Zanna.Collections.MultiMap.Add` | `void(obj,str,obj)` | `rt_multimap_put` |
 | `Zanna.Collections.MultiMap.RemoveAll` | `i1(obj,str)` | `rt_multimap_remove_all` |
 | `Zanna.Collections.Map.Get` | `obj(obj,str)` | `rt_map_get` |
@@ -1406,7 +1406,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-map-get-isempty"></a>`Zanna.Collections.Map.get_IsEmpty` | `i1(obj)` | `rt_map_is_empty` |
 | `Zanna.Collections.Map.Keys` | `seq<str>(obj)` | `rt_map_keys` |
 | <a id="zanna-collections-map-get-count"></a>`Zanna.Collections.Map.get_Count` | `i64(obj)` | `rt_map_len` |
-| `Zanna.Collections.Map.New` | `obj()` | `rt_map_new` |
+| `Zanna.Collections.Map.New` | `obj<Zanna.Collections.Map>()` | `rt_map_new` |
 | `Zanna.Collections.Map.Remove` | `i1(obj,str)` | `rt_map_remove` |
 | `Zanna.Collections.Map.Set` | `void(obj,str,obj)` | `rt_map_set` |
 | `Zanna.Collections.Map.SetIfMissing` | `i1(obj,str,obj)` | `rt_map_set_if_missing` |
@@ -1424,7 +1424,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Map.SetStr` | `void(obj,str,str)` | `rt_map_set_str` |
 | `Zanna.Collections.Map.GetStr` | `str(obj,str)` | `rt_map_get_str` |
 | `Zanna.Collections.Map.GetOptStr` | `str(obj,str)` | `rt_map_get_opt_str` |
-| `Zanna.Collections.IntMap.New` | `obj()` | `rt_intmap_new` |
+| `Zanna.Collections.IntMap.New` | `obj<Zanna.Collections.IntMap>()` | `rt_intmap_new` |
 | <a id="zanna-collections-intmap-get-count"></a>`Zanna.Collections.IntMap.get_Count` | `i64(obj)` | `rt_intmap_len` |
 | <a id="zanna-collections-intmap-get-isempty"></a>`Zanna.Collections.IntMap.get_IsEmpty` | `i1(obj)` | `rt_intmap_is_empty` |
 | `Zanna.Collections.IntMap.Set` | `void(obj,i64,obj)` | `rt_intmap_set` |
@@ -1440,7 +1440,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Queue.Clear` | `void(obj)` | `rt_queue_clear` |
 | <a id="zanna-collections-queue-get-isempty"></a>`Zanna.Collections.Queue.get_IsEmpty` | `i1(obj)` | `rt_queue_is_empty` |
 | <a id="zanna-collections-queue-get-count"></a>`Zanna.Collections.Queue.get_Count` | `i64(obj)` | `rt_queue_len` |
-| `Zanna.Collections.Queue.New` | `obj()` | `rt_queue_new` |
+| `Zanna.Collections.Queue.New` | `obj<Zanna.Collections.Queue>()` | `rt_queue_new` |
 | `Zanna.Collections.Queue.Peek` | `obj(obj)` | `rt_queue_peek` |
 | `Zanna.Collections.Queue.Pop` | `obj(obj)` | `rt_queue_pop` |
 | `Zanna.Collections.Queue.Has` | `i1(obj,obj)` | `rt_queue_has` |
@@ -1453,8 +1453,8 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-heap-get-isempty"></a>`Zanna.Collections.Heap.get_IsEmpty` | `i1(obj)` | `rt_pqueue_is_empty` |
 | <a id="zanna-collections-heap-get-ismax"></a>`Zanna.Collections.Heap.get_IsMax` | `i1(obj)` | `rt_pqueue_is_max` |
 | <a id="zanna-collections-heap-get-count"></a>`Zanna.Collections.Heap.get_Count` | `i64(obj)` | `rt_pqueue_len` |
-| `Zanna.Collections.Heap.New` | `obj()` | `rt_pqueue_new` |
-| `Zanna.Collections.Heap.NewMax` | `obj(i1)` | `rt_pqueue_new_max` |
+| `Zanna.Collections.Heap.New` | `obj<Zanna.Collections.Heap>()` | `rt_pqueue_new` |
+| `Zanna.Collections.Heap.NewMax` | `obj<Zanna.Collections.Heap>(i1)` | `rt_pqueue_new_max` |
 | `Zanna.Collections.Heap.Peek` | `obj(obj)` | `rt_pqueue_peek` |
 | `Zanna.Collections.Heap.Pop` | `obj(obj)` | `rt_pqueue_pop` |
 | `Zanna.Collections.Heap.Push` | `void(obj,i64,obj)` | `rt_pqueue_push` |
@@ -1467,8 +1467,8 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-ring-get-isempty"></a>`Zanna.Collections.Ring.get_IsEmpty` | `i1(obj)` | `rt_ring_is_empty` |
 | <a id="zanna-collections-ring-get-isfull"></a>`Zanna.Collections.Ring.get_IsFull` | `i1(obj)` | `rt_ring_is_full` |
 | <a id="zanna-collections-ring-get-count"></a>`Zanna.Collections.Ring.get_Count` | `i64(obj)` | `rt_ring_len` |
-| `Zanna.Collections.Ring.New` | `obj(i64)` | `rt_ring_new` |
-| `Zanna.Collections.Ring.NewDefault` | `obj()` | `rt_ring_new_default` |
+| `Zanna.Collections.Ring.New` | `obj<Zanna.Collections.Ring>(i64)` | `rt_ring_new` |
+| `Zanna.Collections.Ring.NewDefault` | `obj<Zanna.Collections.Ring>()` | `rt_ring_new_default` |
 | `Zanna.Collections.Ring.Peek` | `obj(obj)` | `rt_ring_peek` |
 | `Zanna.Collections.Ring.Pop` | `obj(obj)` | `rt_ring_pop` |
 | `Zanna.Collections.Ring.Push` | `void(obj,obj)` | `rt_ring_push` |
@@ -1528,7 +1528,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Stack.Clear` | `void(obj)` | `rt_stack_clear` |
 | <a id="zanna-collections-stack-get-isempty"></a>`Zanna.Collections.Stack.get_IsEmpty` | `i1(obj)` | `rt_stack_is_empty` |
 | <a id="zanna-collections-stack-get-count"></a>`Zanna.Collections.Stack.get_Count` | `i64(obj)` | `rt_stack_len` |
-| `Zanna.Collections.Stack.New` | `obj()` | `rt_stack_new` |
+| `Zanna.Collections.Stack.New` | `obj<Zanna.Collections.Stack>()` | `rt_stack_new` |
 | `Zanna.Collections.Stack.Peek` | `obj(obj)` | `rt_stack_peek` |
 | `Zanna.Collections.Stack.Pop` | `obj(obj)` | `rt_stack_pop` |
 | `Zanna.Collections.Stack.Push` | `void(obj,obj)` | `rt_stack_push` |
@@ -1538,14 +1538,14 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Stack.TryPop` | `obj<Zanna.Option>(obj)` | `rt_stack_try_pop_option` |
 | `Zanna.Collections.Stack.ToSeq` | `obj<Zanna.Collections.Seq>(obj)` | `rt_stack_to_seq` |
 | `Zanna.Collections.Stack.SetOwnsElements` | `void(obj,i1)` | `rt_stack_set_owns_elements` |
-| `Zanna.Collections.Iterator.FromSeq` | `obj(obj)` | `rt_iter_from_seq` |
-| `Zanna.Collections.Iterator.FromList` | `obj(obj)` | `rt_iter_from_list` |
-| `Zanna.Collections.Iterator.FromDeque` | `obj(obj)` | `rt_iter_from_deque` |
-| `Zanna.Collections.Iterator.FromMapKeys` | `obj(obj)` | `rt_iter_from_map_keys` |
-| `Zanna.Collections.Iterator.FromMapValues` | `obj(obj)` | `rt_iter_from_map_values` |
-| `Zanna.Collections.Iterator.FromSet` | `obj(obj)` | `rt_iter_from_set` |
-| `Zanna.Collections.Iterator.FromStack` | `obj(obj)` | `rt_iter_from_stack` |
-| `Zanna.Collections.Iterator.FromRing` | `obj(obj)` | `rt_iter_from_ring` |
+| `Zanna.Collections.Iterator.FromSeq` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_seq` |
+| `Zanna.Collections.Iterator.FromList` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_list` |
+| `Zanna.Collections.Iterator.FromDeque` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_deque` |
+| `Zanna.Collections.Iterator.FromMapKeys` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_map_keys` |
+| `Zanna.Collections.Iterator.FromMapValues` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_map_values` |
+| `Zanna.Collections.Iterator.FromSet` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_set` |
+| `Zanna.Collections.Iterator.FromStack` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_stack` |
+| `Zanna.Collections.Iterator.FromRing` | `obj<Zanna.Collections.Iterator>(obj)` | `rt_iter_from_ring` |
 | `Zanna.Collections.Iterator.HasNext` | `i1(obj)` | `rt_iter_has_next` |
 | `Zanna.Collections.Iterator.Next` | `obj(obj)` | `rt_iter_next` |
 | `Zanna.Collections.Iterator.Peek` | `obj(obj)` | `rt_iter_peek` |
@@ -1554,7 +1554,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | <a id="zanna-collections-iterator-get-count"></a>`Zanna.Collections.Iterator.get_Count` | `i64(obj)` | `rt_iter_count` |
 | `Zanna.Collections.Iterator.ToSeq` | `seq<obj>(obj)` | `rt_iter_to_seq` |
 | `Zanna.Collections.Iterator.Skip` | `i64(obj,i64)` | `rt_iter_skip` |
-| `Zanna.Collections.SortedMap.New` | `obj()` | `rt_treemap_new` |
+| `Zanna.Collections.SortedMap.New` | `obj<Zanna.Collections.SortedMap>()` | `rt_treemap_new` |
 | <a id="zanna-collections-sortedmap-get-count"></a>`Zanna.Collections.SortedMap.get_Count` | `i64(obj)` | `rt_treemap_len` |
 | <a id="zanna-collections-sortedmap-get-isempty"></a>`Zanna.Collections.SortedMap.get_IsEmpty` | `i1(obj)` | `rt_treemap_is_empty` |
 | `Zanna.Collections.SortedMap.Set` | `void(obj,str,obj)` | `rt_treemap_set` |
@@ -1573,16 +1573,16 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Trie.Has` | `i1(obj,str)` | `rt_trie_has` |
 | `Zanna.Collections.Trie.HasPrefix` | `i1(obj,str)` | `rt_trie_has_prefix` |
 | <a id="zanna-collections-trie-get-isempty"></a>`Zanna.Collections.Trie.get_IsEmpty` | `i1(obj)` | `rt_trie_is_empty` |
-| `Zanna.Collections.Trie.Clone` | `obj(obj)` | `rt_trie_clone` |
+| `Zanna.Collections.Trie.Clone` | `obj<Zanna.Collections.Trie>(obj)` | `rt_trie_clone` |
 | `Zanna.Collections.Trie.Keys` | `seq<str>(obj)` | `rt_trie_keys` |
 | <a id="zanna-collections-trie-get-count"></a>`Zanna.Collections.Trie.get_Count` | `i64(obj)` | `rt_trie_len` |
 | `Zanna.Collections.Trie.LongestPrefix` | `str(obj,str)` | `rt_trie_longest_prefix` |
 | `Zanna.Collections.Trie.LongestPrefixOption` | `obj<Zanna.Option>(obj,str)` | `rt_trie_longest_prefix_option` |
-| `Zanna.Collections.Trie.New` | `obj()` | `rt_trie_new` |
+| `Zanna.Collections.Trie.New` | `obj<Zanna.Collections.Trie>()` | `rt_trie_new` |
 | `Zanna.Collections.Trie.Set` | `void(obj,str,obj)` | `rt_trie_set` |
 | `Zanna.Collections.Trie.Remove` | `i1(obj,str)` | `rt_trie_remove` |
 | `Zanna.Collections.Trie.WithPrefix` | `seq<str>(obj,str)` | `rt_trie_with_prefix` |
-| `Zanna.Collections.DefaultMap.New` | `obj(obj)` | `rt_defaultmap_new` |
+| `Zanna.Collections.DefaultMap.New` | `obj<Zanna.Collections.DefaultMap>(obj)` | `rt_defaultmap_new` |
 | <a id="zanna-collections-defaultmap-get-count"></a>`Zanna.Collections.DefaultMap.get_Count` | `i64(obj)` | `rt_defaultmap_len` |
 | `Zanna.Collections.DefaultMap.Get` | `obj(obj,str)` | `rt_defaultmap_get` |
 | `Zanna.Collections.DefaultMap.Set` | `void(obj,str,obj)` | `rt_defaultmap_set` |
@@ -1592,7 +1592,7 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.DefaultMap.GetDefault` | `obj(obj)` | `rt_defaultmap_get_default` |
 | `Zanna.Collections.DefaultMap.Clear` | `void(obj)` | `rt_defaultmap_clear` |
 | <a id="zanna-collections-defaultmap-get-isempty"></a>`Zanna.Collections.DefaultMap.get_IsEmpty` | `i1(obj)` | `rt_defaultmap_is_empty` |
-| `Zanna.Collections.SortedSet.New` | `obj()` | `rt_sortedset_new` |
+| `Zanna.Collections.SortedSet.New` | `obj<Zanna.Collections.SortedSet>()` | `rt_sortedset_new` |
 | <a id="zanna-collections-sortedset-get-count"></a>`Zanna.Collections.SortedSet.get_Count` | `i64(obj)` | `rt_sortedset_len` |
 | <a id="zanna-collections-sortedset-get-isempty"></a>`Zanna.Collections.SortedSet.get_IsEmpty` | `i1(obj)` | `rt_sortedset_is_empty` |
 | `Zanna.Collections.SortedSet.Clear` | `void(obj)` | `rt_sortedset_clear` |
@@ -1611,12 +1611,12 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.SortedSet.Range` | `seq<str>(obj,str,str)` | `rt_sortedset_range` |
 | `Zanna.Collections.SortedSet.Take` | `seq<str>(obj,i64)` | `rt_sortedset_take` |
 | `Zanna.Collections.SortedSet.Skip` | `seq<str>(obj,i64)` | `rt_sortedset_skip` |
-| `Zanna.Collections.SortedSet.Union` | `obj(obj,obj)` | `rt_sortedset_union` |
-| `Zanna.Collections.SortedSet.Intersect` | `obj(obj,obj)` | `rt_sortedset_intersect` |
-| `Zanna.Collections.SortedSet.Difference` | `obj(obj,obj)` | `rt_sortedset_diff` |
+| `Zanna.Collections.SortedSet.Union` | `obj<Zanna.Collections.SortedSet>(obj,obj)` | `rt_sortedset_union` |
+| `Zanna.Collections.SortedSet.Intersect` | `obj<Zanna.Collections.SortedSet>(obj,obj)` | `rt_sortedset_intersect` |
+| `Zanna.Collections.SortedSet.Difference` | `obj<Zanna.Collections.SortedSet>(obj,obj)` | `rt_sortedset_diff` |
 | `Zanna.Collections.SortedSet.IsSubset` | `i1(obj,obj)` | `rt_sortedset_is_subset` |
-| `Zanna.Collections.Deque.New` | `obj()` | `rt_deque_new` |
-| `Zanna.Collections.Deque.WithCapacity` | `obj(i64)` | `rt_deque_with_capacity` |
+| `Zanna.Collections.Deque.New` | `obj<Zanna.Collections.Deque>()` | `rt_deque_new` |
+| `Zanna.Collections.Deque.WithCapacity` | `obj<Zanna.Collections.Deque>(i64)` | `rt_deque_with_capacity` |
 | <a id="zanna-collections-deque-get-count"></a>`Zanna.Collections.Deque.get_Count` | `i64(obj)` | `rt_deque_len` |
 | <a id="zanna-collections-deque-get-capacity"></a>`Zanna.Collections.Deque.get_Capacity` | `i64(obj)` | `rt_deque_cap` |
 | <a id="zanna-collections-deque-get-isempty"></a>`Zanna.Collections.Deque.get_IsEmpty` | `i1(obj)` | `rt_deque_is_empty` |

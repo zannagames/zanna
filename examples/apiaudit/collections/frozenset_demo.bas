@@ -33,7 +33,7 @@ PRINT fs.Has("grape")    ' 0
 ' --- Items ---
 PRINT "--- Items ---"
 DIM all AS OBJECT
-all = fs.Items()
+all = fs.ToSeq()
 PRINT all.Count             ' 3
 
 ' --- Union ---
@@ -59,7 +59,7 @@ PRINT inter.Has("cherry") ' 1
 ' --- Diff ---
 PRINT "--- Diff ---"
 DIM diff AS OBJECT
-diff = fs.Diff(fs2)
+diff = fs.Difference(fs2)
 PRINT diff.Count            ' 2
 PRINT diff.Has("apple")   ' 1
 PRINT diff.Has("cherry")  ' 0

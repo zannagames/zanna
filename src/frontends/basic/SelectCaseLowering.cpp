@@ -26,6 +26,7 @@
 
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/Lowerer.hpp"
+#include "frontends/basic/lower/Emitter.hpp"
 
 #include "zanna/il/Module.hpp"
 
@@ -103,6 +104,11 @@ void SelectCaseLowering::lower(const SelectCaseStmt &stmt) {
         lowerNumericDispatch(stmt, model, blocks, selWide, sel);
     }
 
+    // The selector's temporaries must outlive every CASE test but not be released by a statement
+    // inside an arm (once per iteration of a loop there). Set them aside for the arm bodies and
+    // release them where the arms rejoin.
+    auto selectorTemps = lowerer_.emitter().takeDeferredTemps();
+
     // BUG-087 fix: Pass end block INDEX instead of pointer, since nested statements
     // (like IF) can cause func->blocks vector to reallocate, invalidating pointers.
     for (size_t i = 0; i < stmt.arms.size(); ++i) {
@@ -121,6 +127,8 @@ void SelectCaseLowering::lower(const SelectCaseStmt &stmt) {
     func = ctx.function();
     auto *endBlk = &func->blocks[blocks.endIdx];
     ctx.setCurrent(endBlk);
+    lowerer_.emitter().restoreDeferredTemps(std::move(selectorTemps));
+    lowerer_.releaseDeferredTemps();
 }
 
 /// @brief Appends and indexes the block skeleton for one SELECT statement.

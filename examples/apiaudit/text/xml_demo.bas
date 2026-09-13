@@ -1,7 +1,7 @@
 ' =============================================================================
 ' API Audit: Zanna.Data.Xml - XML Processing
 ' =============================================================================
-' Tests: ParseResult, Parse, Error, IsValid, Element, Text, Comment, Cdata,
+' Tests: ParseResult, Parse, IsValid, Element, Text, Comment, Cdata,
 '        NodeType, Tag, Content, TextContent, Attr, HasAttr, SetAttr, RemoveAttr, AttrNames, Children,
 '        ChildCount, ChildAt, Append, Remove, Find, FindAll, Format,
 '        FormatPretty, Escape, Unescape
@@ -28,14 +28,14 @@ badParse = Zanna.Data.Xml.ParseResult("<root")
 PRINT "Bad ParseResult IsErr: "; badParse.IsErr
 PRINT "Bad ParseResult Err: "; badParse.UnwrapErrStr()
 
-' --- Parse / Error compatibility ---
-PRINT "--- Parse / Error compatibility ---"
+' --- Parse ---
+PRINT "--- Parse ---"
 DIM legacyDoc AS OBJECT
 legacyDoc = Zanna.Data.Xml.Parse("<root/>")
 PRINT "Legacy Parse done"
 DIM legacyBad AS OBJECT
 legacyBad = Zanna.Data.Xml.Parse("<root")
-PRINT "Legacy Error: "; Zanna.Data.Xml.Error()
+PRINT "Legacy Parse failure handled"
 
 ' --- NodeType ---
 PRINT "--- NodeType ---"
@@ -126,12 +126,9 @@ PRINT "ChildCount after remove: "; Zanna.Data.Xml.ChildCount(doc)
 PRINT "--- Find ---"
 DIM found AS OBJECT
 found = Zanna.Data.Xml.Find(doc, "item")
-PRINT "Find('item') Tag: "; Zanna.Data.Xml.Tag(found)
-DIM foundOption AS OBJECT
-foundOption = Zanna.Data.Xml.FindOption(doc, "item")
-PRINT "FindOption IsSome: "; foundOption.IsSome
-PRINT "FindOption Tag: "; Zanna.Data.Xml.Tag(foundOption.Unwrap())
-PRINT "FindOption missing: "; Zanna.Data.Xml.FindOption(doc, "missing").IsNone
+PRINT "Find IsSome: "; found.IsSome
+PRINT "Find('item') Tag: "; Zanna.Data.Xml.Tag(found.Unwrap())
+PRINT "Find missing: "; Zanna.Data.Xml.Find(doc, "missing").IsNone
 
 ' --- FindAll ---
 PRINT "--- FindAll ---"

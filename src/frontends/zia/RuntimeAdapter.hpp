@@ -189,6 +189,14 @@ std::vector<TypeRef> toZiaParamTypes(const il::runtime::ParsedSignature &sig);
 ///
 TypeRef toZiaReturnType(const il::runtime::ParsedSignature &sig);
 
+/// @brief Build the Zia type for a runtime class named by an `obj<Class>` registry annotation.
+/// @details Collection classes get the same parameterized shape their source spelling resolves
+///          to (so a declared `obj<Zanna.Collections.Seq>` result is iterable like `seq<obj>`),
+///          with `Any` element types; other classes are named runtime classes (ADR 0356).
+/// @param className Fully qualified runtime class name.
+/// @return Zia semantic type for values of that class.
+TypeRef runtimeObjectType(const std::string &className);
+
 /// @}
 
 } // namespace il::frontends::zia

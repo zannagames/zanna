@@ -3,7 +3,7 @@
 ' =============================================================================
 ' Tests: Parse, New, Scheme, Host, Port, Path, Query, Fragment, User, Pass,
 '        Authority, HostPort, Full, SetQueryParam, GetQueryParam,
-'        HasQueryParam, DelQueryParam, Resolve, Clone, Encode, Decode,
+'        HasQueryParam, DelQueryParam, Resolve, Clone, EncodeQuery, DecodeQuery,
 '        IsValid
 ' =============================================================================
 
@@ -100,13 +100,18 @@ DIM base AS OBJECT = Zanna.Network.Url.Parse("https://example.com/a/b/c")
 DIM resolved AS OBJECT = Zanna.Network.Url.Resolve(base, "/x/y/z")
 PRINT Zanna.Network.Url.get_Full(resolved)
 
-' --- Encode ---
-PRINT "--- Encode ---"
-PRINT Zanna.Network.Url.Encode("hello world&foo=bar")
+' --- EncodeQuery ---
+PRINT "--- EncodeQuery ---"
+DIM params AS OBJECT = Zanna.Collections.Map.New()
+params.SetStr("q", "hello world&foo=bar")
+PRINT Zanna.Network.Url.EncodeQuery(params)
 
-' --- Decode ---
-PRINT "--- Decode ---"
-PRINT Zanna.Network.Url.Decode("hello%20world%26foo%3Dbar")
+' --- DecodeQuery ---
+PRINT "--- DecodeQuery ---"
+DIM decoded AS OBJECT = Zanna.Network.Url.DecodeQuery("q=hello%20world%26foo%3Dbar&page=2")
+PRINT decoded.Count
+PRINT decoded.GetStr("q")
+PRINT decoded.GetStr("page")
 
 ' --- IsValid ---
 PRINT "--- IsValid ---"

@@ -8,39 +8,45 @@
 // File: src/runtime/services/steam/rt_steam_provider.c
 // Purpose: Steam provider for Zanna.Services. Loads the developer-shipped
 //          steam_api redistributable at run time, binds the Steamworks flat C
-//          API, pumps callbacks through manual dispatch, and implements the
-//          Zanna.Services.Steam extension class.
+//          API, pumps callbacks through manual dispatch, tracks the requests it
+//          serves, and implements the Zanna.Services.Steam extension class.
 // Key invariants:
 //   - The redistributable is resolved from exactly one path: the
 //     ZANNA_SERVICES_STEAM_LIBRARY override when set, otherwise the
 //     executable directory. It is never unloaded.
 //   - Core exports are resolved as one all-or-nothing table before any call.
 //     Interfaces are resolved by exact accessor name after SteamAPI_InitFlat;
-//     a missing interface disables only its features.
+//     a missing interface or export disables only its features.
 //   - Callback payloads are decoded only when their size equals the declared
 //     layout size; layouts are pinned by the static assertions below.
+//   - Every request owns one operation slot keyed by a provider token; Steam
+//     call completions are matched to slots by SteamAPICall_t.
 //   - Every entry point runs on the main thread; manual dispatch is never
 //     entered concurrently.
 // Ownership/Lifetime:
 //   - Provider state is static for the process lifetime.
 //   - Interface pointers are valid only between a successful start and stop.
 //   - Strings returned to the core are new caller-owned references.
-// Links: src/runtime/services/steam/rt_steam_abi.h,
+// Links: src/runtime/services/steam/rt_steam_internal.h,
+//        src/runtime/services/steam/rt_steam_abi.h,
 //        src/runtime/services/steam/rt_steam.h,
 //        src/runtime/services/rt_services_provider.h,
-//        docs/adr/0352-platform-services-runtime-loaded-providers.md
+//        docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        docs/adr/0353-platform-services-player-features.md
 //
 //===----------------------------------------------------------------------===//
 
 /**
  * @file rt_steam_provider.c
- * @brief Implements the Steamworks-backed platform services provider.
+ * @brief Implements the Steamworks-backed platform services provider core.
  * @details Start sequence: validate the app id, resolve the library path,
  *          export SteamAppId/SteamGameId when absent, load the library and its
  *          core exports, call SteamAPI_InitFlat, enable manual dispatch, read
  *          the client pipe, and open the versioned interfaces. Each pump runs
  *          one dispatch frame and translates up to 1024 callbacks into
- *          Zanna.Services events and request completions.
+ *          Zanna.Services events and request completions. Feature bindings
+ *          live in rt_steam_user_stats.c, rt_steam_social.c, and
+ *          rt_steam_cloud.c.
  */
 
 #include "rt_steam.h"
@@ -53,6 +59,7 @@
 #include "rt_services_dynlib.h"
 #include "rt_services_provider.h"
 #include "rt_steam_abi.h"
+#include "rt_steam_internal.h"
 #include "rt_string.h"
 #include "rt_trap.h"
 
@@ -67,6 +74,7 @@
 
 _Static_assert(sizeof(void *) == 8, "Steam provider layouts assume a 64-bit target");
 _Static_assert(sizeof(bool) == 1, "flat API bool must be one byte");
+_Static_assert(sizeof(float) == 4 && sizeof(double) == 8, "flat API float and double sizes");
 _Static_assert(sizeof(rt_steam_packing_sentinel) == RT_STEAM_PACKING_SENTINEL_SIZE,
                "Steam packing sentinel does not match the redistributable packing");
 _Static_assert(sizeof(rt_steam_callback_msg) == RT_STEAM_CALLBACK_MSG_SIZE,
@@ -92,13 +100,59 @@ _Static_assert(sizeof(rt_steam_dlc_installed) == 4, "DlcInstalled_t size");
 _Static_assert(sizeof(rt_steam_number_of_current_players) == 8, "NumberOfCurrentPlayers_t size");
 _Static_assert(offsetof(rt_steam_number_of_current_players, players) == 4,
                "NumberOfCurrentPlayers_t.m_cPlayers offset");
+_Static_assert(sizeof(rt_steam_gamepad_text_input_dismissed) == 12,
+               "GamepadTextInputDismissed_t size");
+_Static_assert(offsetof(rt_steam_gamepad_text_input_dismissed, submitted_size) == 4,
+               "GamepadTextInputDismissed_t.m_unSubmittedText offset");
+_Static_assert(offsetof(rt_steam_gamepad_text_input_dismissed, app_id) == 8,
+               "GamepadTextInputDismissed_t.m_unAppID offset");
+_Static_assert(sizeof(rt_steam_user_stats_stored) == RT_STEAM_USER_STATS_STORED_SIZE,
+               "UserStatsStored_t size");
+_Static_assert(offsetof(rt_steam_user_stats_stored, result) == 8,
+               "UserStatsStored_t.m_eResult offset");
+_Static_assert(sizeof(rt_steam_user_achievement_stored) == RT_STEAM_USER_ACHIEVEMENT_STORED_SIZE,
+               "UserAchievementStored_t size");
+_Static_assert(offsetof(rt_steam_user_achievement_stored, achievement_name) == 9,
+               "UserAchievementStored_t.m_rgchAchievementName offset");
+_Static_assert(offsetof(rt_steam_user_achievement_stored, current_progress) == 140,
+               "UserAchievementStored_t.m_nCurProgress offset");
+_Static_assert(offsetof(rt_steam_user_achievement_stored, max_progress) == 144,
+               "UserAchievementStored_t.m_nMaxProgress offset");
+_Static_assert(sizeof(rt_steam_leaderboard_find_result) == RT_STEAM_LEADERBOARD_FIND_RESULT_SIZE,
+               "LeaderboardFindResult_t size");
+_Static_assert(offsetof(rt_steam_leaderboard_find_result, found) == 8,
+               "LeaderboardFindResult_t.m_bLeaderboardFound offset");
+_Static_assert(sizeof(rt_steam_leaderboard_scores_downloaded) ==
+                   RT_STEAM_LEADERBOARD_SCORES_DOWNLOADED_SIZE,
+               "LeaderboardScoresDownloaded_t size");
+_Static_assert(offsetof(rt_steam_leaderboard_scores_downloaded, entries) == 8,
+               "LeaderboardScoresDownloaded_t.m_hSteamLeaderboardEntries offset");
+_Static_assert(offsetof(rt_steam_leaderboard_scores_downloaded, entry_count) == 16,
+               "LeaderboardScoresDownloaded_t.m_cEntryCount offset");
+_Static_assert(sizeof(rt_steam_leaderboard_score_uploaded) ==
+                   RT_STEAM_LEADERBOARD_SCORE_UPLOADED_SIZE,
+               "LeaderboardScoreUploaded_t size");
+_Static_assert(offsetof(rt_steam_leaderboard_score_uploaded, leaderboard) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 8u : 4u),
+               "LeaderboardScoreUploaded_t.m_hSteamLeaderboard offset");
+_Static_assert(offsetof(rt_steam_leaderboard_score_uploaded, score_changed) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 20u : 16u),
+               "LeaderboardScoreUploaded_t.m_bScoreChanged offset");
+_Static_assert(offsetof(rt_steam_leaderboard_score_uploaded, global_rank_previous) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 28u : 24u),
+               "LeaderboardScoreUploaded_t.m_nGlobalRankPrevious offset");
+_Static_assert(sizeof(rt_steam_leaderboard_entry) == RT_STEAM_LEADERBOARD_ENTRY_SIZE,
+               "LeaderboardEntry_t size");
+_Static_assert(offsetof(rt_steam_leaderboard_entry, detail_count) == 16,
+               "LeaderboardEntry_t.m_cDetails offset");
+_Static_assert(offsetof(rt_steam_leaderboard_entry, ugc) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 24u : 20u),
+               "LeaderboardEntry_t.m_hUGC offset");
 
 //===----------------------------------------------------------------------===//
 // State
 //===----------------------------------------------------------------------===//
 
-/// @brief Capacity, including the terminator, of a resolved library path.
-#define STEAM_PATH_CAPACITY 4096
 /// @brief Upper bound on callbacks drained by one pump, guarding against a misbehaving library.
 #define STEAM_MAX_CALLBACKS_PER_PUMP 1024
 /// @brief Environment variable naming an explicit steam_api library path.
@@ -106,74 +160,8 @@ _Static_assert(offsetof(rt_steam_number_of_current_players, players) == 4,
 /// @brief Largest valid Steam app or DLC id.
 #define STEAM_MAX_APP_ID UINT64_C(4294967295)
 
-/// @brief Core flat-API exports, resolved all-or-nothing.
-typedef struct steam_core_api {
-    rt_steam_init_flat_fn init_flat;              ///< SteamAPI_InitFlat.
-    rt_steam_void_fn shutdown;                    ///< SteamAPI_Shutdown.
-    rt_steam_restart_app_fn restart_app;          ///< SteamAPI_RestartAppIfNecessary.
-    rt_steam_bool_fn is_steam_running;            ///< SteamAPI_IsSteamRunning.
-    rt_steam_get_pipe_fn get_pipe;                ///< SteamAPI_GetHSteamPipe.
-    rt_steam_void_fn dispatch_init;               ///< SteamAPI_ManualDispatch_Init.
-    rt_steam_pipe_fn dispatch_run_frame;          ///< SteamAPI_ManualDispatch_RunFrame.
-    rt_steam_next_callback_fn dispatch_next;      ///< SteamAPI_ManualDispatch_GetNextCallback.
-    rt_steam_pipe_fn dispatch_free;               ///< SteamAPI_ManualDispatch_FreeLastCallback.
-    rt_steam_call_result_fn dispatch_call_result; ///< SteamAPI_ManualDispatch_GetAPICallResult.
-} steam_core_api;
-
-/// @brief ISteamUser binding.
-typedef struct steam_user_api {
-    void *self;                        ///< Interface pointer, or NULL when unavailable.
-    rt_steam_self_bool_fn logged_on;   ///< BLoggedOn.
-    rt_steam_self_u64_fn get_steam_id; ///< GetSteamID.
-} steam_user_api;
-
-/// @brief ISteamFriends binding.
-typedef struct steam_friends_api {
-    void *self;                         ///< Interface pointer, or NULL when unavailable.
-    rt_steam_self_cstr_fn persona_name; ///< GetPersonaName.
-} steam_friends_api;
-
-/// @brief ISteamUtils binding (v011 in SDK 1.65, v010 in 1.61-1.64).
-typedef struct steam_utils_api {
-    void *self;                           ///< Interface pointer, or NULL when unavailable.
-    int version;                          ///< 11 or 10 once bound.
-    rt_steam_self_u32_fn get_app_id;      ///< GetAppID.
-    rt_steam_self_bool_fn big_picture;    ///< IsSteamInBigPictureMode.
-    rt_steam_self_enum_fn steam_hardware; ///< IsRunningOnSteamHardware (v011).
-    rt_steam_self_bool_fn under_proton;   ///< IsRunningUnderProton (v011).
-    rt_steam_self_bool_fn on_steam_deck;  ///< IsSteamRunningOnSteamDeck (v010).
-} steam_utils_api;
-
-/// @brief ISteamApps binding.
-typedef struct steam_apps_api {
-    void *self;                                 ///< Interface pointer, or NULL when unavailable.
-    rt_steam_self_bool_fn is_subscribed;        ///< BIsSubscribed.
-    rt_steam_self_app_bool_fn is_dlc_installed; ///< BIsDlcInstalled.
-    rt_steam_self_cstr_fn game_language;        ///< GetCurrentGameLanguage.
-} steam_apps_api;
-
-/// @brief ISteamUserStats binding.
-typedef struct steam_user_stats_api {
-    void *self;                         ///< Interface pointer, or NULL when unavailable.
-    rt_steam_self_call_fn player_count; ///< GetNumberOfCurrentPlayers.
-} steam_user_stats_api;
-
-/// @brief Process-global Steam provider state (main thread only).
-typedef struct steam_state {
-    void *library;                          ///< Loaded redistributable, or NULL.
-    char library_path[STEAM_PATH_CAPACITY]; ///< Path of @ref library.
-    steam_core_api core;                    ///< Core exports of @ref library.
-    int started;                            ///< Nonzero between start and stop.
-    rt_steam_pipe pipe;                     ///< Client pipe while started.
-    steam_user_api user;                    ///< ISteamUser binding.
-    steam_friends_api friends;              ///< ISteamFriends binding.
-    steam_utils_api utils;                  ///< ISteamUtils binding.
-    steam_apps_api apps;                    ///< ISteamApps binding.
-    steam_user_stats_api user_stats;        ///< ISteamUserStats binding.
-} steam_state;
-
-/// @brief Zero-initialized provider state.
-static steam_state g_steam;
+/// @brief Zero-initialized provider state shared with the feature sources.
+steam_state rt_services_steam_state;
 
 //===----------------------------------------------------------------------===//
 // Host platform and ids
@@ -229,7 +217,7 @@ static const char *steam_library_file_name(void) {
 /// @param text NUL-terminated candidate; digits only, no sign or whitespace.
 /// @param out Receives the id on success.
 /// @return 1 when @p text is an integer in 1..4294967295, otherwise 0.
-static int steam_parse_id(const char *text, uint32_t *out) {
+int rt_services_steam_parse_id(const char *text, uint32_t *out) {
     uint64_t value = 0;
     size_t digits = 0;
     if (!text || !*text)
@@ -395,7 +383,7 @@ static int64_t steam_load_library(const char *path, char *message, size_t messag
 /// @brief Resolve an export from the loaded library.
 /// @param name Exported symbol name.
 /// @return Symbol address, or NULL.
-static void *steam_symbol(const char *name) {
+void *rt_services_steam_symbol(const char *name) {
     return rt_services_dynlib_symbol(g_steam.library, name);
 }
 
@@ -407,7 +395,7 @@ static void *steam_symbol(const char *name) {
 static void *steam_open_interface(const char *const *accessors, size_t count, int *out_index) {
     *out_index = -1;
     for (size_t i = 0; i < count; ++i) {
-        void *symbol = steam_symbol(accessors[i]);
+        void *symbol = rt_services_steam_symbol(accessors[i]);
         if (!symbol)
             continue;
         *out_index = (int)i;
@@ -417,12 +405,15 @@ static void *steam_open_interface(const char *const *accessors, size_t count, in
     return NULL;
 }
 
-/// @brief Record that an interface could not be bound.
-/// @param accessors Human-readable accessor name list.
+/// @brief Record that an interface or export could not be bound.
+/// @param what Accessor or export name(s).
 /// @param features Human-readable list of disabled features.
-static void steam_report_missing_interface(const char *accessors, const char *features) {
-    rt_services_provider_add_diagnostic(
-        "Steam: interface %s unavailable; %s disabled", accessors, features);
+void rt_services_steam_report_missing(const char *what, const char *features) {
+    const int is_accessor = strncmp(what, "SteamAPI_Steam", 14) == 0;
+    rt_services_provider_add_diagnostic("Steam: %s %s unavailable; %s disabled",
+                                        is_accessor ? "interface" : "export",
+                                        what,
+                                        features);
 }
 
 /// @brief Bind every versioned interface after a successful SteamAPI_InitFlat.
@@ -432,19 +423,20 @@ static void steam_open_interfaces(void) {
     memset(&g_steam.utils, 0, sizeof(g_steam.utils));
     memset(&g_steam.apps, 0, sizeof(g_steam.apps));
     memset(&g_steam.user_stats, 0, sizeof(g_steam.user_stats));
+    memset(&g_steam.remote_storage, 0, sizeof(g_steam.remote_storage));
     int version = -1;
 
     {
         static const char *const accessors[] = {RT_STEAM_SYMBOL_USER_V023};
         void *self = steam_open_interface(accessors, 1, &version);
-        void *logged_on = steam_symbol(RT_STEAM_SYMBOL_USER_LOGGED_ON);
-        void *steam_id = steam_symbol(RT_STEAM_SYMBOL_USER_GET_STEAM_ID);
+        void *logged_on = rt_services_steam_symbol(RT_STEAM_SYMBOL_USER_LOGGED_ON);
+        void *steam_id = rt_services_steam_symbol(RT_STEAM_SYMBOL_USER_GET_STEAM_ID);
         if (self && logged_on && steam_id) {
             g_steam.user.self = self;
             g_steam.user.logged_on = RT_FN_PTR_CAST((rt_steam_self_bool_fn)logged_on);
             g_steam.user.get_steam_id = RT_FN_PTR_CAST((rt_steam_self_u64_fn)steam_id);
         } else {
-            steam_report_missing_interface(RT_STEAM_SYMBOL_USER_V023, "identity queries");
+            rt_services_steam_report_missing(RT_STEAM_SYMBOL_USER_V023, "identity queries");
         }
     }
 
@@ -452,13 +444,14 @@ static void steam_open_interfaces(void) {
         static const char *const accessors[] = {RT_STEAM_SYMBOL_FRIENDS_V018,
                                                 RT_STEAM_SYMBOL_FRIENDS_V017};
         void *self = steam_open_interface(accessors, 2, &version);
-        void *persona = steam_symbol(RT_STEAM_SYMBOL_FRIENDS_PERSONA_NAME);
+        void *persona = rt_services_steam_symbol(RT_STEAM_SYMBOL_FRIENDS_PERSONA_NAME);
         if (self && persona) {
             g_steam.friends.self = self;
             g_steam.friends.persona_name = RT_FN_PTR_CAST((rt_steam_self_cstr_fn)persona);
         } else {
-            steam_report_missing_interface(
-                RT_STEAM_SYMBOL_FRIENDS_V018 " or " RT_STEAM_SYMBOL_FRIENDS_V017, "user names");
+            rt_services_steam_report_missing(RT_STEAM_SYMBOL_FRIENDS_V018
+                                             " or " RT_STEAM_SYMBOL_FRIENDS_V017,
+                                             "user names, presence, and overlay pages");
         }
     }
 
@@ -466,11 +459,11 @@ static void steam_open_interfaces(void) {
         static const char *const accessors[] = {RT_STEAM_SYMBOL_UTILS_V011,
                                                 RT_STEAM_SYMBOL_UTILS_V010};
         void *self = steam_open_interface(accessors, 2, &version);
-        void *app_id = steam_symbol(RT_STEAM_SYMBOL_UTILS_GET_APP_ID);
-        void *big_picture = steam_symbol(RT_STEAM_SYMBOL_UTILS_BIG_PICTURE);
-        void *hardware = steam_symbol(RT_STEAM_SYMBOL_UTILS_STEAM_HARDWARE);
-        void *proton = steam_symbol(RT_STEAM_SYMBOL_UTILS_UNDER_PROTON);
-        void *deck = steam_symbol(RT_STEAM_SYMBOL_UTILS_ON_STEAM_DECK);
+        void *app_id = rt_services_steam_symbol(RT_STEAM_SYMBOL_UTILS_GET_APP_ID);
+        void *big_picture = rt_services_steam_symbol(RT_STEAM_SYMBOL_UTILS_BIG_PICTURE);
+        void *hardware = rt_services_steam_symbol(RT_STEAM_SYMBOL_UTILS_STEAM_HARDWARE);
+        void *proton = rt_services_steam_symbol(RT_STEAM_SYMBOL_UTILS_UNDER_PROTON);
+        void *deck = rt_services_steam_symbol(RT_STEAM_SYMBOL_UTILS_ON_STEAM_DECK);
         const int v011 = version == 0 && hardware && proton;
         const int v010 = version == 1 && deck;
         if (self && app_id && big_picture && (v011 || v010)) {
@@ -485,9 +478,9 @@ static void steam_open_interfaces(void) {
                 g_steam.utils.on_steam_deck = RT_FN_PTR_CAST((rt_steam_self_bool_fn)deck);
             }
         } else {
-            steam_report_missing_interface(RT_STEAM_SYMBOL_UTILS_V011
-                                           " or " RT_STEAM_SYMBOL_UTILS_V010,
-                                           "app id, hardware, Proton, and Big Picture queries");
+            rt_services_steam_report_missing(
+                RT_STEAM_SYMBOL_UTILS_V011 " or " RT_STEAM_SYMBOL_UTILS_V010,
+                "app id, hardware, Proton, Big Picture, overlay, and text input queries");
         }
     }
 
@@ -495,32 +488,108 @@ static void steam_open_interfaces(void) {
         static const char *const accessors[] = {RT_STEAM_SYMBOL_APPS_V009,
                                                 RT_STEAM_SYMBOL_APPS_V008};
         void *self = steam_open_interface(accessors, 2, &version);
-        void *subscribed = steam_symbol(RT_STEAM_SYMBOL_APPS_IS_SUBSCRIBED);
-        void *dlc = steam_symbol(RT_STEAM_SYMBOL_APPS_IS_DLC_INSTALLED);
-        void *language = steam_symbol(RT_STEAM_SYMBOL_APPS_GAME_LANGUAGE);
+        void *subscribed = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_IS_SUBSCRIBED);
+        void *dlc = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_IS_DLC_INSTALLED);
+        void *language = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_GAME_LANGUAGE);
         if (self && subscribed && dlc && language) {
             g_steam.apps.self = self;
             g_steam.apps.is_subscribed = RT_FN_PTR_CAST((rt_steam_self_bool_fn)subscribed);
             g_steam.apps.is_dlc_installed = RT_FN_PTR_CAST((rt_steam_self_app_bool_fn)dlc);
             g_steam.apps.game_language = RT_FN_PTR_CAST((rt_steam_self_cstr_fn)language);
         } else {
-            steam_report_missing_interface(RT_STEAM_SYMBOL_APPS_V009
-                                           " or " RT_STEAM_SYMBOL_APPS_V008,
-                                           "licensing, DLC, and language queries");
+            rt_services_steam_report_missing(RT_STEAM_SYMBOL_APPS_V009
+                                             " or " RT_STEAM_SYMBOL_APPS_V008,
+                                             "licensing, DLC, and language queries");
         }
     }
 
     {
         static const char *const accessors[] = {RT_STEAM_SYMBOL_USER_STATS_V013};
         void *self = steam_open_interface(accessors, 1, &version);
-        void *player_count = steam_symbol(RT_STEAM_SYMBOL_USER_STATS_PLAYER_COUNT);
-        if (self && player_count) {
+        void *player_count = rt_services_steam_symbol(RT_STEAM_SYMBOL_USER_STATS_PLAYER_COUNT);
+        if (self) {
             g_steam.user_stats.self = self;
-            g_steam.user_stats.player_count = RT_FN_PTR_CAST((rt_steam_self_call_fn)player_count);
+            if (player_count) {
+                g_steam.user_stats.player_count =
+                    RT_FN_PTR_CAST((rt_steam_self_call_fn)player_count);
+            } else {
+                rt_services_steam_report_missing(RT_STEAM_SYMBOL_USER_STATS_PLAYER_COUNT,
+                                                 "player counts");
+            }
         } else {
-            steam_report_missing_interface(RT_STEAM_SYMBOL_USER_STATS_V013, "player counts");
+            rt_services_steam_report_missing(RT_STEAM_SYMBOL_USER_STATS_V013,
+                                             "player counts, achievements, stats, and "
+                                             "leaderboards");
         }
     }
+
+    rt_services_steam_bind_user_stats();
+    rt_services_steam_bind_social();
+    rt_services_steam_bind_cloud();
+}
+
+//===----------------------------------------------------------------------===//
+// Operations
+//===----------------------------------------------------------------------===//
+
+/// @brief Allocate an operation slot and a fresh provider token.
+/// @param stage Initial stage.
+/// @return Operation slot, or NULL when the table is full.
+steam_request_op *rt_services_steam_op_alloc(steam_op_stage stage) {
+    for (size_t i = 0; i < sizeof(g_steam.ops) / sizeof(g_steam.ops[0]); ++i) {
+        steam_request_op *op = &g_steam.ops[i];
+        if (op->stage != STEAM_OP_FREE)
+            continue;
+        memset(op, 0, sizeof(*op));
+        if (++g_steam.next_token == 0)
+            g_steam.next_token = 1;
+        op->token = g_steam.next_token;
+        op->stage = stage;
+        return op;
+    }
+    return NULL;
+}
+
+/// @brief Find the operation waiting on a Steam call.
+/// @param call SteamAPICall_t from a completion record.
+/// @return Operation slot, or NULL.
+steam_request_op *rt_services_steam_op_find_call(rt_steam_api_call call) {
+    if (call == 0)
+        return NULL;
+    for (size_t i = 0; i < sizeof(g_steam.ops) / sizeof(g_steam.ops[0]); ++i) {
+        if (g_steam.ops[i].stage != STEAM_OP_FREE && g_steam.ops[i].call == call)
+            return &g_steam.ops[i];
+    }
+    return NULL;
+}
+
+/// @brief Find the first operation in a stage.
+/// @param stage Stage to look for.
+/// @return Operation slot, or NULL.
+steam_request_op *rt_services_steam_op_find_stage(steam_op_stage stage) {
+    for (size_t i = 0; i < sizeof(g_steam.ops) / sizeof(g_steam.ops[0]); ++i) {
+        if (g_steam.ops[i].stage == stage)
+            return &g_steam.ops[i];
+    }
+    return NULL;
+}
+
+/// @brief Release an operation slot.
+/// @param op Slot to clear; NULL is ignored.
+void rt_services_steam_op_free(steam_request_op *op) {
+    if (op)
+        memset(op, 0, sizeof(*op));
+}
+
+/// @brief Fail a pending operation's request and release its slot.
+/// @param op Operation to fail.
+/// @param error Failure message.
+void rt_services_steam_op_fail(steam_request_op *op, const char *error) {
+    if (!op)
+        return;
+    // Complete before freeing the slot so an error that points into it stays valid.
+    rt_services_provider_complete_request(op->token, 0, RT_STEAM_RESULT_FAIL, 0, error);
+    rt_services_steam_op_free(op);
 }
 
 //===----------------------------------------------------------------------===//
@@ -565,7 +634,7 @@ static int64_t steam_status_for_init_result(int result) {
 static int64_t steam_start(rt_string app_id, char *message, size_t message_capacity) {
     const char *app_text = rt_string_cstr(app_id);
     uint32_t id = 0;
-    if (!steam_parse_id(app_text, &id)) {
+    if (!rt_services_steam_parse_id(app_text, &id)) {
         snprintf(message,
                  message_capacity,
                  "Services.Platform.Init: Steam app id '%s' must be an integer in 1..4294967295",
@@ -600,6 +669,7 @@ static int64_t steam_start(rt_string app_id, char *message, size_t message_capac
     g_steam.core.dispatch_init();
     g_steam.pipe = g_steam.core.get_pipe();
     g_steam.started = 1;
+    memset(g_steam.ops, 0, sizeof(g_steam.ops));
     steam_open_interfaces();
     if (rt_service_hooks_gpu_presenter_created()) {
         rt_services_provider_add_diagnostic(
@@ -609,7 +679,8 @@ static int64_t steam_start(rt_string app_id, char *message, size_t message_capac
     return RT_SERVICES_STATUS_OK;
 }
 
-/// @brief Stop the Steam provider and forget interface pointers.
+/// @brief Stop the Steam provider and forget interface pointers and operations.
+/// @details The services core cancels the matching requests afterwards.
 static void steam_stop(void) {
     if (!g_steam.started)
         return;
@@ -621,6 +692,9 @@ static void steam_stop(void) {
     memset(&g_steam.utils, 0, sizeof(g_steam.utils));
     memset(&g_steam.apps, 0, sizeof(g_steam.apps));
     memset(&g_steam.user_stats, 0, sizeof(g_steam.user_stats));
+    memset(&g_steam.remote_storage, 0, sizeof(g_steam.remote_storage));
+    memset(g_steam.ops, 0, sizeof(g_steam.ops));
+    rt_services_steam_reset_user_stats();
 }
 
 //===----------------------------------------------------------------------===//
@@ -628,11 +702,10 @@ static void steam_stop(void) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Check a callback payload against its declared layout size.
-/// @details Records a diagnostic when the sizes differ.
 /// @param msg Dispatched callback.
 /// @param expected Declared payload size in bytes.
 /// @return 1 when the payload may be decoded, otherwise 0.
-static int steam_payload_matches(const rt_steam_callback_msg *msg, size_t expected) {
+int rt_services_steam_payload_matches(const rt_steam_callback_msg *msg, size_t expected) {
     if (msg->param && msg->param_size >= 0 && (size_t)msg->param_size == expected)
         return 1;
     rt_services_provider_add_diagnostic(
@@ -643,63 +716,91 @@ static int steam_payload_matches(const rt_steam_callback_msg *msg, size_t expect
     return 0;
 }
 
-/// @brief Complete a PlayerCount request from its SteamAPICallCompleted_t.
-/// @param completed Decoded completion record.
-static void steam_complete_player_count(const rt_steam_api_call_completed *completed) {
-    rt_steam_number_of_current_players result;
-    char error[256];
-    if (completed->callback_id != RT_STEAM_CB_NUMBER_OF_CURRENT_PLAYERS ||
-        completed->param_size != sizeof(result)) {
+/// @brief Fetch a call result after validating its identifier and size.
+/// @param completed Decoded SteamAPICallCompleted_t.
+/// @param callback_id Expected result identifier.
+/// @param buffer Destination for the result structure.
+/// @param size Declared size of the result structure.
+/// @param method Steam method name used in failure messages.
+/// @param error Receives the failure message.
+/// @param error_capacity Size of @p error in bytes.
+/// @return 1 when the result was copied, otherwise 0.
+int rt_services_steam_fetch_call_result(const rt_steam_api_call_completed *completed,
+                                        int callback_id,
+                                        void *buffer,
+                                        size_t size,
+                                        const char *method,
+                                        char *error,
+                                        size_t error_capacity) {
+    if (completed->callback_id != callback_id || completed->param_size != size) {
         snprintf(error,
-                 sizeof(error),
+                 error_capacity,
                  "Steam: callback %d payload is %u bytes; binding expects %u",
                  completed->callback_id,
                  (unsigned)completed->param_size,
-                 (unsigned)sizeof(result));
+                 (unsigned)size);
         rt_services_provider_add_diagnostic("%s", error);
-        rt_services_provider_complete_request(
-            completed->async_call, 0, RT_STEAM_RESULT_FAIL, 0, error);
-        return;
+        return 0;
     }
-    memset(&result, 0, sizeof(result));
+    memset(buffer, 0, size);
     bool failed = false;
-    bool fetched = g_steam.core.dispatch_call_result(g_steam.pipe,
-                                                     completed->async_call,
-                                                     &result,
-                                                     (int)sizeof(result),
-                                                     RT_STEAM_CB_NUMBER_OF_CURRENT_PLAYERS,
-                                                     &failed);
+    bool fetched = g_steam.core.dispatch_call_result(
+        g_steam.pipe, completed->async_call, buffer, (int)size, callback_id, &failed);
     if (!fetched || failed) {
-        rt_services_provider_complete_request(completed->async_call,
-                                              0,
-                                              RT_STEAM_RESULT_FAIL,
-                                              0,
-                                              "Steam: player count request failed");
+        snprintf(error, error_capacity, "Steam: %s call failed", method);
+        return 0;
+    }
+    return 1;
+}
+
+/// @brief Complete a PlayerCount operation from its SteamAPICallCompleted_t.
+/// @param op Operation in the PlayerCount stage.
+/// @param completed Decoded completion record.
+static void steam_complete_player_count(steam_request_op *op,
+                                        const rt_steam_api_call_completed *completed) {
+    rt_steam_number_of_current_players result;
+    char error[256];
+    if (!rt_services_steam_fetch_call_result(completed,
+                                             RT_STEAM_CB_NUMBER_OF_CURRENT_PLAYERS,
+                                             &result,
+                                             sizeof(result),
+                                             "GetNumberOfCurrentPlayers",
+                                             error,
+                                             sizeof(error))) {
+        rt_services_steam_op_fail(op, error);
         return;
     }
     if (result.success != 1) {
-        rt_services_provider_complete_request(completed->async_call,
-                                              0,
-                                              RT_STEAM_RESULT_FAIL,
-                                              0,
-                                              "Steam: player count is unavailable");
+        rt_services_steam_op_fail(op, "Steam: player count is unavailable");
         return;
     }
     rt_services_provider_complete_request(
-        completed->async_call, 1, RT_STEAM_RESULT_OK, (int64_t)result.players, NULL);
+        op->token, 1, RT_STEAM_RESULT_OK, (int64_t)result.players, NULL);
+    rt_services_steam_op_free(op);
 }
 
-/// @brief Route a SteamAPICallCompleted_t to the pending request it completes.
-/// @details Calls not started by this provider are ignored.
+/// @brief Route a SteamAPICallCompleted_t to the operation it completes.
+/// @details Calls not started by this provider, or whose request was
+///          cancelled, are ignored.
 /// @param msg Dispatched callback carrying the completion record.
 static void steam_route_call_result(const rt_steam_callback_msg *msg) {
     rt_steam_api_call_completed completed;
-    if (!steam_payload_matches(msg, sizeof(completed)))
+    if (!rt_services_steam_payload_matches(msg, sizeof(completed)))
         return;
     memcpy(&completed, msg->param, sizeof(completed));
-    switch (rt_services_provider_pending_request_kind(completed.async_call)) {
-        case RT_SERVICES_REQUEST_PLAYER_COUNT:
-            steam_complete_player_count(&completed);
+    steam_request_op *op = rt_services_steam_op_find_call(completed.async_call);
+    if (!op)
+        return;
+    switch (op->stage) {
+        case STEAM_OP_PLAYER_COUNT:
+            steam_complete_player_count(op, &completed);
+            break;
+        case STEAM_OP_FIND:
+        case STEAM_OP_FIND_FOR_UPLOAD:
+        case STEAM_OP_FIND_FOR_DOWNLOAD:
+        case STEAM_OP_UPLOAD:
+        case STEAM_OP_DOWNLOAD:
+            rt_services_steam_leaderboard_call_completed(op, &completed);
             break;
         default:
             break;
@@ -715,7 +816,7 @@ static void steam_handle_callback(const rt_steam_callback_msg *msg) {
             break;
         case RT_STEAM_CB_SERVER_CONNECT_FAILURE: {
             rt_steam_server_connect_failure payload;
-            if (steam_payload_matches(msg, sizeof(payload))) {
+            if (rt_services_steam_payload_matches(msg, sizeof(payload))) {
                 memcpy(&payload, msg->param, sizeof(payload));
                 rt_services_provider_emit_event(RT_SERVICES_EVENT_CONNECT_FAILED,
                                                 payload.result,
@@ -727,7 +828,7 @@ static void steam_handle_callback(const rt_steam_callback_msg *msg) {
         }
         case RT_STEAM_CB_SERVERS_DISCONNECTED: {
             rt_steam_servers_disconnected payload;
-            if (steam_payload_matches(msg, sizeof(payload))) {
+            if (rt_services_steam_payload_matches(msg, sizeof(payload))) {
                 memcpy(&payload, msg->param, sizeof(payload));
                 rt_services_provider_emit_event(
                     RT_SERVICES_EVENT_SERVICE_DISCONNECTED, payload.result, 0, 0, NULL);
@@ -736,7 +837,7 @@ static void steam_handle_callback(const rt_steam_callback_msg *msg) {
         }
         case RT_STEAM_CB_GAME_OVERLAY_ACTIVATED: {
             rt_steam_game_overlay_activated payload;
-            if (steam_payload_matches(msg, sizeof(payload))) {
+            if (rt_services_steam_payload_matches(msg, sizeof(payload))) {
                 memcpy(&payload, msg->param, sizeof(payload));
                 rt_services_provider_emit_event(RT_SERVICES_EVENT_OVERLAY_CHANGED,
                                                 0,
@@ -754,7 +855,7 @@ static void steam_handle_callback(const rt_steam_callback_msg *msg) {
             break;
         case RT_STEAM_CB_DLC_INSTALLED: {
             rt_steam_dlc_installed payload;
-            if (steam_payload_matches(msg, sizeof(payload))) {
+            if (rt_services_steam_payload_matches(msg, sizeof(payload))) {
                 char text[16];
                 memcpy(&payload, msg->param, sizeof(payload));
                 snprintf(text, sizeof(text), "%u", (unsigned)payload.app_id);
@@ -768,6 +869,8 @@ static void steam_handle_callback(const rt_steam_callback_msg *msg) {
                 RT_SERVICES_EVENT_LAUNCH_PARAMETERS_CHANGED, 0, 0, 0, NULL);
             break;
         default:
+            if (!rt_services_steam_user_stats_callback(msg))
+                (void)rt_services_steam_social_callback(msg);
             break;
     }
 }
@@ -777,7 +880,7 @@ static void steam_pump(void) {
     if (!g_steam.started)
         return;
     g_steam.core.dispatch_run_frame(g_steam.pipe);
-    for (int i = 0; i < STEAM_MAX_CALLBACKS_PER_PUMP; ++i) {
+    for (int i = 0; i < STEAM_MAX_CALLBACKS_PER_PUMP && g_steam.started; ++i) {
         rt_steam_callback_msg msg;
         memset(&msg, 0, sizeof(msg));
         if (!g_steam.core.dispatch_next(g_steam.pipe, &msg))
@@ -804,7 +907,21 @@ static int8_t steam_has_feature(int64_t feature) {
         case RT_SERVICES_FEATURE_LANGUAGE:
             return g_steam.apps.self ? 1 : 0;
         case RT_SERVICES_FEATURE_PLAYER_COUNT:
-            return g_steam.user_stats.self ? 1 : 0;
+            return g_steam.user_stats.player_count ? 1 : 0;
+        case RT_SERVICES_FEATURE_ACHIEVEMENTS:
+            return g_steam.user_stats.achievements_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_STATS:
+            return g_steam.user_stats.stats_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_LEADERBOARDS:
+            return g_steam.user_stats.leaderboards_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_PRESENCE:
+            return g_steam.friends.presence_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_OVERLAY:
+            return (g_steam.friends.overlay_ready && g_steam.utils.overlay_ready) ? 1 : 0;
+        case RT_SERVICES_FEATURE_TEXT_INPUT:
+            return g_steam.utils.text_input_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_CLOUD:
+            return g_steam.remote_storage.self ? 1 : 0;
         default:
             return 0;
     }
@@ -873,7 +990,7 @@ static int8_t steam_is_online(void) {
 static int8_t steam_is_dlc_installed(rt_string dlc_id) {
     const char *text = rt_string_cstr(dlc_id);
     uint32_t id = 0;
-    if (!steam_parse_id(text, &id)) {
+    if (!rt_services_steam_parse_id(text, &id)) {
         char message[256];
         snprintf(message,
                  sizeof(message),
@@ -888,38 +1005,64 @@ static int8_t steam_is_dlc_installed(rt_string dlc_id) {
     return g_steam.apps.is_dlc_installed(g_steam.apps.self, id) ? 1 : 0;
 }
 
-/// @brief Begin an asynchronous request.
-/// @param kind RT_SERVICES_REQUEST_* value.
-/// @param out_handle Receives the SteamAPICall_t handle.
+/// @brief Start a player-count call.
+/// @param out_handle Receives the provider token.
 /// @param message Receives the failure message.
 /// @param message_capacity Size of @p message in bytes.
 /// @return 1 when the call started, otherwise 0.
-static int8_t steam_begin_request(int64_t kind,
-                                  uint64_t *out_handle,
-                                  char *message,
-                                  size_t message_capacity) {
-    if (kind != RT_SERVICES_REQUEST_PLAYER_COUNT) {
-        snprintf(message,
-                 message_capacity,
-                 "Steam: request kind %lld is not supported",
-                 (long long)kind);
-        return 0;
-    }
-    if (!g_steam.started || !g_steam.user_stats.self) {
+static int8_t steam_begin_player_count(uint64_t *out_handle,
+                                       char *message,
+                                       size_t message_capacity) {
+    if (!g_steam.started || !g_steam.user_stats.player_count) {
         snprintf(message,
                  message_capacity,
                  "Steam: player counts are unavailable (ISteamUserStats interface missing)");
         return 0;
     }
+    steam_request_op *op = rt_services_steam_op_alloc(STEAM_OP_PLAYER_COUNT);
+    if (!op) {
+        snprintf(message, message_capacity, "Steam: too many pending requests");
+        return 0;
+    }
     rt_steam_api_call call = g_steam.user_stats.player_count(g_steam.user_stats.self);
     if (call == 0) {
+        rt_services_steam_op_free(op);
         snprintf(message,
                  message_capacity,
                  "Steam: GetNumberOfCurrentPlayers returned an invalid call handle");
         return 0;
     }
-    *out_handle = call;
+    op->call = call;
+    *out_handle = op->token;
     return 1;
+}
+
+/// @brief Begin an asynchronous request.
+/// @param args Validated request kind and arguments.
+/// @param out_handle Receives the provider token.
+/// @param message Receives the failure message.
+/// @param message_capacity Size of @p message in bytes.
+/// @return 1 when the request started, otherwise 0.
+static int8_t steam_begin_request(const rt_services_request_args *args,
+                                  uint64_t *out_handle,
+                                  char *message,
+                                  size_t message_capacity) {
+    switch (args->kind) {
+        case RT_SERVICES_REQUEST_PLAYER_COUNT:
+            return steam_begin_player_count(out_handle, message, message_capacity);
+        case RT_SERVICES_REQUEST_LEADERBOARD_FIND:
+        case RT_SERVICES_REQUEST_LEADERBOARD_UPLOAD:
+        case RT_SERVICES_REQUEST_LEADERBOARD_DOWNLOAD:
+            return rt_services_steam_begin_leaderboard(args, out_handle, message, message_capacity);
+        case RT_SERVICES_REQUEST_TEXT_INPUT:
+            return rt_services_steam_begin_text_input(args, out_handle, message, message_capacity);
+        default:
+            snprintf(message,
+                     message_capacity,
+                     "Steam: request kind %lld is not supported",
+                     (long long)args->kind);
+            return 0;
+    }
 }
 
 /// @brief Steam provider registration consumed by the services core.
@@ -938,6 +1081,13 @@ const rt_services_provider rt_services_steam_provider = {
     .is_online = steam_is_online,
     .is_dlc_installed = steam_is_dlc_installed,
     .begin_request = steam_begin_request,
+    .achievements = &rt_services_steam_achievement_ops,
+    .stats = &rt_services_steam_stat_ops,
+    .leaderboards = &rt_services_steam_leaderboard_ops,
+    .presence = &rt_services_steam_presence_ops,
+    .overlay = &rt_services_steam_overlay_ops,
+    .text_input = &rt_services_steam_text_input_ops,
+    .cloud = &rt_services_steam_cloud_ops,
 };
 
 //===----------------------------------------------------------------------===//

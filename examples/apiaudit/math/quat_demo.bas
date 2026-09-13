@@ -81,14 +81,14 @@ PRINT "--- Norm ---"
 DIM q2 AS Zanna.Math.Quat
 q2 = Zanna.Math.Quat.New(1.0, 2.0, 3.0, 4.0)
 DIM qn AS Zanna.Math.Quat
-qn = q2.Norm()
-PRINT "Norm(1,2,3,4) Len: "; qn.Len()
+qn = q2.Normalize()
+PRINT "Norm(1,2,3,4) Len: "; qn.Length()
 
 ' --- Len ---
 PRINT "--- Len ---"
-PRINT "Len(identity): "; qi.Len()
-PRINT "Len(rotY): "; qa.Len()
-PRINT "Len(1,2,3,4): "; q2.Len()
+PRINT "Len(identity): "; qi.Length()
+PRINT "Len(rotY): "; qa.Length()
+PRINT "Len(1,2,3,4): "; q2.Length()
 
 ' --- LenSq ---
 PRINT "--- LenSq ---"

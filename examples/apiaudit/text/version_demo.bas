@@ -50,9 +50,9 @@ DIM v5 AS OBJECT
 v3 = Zanna.Text.Version.Parse("1.0.0")
 v4 = Zanna.Text.Version.Parse("2.0.0")
 v5 = Zanna.Text.Version.Parse("1.0.0")
-PRINT "1.0.0 vs 2.0.0: "; Zanna.Text.Version.Cmp(v3, v4)
-PRINT "2.0.0 vs 1.0.0: "; Zanna.Text.Version.Cmp(v4, v3)
-PRINT "1.0.0 vs 1.0.0: "; Zanna.Text.Version.Cmp(v3, v5)
+PRINT "1.0.0 vs 2.0.0: "; v3.CompareTo(v4)
+PRINT "2.0.0 vs 1.0.0: "; v4.CompareTo(v3)
+PRINT "1.0.0 vs 1.0.0: "; v3.CompareTo(v5)
 
 ' --- Satisfies ---
 PRINT "--- Satisfies ---"

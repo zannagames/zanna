@@ -20,7 +20,7 @@
 // GRAPHICS 3D - TRANSFORM3D
 //=============================================================================
 
-RT_FUNC(Transform3DNew, rt_transform3d_new, "Zanna.Graphics3D.Transform3D.New", "obj()", owned)
+RT_FUNC(Transform3DNew, rt_transform3d_new, "Zanna.Graphics3D.Transform3D.New", "obj<Zanna.Graphics3D.Transform3D>()", owned)
 RT_FUNC(Transform3DSetPosition,  rt_transform3d_set_position, "Zanna.Graphics3D.Transform3D.SetPosition",  "void(obj,f64,f64,f64)")
 RT_FUNC(Transform3DGetPosition, rt_transform3d_get_position, "Zanna.Graphics3D.Transform3D.get_Position", "obj<Zanna.Math.Vec3>(obj)", owned)
 RT_FUNC(Transform3DSetRotation,  rt_transform3d_set_rotation, "Zanna.Graphics3D.Transform3D.set_Rotation", "void(obj,obj<Zanna.Math.Quat>)")
@@ -59,10 +59,10 @@ RT_CLASS_END()
 // GRAPHICS 3D - PATH3D
 //=============================================================================
 
-RT_FUNC(Path3DNew, rt_path3d_new, "Zanna.Graphics3D.Path3D.New", "obj()", owned)
+RT_FUNC(Path3DNew, rt_path3d_new, "Zanna.Graphics3D.Path3D.New", "obj<Zanna.Graphics3D.Path3D>()", owned)
 RT_FUNC(Path3DAddPoint,         rt_path3d_add_point,        "Zanna.Graphics3D.Path3D.AddPoint",         "void(obj,obj)")
-RT_FUNC(Path3DGetPositionAt, rt_path3d_get_position_at, "Zanna.Graphics3D.Path3D.GetPositionAt", "obj(obj,f64)", owned)
-RT_FUNC(Path3DGetDirectionAt, rt_path3d_get_direction_at, "Zanna.Graphics3D.Path3D.GetDirectionAt", "obj(obj,f64)", owned)
+RT_FUNC(Path3DGetPositionAt, rt_path3d_get_position_at, "Zanna.Graphics3D.Path3D.GetPositionAt", "obj<Zanna.Math.Vec3>(obj,f64)", owned)
+RT_FUNC(Path3DGetDirectionAt, rt_path3d_get_direction_at, "Zanna.Graphics3D.Path3D.GetDirectionAt", "obj<Zanna.Math.Vec3>(obj,f64)", owned)
 RT_FUNC(Path3DGetLength,        rt_path3d_get_length,       "Zanna.Graphics3D.Path3D.get_Length",       "f64(obj)")
 RT_FUNC(Path3DGetPointCount,    rt_path3d_get_point_count,  "Zanna.Graphics3D.Path3D.get_PointCount",   "i64(obj)")
 RT_FUNC(Path3DSetLooping,       rt_path3d_set_looping,      "Zanna.Graphics3D.Path3D.set_Looping",      "void(obj,i1)")
@@ -80,8 +80,8 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Path3D", Path3D, "obj", Path3DNew)
     RT_PROP("PointCount", "i64", Path3DGetPointCount, none)
     RT_PROP("Looping", "i1", Path3DGetLooping, Path3DSetLooping)
     RT_METHOD("AddPoint", "void(obj)", Path3DAddPoint)
-    RT_METHOD("GetPositionAt", "obj(f64)", Path3DGetPositionAt)
-    RT_METHOD("GetDirectionAt", "obj(f64)", Path3DGetDirectionAt)
+    RT_METHOD("GetPositionAt", "obj<Zanna.Math.Vec3>(f64)", Path3DGetPositionAt)
+    RT_METHOD("GetDirectionAt", "obj<Zanna.Math.Vec3>(f64)", Path3DGetDirectionAt)
     RT_METHOD("Clear", "void()", Path3DClear)
 RT_CLASS_END()
 
@@ -89,7 +89,7 @@ RT_CLASS_END()
 // GRAPHICS 3D - INSTANCEBATCH3D
 //=============================================================================
 
-RT_FUNC(InstBatch3DNew, rt_instbatch3d_new, "Zanna.Graphics3D.InstanceBatch3D.New", "obj(obj,obj)", owned)
+RT_FUNC(InstBatch3DNew, rt_instbatch3d_new, "Zanna.Graphics3D.InstanceBatch3D.New", "obj<Zanna.Graphics3D.InstanceBatch3D>(obj,obj)", owned)
 RT_FUNC(InstBatch3DAdd,          rt_instbatch3d_add,          "Zanna.Graphics3D.InstanceBatch3D.Add",          "void(obj,obj)")
 RT_FUNC(InstBatch3DRemove,       rt_instbatch3d_remove,       "Zanna.Graphics3D.InstanceBatch3D.Remove",       "void(obj,i64)")
 RT_FUNC(InstBatch3DSet,          rt_instbatch3d_set,          "Zanna.Graphics3D.InstanceBatch3D.Set",          "void(obj,i64,obj)")
@@ -125,12 +125,12 @@ RT_CLASS_END()
 // GRAPHICS 3D - TERRAIN3D
 //=============================================================================
 
-RT_FUNC(Terrain3DNew, rt_terrain3d_new, "Zanna.Graphics3D.Terrain3D.New", "obj(i64,i64)", owned)
+RT_FUNC(Terrain3DNew, rt_terrain3d_new, "Zanna.Graphics3D.Terrain3D.New", "obj<Zanna.Graphics3D.Terrain3D>(i64,i64)", owned)
 RT_FUNC(Terrain3DSetHeightmap,   rt_terrain3d_set_heightmap,  "Zanna.Graphics3D.Terrain3D.SetHeightmap",   "void(obj,obj)")
 RT_FUNC(Terrain3DSetMaterial,    rt_terrain3d_set_material,   "Zanna.Graphics3D.Terrain3D.SetMaterial",    "void(obj,obj)")
 RT_FUNC(Terrain3DSetScale,       rt_terrain3d_set_scale,      "Zanna.Graphics3D.Terrain3D.SetScale",       "void(obj,f64,f64,f64)")
 RT_FUNC(Terrain3DGetHeightAt,    rt_terrain3d_get_height_at,  "Zanna.Graphics3D.Terrain3D.GetHeightAt",    "f64(obj,f64,f64)")
-RT_FUNC(Terrain3DGetNormalAt, rt_terrain3d_get_normal_at, "Zanna.Graphics3D.Terrain3D.GetNormalAt", "obj(obj,f64,f64)", owned)
+RT_FUNC(Terrain3DGetNormalAt, rt_terrain3d_get_normal_at, "Zanna.Graphics3D.Terrain3D.GetNormalAt", "obj<Zanna.Math.Vec3>(obj,f64,f64)", owned)
 RT_FUNC(Canvas3DDrawTerrain,     rt_canvas3d_draw_terrain,    "Zanna.Graphics3D.Canvas3D.DrawTerrain",     "void(obj,obj)")
 RT_FUNC(Canvas3DDrawTerrainAt,   rt_canvas3d_draw_terrain_at, "Zanna.Graphics3D.Canvas3D.DrawTerrainAt",   "void(obj,obj,f64,f64,f64)")
 
@@ -147,9 +147,9 @@ RT_FUNC(Terrain3DRebuildSplatWeights, rt_terrain3d_rebuild_splat_weights, "Zanna
 // ADR 0227 readback symmetry
 RT_FUNC(Terrain3DGetScale, rt_terrain3d_get_scale, "Zanna.Graphics3D.Terrain3D.GetScale", "obj<Zanna.Math.Vec3>(obj)", owned)
 RT_FUNC(Terrain3DGetMaterial, rt_terrain3d_get_material, "Zanna.Graphics3D.Terrain3D.get_Material", "obj<Zanna.Graphics3D.Material3D>(obj)", borrowed)
-RT_FUNC(Terrain3DGetLayerTex, rt_terrain3d_get_layer_texture, "Zanna.Graphics3D.Terrain3D.GetLayerTexture", "obj(obj,i64)", borrowed)
+RT_FUNC(Terrain3DGetLayerTex, rt_terrain3d_get_layer_texture, "Zanna.Graphics3D.Terrain3D.GetLayerTexture", "obj<Zanna.Core.Object>(obj,i64)", borrowed)
 RT_FUNC(Terrain3DGetLayerScale,  rt_terrain3d_get_layer_scale,  "Zanna.Graphics3D.Terrain3D.GetLayerScale",  "f64(obj,i64)")
-RT_FUNC(Terrain3DGetSplatMap, rt_terrain3d_get_splat_map, "Zanna.Graphics3D.Terrain3D.GetSplatMap", "obj(obj,i64)", borrowed)
+RT_FUNC(Terrain3DGetSplatMap, rt_terrain3d_get_splat_map, "Zanna.Graphics3D.Terrain3D.GetSplatMap", "obj<Zanna.Graphics.Pixels>(obj,i64)", borrowed)
 RT_FUNC(Terrain3DGetLodNear,     rt_terrain3d_get_lod_near_distance, "Zanna.Graphics3D.Terrain3D.get_LodNearDistance", "f64(obj)")
 RT_FUNC(Terrain3DGetLodFar,      rt_terrain3d_get_lod_far_distance,  "Zanna.Graphics3D.Terrain3D.get_LodFarDistance",  "f64(obj)")
 RT_FUNC(Terrain3DGetLodHysteresis, rt_terrain3d_get_lod_hysteresis, "Zanna.Graphics3D.Terrain3D.get_LodHysteresis", "f64(obj)")
@@ -165,7 +165,7 @@ RT_FUNC(Terrain3DGetHoleDepth,   rt_terrain3d_get_hole_depth,   "Zanna.Graphics3
 // GRAPHICS 3D - BAKED GLOBAL ILLUMINATION
 //=============================================================================
 
-RT_FUNC(LightBaker3DNew, rt_lightbaker3d_new, "Zanna.Graphics3D.LightBaker3D.New", "obj(obj<Zanna.Graphics3D.SceneGraph>)", owned)
+RT_FUNC(LightBaker3DNew, rt_lightbaker3d_new, "Zanna.Graphics3D.LightBaker3D.New", "obj<Zanna.Graphics3D.LightBaker3D>(obj<Zanna.Graphics3D.SceneGraph>)", owned)
 RT_FUNC(LightBaker3DSetTexels,   rt_lightbaker3d_set_texels_per_unit, "Zanna.Graphics3D.LightBaker3D.set_TexelsPerUnit",  "void(obj,f64)")
 RT_FUNC(LightBaker3DGetTexels,   rt_lightbaker3d_get_texels_per_unit, "Zanna.Graphics3D.LightBaker3D.get_TexelsPerUnit",  "f64(obj)")
 RT_FUNC(LightBaker3DSetSamples,  rt_lightbaker3d_set_samples,         "Zanna.Graphics3D.LightBaker3D.set_Samples",        "void(obj,i64)")
@@ -179,7 +179,7 @@ RT_FUNC(LightBaker3DGetProgress, rt_lightbaker3d_get_progress,        "Zanna.Gra
 RT_FUNC(LightBaker3DAddLight,    rt_lightbaker3d_add_light,           "Zanna.Graphics3D.LightBaker3D.AddLight",           "void(obj,obj<Zanna.Graphics3D.Light3D>)")
 RT_FUNC(LightBaker3DBakeStep,    rt_lightbaker3d_bake_step,           "Zanna.Graphics3D.LightBaker3D.BakeStep",           "i1(obj)")
 RT_FUNC(LightBaker3DApply,       rt_lightbaker3d_apply,               "Zanna.Graphics3D.LightBaker3D.Apply",              "void(obj)")
-RT_FUNC(LightBaker3DGetAtlas, rt_lightbaker3d_get_atlas, "Zanna.Graphics3D.LightBaker3D.get_Atlas", "obj(obj)", owned)
+RT_FUNC(LightBaker3DGetAtlas, rt_lightbaker3d_get_atlas, "Zanna.Graphics3D.LightBaker3D.get_Atlas", "obj<Zanna.Graphics.Pixels>(obj)", owned)
 
 /// @summary Provides Light Baker 3D functionality for 3D rendering and scene applications.
 /// @details
@@ -195,21 +195,21 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.LightBaker3D", LightBaker3D, "obj", LightBaker3
     RT_PROP("Bounces", "i64", LightBaker3DGetBounces, LightBaker3DSetBounces)
     RT_PROP("IncludeDirect", "i1", LightBaker3DGetIncludeDirect, LightBaker3DSetIncludeDirect)
     RT_PROP("Progress", "f64", LightBaker3DGetProgress, none)
-    RT_PROP("Atlas", "obj", LightBaker3DGetAtlas, none)
+    RT_PROP("Atlas", "obj<Zanna.Graphics.Pixels>", LightBaker3DGetAtlas, none)
     RT_METHOD("SetSkyColor", "void(f64,f64,f64)", LightBaker3DSetSkyColor)
     RT_METHOD("AddLight", "void(obj)", LightBaker3DAddLight)
     RT_METHOD("BakeStep", "i1()", LightBaker3DBakeStep)
     RT_METHOD("Apply", "void()", LightBaker3DApply)
 RT_CLASS_END()
 
-RT_FUNC(LightProbeGrid3DNew, rt_lightprobegrid3d_new, "Zanna.Graphics3D.LightProbeGrid3D.New", "obj(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,f64)", owned)
+RT_FUNC(LightProbeGrid3DNew, rt_lightprobegrid3d_new, "Zanna.Graphics3D.LightProbeGrid3D.New", "obj<Zanna.Graphics3D.LightProbeGrid3D>(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,f64)", owned)
 RT_FUNC(LightProbeGrid3DGetCount,  rt_lightprobegrid3d_get_probe_count, "Zanna.Graphics3D.LightProbeGrid3D.get_ProbeCount",  "i64(obj)")
 RT_FUNC(LightProbeGrid3DBake,      rt_lightprobegrid3d_bake,            "Zanna.Graphics3D.LightProbeGrid3D.Bake",            "void(obj,obj<Zanna.Graphics3D.LightBaker3D>)")
 RT_FUNC(LightProbeGrid3DSample, rt_lightprobegrid3d_sample, "Zanna.Graphics3D.LightProbeGrid3D.Sample", "obj<Zanna.Math.Vec3>(obj,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>)", owned)
 RT_FUNC(LightProbeGrid3DSave,      rt_lightprobegrid3d_save,            "Zanna.Graphics3D.LightProbeGrid3D.Save",            "i1(obj,str)")
 RT_FUNC(LightProbeGrid3DLoad,      rt_lightprobegrid3d_load,            "Zanna.Graphics3D.LightProbeGrid3D.Load",            "i1(obj,str)")
 
-RT_FUNC(Sky3DNew, rt_sky3d_new, "Zanna.Graphics3D.Sky3D.New", "obj()", owned)
+RT_FUNC(Sky3DNew, rt_sky3d_new, "Zanna.Graphics3D.Sky3D.New", "obj<Zanna.Graphics3D.Sky3D>()", owned)
 RT_FUNC(Sky3DSetSunDirection, rt_sky3d_set_sun_direction, "Zanna.Graphics3D.Sky3D.SetSunDirection",  "void(obj,obj<Zanna.Math.Vec3>)")
 RT_FUNC(Sky3DSetTurbidity,   rt_sky3d_set_turbidity,      "Zanna.Graphics3D.Sky3D.set_Turbidity",    "void(obj,f64)")
 RT_FUNC(Sky3DGetTurbidity,   rt_sky3d_get_turbidity,      "Zanna.Graphics3D.Sky3D.get_Turbidity",    "f64(obj)")
@@ -221,7 +221,7 @@ RT_FUNC(Sky3DSetResolution,  rt_sky3d_set_resolution,     "Zanna.Graphics3D.Sky3
 RT_FUNC(Sky3DGetResolution,  rt_sky3d_get_resolution,     "Zanna.Graphics3D.Sky3D.get_Resolution",   "i64(obj)")
 RT_FUNC(Sky3DGetDirty,       rt_sky3d_get_dirty,          "Zanna.Graphics3D.Sky3D.get_Dirty",        "i1(obj)")
 RT_FUNC(Sky3DUpdate,         rt_sky3d_update,             "Zanna.Graphics3D.Sky3D.Update",           "i1(obj,obj)")
-RT_FUNC(Sky3DGetCubemap, rt_sky3d_get_cubemap, "Zanna.Graphics3D.Sky3D.get_Cubemap", "obj(obj)", owned)
+RT_FUNC(Sky3DGetCubemap, rt_sky3d_get_cubemap, "Zanna.Graphics3D.Sky3D.get_Cubemap", "obj<Zanna.Graphics3D.CubeMap3D>(obj)", owned)
 // Plan 59 (baseball night look): deterministic night star field + moon.
 RT_FUNC(Sky3DSetStars,       rt_sky3d_set_stars,          "Zanna.Graphics3D.Sky3D.set_Stars",        "void(obj,i1)")
 RT_FUNC(Sky3DGetStars,       rt_sky3d_get_stars,          "Zanna.Graphics3D.Sky3D.get_Stars",        "i1(obj)")
@@ -240,7 +240,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Sky3D", Sky3D, "obj", Sky3DNew)
     RT_PROP("Stars", "i1", Sky3DGetStars, Sky3DSetStars)
     RT_PROP("StarIntensity", "f64", Sky3DGetStarIntensity, Sky3DSetStarIntensity)
     RT_PROP("Dirty", "i1", Sky3DGetDirty, none)
-    RT_PROP("Cubemap", "obj", Sky3DGetCubemap, none)
+    RT_PROP("Cubemap", "obj<Zanna.Graphics3D.CubeMap3D>", Sky3DGetCubemap, none)
     RT_PROP("SunDirection", "obj<Zanna.Math.Vec3>", Sky3DGetSunDirection, none)
     RT_PROP("GroundAlbedo", "obj<Zanna.Math.Vec3>", Sky3DGetGroundAlbedo, none)
     RT_METHOD("SetSunDirection", "void(obj)", Sky3DSetSunDirection)
@@ -248,7 +248,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Sky3D", Sky3D, "obj", Sky3DNew)
     RT_METHOD("Update", "i1(obj)", Sky3DUpdate)
 RT_CLASS_END()
 
-RT_FUNC(TimeOfDay3DNew, rt_timeofday3d_new, "Zanna.Graphics3D.TimeOfDay3D.New", "obj()", owned)
+RT_FUNC(TimeOfDay3DNew, rt_timeofday3d_new, "Zanna.Graphics3D.TimeOfDay3D.New", "obj<Zanna.Graphics3D.TimeOfDay3D>()", owned)
 RT_FUNC(TimeOfDay3DSetHours,     rt_timeofday3d_set_hours,             "Zanna.Graphics3D.TimeOfDay3D.set_Hours",            "void(obj,f64)")
 RT_FUNC(TimeOfDay3DGetHours,     rt_timeofday3d_get_hours,             "Zanna.Graphics3D.TimeOfDay3D.get_Hours",            "f64(obj)")
 RT_FUNC(TimeOfDay3DSetDayLength, rt_timeofday3d_set_day_length_seconds, "Zanna.Graphics3D.TimeOfDay3D.set_DayLengthSeconds", "void(obj,f64)")
@@ -281,7 +281,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.TimeOfDay3D", TimeOfDay3D, "obj", TimeOfDay3DNe
     RT_METHOD("Advance", "void(f64,obj)", TimeOfDay3DAdvance)
 RT_CLASS_END()
 
-RT_FUNC(ReflProbe3DNew, rt_reflectionprobe3d_new, "Zanna.Graphics3D.ReflectionProbe3D.New", "obj(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>)", owned)
+RT_FUNC(ReflProbe3DNew, rt_reflectionprobe3d_new, "Zanna.Graphics3D.ReflectionProbe3D.New", "obj<Zanna.Graphics3D.ReflectionProbe3D>(obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>,obj<Zanna.Math.Vec3>)", owned)
 RT_FUNC(ReflProbe3DGetPosition, rt_reflectionprobe3d_get_position, "Zanna.Graphics3D.ReflectionProbe3D.get_Position", "obj<Zanna.Math.Vec3>(obj)", owned)
 RT_FUNC(ReflProbe3DSetInfluence,  rt_reflectionprobe3d_set_influence_scale, "Zanna.Graphics3D.ReflectionProbe3D.set_InfluenceScale", "void(obj,f64)")
 RT_FUNC(ReflProbe3DGetInfluence,  rt_reflectionprobe3d_get_influence_scale, "Zanna.Graphics3D.ReflectionProbe3D.get_InfluenceScale", "f64(obj)")
@@ -290,7 +290,7 @@ RT_FUNC(ReflProbe3DGetResolution, rt_reflectionprobe3d_get_resolution,     "Zann
 RT_FUNC(ReflProbe3DSetDirty,      rt_reflectionprobe3d_set_capture_dirty,  "Zanna.Graphics3D.ReflectionProbe3D.set_CaptureDirty",    "void(obj,i1)")
 RT_FUNC(ReflProbe3DGetDirty,      rt_reflectionprobe3d_get_capture_dirty,  "Zanna.Graphics3D.ReflectionProbe3D.get_CaptureDirty",    "i1(obj)")
 RT_FUNC(ReflProbe3DContains,      rt_reflectionprobe3d_contains,           "Zanna.Graphics3D.ReflectionProbe3D.Contains",            "i1(obj,obj<Zanna.Math.Vec3>)")
-RT_FUNC(ReflProbe3DGetCubemap, rt_reflectionprobe3d_get_cubemap, "Zanna.Graphics3D.ReflectionProbe3D.get_Cubemap", "obj(obj)", owned)
+RT_FUNC(ReflProbe3DGetCubemap, rt_reflectionprobe3d_get_cubemap, "Zanna.Graphics3D.ReflectionProbe3D.get_Cubemap", "obj<Zanna.Graphics3D.CubeMap3D>(obj)", owned)
 RT_FUNC(ReflProbe3DCapture,       rt_reflectionprobe3d_capture,            "Zanna.Graphics3D.ReflectionProbe3D.Capture",             "i1(obj,obj,obj)")
 
 /// @summary Provides Reflection Probe 3D functionality for 3D rendering and scene applications.
@@ -304,7 +304,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.ReflectionProbe3D", ReflectionProbe3D, "obj", R
     RT_PROP("InfluenceScale", "f64", ReflProbe3DGetInfluence, ReflProbe3DSetInfluence)
     RT_PROP("Resolution", "i64", ReflProbe3DGetResolution, ReflProbe3DSetResolution)
     RT_PROP("CaptureDirty", "i1", ReflProbe3DGetDirty, ReflProbe3DSetDirty)
-    RT_PROP("Cubemap", "obj", ReflProbe3DGetCubemap, none)
+    RT_PROP("Cubemap", "obj<Zanna.Graphics3D.CubeMap3D>", ReflProbe3DGetCubemap, none)
     RT_METHOD("Contains", "i1(obj)", ReflProbe3DContains)
     RT_METHOD("Capture", "i1(obj,obj)", ReflProbe3DCapture)
 RT_CLASS_END()
@@ -360,16 +360,16 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Terrain3D", Terrain3D, "obj", Terrain3DNew)
     RT_METHOD("SetLayerTexture", "void(i64,obj)", Terrain3DSetLayerTex)
     RT_METHOD("SetLayerScale", "void(i64,f64)", Terrain3DSetLayerScale)
     RT_METHOD("GetHeightAt", "f64(f64,f64)", Terrain3DGetHeightAt)
-    RT_METHOD("GetNormalAt", "obj(f64,f64)", Terrain3DGetNormalAt)
+    RT_METHOD("GetNormalAt", "obj<Zanna.Math.Vec3>(f64,f64)", Terrain3DGetNormalAt)
     RT_METHOD("SetLodDistances", "void(f64,f64)", Terrain3DSetLODDist)
     RT_METHOD("SetLodHysteresis", "void(f64)", Terrain3DSetLODHysteresis)
     RT_METHOD("SetSkirtDepth", "void(f64)", Terrain3DSetSkirt)
     // ADR 0227: readback symmetry — authored terrain is inspectable.
     RT_METHOD("GetScale", "obj<Zanna.Math.Vec3>()", Terrain3DGetScale)
     RT_PROP("Material", "obj<Zanna.Graphics3D.Material3D>", Terrain3DGetMaterial, none)
-    RT_METHOD("GetLayerTexture", "obj(i64)", Terrain3DGetLayerTex)
+    RT_METHOD("GetLayerTexture", "obj<Zanna.Core.Object>(i64)", Terrain3DGetLayerTex)
     RT_METHOD("GetLayerScale", "f64(i64)", Terrain3DGetLayerScale)
-    RT_METHOD("GetSplatMap", "obj(i64)", Terrain3DGetSplatMap)
+    RT_METHOD("GetSplatMap", "obj<Zanna.Graphics.Pixels>(i64)", Terrain3DGetSplatMap)
     RT_PROP("LodNearDistance", "f64", Terrain3DGetLodNear, none)
     RT_PROP("LodFarDistance", "f64", Terrain3DGetLodFar, none)
     RT_PROP("LodHysteresis", "f64", Terrain3DGetLodHysteresis, none)
@@ -395,13 +395,13 @@ RT_CLASS_END()
 // GRAPHICS 3D - NAVMESH3D
 //=============================================================================
 
-RT_FUNC(NavMesh3DBuild, rt_navmesh3d_build, "Zanna.Graphics3D.NavMesh3D.Build", "obj(obj,f64,f64)", owned)
-RT_FUNC(NavMesh3DBake, rt_navmesh3d_bake, "Zanna.Graphics3D.NavMesh3D.Bake", "obj(obj,f64,f64,f64,f64)", owned)
-RT_FUNC(NavMesh3DBakeTiled, rt_navmesh3d_bake_tiled, "Zanna.Graphics3D.NavMesh3D.BakeTiled", "obj(obj,f64,f64,f64,f64,f64)", owned)
+RT_FUNC(NavMesh3DBuild, rt_navmesh3d_build, "Zanna.Graphics3D.NavMesh3D.Build", "obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64)", owned)
+RT_FUNC(NavMesh3DBake, rt_navmesh3d_bake, "Zanna.Graphics3D.NavMesh3D.Bake", "obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64,f64,f64)", owned)
+RT_FUNC(NavMesh3DBakeTiled, rt_navmesh3d_bake_tiled, "Zanna.Graphics3D.NavMesh3D.BakeTiled", "obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64,f64,f64,f64)", owned)
 RT_FUNC(NavMesh3DExport,         rt_navmesh3d_export,           "Zanna.Graphics3D.NavMesh3D.Export",         "i1(obj,str)")
-RT_FUNC(NavMesh3DImport, rt_navmesh3d_import, "Zanna.Graphics3D.NavMesh3D.Import", "obj(str)", owned)
+RT_FUNC(NavMesh3DImport, rt_navmesh3d_import, "Zanna.Graphics3D.NavMesh3D.Import", "obj<Zanna.Graphics3D.NavMesh3D>(str)", owned)
 RT_FUNC(NavMesh3DFindPathOption, rt_navmesh3d_find_path_option, "Zanna.Graphics3D.NavMesh3D.FindPathOption", "obj<Zanna.Option>(obj,obj,obj)", owned)
-RT_FUNC(NavMesh3DSamplePosition, rt_navmesh3d_sample_position, "Zanna.Graphics3D.NavMesh3D.SamplePosition", "obj(obj,obj)", owned)
+RT_FUNC(NavMesh3DSamplePosition, rt_navmesh3d_sample_position, "Zanna.Graphics3D.NavMesh3D.SamplePosition", "obj<Zanna.Math.Vec3>(obj,obj)", owned)
 RT_FUNC(NavMesh3DIsWalkable,     rt_navmesh3d_is_walkable,      "Zanna.Graphics3D.NavMesh3D.IsWalkable",     "i1(obj,obj)")
 RT_FUNC(NavMesh3DTriCount,       rt_navmesh3d_get_triangle_count,"Zanna.Graphics3D.NavMesh3D.get_TriangleCount","i64(obj)")
 RT_FUNC(NavMesh3DLastPathCost,   rt_navmesh3d_get_last_path_cost,"Zanna.Graphics3D.NavMesh3D.get_LastPathCost","f64(obj)")
@@ -437,13 +437,13 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.NavMesh3D", NavMesh3D, "none", none)
     RT_PROP("ObstacleCount", "i64", NavMesh3DObstacleCount, none)
     RT_PROP("LastPathCost", "f64", NavMesh3DLastPathCost, none)
     RT_METHOD("FindPathOption", "obj<Zanna.Option>(obj,obj)", NavMesh3DFindPathOption)
-    RT_METHOD("SamplePosition", "obj(obj)", NavMesh3DSamplePosition)
+    RT_METHOD("SamplePosition", "obj<Zanna.Math.Vec3>(obj)", NavMesh3DSamplePosition)
     RT_METHOD("IsWalkable", "i1(obj)", NavMesh3DIsWalkable)
-    RT_METHOD("Build", "obj(obj,f64,f64)", NavMesh3DBuild)
-    RT_METHOD("Bake", "obj(obj,f64,f64,f64,f64)", NavMesh3DBake)
-    RT_METHOD("BakeTiled", "obj(obj,f64,f64,f64,f64,f64)", NavMesh3DBakeTiled)
+    RT_METHOD("Build", "obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64)", NavMesh3DBuild)
+    RT_METHOD("Bake", "obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64,f64,f64)", NavMesh3DBake)
+    RT_METHOD("BakeTiled", "obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64,f64,f64,f64)", NavMesh3DBakeTiled)
     RT_METHOD("Export", "i1(obj,str)", NavMesh3DExport)
-    RT_METHOD("Import", "obj(str)", NavMesh3DImport)
+    RT_METHOD("Import", "obj<Zanna.Graphics3D.NavMesh3D>(str)", NavMesh3DImport)
     RT_METHOD("AddOffMeshLink", "i1(obj,obj,i1)", NavMesh3DAddOffMeshLink)
     RT_METHOD("SetOffMeshLinkMetadata", "i1(i64,str,f64,i64)", NavMesh3DSetOffMeshLinkMetadata)
     RT_METHOD("GetOffMeshLinkKind", "str(i64)", NavMesh3DGetOffMeshLinkKind)
@@ -468,7 +468,7 @@ RT_CLASS_END()
 // GRAPHICS 3D - NAVAGENT3D
 //=============================================================================
 
-RT_FUNC(NavAgent3DNew, rt_navagent3d_new, "Zanna.Graphics3D.NavAgent3D.New", "obj(obj,f64,f64)", owned)
+RT_FUNC(NavAgent3DNew, rt_navagent3d_new, "Zanna.Graphics3D.NavAgent3D.New", "obj<Zanna.Graphics3D.NavAgent3D>(obj,f64,f64)", owned)
 RT_FUNC(NavAgent3DSetTarget,            rt_navagent3d_set_target,           "Zanna.Graphics3D.NavAgent3D.SetTarget",            "void(obj,obj)")
 RT_FUNC(NavAgent3DClearTarget,          rt_navagent3d_clear_target,         "Zanna.Graphics3D.NavAgent3D.ClearTarget",          "void(obj)")
 RT_FUNC(NavAgent3DUpdate,               rt_navagent3d_update,               "Zanna.Graphics3D.NavAgent3D.Update",               "void(obj,f64)")
@@ -543,7 +543,7 @@ RT_CLASS_END()
 // GRAPHICS 3D - ANIMBLEND3D
 //=============================================================================
 
-RT_FUNC(AnimBlend3DNew, rt_anim_blend3d_new, "Zanna.Graphics3D.AnimBlend3D.New", "obj(obj)", owned)
+RT_FUNC(AnimBlend3DNew, rt_anim_blend3d_new, "Zanna.Graphics3D.AnimBlend3D.New", "obj<Zanna.Graphics3D.AnimBlend3D>(obj)", owned)
 RT_FUNC(AnimBlend3DAddState,      rt_anim_blend3d_add_state,       "Zanna.Graphics3D.AnimBlend3D.AddState",      "i64(obj,str,obj)")
 RT_FUNC(AnimBlend3DSetWeight,     rt_anim_blend3d_set_weight,      "Zanna.Graphics3D.AnimBlend3D.SetWeight",     "void(obj,i64,f64)")
 RT_FUNC(AnimBlend3DSetWeightName, rt_anim_blend3d_set_weight_by_name,"Zanna.Graphics3D.AnimBlend3D.SetWeightByName","void(obj,str,f64)")
@@ -576,8 +576,8 @@ RT_CLASS_END()
 // GRAPHICS 3D - BLENDTREE3D
 //=============================================================================
 
-RT_FUNC(BlendTree3DNew1D, rt_blend_tree3d_new_1d, "Zanna.Graphics3D.BlendTree3D.New1D", "obj(obj)", owned)
-RT_FUNC(BlendTree3DNew2D, rt_blend_tree3d_new_2d, "Zanna.Graphics3D.BlendTree3D.New2D", "obj(obj)", owned)
+RT_FUNC(BlendTree3DNew1D, rt_blend_tree3d_new_1d, "Zanna.Graphics3D.BlendTree3D.New1D", "obj<Zanna.Graphics3D.BlendTree3D>(obj)", owned)
+RT_FUNC(BlendTree3DNew2D, rt_blend_tree3d_new_2d, "Zanna.Graphics3D.BlendTree3D.New2D", "obj<Zanna.Graphics3D.BlendTree3D>(obj)", owned)
 RT_FUNC(BlendTree3DAddSample,    rt_blend_tree3d_add_sample,      "Zanna.Graphics3D.BlendTree3D.AddSample",      "i64(obj,obj,f64,f64)")
 RT_FUNC(BlendTree3DSetParam,     rt_blend_tree3d_set_param,       "Zanna.Graphics3D.BlendTree3D.SetParam",       "void(obj,f64,f64)")
 RT_FUNC(BlendTree3DUpdate,       rt_blend_tree3d_update,          "Zanna.Graphics3D.BlendTree3D.Update",         "void(obj,f64)")
@@ -586,9 +586,9 @@ RT_FUNC(BlendTree3DSetBlendMode, rt_blend_tree3d_set_blend_mode, "Zanna.Graphics
 RT_FUNC(BlendTree3DGetBlendMode, rt_blend_tree3d_get_blend_mode, "Zanna.Graphics3D.BlendTree3D.get_BlendMode", "i64(obj)")
 RT_FUNC(BlendTree3DGetBlend, rt_blend_tree3d_get_blend, "Zanna.Graphics3D.BlendTree3D.get_Blend", "obj<Zanna.Graphics3D.AnimBlend3D>(obj)", borrowed)
 
-RT_FUNC(IKSolver3DTwoBone, rt_ik_solver3d_two_bone, "Zanna.Graphics3D.IKSolver3D.TwoBone", "obj(obj,i64,i64,i64)", owned)
-RT_FUNC(IKSolver3DLookAt, rt_ik_solver3d_look_at, "Zanna.Graphics3D.IKSolver3D.LookAt", "obj(obj,i64)", owned)
-RT_FUNC(IKSolver3DFABRIK, rt_ik_solver3d_fabrik, "Zanna.Graphics3D.IKSolver3D.FABRIK", "obj(obj,obj)", owned)
+RT_FUNC(IKSolver3DTwoBone, rt_ik_solver3d_two_bone, "Zanna.Graphics3D.IKSolver3D.TwoBone", "obj<Zanna.Graphics3D.IKSolver3D>(obj,i64,i64,i64)", owned)
+RT_FUNC(IKSolver3DLookAt, rt_ik_solver3d_look_at, "Zanna.Graphics3D.IKSolver3D.LookAt", "obj<Zanna.Graphics3D.IKSolver3D>(obj,i64)", owned)
+RT_FUNC(IKSolver3DFABRIK, rt_ik_solver3d_fabrik, "Zanna.Graphics3D.IKSolver3D.FABRIK", "obj<Zanna.Graphics3D.IKSolver3D>(obj,obj)", owned)
 RT_FUNC(IKSolver3DSetTarget,     rt_ik_solver3d_set_target,       "Zanna.Graphics3D.IKSolver3D.SetTarget",        "void(obj,obj)")
 RT_FUNC(IKSolver3DSetStrideWarp, rt_ik_solver3d_set_stride_warp, "Zanna.Graphics3D.IKSolver3D.SetStrideWarp", "void(obj,obj,f64,f64)")
 RT_FUNC(IKSolver3DClearStrideWarp, rt_ik_solver3d_clear_stride_warp, "Zanna.Graphics3D.IKSolver3D.ClearStrideWarp", "void(obj)")
@@ -643,7 +643,7 @@ RT_CLASS_END()
 // GRAPHICS 3D - ANIMCONTROLLER3D
 //=============================================================================
 
-RT_FUNC(AnimController3DNew, rt_anim_controller3d_new, "Zanna.Graphics3D.AnimController3D.New", "obj(obj)", owned)
+RT_FUNC(AnimController3DNew, rt_anim_controller3d_new, "Zanna.Graphics3D.AnimController3D.New", "obj<Zanna.Graphics3D.AnimController3D>(obj)", owned)
 RT_FUNC(AnimController3DAddState,       rt_anim_controller3d_add_state,        "Zanna.Graphics3D.AnimController3D.AddState",        "i64(obj,str,obj)")
 RT_FUNC(AnimController3DAddTransition,  rt_anim_controller3d_add_transition,   "Zanna.Graphics3D.AnimController3D.AddTransition",   "i1(obj,str,str,f64)")
 RT_FUNC(AnimController3DPlay,           rt_anim_controller3d_play,             "Zanna.Graphics3D.AnimController3D.Play",            "i1(obj,str)")
@@ -732,7 +732,7 @@ RT_CLASS_END()
 // GRAPHICS 3D - DECAL3D
 //=============================================================================
 
-RT_FUNC(Decal3DNew, rt_decal3d_new, "Zanna.Graphics3D.Decal3D.New", "obj(obj,obj,f64,obj)", owned)
+RT_FUNC(Decal3DNew, rt_decal3d_new, "Zanna.Graphics3D.Decal3D.New", "obj<Zanna.Graphics3D.Decal3D>(obj,obj,f64,obj)", owned)
 RT_FUNC(Decal3DSetLifetime,  rt_decal3d_set_lifetime,  "Zanna.Graphics3D.Decal3D.SetLifetime",  "void(obj,f64)")
 RT_FUNC(Decal3DSetDepthBias, rt_decal3d_set_depth_bias, "Zanna.Graphics3D.Decal3D.SetDepthBias", "void(obj,f64)")
 RT_FUNC(Decal3DUpdate,       rt_decal3d_update,        "Zanna.Graphics3D.Decal3D.Update",       "void(obj,f64)")
@@ -755,7 +755,7 @@ RT_CLASS_END()
 // GRAPHICS 3D - SPRITE3D
 //=============================================================================
 
-RT_FUNC(LensFlare3DNew, rt_lensflare3d_new, "Zanna.Graphics3D.LensFlare3D.New", "obj(obj)", owned)
+RT_FUNC(LensFlare3DNew, rt_lensflare3d_new, "Zanna.Graphics3D.LensFlare3D.New", "obj<Zanna.Graphics3D.LensFlare3D>(obj)", owned)
 RT_FUNC(LensFlare3DAddElement, rt_lensflare3d_add_element, "Zanna.Graphics3D.LensFlare3D.AddElement", "void(obj,f64,f64,i64,f64)")
 RT_FUNC(Canvas3DDrawLensFlare, rt_canvas3d_draw_lens_flare,"Zanna.Graphics3D.Canvas3D.DrawLensFlare", "void(obj,obj)")
 
@@ -769,7 +769,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.LensFlare3D", LensFlare3D, "obj", LensFlare3DNe
     RT_METHOD("AddElement", "void(f64,f64,i64,f64)", LensFlare3DAddElement)
 RT_CLASS_END()
 
-RT_FUNC(Sprite3DNew, rt_sprite3d_new, "Zanna.Graphics3D.Sprite3D.New", "obj(obj)", owned)
+RT_FUNC(Sprite3DNew, rt_sprite3d_new, "Zanna.Graphics3D.Sprite3D.New", "obj<Zanna.Graphics3D.Sprite3D>(obj)", owned)
 RT_FUNC(Sprite3DSetPosition,  rt_sprite3d_set_position, "Zanna.Graphics3D.Sprite3D.SetPosition",  "void(obj,f64,f64,f64)")
 RT_FUNC(Sprite3DSetScale,     rt_sprite3d_set_scale,    "Zanna.Graphics3D.Sprite3D.SetScale",     "void(obj,f64,f64)")
 RT_FUNC(Sprite3DSetAnchor,    rt_sprite3d_set_anchor,   "Zanna.Graphics3D.Sprite3D.SetAnchor",    "void(obj,f64,f64)")
@@ -800,7 +800,7 @@ RT_CLASS_END()
 // GRAPHICS 3D - WATER3D
 //=============================================================================
 
-RT_FUNC(Water3DNew, rt_water3d_new, "Zanna.Graphics3D.Water3D.New", "obj(f64,f64)", owned)
+RT_FUNC(Water3DNew, rt_water3d_new, "Zanna.Graphics3D.Water3D.New", "obj<Zanna.Graphics3D.Water3D>(f64,f64)", owned)
 RT_FUNC(Water3DSetHeight,      rt_water3d_set_height,     "Zanna.Graphics3D.Water3D.SetHeight",      "void(obj,f64)")
 RT_FUNC(Water3DSetPosition,    rt_water3d_set_position,   "Zanna.Graphics3D.Water3D.SetPosition",    "void(obj,f64,f64,f64)")
 RT_FUNC(Water3DSetWaveParams,  rt_water3d_set_wave_params,"Zanna.Graphics3D.Water3D.SetWaveParams",  "void(obj,f64,f64,f64)")
@@ -825,9 +825,9 @@ RT_FUNC(Water3DGetColor, rt_water3d_get_color, "Zanna.Graphics3D.Water3D.get_Col
 RT_FUNC(Water3DGetAlpha,       rt_water3d_get_alpha,       "Zanna.Graphics3D.Water3D.get_Alpha",       "f64(obj)")
 RT_FUNC(Water3DGetReflect,     rt_water3d_get_reflectivity,"Zanna.Graphics3D.Water3D.get_Reflectivity","f64(obj)")
 RT_FUNC(Water3DGetResolution,  rt_water3d_get_resolution,  "Zanna.Graphics3D.Water3D.get_Resolution",  "i64(obj)")
-RT_FUNC(Water3DGetTexture, rt_water3d_get_texture, "Zanna.Graphics3D.Water3D.get_Texture", "obj(obj)", borrowed)
-RT_FUNC(Water3DGetNormalMap, rt_water3d_get_normal_map, "Zanna.Graphics3D.Water3D.get_NormalMap", "obj(obj)", borrowed)
-RT_FUNC(Water3DGetEnvMap, rt_water3d_get_env_map, "Zanna.Graphics3D.Water3D.get_EnvMap", "obj(obj)", borrowed)
+RT_FUNC(Water3DGetTexture, rt_water3d_get_texture, "Zanna.Graphics3D.Water3D.get_Texture", "obj<Zanna.Graphics.Pixels>(obj)", borrowed)
+RT_FUNC(Water3DGetNormalMap, rt_water3d_get_normal_map, "Zanna.Graphics3D.Water3D.get_NormalMap", "obj<Zanna.Graphics.Pixels>(obj)", borrowed)
+RT_FUNC(Water3DGetEnvMap, rt_water3d_get_env_map, "Zanna.Graphics3D.Water3D.get_EnvMap", "obj<Zanna.Graphics3D.CubeMap3D>(obj)", borrowed)
 RT_FUNC(Canvas3DDrawWater,     rt_canvas3d_draw_water,    "Zanna.Graphics3D.Canvas3D.DrawWater",     "void(obj,obj,obj)")
 
 /// @summary Provides Water 3D functionality for 3D rendering and scene applications.
@@ -860,9 +860,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Water3D", Water3D, "obj", Water3DNew)
     RT_PROP("Alpha", "f64", Water3DGetAlpha, none)
     RT_PROP("Reflectivity", "f64", Water3DGetReflect, none)
     RT_PROP("Resolution", "i64", Water3DGetResolution, none)
-    RT_PROP("Texture", "obj", Water3DGetTexture, none)
-    RT_PROP("NormalMap", "obj", Water3DGetNormalMap, none)
-    RT_PROP("EnvMap", "obj", Water3DGetEnvMap, none)
+    RT_PROP("Texture", "obj<Zanna.Graphics.Pixels>", Water3DGetTexture, none)
+    RT_PROP("NormalMap", "obj<Zanna.Graphics.Pixels>", Water3DGetNormalMap, none)
+    RT_PROP("EnvMap", "obj<Zanna.Graphics3D.CubeMap3D>", Water3DGetEnvMap, none)
 RT_CLASS_END()
 
 // PostFX additions (F5-F7)
@@ -882,7 +882,7 @@ RT_FUNC(PostFX3DGetLastError, rt_postfx3d_get_last_error, "Zanna.Graphics3D.Post
 // GRAPHICS 3D - VEGETATION3D
 //=============================================================================
 
-RT_FUNC(Veg3DNew, rt_vegetation3d_new, "Zanna.Graphics3D.Vegetation3D.New", "obj(obj)", owned)
+RT_FUNC(Veg3DNew, rt_vegetation3d_new, "Zanna.Graphics3D.Vegetation3D.New", "obj<Zanna.Graphics3D.Vegetation3D>(obj)", owned)
 RT_FUNC(Veg3DSetDensityMap,  rt_vegetation3d_set_density_map,"Zanna.Graphics3D.Vegetation3D.SetDensityMap",  "void(obj,obj)")
 RT_FUNC(Veg3DSetWind,        rt_vegetation3d_set_wind_params,"Zanna.Graphics3D.Vegetation3D.SetWindParams",  "void(obj,f64,f64,f64)")
 RT_FUNC(Veg3DSetLOD,         rt_vegetation3d_set_lod_distances,"Zanna.Graphics3D.Vegetation3D.SetLodDistances","void(obj,f64,f64)")
@@ -911,7 +911,7 @@ RT_CLASS_END()
 // GRAPHICS - VIDEOPLAYER
 //=============================================================================
 
-RT_FUNC(VideoPlayerOpen, rt_videoplayer_open, "Zanna.Graphics.VideoPlayer.Open", "obj(str)", owned)
+RT_FUNC(VideoPlayerOpen, rt_videoplayer_open, "Zanna.Graphics.VideoPlayer.Open", "obj<Zanna.Graphics.VideoPlayer>(str)", owned)
 RT_FUNC(VideoPlayerPlay,      rt_videoplayer_play,         "Zanna.Graphics.VideoPlayer.Play",         "void(obj)")
 RT_FUNC(VideoPlayerPause,     rt_videoplayer_pause,        "Zanna.Graphics.VideoPlayer.Pause",        "void(obj)")
 RT_FUNC(VideoPlayerStop,      rt_videoplayer_stop,         "Zanna.Graphics.VideoPlayer.Stop",         "void(obj)")
@@ -923,7 +923,7 @@ RT_FUNC(VideoPlayerGetH,      rt_videoplayer_get_height,   "Zanna.Graphics.Video
 RT_FUNC(VideoPlayerGetDur,    rt_videoplayer_get_duration, "Zanna.Graphics.VideoPlayer.get_Duration", "f64(obj)")
 RT_FUNC(VideoPlayerGetPos,    rt_videoplayer_get_position, "Zanna.Graphics.VideoPlayer.get_Position", "f64(obj)")
 RT_FUNC(VideoPlayerGetPlay,   rt_videoplayer_get_is_playing,"Zanna.Graphics.VideoPlayer.get_IsPlaying","i1(obj)")
-RT_FUNC(VideoPlayerGetFrame, rt_videoplayer_get_frame, "Zanna.Graphics.VideoPlayer.get_Frame", "obj(obj)", borrowed)
+RT_FUNC(VideoPlayerGetFrame, rt_videoplayer_get_frame, "Zanna.Graphics.VideoPlayer.get_Frame", "obj<Zanna.Graphics.Pixels>(obj)", borrowed)
 
 /// @summary Provides Video Player functionality for 2D graphics and media applications.
 /// @details
@@ -942,14 +942,14 @@ RT_CLASS_BEGIN("Zanna.Graphics.VideoPlayer", VideoPlayer, "obj", none)
     RT_PROP("Duration", "f64", VideoPlayerGetDur, none)
     RT_PROP("Position", "f64", VideoPlayerGetPos, none)
     RT_PROP("IsPlaying", "i1", VideoPlayerGetPlay, none)
-    RT_PROP("Frame", "obj", VideoPlayerGetFrame, none)
+    RT_PROP("Frame", "obj<Zanna.Graphics.Pixels>", VideoPlayerGetFrame, none)
 RT_CLASS_END()
 
 //=============================================================================
 // GUI - VIDEOWIDGET
 //=============================================================================
 
-RT_FUNC(VideoWidgetNew, rt_videowidget_new, "Zanna.GUI.VideoWidget.New", "obj(obj,str)", owned)
+RT_FUNC(VideoWidgetNew, rt_videowidget_new, "Zanna.GUI.VideoWidget.New", "obj<Zanna.GUI.VideoWidget>(obj,str)", owned)
 RT_FUNC(VideoWidgetDestroy,   rt_videowidget_destroy,          "Zanna.GUI.VideoWidget.Destroy",        "void(obj)")
 RT_FUNC(VideoWidgetPlay,      rt_videowidget_play,             "Zanna.GUI.VideoWidget.Play",           "void(obj)")
 RT_FUNC(VideoWidgetPause,     rt_videowidget_pause,            "Zanna.GUI.VideoWidget.Pause",          "void(obj)")
@@ -1029,9 +1029,9 @@ RT_CLASS_BEGIN("Zanna.GUI.VideoWidget", VideoWidget, "obj", VideoWidgetNew)
 RT_CLASS_END()
 
 // TextureAtlas3D (F4)
-RT_FUNC(TexAtlas3DNew, rt_texatlas3d_new, "Zanna.Graphics3D.TextureAtlas3D.New", "obj(i64,i64)", owned)
+RT_FUNC(TexAtlas3DNew, rt_texatlas3d_new, "Zanna.Graphics3D.TextureAtlas3D.New", "obj<Zanna.Graphics3D.TextureAtlas3D>(i64,i64)", owned)
 RT_FUNC(TexAtlas3DAdd,       rt_texatlas3d_add,        "Zanna.Graphics3D.TextureAtlas3D.Add",       "i64(obj,obj)")
-RT_FUNC(TexAtlas3DGetTexture, rt_texatlas3d_get_texture, "Zanna.Graphics3D.TextureAtlas3D.GetTexture", "obj(obj)", borrowed)
+RT_FUNC(TexAtlas3DGetTexture, rt_texatlas3d_get_texture, "Zanna.Graphics3D.TextureAtlas3D.GetTexture", "obj<Zanna.Graphics.Pixels>(obj)", borrowed)
 RT_FUNC(TexAtlas3DGetUvMin, rt_texatlas3d_get_uv_min, "Zanna.Graphics3D.TextureAtlas3D.GetUvMin", "obj<Zanna.Math.Vec2>(obj,i64)", owned)
 RT_FUNC(TexAtlas3DGetUvMax, rt_texatlas3d_get_uv_max, "Zanna.Graphics3D.TextureAtlas3D.GetUvMax", "obj<Zanna.Math.Vec2>(obj,i64)", owned)
 
@@ -1042,7 +1042,7 @@ RT_FUNC(TexAtlas3DGetUvMax, rt_texatlas3d_get_uv_max, "Zanna.Graphics3D.TextureA
 /// including `Add`, `GetTexture`.
 RT_CLASS_BEGIN("Zanna.Graphics3D.TextureAtlas3D", TextureAtlas3D, "obj", TexAtlas3DNew)
     RT_METHOD("Add", "i64(obj)", TexAtlas3DAdd)
-    RT_METHOD("GetTexture", "obj()", TexAtlas3DGetTexture)
+    RT_METHOD("GetTexture", "obj<Zanna.Graphics.Pixels>()", TexAtlas3DGetTexture)
     // ADR 0227: without UV readback a packed region could never be used.
     RT_METHOD("GetUvMin", "obj<Zanna.Math.Vec2>(i64)", TexAtlas3DGetUvMin)
     RT_METHOD("GetUvMax", "obj<Zanna.Math.Vec2>(i64)", TexAtlas3DGetUvMax)

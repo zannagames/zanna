@@ -73,6 +73,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "il/runtime/classes/RuntimeClasses.hpp"
+#include "il/runtime/RuntimeSignatures.hpp"
 
 #include "collections/rt_collection_ids.h"
 
@@ -126,8 +127,8 @@ namespace {
 /// @details This macro is the main entry point for RuntimeClasses.inc. Each
 /// invocation creates a RuntimeClass with all its metadata, properties, and
 /// methods, then emplaces it into the catalog vector being constructed.
-#define RUNTIME_CLASS(                                                                            \
-    _qname, _typeId, _layout, _base, _ctor, _summary, _details, _props, _methods)                 \
+#define RUNTIME_CLASS(                                                                             \
+    _qname, _typeId, _layout, _base, _ctor, _summary, _details, _props, _methods)                  \
     catalog.emplace_back(::il::runtime::RuntimeClass{(_qname),                                     \
                                                      (_layout),                                    \
                                                      (_base),                                      \
@@ -593,7 +594,12 @@ RuntimeRegistry::RuntimeRegistry() {
 /// 2. For each property:
 ///    - Creates a ParsedProperty with name, type, and getter/setter targets
 ///    - Indexes by "class.property" for lookup by class/property
-///    - Indexes getter and setter as functions for direct lookup
+///    - Indexes getter and setter as functions for direct lookup; the getter
+///      keeps the object class its runtime.def row declares
+///
+/// 3. Every other public runtime function (constructors such as `Class.New`,
+///    free functions) is indexed by canonical name with the signature its row
+///    declares, so findFunction() reports the class any runtime call returns.
 ///
 /// ## Performance
 ///
@@ -670,6 +676,17 @@ void RuntimeRegistry::buildIndexes() {
             if (p.getter) {
                 ParsedSignature getterSig;
                 getterSig.returnType = pp.type;
+                // The getter's own row declares the class of an object result (ADR 0356).
+                if (const auto *desc = findRuntimeDescriptor(p.getter);
+                    desc && !desc->signatureText.empty()) {
+                    ParsedSignature declared = parseRuntimeSignature(desc->signatureText);
+                    if (declared.isValid() && declared.returnType == pp.type) {
+                        getterSig.isOptionalReturn = declared.isOptionalReturn;
+                        getterSig.containerTypeName = std::move(declared.containerTypeName);
+                        getterSig.elementTypeName = std::move(declared.elementTypeName);
+                        getterSig.objectTypeName = std::move(declared.objectTypeName);
+                    }
+                }
                 // Getter takes only the receiver (no explicit params)
                 functionIndex_[functionKey(p.getter)] = getterSig;
             }
@@ -682,6 +699,21 @@ void RuntimeRegistry::buildIndexes() {
                 functionIndex_[functionKey(p.setter)] = setterSig;
             }
         }
+    }
+
+    // Index every remaining public runtime function by its canonical name from the signature its
+    // row declares, so constructors (`Class.New`) and free functions report the class they
+    // return (ADR 0356). Class methods and properties indexed above keep their receiver-free
+    // signatures.
+    for (const auto &desc : runtimeRegistry()) {
+        if (desc.name.find('.') == std::string_view::npos || desc.signatureText.empty())
+            continue;
+        std::string key = functionKey(desc.name);
+        if (functionIndex_.contains(key))
+            continue;
+        ParsedSignature sig = parseRuntimeSignature(desc.signatureText);
+        if (sig.isValid())
+            functionIndex_.emplace(std::move(key), std::move(sig));
     }
 }
 
@@ -850,6 +882,7 @@ std::optional<int64_t> runtimeCollectionClassId(std::string_view qname) {
         std::string_view name;
         int64_t id;
     };
+
     // Mirrors src/runtime/collections/rt_collection_ids.h. Frontends cannot
     // include that header, so the values are bridged here and pinned by
     // RuntimeCollectionClassIdsMatchRuntimeHeader in the runtime tests.

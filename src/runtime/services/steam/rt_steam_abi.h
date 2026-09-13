@@ -27,7 +27,11 @@
 //   - Callback payload pointers are valid only until the matching
 //     SteamAPI_ManualDispatch_FreeLastCallback call.
 // Links: src/runtime/services/steam/rt_steam_provider.c,
-//        docs/adr/0352-platform-services-runtime-loaded-providers.md
+//        src/runtime/services/steam/rt_steam_user_stats.c,
+//        src/runtime/services/steam/rt_steam_social.c,
+//        src/runtime/services/steam/rt_steam_cloud.c,
+//        docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        docs/adr/0353-platform-services-player-features.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -80,6 +84,9 @@ typedef uint64_t rt_steam_api_call;
 /// @brief EResult: generic failure.
 #define RT_STEAM_RESULT_FAIL 2
 
+/// @brief EResult: a parameter was rejected (StoreStats: stats reverted by the server).
+#define RT_STEAM_RESULT_INVALID_PARAM 8
+
 /// @brief ESteamHardwareType values reported by ISteamUtils::IsRunningOnSteamHardware (1.65+).
 #define RT_STEAM_HARDWARE_NONE 0
 /// @brief ESteamHardwareType: Steam Deck.
@@ -88,6 +95,65 @@ typedef uint64_t rt_steam_api_call;
 #define RT_STEAM_HARDWARE_STEAM_MACHINE 2
 /// @brief ESteamHardwareType: Steam Frame.
 #define RT_STEAM_HARDWARE_STEAM_FRAME 3
+
+/// @brief k_cchStatNameMax: bytes, including the terminator, of stat and achievement names.
+#define RT_STEAM_STAT_NAME_CAPACITY 128
+/// @brief k_cchLeaderboardNameMax: bytes, including the terminator, of a leaderboard name.
+#define RT_STEAM_LEADERBOARD_NAME_CAPACITY 128
+/// @brief k_unMaxCloudFileChunkSize: largest file ISteamRemoteStorage::FileWrite accepts.
+#define RT_STEAM_CLOUD_FILE_MAX_BYTES (100 * 1024 * 1024)
+
+/// @brief ELeaderboardDataRequest: absolute global ranks.
+#define RT_STEAM_LEADERBOARD_REQUEST_GLOBAL 0
+/// @brief ELeaderboardDataRequest: ranks relative to the user.
+#define RT_STEAM_LEADERBOARD_REQUEST_GLOBAL_AROUND_USER 1
+/// @brief ELeaderboardDataRequest: the user and their friends.
+#define RT_STEAM_LEADERBOARD_REQUEST_FRIENDS 2
+
+/// @brief ELeaderboardSortMethod: ascending (lowest score first).
+#define RT_STEAM_LEADERBOARD_SORT_ASCENDING 1
+/// @brief ELeaderboardSortMethod: descending (highest score first).
+#define RT_STEAM_LEADERBOARD_SORT_DESCENDING 2
+
+/// @brief ELeaderboardDisplayType: numeric.
+#define RT_STEAM_LEADERBOARD_DISPLAY_NUMERIC 1
+/// @brief ELeaderboardDisplayType: time in seconds.
+#define RT_STEAM_LEADERBOARD_DISPLAY_TIME_SECONDS 2
+/// @brief ELeaderboardDisplayType: time in milliseconds.
+#define RT_STEAM_LEADERBOARD_DISPLAY_TIME_MILLISECONDS 3
+
+/// @brief ELeaderboardUploadScoreMethod: keep the user's best score.
+#define RT_STEAM_LEADERBOARD_UPLOAD_KEEP_BEST 1
+/// @brief ELeaderboardUploadScoreMethod: always replace the user's score.
+#define RT_STEAM_LEADERBOARD_UPLOAD_FORCE_UPDATE 2
+
+/// @brief EActivateGameOverlayToWebPageMode: browser beside other overlay windows.
+#define RT_STEAM_WEB_PAGE_MODE_DEFAULT 0
+/// @brief EActivateGameOverlayToWebPageMode: browser alone in a modal overlay.
+#define RT_STEAM_WEB_PAGE_MODE_MODAL 1
+
+/// @brief EOverlayToStoreFlag: show the store page only.
+#define RT_STEAM_STORE_FLAG_NONE 0
+/// @brief EOverlayToStoreFlag: add to the cart and show the store page.
+#define RT_STEAM_STORE_FLAG_ADD_TO_CART_AND_SHOW 2
+
+/// @brief EGamepadTextInputMode: normal text.
+#define RT_STEAM_GAMEPAD_INPUT_NORMAL 0
+/// @brief EGamepadTextInputMode: masked text.
+#define RT_STEAM_GAMEPAD_INPUT_PASSWORD 1
+/// @brief EGamepadTextInputLineMode: one line.
+#define RT_STEAM_GAMEPAD_LINE_SINGLE 0
+/// @brief EGamepadTextInputLineMode: several lines.
+#define RT_STEAM_GAMEPAD_LINE_MULTIPLE 1
+
+/// @brief EFloatingGamepadTextInputMode: one line; Enter dismisses.
+#define RT_STEAM_FLOATING_INPUT_SINGLE_LINE 0
+/// @brief EFloatingGamepadTextInputMode: several lines; the user dismisses explicitly.
+#define RT_STEAM_FLOATING_INPUT_MULTIPLE_LINES 1
+/// @brief EFloatingGamepadTextInputMode: email layout.
+#define RT_STEAM_FLOATING_INPUT_EMAIL 2
+/// @brief EFloatingGamepadTextInputMode: numeric layout.
+#define RT_STEAM_FLOATING_INPUT_NUMERIC 3
 
 //===----------------------------------------------------------------------===//
 // Callback identifiers (k_iSteam<Interface>Callbacks base + offset)
@@ -105,10 +171,24 @@ typedef uint64_t rt_steam_api_call;
 #define RT_STEAM_CB_API_CALL_COMPLETED 703
 /// @brief SteamShutdown_t (700 + 4); empty payload.
 #define RT_STEAM_CB_STEAM_SHUTDOWN 704
+/// @brief GamepadTextInputDismissed_t (700 + 14).
+#define RT_STEAM_CB_GAMEPAD_TEXT_INPUT_DISMISSED 714
+/// @brief FloatingGamepadTextInputDismissed_t (700 + 38); empty payload.
+#define RT_STEAM_CB_FLOATING_GAMEPAD_TEXT_INPUT_DISMISSED 738
 /// @brief DlcInstalled_t (ISteamApps base 1000 + 5).
 #define RT_STEAM_CB_DLC_INSTALLED 1005
 /// @brief NewUrlLaunchParameters_t (1000 + 14); empty payload.
 #define RT_STEAM_CB_NEW_URL_LAUNCH_PARAMETERS 1014
+/// @brief UserStatsStored_t (ISteamUserStats base 1100 + 2).
+#define RT_STEAM_CB_USER_STATS_STORED 1102
+/// @brief UserAchievementStored_t (1100 + 3).
+#define RT_STEAM_CB_USER_ACHIEVEMENT_STORED 1103
+/// @brief LeaderboardFindResult_t call result (1100 + 4).
+#define RT_STEAM_CB_LEADERBOARD_FIND_RESULT 1104
+/// @brief LeaderboardScoresDownloaded_t call result (1100 + 5).
+#define RT_STEAM_CB_LEADERBOARD_SCORES_DOWNLOADED 1105
+/// @brief LeaderboardScoreUploaded_t call result (1100 + 6).
+#define RT_STEAM_CB_LEADERBOARD_SCORE_UPLOADED 1106
 /// @brief NumberOfCurrentPlayers_t call result (ISteamUserStats base 1100 + 7).
 #define RT_STEAM_CB_NUMBER_OF_CURRENT_PLAYERS 1107
 
@@ -179,12 +259,80 @@ typedef struct rt_steam_number_of_current_players {
     int32_t players; ///< Number of players currently playing.
 } rt_steam_number_of_current_players;
 
+/// @brief GamepadTextInputDismissed_t payload (12 bytes).
+typedef struct rt_steam_gamepad_text_input_dismissed {
+    uint8_t submitted;       ///< C++ bool: nonzero when the user submitted text.
+    uint32_t submitted_size; ///< Length of the submitted text in bytes.
+    uint32_t app_id;         ///< Application id of the game.
+} rt_steam_gamepad_text_input_dismissed;
+
+/// @brief UserStatsStored_t payload (16 bytes under pack 8, 12 under pack 4).
+typedef struct rt_steam_user_stats_stored {
+    uint64_t game_id; ///< Game the stats belong to.
+    int32_t result;   ///< EResult of the store.
+} rt_steam_user_stats_stored;
+
+/// @brief UserAchievementStored_t payload (152 bytes under pack 8, 148 under pack 4).
+typedef struct rt_steam_user_achievement_stored {
+    uint64_t game_id;                                   ///< Game the achievement belongs to.
+    uint8_t group_achievement;                          ///< C++ bool; unused by Steam.
+    char achievement_name[RT_STEAM_STAT_NAME_CAPACITY]; ///< Achievement API name.
+    uint32_t current_progress; ///< Progress so far; 0 together with max_progress means unlocked.
+    uint32_t max_progress; ///< Progress maximum; 0 together with current_progress means unlocked.
+} rt_steam_user_achievement_stored;
+
+/// @brief LeaderboardFindResult_t call result (16 bytes under pack 8, 12 under pack 4).
+typedef struct rt_steam_leaderboard_find_result {
+    uint64_t leaderboard; ///< SteamLeaderboard_t handle, 0 when not found.
+    uint8_t found;        ///< Nonzero when the board was found.
+} rt_steam_leaderboard_find_result;
+
+/// @brief LeaderboardScoresDownloaded_t call result (24 bytes under pack 8, 20 under pack 4).
+typedef struct rt_steam_leaderboard_scores_downloaded {
+    uint64_t leaderboard; ///< SteamLeaderboard_t handle.
+    uint64_t entries;     ///< SteamLeaderboardEntries_t handle for GetDownloadedLeaderboardEntry.
+    int32_t entry_count;  ///< Number of downloaded entries.
+} rt_steam_leaderboard_scores_downloaded;
+
+/// @brief LeaderboardScoreUploaded_t call result (32 bytes under pack 8, 28 under pack 4).
+typedef struct rt_steam_leaderboard_score_uploaded {
+    uint8_t success;              ///< 1 when the upload succeeded.
+    uint64_t leaderboard;         ///< SteamLeaderboard_t handle.
+    int32_t score;                ///< Score the upload attempted to set.
+    uint8_t score_changed;        ///< Nonzero when the stored score changed.
+    int32_t global_rank_new;      ///< The user's global rank after the upload.
+    int32_t global_rank_previous; ///< The user's previous global rank, or 0.
+} rt_steam_leaderboard_score_uploaded;
+
+/// @brief LeaderboardEntry_t (32 bytes under pack 8, 28 under pack 4).
+/// @details The SDK declares the user as a one-byte-aligned CSteamID. It is the
+///          first member, so a uint64_t yields the same offsets and size.
+typedef struct rt_steam_leaderboard_entry {
+    uint64_t steam_id;    ///< SteamID64 of the entry's user.
+    int32_t global_rank;  ///< Global rank, starting at 1.
+    int32_t score;        ///< Stored score.
+    int32_t detail_count; ///< Number of detail values stored with the entry.
+    uint64_t ugc;         ///< UGCHandle_t attached to the entry.
+} rt_steam_leaderboard_entry;
+
 #pragma pack(pop)
 
 /// @brief Expected sizeof(rt_steam_packing_sentinel) under the platform pack.
 #define RT_STEAM_PACKING_SENTINEL_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 32u : 24u)
 /// @brief Expected sizeof(rt_steam_callback_msg) under the platform pack.
 #define RT_STEAM_CALLBACK_MSG_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 24u : 20u)
+/// @brief Expected sizeof(rt_steam_user_stats_stored) under the platform pack.
+#define RT_STEAM_USER_STATS_STORED_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u)
+/// @brief Expected sizeof(rt_steam_user_achievement_stored) under the platform pack.
+#define RT_STEAM_USER_ACHIEVEMENT_STORED_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 152u : 148u)
+/// @brief Expected sizeof(rt_steam_leaderboard_find_result) under the platform pack.
+#define RT_STEAM_LEADERBOARD_FIND_RESULT_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u)
+/// @brief Expected sizeof(rt_steam_leaderboard_scores_downloaded) under the platform pack.
+#define RT_STEAM_LEADERBOARD_SCORES_DOWNLOADED_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 24u : 20u)
+/// @brief Expected sizeof(rt_steam_leaderboard_score_uploaded) under the platform pack.
+#define RT_STEAM_LEADERBOARD_SCORE_UPLOADED_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 32u : 28u)
+/// @brief Expected sizeof(rt_steam_leaderboard_entry) under the platform pack.
+#define RT_STEAM_LEADERBOARD_ENTRY_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 32u : 28u)
 
 //===----------------------------------------------------------------------===//
 // Flat API function types
@@ -228,6 +376,116 @@ typedef const char *(*rt_steam_self_cstr_fn)(void *self);
 typedef bool (*rt_steam_self_app_bool_fn)(void *self, uint32_t app_id);
 /// @brief Interface method returning a SteamAPICall_t (ISteamUserStats::GetNumberOfCurrentPlayers).
 typedef rt_steam_api_call (*rt_steam_self_call_fn)(void *self);
+/// @brief Interface method returning void (ISteamFriends::ClearRichPresence).
+typedef void (*rt_steam_self_void_fn)(void *self);
+/// @brief Interface method taking one string and returning bool (SetAchievement, FileExists).
+typedef bool (*rt_steam_self_str_bool_fn)(void *self, const char *name);
+/// @brief Interface method taking two strings and returning bool (ISteamFriends::SetRichPresence).
+typedef bool (*rt_steam_self_str_str_bool_fn)(void *self, const char *key, const char *value);
+/// @brief ISteamUserStats::GetAchievementAndUnlockTime.
+typedef bool (*rt_steam_get_achievement_fn)(void *self,
+                                            const char *name,
+                                            bool *achieved,
+                                            uint32_t *unlock_time);
+/// @brief ISteamUserStats::IndicateAchievementProgress.
+typedef bool (*rt_steam_indicate_progress_fn)(void *self,
+                                              const char *name,
+                                              uint32_t current,
+                                              uint32_t maximum);
+/// @brief ISteamUserStats::GetAchievementName.
+typedef const char *(*rt_steam_achievement_name_fn)(void *self, uint32_t index);
+/// @brief ISteamUserStats::GetAchievementDisplayAttribute.
+typedef const char *(*rt_steam_achievement_attribute_fn)(void *self,
+                                                         const char *name,
+                                                         const char *key);
+/// @brief ISteamUserStats::GetStatInt32.
+typedef bool (*rt_steam_get_stat_int_fn)(void *self, const char *name, int32_t *value);
+/// @brief ISteamUserStats::SetStatInt32.
+typedef bool (*rt_steam_set_stat_int_fn)(void *self, const char *name, int32_t value);
+/// @brief ISteamUserStats::GetStatFloat.
+typedef bool (*rt_steam_get_stat_float_fn)(void *self, const char *name, float *value);
+/// @brief ISteamUserStats::SetStatFloat.
+typedef bool (*rt_steam_set_stat_float_fn)(void *self, const char *name, float value);
+/// @brief ISteamUserStats::UpdateAvgRateStat.
+typedef bool (*rt_steam_update_avg_rate_fn)(void *self,
+                                            const char *name,
+                                            float count_this_session,
+                                            double session_length);
+/// @brief ISteamUserStats::ResetAllStats.
+typedef bool (*rt_steam_reset_all_stats_fn)(void *self, bool achievements_too);
+/// @brief ISteamUserStats::FindLeaderboard.
+typedef rt_steam_api_call (*rt_steam_find_leaderboard_fn)(void *self, const char *name);
+/// @brief ISteamUserStats::FindOrCreateLeaderboard.
+typedef rt_steam_api_call (*rt_steam_find_or_create_leaderboard_fn)(void *self,
+                                                                    const char *name,
+                                                                    int sort_method,
+                                                                    int display_type);
+/// @brief ISteamUserStats::GetLeaderboardName.
+typedef const char *(*rt_steam_leaderboard_name_fn)(void *self, uint64_t leaderboard);
+/// @brief ISteamUserStats::GetLeaderboardEntryCount.
+typedef int (*rt_steam_leaderboard_entry_count_fn)(void *self, uint64_t leaderboard);
+/// @brief ISteamUserStats::DownloadLeaderboardEntries.
+typedef rt_steam_api_call (*rt_steam_download_entries_fn)(
+    void *self, uint64_t leaderboard, int data_request, int range_start, int range_end);
+/// @brief ISteamUserStats::GetDownloadedLeaderboardEntry.
+typedef bool (*rt_steam_downloaded_entry_fn)(void *self,
+                                             uint64_t entries,
+                                             int index,
+                                             rt_steam_leaderboard_entry *entry,
+                                             int32_t *details,
+                                             int details_max);
+/// @brief ISteamUserStats::UploadLeaderboardScore.
+typedef rt_steam_api_call (*rt_steam_upload_score_fn)(void *self,
+                                                      uint64_t leaderboard,
+                                                      int upload_method,
+                                                      int32_t score,
+                                                      const int32_t *details,
+                                                      int detail_count);
+/// @brief ISteamFriends::ActivateGameOverlay.
+typedef void (*rt_steam_activate_overlay_fn)(void *self, const char *dialog);
+/// @brief ISteamFriends::ActivateGameOverlayToWebPage.
+typedef void (*rt_steam_activate_web_page_fn)(void *self, const char *url, int mode);
+/// @brief ISteamFriends::ActivateGameOverlayToStore.
+typedef void (*rt_steam_activate_store_fn)(void *self, uint32_t app_id, int flag);
+/// @brief ISteamFriends::GetFriendPersonaName.
+typedef const char *(*rt_steam_friend_persona_name_fn)(void *self, uint64_t steam_id);
+/// @brief ISteamFriends::RequestUserInformation.
+typedef bool (*rt_steam_request_user_information_fn)(void *self,
+                                                     uint64_t steam_id,
+                                                     bool require_name_only);
+/// @brief ISteamUtils::SetOverlayNotificationPosition.
+typedef void (*rt_steam_notification_position_fn)(void *self, int position);
+/// @brief ISteamUtils::SetOverlayNotificationInset.
+typedef void (*rt_steam_notification_inset_fn)(void *self, int horizontal, int vertical);
+/// @brief ISteamUtils::ShowFloatingGamepadTextInput.
+typedef bool (*rt_steam_show_floating_input_fn)(
+    void *self, int keyboard_mode, int x, int y, int width, int height);
+/// @brief ISteamUtils::ShowGamepadTextInput.
+typedef bool (*rt_steam_show_gamepad_input_fn)(void *self,
+                                               int input_mode,
+                                               int line_mode,
+                                               const char *description,
+                                               uint32_t char_max,
+                                               const char *existing_text);
+/// @brief ISteamUtils::GetEnteredGamepadTextInput.
+typedef bool (*rt_steam_entered_gamepad_text_fn)(void *self, char *text, uint32_t capacity);
+/// @brief ISteamRemoteStorage::FileWrite.
+typedef bool (*rt_steam_file_write_fn)(void *self,
+                                       const char *name,
+                                       const void *data,
+                                       int32_t size);
+/// @brief ISteamRemoteStorage::FileRead.
+typedef int32_t (*rt_steam_file_read_fn)(void *self, const char *name, void *data, int32_t size);
+/// @brief ISteamRemoteStorage::GetFileSize.
+typedef int32_t (*rt_steam_file_size_fn)(void *self, const char *name);
+/// @brief ISteamRemoteStorage::GetFileTimestamp.
+typedef int64_t (*rt_steam_file_timestamp_fn)(void *self, const char *name);
+/// @brief ISteamRemoteStorage::GetFileCount.
+typedef int32_t (*rt_steam_file_count_fn)(void *self);
+/// @brief ISteamRemoteStorage::GetFileNameAndSize.
+typedef const char *(*rt_steam_file_name_and_size_fn)(void *self, int index, int32_t *size);
+/// @brief ISteamRemoteStorage::GetQuota.
+typedef bool (*rt_steam_quota_fn)(void *self, uint64_t *total_bytes, uint64_t *available_bytes);
 
 //===----------------------------------------------------------------------===//
 // Exported symbol names
@@ -266,8 +524,77 @@ typedef rt_steam_api_call (*rt_steam_self_call_fn)(void *self);
 #define RT_STEAM_SYMBOL_APPS_IS_DLC_INSTALLED "SteamAPI_ISteamApps_BIsDlcInstalled"
 #define RT_STEAM_SYMBOL_APPS_GAME_LANGUAGE "SteamAPI_ISteamApps_GetCurrentGameLanguage"
 
+#define RT_STEAM_SYMBOL_FRIENDS_SET_RICH_PRESENCE "SteamAPI_ISteamFriends_SetRichPresence"
+#define RT_STEAM_SYMBOL_FRIENDS_CLEAR_RICH_PRESENCE "SteamAPI_ISteamFriends_ClearRichPresence"
+#define RT_STEAM_SYMBOL_FRIENDS_ACTIVATE_OVERLAY "SteamAPI_ISteamFriends_ActivateGameOverlay"
+#define RT_STEAM_SYMBOL_FRIENDS_ACTIVATE_WEB_PAGE                                                  \
+    "SteamAPI_ISteamFriends_ActivateGameOverlayToWebPage"
+#define RT_STEAM_SYMBOL_FRIENDS_ACTIVATE_STORE "SteamAPI_ISteamFriends_ActivateGameOverlayToStore"
+#define RT_STEAM_SYMBOL_FRIENDS_FRIEND_PERSONA_NAME "SteamAPI_ISteamFriends_GetFriendPersonaName"
+#define RT_STEAM_SYMBOL_FRIENDS_REQUEST_USER_INFO "SteamAPI_ISteamFriends_RequestUserInformation"
+
+#define RT_STEAM_SYMBOL_UTILS_OVERLAY_ENABLED "SteamAPI_ISteamUtils_IsOverlayEnabled"
+#define RT_STEAM_SYMBOL_UTILS_NOTIFICATION_POSITION                                                \
+    "SteamAPI_ISteamUtils_SetOverlayNotificationPosition"
+#define RT_STEAM_SYMBOL_UTILS_NOTIFICATION_INSET "SteamAPI_ISteamUtils_SetOverlayNotificationInset"
+#define RT_STEAM_SYMBOL_UTILS_SHOW_FLOATING_INPUT                                                  \
+    "SteamAPI_ISteamUtils_ShowFloatingGamepadTextInput"
+#define RT_STEAM_SYMBOL_UTILS_DISMISS_FLOATING_INPUT                                               \
+    "SteamAPI_ISteamUtils_DismissFloatingGamepadTextInput"
+#define RT_STEAM_SYMBOL_UTILS_SHOW_GAMEPAD_INPUT "SteamAPI_ISteamUtils_ShowGamepadTextInput"
+#define RT_STEAM_SYMBOL_UTILS_ENTERED_TEXT_LENGTH "SteamAPI_ISteamUtils_GetEnteredGamepadTextLength"
+#define RT_STEAM_SYMBOL_UTILS_ENTERED_TEXT "SteamAPI_ISteamUtils_GetEnteredGamepadTextInput"
+
 #define RT_STEAM_SYMBOL_USER_STATS_V013 "SteamAPI_SteamUserStats_v013"
 #define RT_STEAM_SYMBOL_USER_STATS_PLAYER_COUNT "SteamAPI_ISteamUserStats_GetNumberOfCurrentPlayers"
+#define RT_STEAM_SYMBOL_USER_STATS_SET_ACHIEVEMENT "SteamAPI_ISteamUserStats_SetAchievement"
+#define RT_STEAM_SYMBOL_USER_STATS_CLEAR_ACHIEVEMENT "SteamAPI_ISteamUserStats_ClearAchievement"
+#define RT_STEAM_SYMBOL_USER_STATS_GET_ACHIEVEMENT_TIME                                            \
+    "SteamAPI_ISteamUserStats_GetAchievementAndUnlockTime"
+#define RT_STEAM_SYMBOL_USER_STATS_INDICATE_PROGRESS                                               \
+    "SteamAPI_ISteamUserStats_IndicateAchievementProgress"
+#define RT_STEAM_SYMBOL_USER_STATS_NUM_ACHIEVEMENTS "SteamAPI_ISteamUserStats_GetNumAchievements"
+#define RT_STEAM_SYMBOL_USER_STATS_ACHIEVEMENT_NAME "SteamAPI_ISteamUserStats_GetAchievementName"
+#define RT_STEAM_SYMBOL_USER_STATS_ACHIEVEMENT_ATTRIBUTE                                           \
+    "SteamAPI_ISteamUserStats_GetAchievementDisplayAttribute"
+#define RT_STEAM_SYMBOL_USER_STATS_GET_STAT_INT "SteamAPI_ISteamUserStats_GetStatInt32"
+#define RT_STEAM_SYMBOL_USER_STATS_SET_STAT_INT "SteamAPI_ISteamUserStats_SetStatInt32"
+#define RT_STEAM_SYMBOL_USER_STATS_GET_STAT_FLOAT "SteamAPI_ISteamUserStats_GetStatFloat"
+#define RT_STEAM_SYMBOL_USER_STATS_SET_STAT_FLOAT "SteamAPI_ISteamUserStats_SetStatFloat"
+#define RT_STEAM_SYMBOL_USER_STATS_UPDATE_AVG_RATE "SteamAPI_ISteamUserStats_UpdateAvgRateStat"
+#define RT_STEAM_SYMBOL_USER_STATS_STORE "SteamAPI_ISteamUserStats_StoreStats"
+#define RT_STEAM_SYMBOL_USER_STATS_RESET_ALL "SteamAPI_ISteamUserStats_ResetAllStats"
+#define RT_STEAM_SYMBOL_USER_STATS_FIND_LEADERBOARD "SteamAPI_ISteamUserStats_FindLeaderboard"
+#define RT_STEAM_SYMBOL_USER_STATS_FIND_OR_CREATE_LEADERBOARD                                      \
+    "SteamAPI_ISteamUserStats_FindOrCreateLeaderboard"
+#define RT_STEAM_SYMBOL_USER_STATS_LEADERBOARD_NAME "SteamAPI_ISteamUserStats_GetLeaderboardName"
+#define RT_STEAM_SYMBOL_USER_STATS_LEADERBOARD_ENTRY_COUNT                                         \
+    "SteamAPI_ISteamUserStats_GetLeaderboardEntryCount"
+#define RT_STEAM_SYMBOL_USER_STATS_DOWNLOAD_ENTRIES                                                \
+    "SteamAPI_ISteamUserStats_DownloadLeaderboardEntries"
+#define RT_STEAM_SYMBOL_USER_STATS_DOWNLOADED_ENTRY                                                \
+    "SteamAPI_ISteamUserStats_GetDownloadedLeaderboardEntry"
+#define RT_STEAM_SYMBOL_USER_STATS_UPLOAD_SCORE "SteamAPI_ISteamUserStats_UploadLeaderboardScore"
+
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_V016 "SteamAPI_SteamRemoteStorage_v016"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_WRITE "SteamAPI_ISteamRemoteStorage_FileWrite"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_READ "SteamAPI_ISteamRemoteStorage_FileRead"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_EXISTS "SteamAPI_ISteamRemoteStorage_FileExists"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_DELETE "SteamAPI_ISteamRemoteStorage_FileDelete"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_SIZE "SteamAPI_ISteamRemoteStorage_GetFileSize"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_TIMESTAMP                                              \
+    "SteamAPI_ISteamRemoteStorage_GetFileTimestamp"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_COUNT "SteamAPI_ISteamRemoteStorage_GetFileCount"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_NAME_AND_SIZE                                          \
+    "SteamAPI_ISteamRemoteStorage_GetFileNameAndSize"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_QUOTA "SteamAPI_ISteamRemoteStorage_GetQuota"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_ENABLED_FOR_ACCOUNT                                         \
+    "SteamAPI_ISteamRemoteStorage_IsCloudEnabledForAccount"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_ENABLED_FOR_APP                                             \
+    "SteamAPI_ISteamRemoteStorage_IsCloudEnabledForApp"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_BEGIN_BATCH                                                 \
+    "SteamAPI_ISteamRemoteStorage_BeginFileWriteBatch"
+#define RT_STEAM_SYMBOL_REMOTE_STORAGE_END_BATCH "SteamAPI_ISteamRemoteStorage_EndFileWriteBatch"
 
 #ifdef __cplusplus
 }

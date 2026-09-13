@@ -871,6 +871,11 @@ bool is_allowed_duplicate_function_export(std::string_view key,
         return all_names_start_with_one_of(names, {"Zanna.Graphics3D.Material3D."});
     }
 
+    // A JSON object is a Map, so Json.NewObject shares Map.New's declared result (ADR 0356).
+    if (symbol == "rt_map_new") {
+        return all_names_start_with_one_of(names, {"Zanna.Collections.Map.", "Zanna.Data.Json."});
+    }
+
     static const std::set<std::string_view> allowed_symbols = {
         "rt_bimap_put",
         "rt_binbuf_new_cap",

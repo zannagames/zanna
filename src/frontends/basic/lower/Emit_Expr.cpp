@@ -621,6 +621,29 @@ static std::string mapToCanonicalRuntime(std::string_view name) {
 }
 } // namespace
 
+/// @brief Queues the statement-boundary release a runtime call result needs.
+/// @details Each runtime.def row declares who owns its result (ADR 0314). A string
+///          result is released unless the row declares it borrowed, and an object
+///          result is released only when the row declares it owned. A borrowed result
+///          is a view another runtime object still owns, so the slot, field or array
+///          element it is stored in takes its own retain and nothing releases it here.
+/// @param v Result of the runtime call.
+/// @param ty IL type of @p v.
+/// @param callee Runtime name or alias that produced @p v.
+void Lowerer::deferReleaseRuntimeResult(Value v, Type ty, const std::string &callee) {
+    if (ty.kind != Type::Kind::Str && ty.kind != Type::Kind::Ptr)
+        return;
+    const auto *descriptor = il::runtime::findRuntimeDescriptor(mapToCanonicalRuntime(callee));
+    if (ty.kind == Type::Kind::Str) {
+        if (!descriptor ||
+            descriptor->signature.resultOwnership != il::runtime::RuntimeResultOwnership::Borrowed)
+            deferReleaseStr(v);
+        return;
+    }
+    if (descriptor && descriptor->signature.returnsOwned)
+        deferReleaseObj(v);
+}
+
 /// @brief Emits a direct void call and tracks registered runtime callees.
 /// @param callee Requested runtime alias or direct function name.
 /// @param args Ordered IL argument values.

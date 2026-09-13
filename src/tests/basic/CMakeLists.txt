@@ -1113,6 +1113,24 @@ function(zanna_add_basic_semantics_golden_tests)
             -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
             -P ${_ZANNA_BASIC_SEMANTICS_DIR}/check_diag.cmake)
 
+    zanna_add_ctest(basic_semantics_array_upper_bound_and_float_elements_ok
+            ${CMAKE_COMMAND}
+            -DILC=${_ZANNA_BASIC_ILC}
+            -DBAS_FILE=${_ZANNA_BASIC_SEMANTICS_DIR}/array_upper_bound_and_float_elements_ok.bas
+            -DDIAG_FILE=${_ZANNA_BASIC_SEMANTICS_DIR}/array_upper_bound_and_float_elements_ok.diag
+            -DEXPECT_STATUS=0
+            -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
+            -P ${_ZANNA_BASIC_SEMANTICS_DIR}/check_diag.cmake)
+
+    zanna_add_ctest(basic_semantics_array_write_out_of_bounds
+            ${CMAKE_COMMAND}
+            -DILC=${_ZANNA_BASIC_ILC}
+            -DBAS_FILE=${_ZANNA_BASIC_SEMANTICS_DIR}/array_write_out_of_bounds.bas
+            -DDIAG_FILE=${_ZANNA_BASIC_SEMANTICS_DIR}/array_write_out_of_bounds.diag
+            -DEXPECT_STATUS=0
+            -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
+            -P ${_ZANNA_BASIC_SEMANTICS_DIR}/check_diag.cmake)
+
     set(_ZANNA_UNKNOWN_STMT_REGEX "unknown statement 'FROB'")
     zanna_add_ctest(basic_semantics_unknown_statement
             ${CMAKE_COMMAND}
@@ -1357,6 +1375,16 @@ function(zanna_add_basic_integration_tests)
             -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/basic/regress_fileio_write_ok.bas
             -DEXPECT_FILE=${CMAKE_SOURCE_DIR}/src/tests/basic/regress_fileio_write_ok.expect
             -P ${_ZANNA_BASIC_SEMANTICS_DIR}/check_expect.cmake)
+
+    # File-channel I/O: EOF, LOF, LOC, SEEK, INPUT # and LINE INPUT # round trips.
+    foreach (_fileio_case IN ITEMS eof eof_lof_loc input_num input_str loc_seek lof write)
+        zanna_add_ctest(basic_fileio_${_fileio_case}
+                ${CMAKE_COMMAND}
+                -DILC=${_ZANNA_BASIC_ILC}
+                -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/basic/fileio_${_fileio_case}.bas
+                -DEXPECT_FILE=${CMAKE_SOURCE_DIR}/src/tests/basic/fileio_${_fileio_case}.expect
+                -P ${_ZANNA_BASIC_SEMANTICS_DIR}/check_expect.cmake)
+    endforeach ()
 
     zanna_add_ctest(basic_regress_me_keyword
             ${CMAKE_COMMAND}

@@ -6,8 +6,10 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/runtime/RTSeqBoxTests.cpp
-// Purpose: Validate Seq.Find/Has content-aware equality for boxed values.
-// Key invariants: Boxed values are compared by content, not pointer identity.
+// Purpose: Validate Seq.Find/Has content-aware equality for boxed values, and
+//          the Box string accessors on boxed and raw strings.
+// Key invariants: Boxed values are compared by content, not pointer identity;
+//                 raw string handles in object slots read as strings.
 // Ownership/Lifetime: Each sequence owns its retained boxed values until the
 //                     test releases the sequence and any independent aliases.
 // Links: src/runtime/collections/rt_seq.c, src/runtime/oop/rt_box.c
@@ -297,6 +299,48 @@ static void test_box_string_helpers_validate_string_handles() {
     printf("\n");
 }
 
+static void *g_unbox_non_string = nullptr;
+
+static void call_unbox_str_non_string() {
+    (void)rt_unbox_str(g_unbox_non_string);
+}
+
+static void test_box_string_accessors_accept_raw_strings() {
+    printf("Testing Box string accessors on raw string handles:\n");
+
+    rt_string raw = rt_string_from_bytes("raw", 3);
+    rt_string unboxed = rt_unbox_str(raw);
+    test_result("ToStr returns the raw string", unboxed == raw);
+    rt_str_release_maybe(unboxed);
+
+    rt_string tried = nullptr;
+    test_result("ToStrOption accepts a raw string", rt_box_try_to_str(raw, &tried) == 1);
+    test_result("ToStrOption yields the raw string", tried == raw);
+    rt_str_release_maybe(tried);
+
+    test_result("EqStr matches a raw string", rt_box_eq_str(raw, rt_const_cstr("raw")) == 1);
+    test_result("EqStr rejects a different raw string",
+                rt_box_eq_str(raw, rt_const_cstr("other")) == 0);
+    test_result("EqStr rejects a null comparand", rt_box_eq_str(raw, nullptr) == 0);
+
+    void *seq = rt_seq_new();
+    rt_seq_push(seq, raw);
+    rt_string element = rt_unbox_str(rt_seq_get(seq, 0));
+    test_result("ToStr reads a raw seq element", rt_str_eq(element, raw) == 1);
+    rt_str_release_maybe(element);
+
+    g_unbox_non_string = rt_box_i64(7);
+    expect_trap(call_unbox_str_non_string, "type mismatch");
+    release_object(g_unbox_non_string);
+    g_unbox_non_string = seq;
+    expect_trap(call_unbox_str_non_string, "invalid boxed value");
+    g_unbox_non_string = nullptr;
+
+    release_object(seq);
+    rt_str_release_maybe(raw);
+    printf("\n");
+}
+
 static void test_value_type_managed_fields() {
     printf("Testing Box.ValueType managed field registration:\n");
 
@@ -456,6 +500,7 @@ int main() {
     test_null_string_boxes_compare_equal();
     test_boxed_nan_hash_is_canonical();
     test_box_string_helpers_validate_string_handles();
+    test_box_string_accessors_accept_raw_strings();
     test_value_type_managed_fields();
     test_value_type_chains_existing_finalizer();
     test_value_type_zero_size_and_duplicate_fields();

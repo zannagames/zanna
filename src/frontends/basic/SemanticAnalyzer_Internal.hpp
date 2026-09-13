@@ -181,9 +181,9 @@ struct ExprRule {
     /// @brief Binary operator represented by this entry.
     BinaryExpr::Op op{BinaryExpr::Op::Add}; ///< The binary operator this rule applies to.
     /// @brief Optional operand validator invoked before result calculation.
-    OperandValidator validator{nullptr};    ///< Function to validate operand type compatibility.
+    OperandValidator validator{nullptr}; ///< Function to validate operand type compatibility.
     /// @brief Optional result-type callback.
-    ResultTypeFn result{nullptr};           ///< Function to compute the result type.
+    ResultTypeFn result{nullptr}; ///< Function to compute the result type.
     /// @brief Diagnostic identifier supplied to @ref validator.
     std::string_view mismatchDiag; ///< Diagnostic message template for type errors.
 };
@@ -269,5 +269,18 @@ std::string uppercaseBasicTypeName(BasicType type);
 /// @param type Type to classify.
 /// @return @c true for integer, float, or boolean; @c false otherwise.
 bool isNumericSemanticType(SemanticAnalyzer::Type type) noexcept;
+
+/// @brief Tests the whole-array semantic categories.
+/// @param type Type to classify.
+/// @return @c true for integer, float, string, or object arrays.
+bool isSemanticArrayType(SemanticAnalyzer::Type type) noexcept;
+
+/// @brief Tests whether a FUNCTION result of one category can hold a value of another.
+/// @details An object result takes only objects and a string result only strings. A numeric
+///          result takes any numeric value except that a BOOLEAN result rejects FLOAT.
+/// @param result Result type the FUNCTION declares.
+/// @param value Type of the RETURN expression or result-name assignment.
+/// @return @c true when the value fits the result's category.
+bool functionResultAccepts(SemanticAnalyzer::Type result, SemanticAnalyzer::Type value) noexcept;
 
 } // namespace il::frontends::basic::semantic_analyzer_detail

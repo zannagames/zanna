@@ -139,6 +139,9 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0281](0281-event-driven-process-pty-gui-wakes.md) — Wake GUI Event Loops for Process and PTY Activity
 - [ADR 0303](0303-complete-owned-workspace-index-cursors.md) — Let Owned Workspace Index Cursors Reach Completion
 - [ADR 0352](0352-platform-services-runtime-loaded-providers.md) — Platform Services with Runtime-Loaded Provider Redistributables (Steamworks First)
+- [ADR 0353](0353-platform-services-player-features.md) — Platform Services Player Features (Achievements, Stats, Leaderboards, Presence, Overlay, Text Input, Cloud)
+- [ADR 0356](0356-runtime-object-results-declare-their-class.md) — Runtime Object Results Declare Their Class
+- [ADR 0357](0357-music-load-asset.md) — Music streams from the asset manager (`Music.LoadAsset`)
 
 ## GUI & IDE
 
@@ -323,6 +326,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0175](0175-zanna-games-windows-installer-experience.md) — Give Windows Setup a Native Zanna Games Experience
 - [ADR 0196](0196-map-windows-runtime-hardening-imports.md) — Map Windows Runtime Hardening Imports
 - [ADR 0283](0283-map-workspace-and-process-posix-imports.md) — Map Workspace Durability and Process Ownership POSIX Imports
+- [ADR 0354](0354-store-depot-packaging.md) — Store Depot Packaging for Platform Services (Steam First)
+- [ADR 0355](0355-package-formats-ship-pack-groups.md) — Every Package Format Ships the Project's Pack Groups
 - [ADR 0197](0197-project-owned-2d-object-preview-profiles.md) — Add Project-Owned 2D Object Preview Profiles
 - [ADR 0198](0198-project-owned-3d-scene-preview-profiles.md) — Add Project-Owned 3D Scene Preview Profiles
 - [ADR 0199](0199-project-owned-3d-node-prefab-previews.md) — Add Project-Owned 3D Node Prefab Previews

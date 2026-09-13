@@ -39,17 +39,17 @@ bool isAssignableTarget(const Expr *expr) {
 }
 
 /// @brief True if @p field is a read-only built-in property of @p baseType
-///        (e.g. List/Map/Set Length/Count) that may not be assigned to.
+///        (e.g. List/Map/Set Length/Count/IsEmpty) that may not be assigned to.
 /// @param baseType Receiver type.
 /// @param field Member spelling.
-/// @return True for recognized collection/string count properties.
+/// @return True for recognized collection count/emptiness and string length properties.
 bool isReadOnlyBuiltinProperty(TypeRef baseType, const std::string &field) {
     if (!baseType)
         return false;
     if (baseType->kind == TypeKindSem::List || baseType->kind == TypeKindSem::Map ||
         baseType->kind == TypeKindSem::Set) {
         return field == "Length" || field == "length" || field == "Len" || field == "Count" ||
-               field == "count" || field == "size";
+               field == "count" || field == "size" || field == "IsEmpty";
     }
     if (baseType->kind == TypeKindSem::String)
         return field == "Length" || field == "length";
@@ -117,7 +117,7 @@ TypeRef Sema::analyzeBinary(BinaryExpr *expr) {
                 error(expr->loc,
                       "Cannot assign to read-only property '" + fieldExpr->field + "' on " +
                           builtinTypeName(baseType));
-                leftType = types::integer();
+                leftType = fieldExpr->field == "IsEmpty" ? types::boolean() : types::integer();
                 exprTypes_[fieldExpr] = leftType;
             }
 
@@ -164,27 +164,20 @@ TypeRef Sema::analyzeBinary(BinaryExpr *expr) {
             if (!leftType && !handledWriteOnlyProperty)
                 leftType = analyzeExpr(expr->left.get());
         } else {
+            // A plain assignment writes its target rather than reading it. The right side was
+            // analyzed above, so reads there (including the one `x += 1` desugars to) still
+            // report W015 before the variable counts as initialized.
+            if (expr->left->kind == ExprKind::Ident)
+                markInitialized(static_cast<IdentExpr *>(expr->left.get())->name);
             leftType = analyzeExpr(expr->left.get());
         }
     } else {
         leftType = analyzeExpr(expr->left.get());
         if (expr->op == BinaryOp::And || expr->op == BinaryOp::Or) {
-            std::string nullCheckVar;
-            bool isNotNull = false;
-            TypeRef checkedNullType = nullptr;
-            bool appliedNarrowing = false;
-
-            if (tryExtractNullCheck(expr->left.get(), nullCheckVar, isNotNull, &checkedNullType)) {
-                TypeRef varType = checkedNullType ? checkedNullType : lookupVarType(nullCheckVar);
-                if (varType && varType->kind == TypeKindSem::Optional && varType->innerType()) {
-                    bool rhsSeesNonNull = (expr->op == BinaryOp::And) ? isNotNull : !isNotNull;
-                    if (rhsSeesNonNull) {
-                        pushNarrowingScope();
-                        narrowType(nullCheckVar, varType->innerType());
-                        appliedNarrowing = true;
-                    }
-                }
-            }
+            // The right operand runs only when `&&`'s left operand holds or `||`'s fails, so it
+            // sees everything that outcome proves non-null.
+            const bool appliedNarrowing =
+                pushConditionNarrowing(expr->left.get(), /*whenTrue=*/expr->op == BinaryOp::And);
 
             rightType = analyzeExpr(expr->right.get());
             if (appliedNarrowing)

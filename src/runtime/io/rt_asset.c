@@ -845,12 +845,15 @@ static void discover_packs(const char *dir, asset_init_stage_t *stage) {
     DIR *d = opendir(dir);
     if (!d)
         return;
+    static const char pack_suffix[] = ".zpak";
+    const size_t suffix_len = sizeof(pack_suffix) - 1;
     struct dirent *entry;
     while ((entry = readdir(d)) != NULL) {
         size_t nlen = strlen(entry->d_name);
-        if (nlen < 5)
+        // Same selection as the Windows "*.zpak" pattern: the name ends with ".zpak".
+        if (nlen < suffix_len)
             continue;
-        if (strcmp(entry->d_name + nlen - 4, ".zpak") != 0)
+        if (strcmp(entry->d_name + nlen - suffix_len, pack_suffix) != 0)
             continue;
 
         size_t dir_len = strlen(dir);

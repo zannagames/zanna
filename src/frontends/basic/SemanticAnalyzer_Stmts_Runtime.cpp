@@ -31,6 +31,7 @@
 #include "frontends/basic/SemanticAnalyzer_Internal.hpp"
 #include "frontends/basic/StringUtils.hpp"
 #include "frontends/basic/ast/ExprNodes.hpp"
+#include "il/runtime/RuntimeClassNames.hpp"
 
 #include <climits>
 
@@ -123,6 +124,66 @@ void SemanticAnalyzer::analyzeCallStmt(CallStmt &stmt) {
     // Unknown invocation node: nothing to analyze (defensive).
 }
 
+/// @brief Scalar result type of the FUNCTION currently being analyzed.
+/// @details The parser folds an AS clause and a name suffix into the declaration's
+///          result type, which defaults to INTEGER. Object results (AS OBJECT or
+///          AS a class) have no scalar type.
+/// @return Result type, or @c std::nullopt outside a FUNCTION and for object results.
+std::optional<SemanticAnalyzer::Type> SemanticAnalyzer::activeFunctionResultType() const {
+    if (!activeFunction_)
+        return std::nullopt;
+    if (!activeFunction_->explicitClassRetQname.empty() ||
+        activeFunctionExplicitRet_ == BasicType::Object)
+        return Type::Object;
+    return semantic_analyzer_detail::astToSemanticType(activeFunction_->ret);
+}
+
+/// @brief Validates a VB-style result assignment to the active FUNCTION's name.
+/// @details The result slot keeps the FUNCTION's declared type: unlike a new
+///          unsuffixed variable it never adopts the assigned value's type, and a
+///          FLOAT value never promotes an INTEGER result. A value outside the
+///          result's category (string, object or numeric) is `B2001`. FLOAT into
+///          an INTEGER result narrows with warning `B2002`, and INTEGER into a
+///          BOOLEAN result converts, as for variables.
+/// @param v Destination naming the active FUNCTION.
+/// @param l LET statement supplying the value and diagnostic location.
+/// @param resultType Result type the FUNCTION declares.
+void SemanticAnalyzer::analyzeFunctionResultAssignment(VarExpr &v,
+                                                       const LetStmt &l,
+                                                       Type resultType) {
+    Type exprTy = Type::Unknown;
+    if (l.expr)
+        exprTy = visitExpr(*l.expr);
+
+    auto itType = varTypes_.find(v.name);
+    if (itType == varTypes_.end() || itType->second != resultType) {
+        if (activeProcScope_) {
+            std::optional<Type> previous;
+            if (itType != varTypes_.end())
+                previous = itType->second;
+            activeProcScope_->noteVarTypeMutation(v.name, previous);
+        }
+        varTypes_[v.name] = resultType;
+    }
+    resolveAndTrackSymbol(v.name, SymbolKind::Definition);
+
+    if (!l.expr || exprTy == Type::Unknown)
+        return;
+
+    if (!semantic_analyzer_detail::functionResultAccepts(resultType, exprTy)) {
+        std::string msg = "operand type mismatch";
+        de.emit(il::support::Severity::Error, "B2001", l.loc, 1, std::move(msg));
+        return;
+    }
+    if (resultType == Type::Int && exprTy == Type::Float) {
+        markImplicitConversion(*l.expr, Type::Int);
+        std::string msg = "narrowing conversion from FLOAT to INT in assignment";
+        de.emit(il::support::Severity::Warning, "B2002", l.loc, 1, std::move(msg));
+    } else if (resultType == Type::Bool && exprTy == Type::Int) {
+        markImplicitConversion(*l.expr, Type::Bool);
+    }
+}
+
 /// @brief Validates assignment to a simple variable or implicit-instance field.
 /// @details Constants are rejected first. Assignment to the active FUNCTION
 ///          name records VB-style result flow. An unshadowed implicit field is
@@ -152,6 +213,10 @@ void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
     // BUG-003: Check if this is an assignment to the function name (VB-style implicit return)
     if (activeFunction_ && string_utils::iequals(v.name, activeFunction_->name)) {
         activeFunctionNameAssigned_ = true;
+        if (auto resultType = activeFunctionResultType()) {
+            analyzeFunctionResultAssignment(v, l, *resultType);
+            return;
+        }
     }
 
     if (!scopes_.resolve(v.name).has_value()) {
@@ -232,12 +297,16 @@ void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
             objectClassTypes_.erase(itClass);
     };
 
-    if (assignedObjectClass) {
-        updateTrackedObjectClass(assignedObjectClass);
-    } else if (exprTy == Type::Object) {
-        updateTrackedObjectClass(std::nullopt);
-    } else if (exprTy != Type::Unknown && objectClassTypes_.contains(v.name)) {
-        updateTrackedObjectClass(std::nullopt);
+    // A variable declared AS a class keeps that class whatever is assigned to it; only
+    // variables without a declared class follow the class of their latest value.
+    if (!declaredObjectClasses_.contains(v.name)) {
+        if (assignedObjectClass) {
+            updateTrackedObjectClass(assignedObjectClass);
+        } else if (exprTy == Type::Object) {
+            updateTrackedObjectClass(std::nullopt);
+        } else if (exprTy != Type::Unknown && objectClassTypes_.contains(v.name)) {
+            updateTrackedObjectClass(std::nullopt);
+        }
     }
 
     Type varTy = Type::Int;
@@ -245,9 +314,7 @@ void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
         varTy = itType->second;
 
     /// Tests the three whole-array semantic categories.
-    auto isArrayType = [](Type ty) {
-        return ty == Type::ArrayInt || ty == Type::ArrayString || ty == Type::ArrayObject;
-    };
+    auto isArrayType = [](Type ty) { return semantic_analyzer_detail::isSemanticArrayType(ty); };
 
     if (isArrayType(varTy)) {
         if (exprTy != Type::Unknown && exprTy != varTy) {
@@ -334,8 +401,8 @@ void SemanticAnalyzer::analyzeArrayAssignment(ArrayExpr &a, const LetStmt &l) {
                     std::initializer_list<diag::Replacement>{diag::Replacement{"name", a.name}});
         }
         if (auto itType = varTypes_.find(a.name);
-            itType != varTypes_.end() && itType->second != Type::ArrayInt &&
-            itType->second != Type::ArrayString && itType->second != Type::ArrayObject) {
+            itType != varTypes_.end() &&
+            !semantic_analyzer_detail::isSemanticArrayType(itType->second)) {
             de.emit(diag::BasicDiag::NotAnArray,
                     a.loc,
                     static_cast<uint32_t>(a.name.size()),
@@ -395,6 +462,8 @@ void SemanticAnalyzer::analyzeArrayAssignment(ArrayExpr &a, const LetStmt &l) {
                 expectedElementType = Type::String;
             else if (itType->second == Type::ArrayObject)
                 expectedElementType = Type::Object;
+            else if (itType->second == Type::ArrayFloat)
+                expectedElementType = Type::Float;
         }
 
         if (expectedElementType == Type::Int) {
@@ -405,6 +474,14 @@ void SemanticAnalyzer::analyzeArrayAssignment(ArrayExpr &a, const LetStmt &l) {
                 de.emit(il::support::Severity::Warning, "B2002", l.loc, 1, std::move(msg));
             } else if (valueTy != Type::Unknown && valueTy != Type::Int) {
                 std::string msg = "array element type mismatch: expected INT, got ";
+                msg += semanticTypeName(valueTy);
+                de.emit(il::support::Severity::Error, "B2001", l.loc, 1, std::move(msg));
+            }
+        } else if (expectedElementType == Type::Float) {
+            // Float array: any numeric value converts.
+            if (valueTy != Type::Unknown &&
+                !semantic_analyzer_detail::isNumericSemanticType(valueTy)) {
+                std::string msg = "array element type mismatch: expected FLOAT, got ";
                 msg += semanticTypeName(valueTy);
                 de.emit(il::support::Severity::Error, "B2001", l.loc, 1, std::move(msg));
             }
@@ -426,11 +503,11 @@ void SemanticAnalyzer::analyzeArrayAssignment(ArrayExpr &a, const LetStmt &l) {
     auto it = arrays_.find(a.name);
     if (it != arrays_.end() && !it->second.extents.empty() && it->second.extents.size() == 1 &&
         a.index) {
-        // Bounds check for single-dimensional arrays
-        long long arraySize = it->second.extents[0];
-        if (arraySize >= 0) {
+        // Bounds check for single-dimensional arrays; DIM extents are inclusive upper bounds.
+        long long upperBound = it->second.extents[0];
+        if (upperBound >= 0) {
             if (auto *ci = as<const IntExpr>(*a.index)) {
-                if (ci->value < 0 || ci->value >= arraySize) {
+                if (ci->value < 0 || ci->value > upperBound) {
                     std::string msg = "index out of bounds";
                     de.emit(il::support::Severity::Warning, "B3001", a.loc, 1, std::move(msg));
                 }
@@ -646,6 +723,7 @@ void SemanticAnalyzer::analyzeRandomize(const RandomizeStmt &r) {
 /// @param d Mutable declaration whose name and resolved extents may be updated.
 void SemanticAnalyzer::analyzeDim(DimStmt &d) {
     ArrayMetadata metadata;
+    checkClassTypeName(JoinDots(d.explicitClassQname), d.loc);
 
     if (d.isArray) {
         // Collect dimension expressions: check 'size' first (backward compat), then 'dimensions'
@@ -801,6 +879,9 @@ void SemanticAnalyzer::analyzeDim(DimStmt &d) {
         } else if (d.type == ::il::frontends::basic::Type::Str ||
                    (!d.name.empty() && d.name.back() == '$')) {
             varTypes_[d.name] = Type::ArrayString;
+        } else if (d.type == ::il::frontends::basic::Type::F64 ||
+                   (!d.name.empty() && (d.name.back() == '#' || d.name.back() == '!'))) {
+            varTypes_[d.name] = Type::ArrayFloat;
         } else {
             varTypes_[d.name] = Type::ArrayInt;
         }
@@ -848,6 +929,24 @@ void SemanticAnalyzer::analyzeDim(DimStmt &d) {
             } else if (itClass != objectClassTypes_.end()) {
                 objectClassTypes_.erase(d.name);
             }
+
+            auto itDeclared = declaredObjectClasses_.find(d.name);
+            if (activeProcScope_) {
+                std::optional<std::string> previous;
+                if (itDeclared != declaredObjectClasses_.end())
+                    previous = itDeclared->second;
+                activeProcScope_->noteDeclaredObjectClassMutation(d.name, previous);
+            }
+            // `AS OBJECT` declares no particular class: such a variable follows the class of
+            // whatever is assigned to it.
+            const std::string declaredClass = JoinDots(d.explicitClassQname);
+            const bool namesConcreteClass =
+                !declaredClass.empty() && !string_utils::iequals(declaredClass, "OBJECT") &&
+                !string_utils::iequals(declaredClass, il::runtime::RTCLASS_OBJECT);
+            if (namesConcreteClass)
+                declaredObjectClasses_[d.name] = declaredClass;
+            else if (itDeclared != declaredObjectClasses_.end())
+                declaredObjectClasses_.erase(itDeclared);
         }
     }
 }
@@ -1024,8 +1123,8 @@ void SemanticAnalyzer::analyzeReDim(ReDimStmt &d) {
     }
 
     if (auto itType = varTypes_.find(d.name);
-        itType != varTypes_.end() && itType->second != Type::ArrayInt &&
-        itType->second != Type::ArrayString && itType->second != Type::ArrayObject) {
+        itType != varTypes_.end() &&
+        !semantic_analyzer_detail::isSemanticArrayType(itType->second)) {
         std::string msg = "REDIM target must be an array";
         de.emit(il::support::Severity::Error, "B2001", d.loc, 1, std::move(msg));
         return;

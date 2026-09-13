@@ -132,8 +132,8 @@ PRINT "Transpose(Translate) [3,2]: "; Zanna.Math.Mat4.Get(tt, 3, 2)
 
 ' --- Det ---
 PRINT "--- Det ---"
-PRINT "Det(Identity): "; Zanna.Math.Mat4.Det(id)
-PRINT "Det(Scale(2,3,4)): "; Zanna.Math.Mat4.Det(sc)
+PRINT "Det(Identity): "; Zanna.Math.Mat4.Determinant(id)
+PRINT "Det(Scale(2,3,4)): "; Zanna.Math.Mat4.Determinant(sc)
 
 ' --- Inverse ---
 PRINT "--- Inverse ---"
@@ -158,7 +158,7 @@ PRINT "Perspective [3,2]: "; Zanna.Math.Mat4.Get(persp, 3, 2)
 ' --- Ortho ---
 PRINT "--- Ortho ---"
 DIM ortho AS OBJECT
-ortho = Zanna.Math.Mat4.Ortho(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0)
+ortho = Zanna.Math.Mat4.Orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0)
 PRINT "Ortho(-1,1,-1,1,0.1,100) [0,0]: "; Zanna.Math.Mat4.Get(ortho, 0, 0)
 PRINT "Ortho [1,1]: "; Zanna.Math.Mat4.Get(ortho, 1, 1)
 PRINT "Ortho [2,2]: "; Zanna.Math.Mat4.Get(ortho, 2, 2)

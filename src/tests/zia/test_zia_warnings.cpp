@@ -5,7 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Unit tests for the Zia compiler warning infrastructure (W001-W016).
+// File: src/tests/zia/test_zia_warnings.cpp
+// Purpose: Unit tests for the Zia compiler warning infrastructure (W001-W018):
+//          what triggers each warning, what must not, suppressions and policy.
+// Key invariants:
+//   - Every case compiles in-memory or temporary-file source through the public
+//     compiler entry point and asserts on diagnostic codes.
+//   - Negative cases pin false positives that previously fired.
+// Ownership/Lifetime:
+//   - Each test owns its SourceManager and CompilerResult; temporary files are
+//     removed by the test that creates them.
+// Links: src/frontends/zia/Warnings.hpp, src/frontends/zia/Sema_Diagnostics.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -435,6 +445,46 @@ TEST(ZiaWarnings, W015_UninitializedVariable) {
 module T;
 bind Zanna.Terminal as IO;func start() {    var x: Integer;
     IO.Say(x);
+}
+)");
+    EXPECT_TRUE(r.succeeded());
+    EXPECT_TRUE(hasWarningCode(r, "W015"));
+}
+
+TEST(ZiaWarnings, W015_AssignmentTargetIsNotARead) {
+    auto r = compileWithPolicy(R"(
+module T;
+bind Zanna.Terminal as IO;
+func pick(p: Integer) -> Integer {
+    var r: Integer;
+    var g: Integer;
+    if p < 60 {
+        r = 255;
+        g = p;
+    } else {
+        r = p;
+        g = 0;
+    }
+    return r + g;
+}
+func start() {
+    var x: Integer;
+    x = 5;
+    IO.SayInt(x + pick(3));
+}
+)");
+    EXPECT_TRUE(r.succeeded());
+    EXPECT_FALSE(hasWarningCode(r, "W015"));
+}
+
+TEST(ZiaWarnings, W015_CompoundAssignmentReadsTheTarget) {
+    auto r = compileWithPolicy(R"(
+module T;
+bind Zanna.Terminal as IO;
+func start() {
+    var x: Integer;
+    x += 1;
+    IO.SayInt(x);
 }
 )");
     EXPECT_TRUE(r.succeeded());

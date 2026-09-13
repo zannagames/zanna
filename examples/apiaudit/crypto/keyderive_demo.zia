@@ -13,32 +13,32 @@ func start() {
     Say("=== API Audit: Zanna.Crypto.KeyDerive ===");
 
     // Create a salt
-    var salt = Rand.Bytes(16);
+    var salt = SecureRandom.Bytes(16);
     Say("Generated 16-byte salt");
     Say("Salt length:");
     SayInt(Bytes.get_Length(salt));
 
     // --- Pbkdf2SHA256 (returns obj/Bytes) ---
     Say("--- Pbkdf2SHA256 ---");
-    var derived = KeyDerive.Pbkdf2Sha256("mypassword", salt, 1000, 32);
+    var derived = KeyDerive.Pbkdf2Sha256("mypassword", salt, 100000, 32);
     Say("Derived key (bytes):");
     SayInt(Bytes.get_Length(derived));
 
     // --- Pbkdf2SHA256Str (returns hex string) ---
     Say("--- Pbkdf2SHA256Str ---");
-    var derivedStr = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt, 1000, 32);
+    var derivedStr = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt, 100000, 32);
     Say("Derived key (hex):");
     Say(derivedStr);
 
     // --- Same password + salt => same result ---
     Say("--- Determinism check ---");
-    var derivedStr2 = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt, 1000, 32);
+    var derivedStr2 = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt, 100000, 32);
     Say("Same inputs produce same output:");
     SayBool(derivedStr == derivedStr2);
 
     // --- Different password => different result ---
     Say("--- Different password ---");
-    var derivedStr3 = KeyDerive.Pbkdf2Sha256Encoded("otherpassword", salt, 1000, 32);
+    var derivedStr3 = KeyDerive.Pbkdf2Sha256Encoded("otherpassword", salt, 100000, 32);
     Say("Different password:");
     Say(derivedStr3);
     Say("Different from first:");
@@ -46,8 +46,8 @@ func start() {
 
     // --- Different salt => different result ---
     Say("--- Different salt ---");
-    var salt2 = Rand.Bytes(16);
-    var derivedStr4 = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt2, 1000, 32);
+    var salt2 = SecureRandom.Bytes(16);
+    var derivedStr4 = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt2, 100000, 32);
     Say("Different salt:");
     Say(derivedStr4);
     Say("Different from first:");
@@ -55,16 +55,16 @@ func start() {
 
     // --- Different key length ---
     Say("--- Different key length (64 bytes) ---");
-    var derived64 = KeyDerive.Pbkdf2Sha256("mypassword", salt, 1000, 64);
+    var derived64 = KeyDerive.Pbkdf2Sha256("mypassword", salt, 100000, 64);
     Say("Key length:");
     SayInt(Bytes.get_Length(derived64));
 
     // --- Different iterations ---
-    Say("--- Different iterations (2000) ---");
-    var derivedStr5 = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt, 2000, 32);
-    Say("2000 iterations:");
+    Say("--- Different iterations (200000) ---");
+    var derivedStr5 = KeyDerive.Pbkdf2Sha256Encoded("mypassword", salt, 200000, 32);
+    Say("200000 iterations:");
     Say(derivedStr5);
-    Say("Different from 1000 iterations:");
+    Say("Different from 100000 iterations:");
     SayBool(derivedStr != derivedStr5);
 
     Say("=== KeyDerive Audit Complete ===");

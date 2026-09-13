@@ -1,7 +1,7 @@
 // =============================================================================
 // API Audit: Zanna.Data.Xml - XML Processing
 // =============================================================================
-// Tests: ParseResult, Parse, Error, IsValid, Element, Text, Comment, Cdata,
+// Tests: ParseResult, Parse, IsValid, Element, Text, Comment, Cdata,
 //        NodeType, Tag, Content, TextContent, Attr, HasAttr, SetAttr, RemoveAttr, AttrNames, Children,
 //        ChildCount, ChildAt, Append, Remove, Find, FindAll, Format,
 //        FormatPretty, Escape, Unescape
@@ -33,13 +33,12 @@ func start() {
     SayBool(badParse.IsErr);
     Say(badParse.UnwrapErrStr());
 
-    // --- Parse / Error compatibility ---
-    Say("--- Parse / Error compatibility ---");
+    // --- Parse ---
+    Say("--- Parse ---");
     var legacyDoc = Xml.Parse("<root/>");
     SayBool(legacyDoc != null);
     var legacyBad = Xml.Parse("<root");
     SayBool(legacyBad == null);
-    Say(Xml.Error());
 
     // --- NodeType ---
     Say("--- NodeType ---");
@@ -161,12 +160,10 @@ func start() {
     // --- Find ---
     Say("--- Find ---");
     var found = Xml.Find(doc, "item");
+    SayBool(found.IsSome);
     Say("Find('item') Tag:");
-    Say(Xml.Tag(found));
-    var foundOption = Xml.FindOption(doc, "item");
-    SayBool(foundOption.IsSome);
-    Say(Xml.Tag(foundOption.Unwrap()));
-    SayBool(Xml.FindOption(doc, "missing").IsNone);
+    Say(Xml.Tag(found.Unwrap()));
+    SayBool(Xml.Find(doc, "missing").IsNone);
 
     // --- FindAll ---
     Say("--- FindAll ---");

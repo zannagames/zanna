@@ -17,3 +17,28 @@ foreach (fixture IN ITEMS test_object_field_release test_runtime_result_ownershi
             LABELS "zia;native_run"
             TIMEOUT 60)
 endforeach ()
+
+# BASIC twin of the ADR 0314 lane; the VM run is basic_runtime_test_basic_runtime_result_ownership.
+add_test(NAME native_run_basic_runtime_result_ownership
+        COMMAND ${CMAKE_COMMAND}
+        -DZANNA_EXE=$<TARGET_FILE:zanna>
+        -DTEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/runtime/test_basic_runtime_result_ownership.bas
+        -DOUT_EXE=${CMAKE_BINARY_DIR}/basic_runtime_result_ownership_native
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_native_run.cmake
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(native_run_basic_runtime_result_ownership PROPERTIES
+        LABELS "basic;native_run"
+        TIMEOUT 60)
+
+# Native twin of basic_runtime_test_basic_class_lifetimes: class array field
+# destructors and FUNCTION AS <Class> results.
+add_test(NAME native_run_basic_class_lifetimes
+        COMMAND ${CMAKE_COMMAND}
+        -DZANNA_EXE=$<TARGET_FILE:zanna>
+        -DTEST_FILE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/runtime/test_basic_class_lifetimes.bas
+        -DOUT_EXE=${CMAKE_BINARY_DIR}/basic_class_lifetimes_native
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_native_run.cmake
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(native_run_basic_class_lifetimes PROPERTIES
+        LABELS "basic;native_run"
+        TIMEOUT 60)

@@ -57,8 +57,8 @@ PRINT Zanna.Text.TextWrapper.Shorten("Hello, World! This is a long string.", 20)
 
 ' --- Left / Right / Center ---
 PRINT "--- Left / Right / Center ---"
-PRINT "["; Zanna.Text.TextWrapper.Left("hello", 20); "]"
-PRINT "["; Zanna.Text.TextWrapper.Right("hello", 20); "]"
+PRINT "["; Zanna.Text.TextWrapper.AlignLeft("hello", 20); "]"
+PRINT "["; Zanna.Text.TextWrapper.AlignRight("hello", 20); "]"
 PRINT "["; Zanna.Text.TextWrapper.Center("hello", 20); "]"
 
 ' --- LineCount ---

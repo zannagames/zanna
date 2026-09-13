@@ -41,7 +41,7 @@ extern @rt_val_to_double(ptr, ptr) -> f64
 extern @rt_string_cstr(str) -> ptr
 extern @rt_str_empty() -> str
 extern @Zanna.Core.Convert.ToStringDouble(f64) -> str
-extern @Zanna.String.FromI32(i32) -> str
+extern @Zanna.Core.Convert.ToStringInt(i64) -> str
 extern @rt_str_retain_maybe(str) -> void
 extern @rt_str_release_maybe(str) -> void
 global const str @.L0 = "              "
@@ -75,54 +75,52 @@ L20:
 L30:
   .loc 1 3 15
   %t6 = load i64, %a
-  .loc 1 3 15
-  %t7:i32 = cast.si_narrow.chk %t6
   .loc 1 3 10
-  %t8:str = call @Zanna.String.FromI32(%t7)
+  %t7:str = call @Zanna.Core.Convert.ToStringInt(%t6)
+  .loc 1 3 10
+  call @Zanna.Terminal.PrintStr(%t7)
+  .loc 1 3 10
+  %t8 = const_str @.L0
   .loc 1 3 10
   call @Zanna.Terminal.PrintStr(%t8)
-  .loc 1 3 10
-  %t9 = const_str @.L0
-  .loc 1 3 10
-  call @Zanna.Terminal.PrintStr(%t9)
   .loc 1 3 24
-  %t10 = load f64, %b#
+  %t9 = load f64, %b#
   .loc 1 3 19
-  %t11:str = call @Zanna.Core.Convert.ToStringDouble(%t10)
+  %t10:str = call @Zanna.Core.Convert.ToStringDouble(%t9)
+  .loc 1 3 19
+  call @Zanna.Terminal.PrintStr(%t10)
+  .loc 1 3 19
+  %t11 = const_str @.L1
   .loc 1 3 19
   call @Zanna.Terminal.PrintStr(%t11)
-  .loc 1 3 19
-  %t12 = const_str @.L1
-  .loc 1 3 19
-  call @Zanna.Terminal.PrintStr(%t12)
   .loc 1 3 4
   br L40
 L40:
   .loc 1 4 13
-  %t13 = const_str @.L2
+  %t12 = const_str @.L2
   .loc 1 4 4
-  call @rt_str_retain_maybe(%t13)
+  call @rt_str_retain_maybe(%t12)
   .loc 1 4 4
-  %t14 = load str, %s$
+  %t13 = load str, %s$
   .loc 1 4 4
-  call @rt_str_release_maybe(%t14)
+  call @rt_str_release_maybe(%t13)
   .loc 1 4 4
-  store str, %s$, %t13
+  store str, %s$, %t12
   .loc 1 4 4
   br L50
 L50:
   .loc 1 5 14
-  %t15 = load str, %s$
+  %t14 = load str, %s$
   .loc 1 5 14
-  %t16:ptr = call @rt_string_cstr(%t15)
+  %t15:ptr = call @rt_string_cstr(%t14)
   .loc 1 5 14
-  %t17 = alloca 1
+  %t16 = alloca 1
   .loc 1 5 14
-  %t18:f64 = call @rt_val_to_double(%t16, %t17)
+  %t17:f64 = call @rt_val_to_double(%t15, %t16)
   .loc 1 5 14
-  %t19 = load i1, %t17
+  %t18 = load i1, %t16
   .loc 1 5 14
-  cbr %t19, val_ok, val_fail
+  cbr %t18, val_ok, val_fail
 L60:
   .loc 1 6 4
   store f64, %x#, 1.8999999999999999
@@ -135,25 +133,25 @@ L70:
   br L80
 L80:
   .loc 1 8 14
-  %t24 = load f64, %x#
+  %t23 = load f64, %x#
   .loc 1 8 10
-  %t25:f64 = call @rt_int_floor(%t24)
+  %t24:f64 = call @rt_int_floor(%t23)
   .loc 1 8 10
-  call @Zanna.Terminal.PrintF64(%t25)
+  call @Zanna.Terminal.PrintF64(%t24)
   .loc 1 8 10
-  %t26 = const_str @.L0
+  %t25 = const_str @.L0
   .loc 1 8 10
-  call @Zanna.Terminal.PrintStr(%t26)
+  call @Zanna.Terminal.PrintStr(%t25)
   .loc 1 8 23
-  %t27 = load f64, %y#
+  %t26 = load f64, %y#
   .loc 1 8 19
-  %t28:f64 = call @rt_int_floor(%t27)
+  %t27:f64 = call @rt_int_floor(%t26)
   .loc 1 8 19
-  call @Zanna.Terminal.PrintF64(%t28)
+  call @Zanna.Terminal.PrintF64(%t27)
   .loc 1 8 19
-  %t29 = const_str @.L1
+  %t28 = const_str @.L1
   .loc 1 8 19
-  call @Zanna.Terminal.PrintStr(%t29)
+  call @Zanna.Terminal.PrintStr(%t28)
   .loc 1 8 4
   br L90
 L90:
@@ -163,26 +161,26 @@ exit:
   ret 0
 val_ok:
   .loc 1 5 14
-  call @Zanna.Terminal.PrintF64(%t18)
+  call @Zanna.Terminal.PrintF64(%t17)
   .loc 1 5 14
-  %t23 = const_str @.L1
+  %t22 = const_str @.L1
   .loc 1 5 14
-  call @Zanna.Terminal.PrintStr(%t23)
+  call @Zanna.Terminal.PrintStr(%t22)
   .loc 1 5 4
   br L60
 val_fail:
   .loc 1 5 14
-  %t20 = fcmp_ne %t18, %t18
+  %t19 = fcmp_ne %t17, %t17
   .loc 1 5 14
-  cbr %t20, val_nan, val_over
+  cbr %t19, val_nan, val_over
 val_nan:
   .loc 1 5 14
-  %t21 = cast.fp_to_si.rte.chk NaN
+  %t20 = cast.fp_to_si.rte.chk NaN
   .loc 1 5 14
   trap
 val_over:
   .loc 1 5 14
-  %t22 = cast.fp_to_si.rte.chk 1.7976931348623157e+308
+  %t21 = cast.fp_to_si.rte.chk 1.7976931348623157e+308
   .loc 1 5 14
   trap
 }

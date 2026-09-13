@@ -56,7 +56,7 @@ Zanna.Core.Diagnostics.AssertEq(fields.Count, 3, "csv.parseline.len")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Core.Box.ToStr(fields.Get(1)), "b", "csv.parseline.get")
 
 DIM row AS Zanna.Collections.Seq
-row = Zanna.Data.Csv.ParseLine("""He said ""Hi""""")
+row = Zanna.Data.Csv.ParseLine("""He said """"Hi""""""")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Core.Box.ToStr(row.Get(0)), "He said ""Hi""", "csv.quotes")
 
 DIM rows AS Zanna.Collections.Seq
@@ -93,7 +93,7 @@ id = Zanna.Text.Uuid.Generate()
 Zanna.Core.Diagnostics.Assert(Zanna.Text.Uuid.IsValid(id), "guid.valid")
 Zanna.Core.Diagnostics.Assert(Zanna.Text.Uuid.IsValid("not-a-guid") = FALSE, "guid.invalid")
 Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Uuid.Empty, "00000000-0000-0000-0000-000000000000", "guid.empty")
-DIM gidBytes AS Zanna.IO.BinaryBuffer
+DIM gidBytes AS Zanna.Collections.Bytes
 gidBytes = Zanna.Text.Uuid.ToBytes(id)
 DIM id2 AS STRING
 id2 = Zanna.Text.Uuid.FromBytes(gidBytes)
@@ -101,19 +101,19 @@ Zanna.Core.Diagnostics.Assert(Zanna.Text.Uuid.IsValid(id2), "guid.frombytes")
 
 DIM text AS STRING
 text = "abc123def456"
-Zanna.Core.Diagnostics.Assert(Zanna.Text.Pattern.IsMatch("\\d+", text), "pat.ismatch")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Option.UnwrapStr(Zanna.Text.Pattern.Find("\\d+", text)), "123", "pat.find")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Option.UnwrapStr(Zanna.Text.Pattern.FindFrom("\\d+", text, 3)), "123", "pat.findfrom")
-Zanna.Core.Diagnostics.AssertEq(Zanna.Option.UnwrapOrI64(Zanna.Text.Pattern.FindPos("World", "Hello World"), -1), 6, "pat.findpos")
+Zanna.Core.Diagnostics.Assert(Zanna.Text.Pattern.IsMatch(text, "\d+"), "pat.ismatch")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Option.UnwrapStr(Zanna.Text.Pattern.Find(text, "\d+")), "123", "pat.find")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Option.UnwrapStr(Zanna.Text.Pattern.FindFrom(text, "\d+", 3)), "123", "pat.findfrom")
+Zanna.Core.Diagnostics.AssertEq(Zanna.Option.UnwrapOrI64(Zanna.Text.Pattern.FindPos("Hello World", "World"), -1), 6, "pat.findpos")
 DIM matches AS Zanna.Collections.Seq
-matches = Zanna.Text.Pattern.FindAll("\\d+", text)
+matches = Zanna.Text.Pattern.FindAll(text, "\d+")
 Zanna.Core.Diagnostics.AssertEq(matches.Count, 2, "pat.findall")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Pattern.Replace("\\d+", text, "X"), "abcXdefX", "pat.replace")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Pattern.ReplaceFirst("\\d+", text, "X"), "abcXdef456", "pat.replacefirst")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Pattern.Replace(text, "\d+", "X"), "abcXdefX", "pat.replace")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Pattern.ReplaceFirst(text, "\d+", "X"), "abcXdef456", "pat.replacefirst")
 DIM parts AS Zanna.Collections.Seq
-parts = Zanna.Text.Pattern.Split("\\s+", "hello   world  test")
+parts = Zanna.Text.Pattern.Split("hello   world  test", "\s+")
 Zanna.Core.Diagnostics.AssertEq(parts.Count, 3, "pat.split")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Pattern.Escape("file.txt"), "file\\.txt", "pat.escape")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Text.Pattern.Escape("file.txt"), "file\.txt", "pat.escape")
 
 DIM values AS Zanna.Collections.Map
 values = Zanna.Collections.Map.New()

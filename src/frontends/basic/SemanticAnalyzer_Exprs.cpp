@@ -28,6 +28,7 @@
 #include "frontends/basic/IdentifierUtil.hpp"
 #include "frontends/basic/SemanticAnalyzer_Internal.hpp"
 #include "frontends/basic/StringUtils.hpp"
+#include "frontends/basic/sem/Check_Common.hpp"
 #include "frontends/basic/sem/OverloadResolution.hpp"
 #include "frontends/basic/sem/RuntimeMethodIndex.hpp"
 #include "frontends/basic/sem/TypeRegistry.hpp"
@@ -269,6 +270,7 @@ static BasicType basicTypeFromSemanticType(SemanticAnalyzer::Type ty) {
         case SemanticAnalyzer::Type::Object:
             return BasicType::Object;
         case SemanticAnalyzer::Type::ArrayInt:
+        case SemanticAnalyzer::Type::ArrayFloat:
         case SemanticAnalyzer::Type::ArrayString:
         case SemanticAnalyzer::Type::ArrayObject:
         case SemanticAnalyzer::Type::Unknown:
@@ -375,21 +377,21 @@ static void emitNoSuchMethod(SemanticDiagnostics &diagnostics,
 }
 
 /// @brief Infers the concrete class returned by a runtime function call.
-/// @details Queries the runtime registry by canonical name. Explicit concrete
-///          return metadata wins; otherwise an object-returning `.New` method
-///          is inferred to return its registered class. An exact name is tried
-///          first. Only unqualified callees are retried beneath active imported
-///          namespaces, whose iteration order is unspecified.
+/// @details Queries the runtime registry by canonical name and uses the class
+///          the row declares; a bare `obj` return has no class (ADR 0356). An
+///          exact name is tried first. Only unqualified callees are retried
+///          beneath active imported namespaces, whose iteration order is
+///          unspecified.
 /// @param analyzer Analyzer supplying active imports.
 /// @param calleeName Qualified or unqualified runtime callee spelling.
-/// @return Concrete runtime class qualified name when inferable.
+/// @return Concrete runtime class qualified name when declared.
 static std::optional<std::string> resolveRuntimeFunctionReturnClassQName(
     SemanticAnalyzer &analyzer, std::string_view calleeName) {
     const auto &registry = il::runtime::RuntimeRegistry::instance();
 
     /// @brief Resolves concrete return metadata for one canonical registry name.
     /// @param canonicalName Canonical runtime function name.
-    /// @return Concrete class name when inferable.
+    /// @return Declared class name, if any.
     auto resolveConcrete = [&](std::string_view canonicalName) -> std::optional<std::string> {
         auto sig = registry.findFunction(canonicalName);
         if (!sig)
@@ -399,19 +401,6 @@ static std::optional<std::string> resolveRuntimeFunctionReturnClassQName(
             !concrete.empty()) {
             return concrete;
         }
-
-        if (sig->returnType != il::runtime::ILScalarType::Object)
-            return std::nullopt;
-
-        auto lastDot = canonicalName.rfind('.');
-        if (lastDot == std::string_view::npos)
-            return std::nullopt;
-
-        std::string prefix(canonicalName.substr(0, lastDot));
-        std::string_view method = canonicalName.substr(lastDot + 1);
-        if (string_utils::iequals(method, "New") && il::runtime::findRuntimeClassByQName(prefix))
-            return prefix;
-
         return std::nullopt;
     };
 
@@ -447,8 +436,18 @@ std::optional<std::string> inferObjectClassQName(SemanticAnalyzer &analyzer, con
         return analyzer.activeInstanceClassQName();
     }
 
-    if (const auto *var = as<const VarExpr>(expr))
-        return analyzer.lookupObjectClassQName(var->name);
+    if (const auto *var = as<const VarExpr>(expr)) {
+        if (auto tracked = analyzer.lookupObjectClassQName(var->name))
+            return tracked;
+        // Inside a class member an unqualified name that is not a variable can be one of the
+        // receiver's object fields.
+        if (!sem::ExprCheckContext(analyzer).hasScopedBinding(var->name)) {
+            if (const auto *field = findActiveInstanceField(analyzer, var->name);
+                field && !field->isArray && !field->objectClassName.empty())
+                return field->objectClassName;
+        }
+        return std::nullopt;
+    }
 
     if (const auto *alloc = as<const NewExpr>(expr)) {
         if (!alloc->className.empty())
@@ -459,10 +458,21 @@ std::optional<std::string> inferObjectClassQName(SemanticAnalyzer &analyzer, con
     }
 
     if (const auto *call = as<const CallExpr>(expr)) {
+        // `items(i)` inside a class member indexes the receiver's object-array field.
+        if (call->calleeQualified.empty() &&
+            !sem::ExprCheckContext(analyzer).hasScopedBinding(call->callee)) {
+            if (const auto *field = findActiveInstanceField(analyzer, call->callee);
+                field && field->isArray && !field->objectClassName.empty())
+                return field->objectClassName;
+        }
         std::string calleeName =
             !call->calleeQualified.empty() ? JoinDots(call->calleeQualified) : call->callee;
         if (calleeName.empty())
             return std::nullopt;
+        // A user FUNCTION declared AS <Class> returns that class.
+        if (const auto *sig = analyzer.lookupProcSignature(calleeName);
+            sig && !sig->isRuntimeBuiltin && !sig->returnClassQName.empty())
+            return sig->returnClassQName;
         return resolveRuntimeFunctionReturnClassQName(analyzer, calleeName);
     }
 
@@ -566,6 +576,7 @@ using semantic_analyzer_detail::astTypeFromSemanticType;
 using semantic_analyzer_detail::emitNoSuchMethod;
 using semantic_analyzer_detail::inferObjectClassQName;
 using semantic_analyzer_detail::isRuntimeNamespaceChain;
+using semantic_analyzer_detail::isSemanticArrayType;
 using semantic_analyzer_detail::levenshtein;
 using semantic_analyzer_detail::resolveRuntimePropertyType;
 using semantic_analyzer_detail::resolveUserClassQNameFromExpr;
@@ -832,8 +843,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
             if (info.args[i] != BasicType::Object)
                 continue;
             const BasicType argTy = argTypes[i];
-            if (argTy == BasicType::Int || argTy == BasicType::Float ||
-                argTy == BasicType::Bool) {
+            if (argTy == BasicType::Int || argTy == BasicType::Float || argTy == BasicType::Bool) {
                 if (argTy == BasicType::Int && i < args.size() && args[i]) {
                     if (const auto *lit = as<const IntExpr>(*args[i]); lit && lit->value == 0)
                         continue; // Literal 0 is the null-object idiom.
@@ -1015,7 +1025,8 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
                     result_ = SemanticAnalyzer::Type::Unknown;
                     return;
                 }
-                if (!checkObjectParamArgs(*info, runtimeArgTypes, expr.args, expr.method, expr.loc)) {
+                if (!checkObjectParamArgs(
+                        *info, runtimeArgTypes, expr.args, expr.method, expr.loc)) {
                     result_ = SemanticAnalyzer::Type::Unknown;
                     return;
                 }
@@ -1043,7 +1054,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         auto isPrimitive = [&](SemanticAnalyzer::Type t) {
             using T = SemanticAnalyzer::Type;
             return t == T::Int || t == T::Float || t == T::Bool || t == T::String ||
-                   t == T::ArrayInt || t == T::ArrayString || t == T::ArrayObject;
+                   isSemanticArrayType(t);
         };
 
         // Resolve right-hand dotted type to class or interface.
@@ -1051,7 +1062,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         /// @param q Qualified name to look up.
         /// @return `true` when a matching interface or class exists.
         auto existsQ = [&](const std::string &q) -> bool {
-            if (analyzer_.oopIndex_.interfacesByQname().contains(q))
+            if (analyzer_.oopIndex_.findInterface(q))
                 return true;
             return analyzer_.oopIndex_.findClass(q) != nullptr;
         };
@@ -1140,7 +1151,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         auto isPrimitive = [&](SemanticAnalyzer::Type t) {
             using T = SemanticAnalyzer::Type;
             return t == T::Int || t == T::Float || t == T::Bool || t == T::String ||
-                   t == T::ArrayInt || t == T::ArrayString || t == T::ArrayObject;
+                   isSemanticArrayType(t);
         };
 
         std::string dotted;
@@ -1155,7 +1166,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
                 /// @param q Qualified name to look up.
                 /// @return `true` when a matching interface or class exists.
                 auto existsQ = [&](const std::string &q) -> bool {
-                    if (analyzer_.oopIndex_.interfacesByQname().contains(q))
+                    if (analyzer_.oopIndex_.findInterface(q))
                         return true;
                     return analyzer_.oopIndex_.findClass(q) != nullptr;
                 };
@@ -1206,7 +1217,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
             }
         }
         bool resolved = false;
-        if (analyzer_.oopIndex_.interfacesByQname().contains(dotted))
+        if (analyzer_.oopIndex_.findInterface(dotted))
             resolved = true;
         if (!resolved) {
             for (const auto &entry : analyzer_.oopIndex_.classes()) {
@@ -1390,7 +1401,7 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
         /// @return `true` when a matching class or interface exists.
         auto existsQ = [&](const std::string &q) -> bool {
             std::string decl = mapCanonicalToDeclared(q);
-            if (oopIndex_.interfacesByQname().contains(decl))
+            if (oopIndex_.findInterface(decl))
                 return true;
             return oopIndex_.findClass(decl) != nullptr;
         };

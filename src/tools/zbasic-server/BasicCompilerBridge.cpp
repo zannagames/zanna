@@ -373,6 +373,9 @@ std::string BasicCompilerBridge::hover(const std::string &source,
             case SemanticAnalyzer::Type::ArrayInt:
                 typeStr = "INTEGER()";
                 break;
+            case SemanticAnalyzer::Type::ArrayFloat:
+                typeStr = "DOUBLE()";
+                break;
             case SemanticAnalyzer::Type::ArrayString:
                 typeStr = "STRING()";
                 break;
@@ -514,6 +517,9 @@ std::vector<SymbolInfo> BasicCompilerBridge::symbols(const std::string &source,
                     break;
                 case SemanticAnalyzer::Type::ArrayInt:
                     typeStr = "INTEGER()";
+                    break;
+                case SemanticAnalyzer::Type::ArrayFloat:
+                    typeStr = "DOUBLE()";
                     break;
                 case SemanticAnalyzer::Type::ArrayString:
                     typeStr = "STRING()";

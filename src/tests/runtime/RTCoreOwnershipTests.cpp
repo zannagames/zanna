@@ -13,7 +13,8 @@
 // Ownership/Lifetime: Test-created managed values and heap blocks are released
 //                     by the creating case after every assertion.
 // Links: src/runtime/core/rt_heap.c, src/il/runtime/RuntimeOwnership.hpp,
-//        docs/adr/0210-read-only-mesh-vertex-positions.md
+//        docs/adr/0210-read-only-mesh-vertex-positions.md,
+//        docs/adr/0356-runtime-object-results-declare-their-class.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -293,7 +294,11 @@ static void test_runtime_metadata_matches_core_contracts(void) {
                 break;
             }
         }
-        if (!geometryMath || descriptor.signatureText.substr(0, 4) != "obj(")
+        // Object results are spelled `obj(` or, with a declared class, `obj<Class>(` (ADR 0356).
+        const std::string_view signature = descriptor.signatureText;
+        const bool objectResult = signature.size() > 3 && signature.substr(0, 3) == "obj" &&
+                                  (signature[3] == '(' || signature[3] == '<');
+        if (!geometryMath || !objectResult)
             continue;
 
         const auto canonical = il::runtime::classifyRuntimeOwnership(descriptor.name);

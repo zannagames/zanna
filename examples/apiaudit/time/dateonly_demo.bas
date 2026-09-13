@@ -11,7 +11,7 @@ PRINT "=== API Audit: Zanna.Time.DateOnly ==="
 
 ' --- Create ---
 PRINT "--- Create ---"
-DIM d AS OBJECT = Zanna.Time.DateOnly.Create(2024, 6, 15)
+DIM d AS OBJECT = Zanna.Time.DateOnly.FromParts(2024, 6, 15)
 PRINT "Created 2024-06-15"
 
 ' --- Year / Month / Day ---
@@ -76,19 +76,19 @@ PRINT d7.ToString()
 
 ' --- DiffDays ---
 PRINT "--- DiffDays ---"
-DIM jan1 AS OBJECT = Zanna.Time.DateOnly.Create(2024, 1, 1)
+DIM jan1 AS OBJECT = Zanna.Time.DateOnly.FromParts(2024, 1, 1)
 PRINT d.DiffDays(jan1)
 
 ' --- IsLeapYear ---
 PRINT "--- IsLeapYear ---"
 PRINT d.IsLeapYear
-DIM d2023 AS OBJECT = Zanna.Time.DateOnly.Create(2023, 3, 1)
+DIM d2023 AS OBJECT = Zanna.Time.DateOnly.FromParts(2023, 3, 1)
 PRINT d2023.IsLeapYear
 
 ' --- DaysInMonth ---
 PRINT "--- DaysInMonth ---"
 PRINT d.DaysInMonth
-DIM feb AS OBJECT = Zanna.Time.DateOnly.Create(2024, 2, 1)
+DIM feb AS OBJECT = Zanna.Time.DateOnly.FromParts(2024, 2, 1)
 PRINT feb.DaysInMonth
 
 ' --- StartOfMonth ---
@@ -107,16 +107,16 @@ PRINT d.StartOfYear().ToString()
 PRINT "--- EndOfYear ---"
 PRINT d.EndOfYear().ToString()
 
-' --- Cmp ---
-PRINT "--- Cmp ---"
-DIM later AS OBJECT = Zanna.Time.DateOnly.Create(2024, 12, 25)
-PRINT d.Cmp(later)
-PRINT later.Cmp(d)
-PRINT d.Cmp(d)
+' --- Compare ---
+PRINT "--- Compare ---"
+DIM later AS OBJECT = Zanna.Time.DateOnly.FromParts(2024, 12, 25)
+PRINT d.Compare(later)
+PRINT later.Compare(d)
+PRINT d.Compare(d)
 
 ' --- Equals ---
 PRINT "--- Equals ---"
-DIM same AS OBJECT = Zanna.Time.DateOnly.Create(2024, 6, 15)
+DIM same AS OBJECT = Zanna.Time.DateOnly.FromParts(2024, 6, 15)
 PRINT d.Equals(same)
 PRINT d.Equals(later)
 

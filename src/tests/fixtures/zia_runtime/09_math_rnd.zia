@@ -3,13 +3,14 @@ module RuntimeTest09;
 bind "./_support";
 
 // EXPECT_OUT: RESULT: ok
-// COVER: Zanna.Math.Randomize
-// COVER: Zanna.Math.Rnd
+// COVER: Zanna.Math.Random.Seed
+// COVER: Zanna.Math.Random.NextDouble
 
-func start() {    Zanna.Math.Randomize(123);
-    var a = Zanna.Math.Rnd();
-    Zanna.Math.Randomize(123);
-    var b = Zanna.Math.Rnd();
+func start() {
+    Zanna.Math.Random.Seed(123);
+    var a = Zanna.Math.Random.NextDouble();
+    Zanna.Math.Random.Seed(123);
+    var b = Zanna.Math.Random.NextDouble();
     assertApprox(a, b, 0.0000001, "rnd");
     report();
 }

@@ -184,6 +184,11 @@ class OopIndex {
     /// @return Pointer to the ClassInfo, or nullptr when not found.
     [[nodiscard]] const ClassInfo *findClass(const std::string &name) const;
 
+    /// @brief Find an interface by qualified name using case-insensitive BASIC comparison.
+    /// @param name Qualified interface name to search for.
+    /// @return Pointer to the InterfaceInfo, or nullptr when not found.
+    [[nodiscard]] const InterfaceInfo *findInterface(const std::string &name) const;
+
     // =========================================================================
     // Field Query API
     // =========================================================================

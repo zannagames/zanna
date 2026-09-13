@@ -22,7 +22,8 @@
 //        docs/adr/0168-windowless-canvas3d-rendering.md,
 //        docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md,
 //        docs/adr/0210-read-only-mesh-vertex-positions.md,
-//        docs/adr/0257-sky3d-night-mode.md
+//        docs/adr/0257-sky3d-night-mode.md,
+//        docs/adr/0356-runtime-object-results-declare-their-class.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -302,9 +303,9 @@ int main() {
     // ADR 0345: IKSolver3D.SetStrideWarp/ClearStrideWarp; previous cf08af8b2dfc7dab.
     // ADR 0349: InstanceBatch3D.RetainedBytes; previous 1f2fe626e0c5c3cf.
     // ADR 0350: AnimController3D.BlendTreeWeight getter + property; previous 0ee92fd98acea706.
-    // ADR 0351: Mesh3D.BoneCount / Skeleton, SceneNode.SelectedLod, AnimController3D.AnimationLodSkips;
-    // previous 21009b37c905fdc8.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xa8016f02bb443e65);
+    // ADR 0351: Mesh3D.BoneCount / Skeleton, SceneNode.SelectedLod,
+    // AnimController3D.AnimationLodSkips; previous 21009b37c905fdc8.
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xdf2087700f2b917c);
     /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
                                                                    AnimController3D.SetBlendTreeFade
                                                                    + SetTransitionContinuity */

@@ -8,15 +8,15 @@ REM ============================================================================
 NAMESPACE Foundation
   CLASS BaseEntity
     DIM id AS I64
-    DIM name AS STR
+    DIM name AS STRING
   END CLASS
 END NAMESPACE
 
 NAMESPACE Application.Domain
   REM Inherit from Foundation.BaseEntity using fully-qualified name
   CLASS Customer : Foundation.BaseEntity
-    DIM email AS STR
-    DIM phone AS STR
+    DIM email AS STRING
+    DIM phone AS STRING
   END CLASS
 END NAMESPACE
 

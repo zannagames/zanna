@@ -406,6 +406,8 @@ std::string semaTypeDisplay(SemanticAnalyzer::Type t) {
             return "BOOLEAN";
         case SemanticAnalyzer::Type::ArrayInt:
             return "INTEGER()";
+        case SemanticAnalyzer::Type::ArrayFloat:
+            return "DOUBLE()";
         case SemanticAnalyzer::Type::ArrayString:
             return "STRING()";
         case SemanticAnalyzer::Type::ArrayObject:

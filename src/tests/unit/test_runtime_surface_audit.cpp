@@ -5,8 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_runtime_surface_audit.cpp
+// File: src/tests/unit/test_runtime_surface_audit.cpp
 // Purpose: Audit the deliberate frontend-visible Zanna.* runtime surface.
+// Key invariants:
+//   - RuntimeSurfacePolicy.inc expectations match the registry and runtime sources.
+//   - Every object result declares its class unless the policy lists it as untyped
+//     (ADR 0356).
+// Ownership/Lifetime:
+//   - Reads repository sources and the compiled registry; writes nothing.
+// Links: src/il/runtime/RuntimeSurfacePolicy.inc,
+//        docs/adr/0356-runtime-object-results-declare-their-class.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -58,12 +66,14 @@ std::vector<std::string> internalHeaders() {
 #define RUNTIME_SURFACE_EXPECT_FUNCTION(canonical, symbol)
 #define RUNTIME_SURFACE_EXPECT_METHOD(class_name, method_name, signature)
 #define RUNTIME_SURFACE_EXPECT_PROPERTY(class_name, property_name, type_name)
+#define RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT(canonical)
 #include "il/runtime/RuntimeSurfacePolicy.inc"
 #undef RUNTIME_SURFACE_INTERNAL_HEADER
 #undef RUNTIME_SURFACE_INTERNAL_SYMBOL
 #undef RUNTIME_SURFACE_EXPECT_FUNCTION
 #undef RUNTIME_SURFACE_EXPECT_METHOD
 #undef RUNTIME_SURFACE_EXPECT_PROPERTY
+#undef RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT
     return headers;
 }
 
@@ -74,12 +84,14 @@ std::vector<std::string> internalSymbols() {
 #define RUNTIME_SURFACE_EXPECT_FUNCTION(canonical, symbol)
 #define RUNTIME_SURFACE_EXPECT_METHOD(class_name, method_name, signature)
 #define RUNTIME_SURFACE_EXPECT_PROPERTY(class_name, property_name, type_name)
+#define RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT(canonical)
 #include "il/runtime/RuntimeSurfacePolicy.inc"
 #undef RUNTIME_SURFACE_INTERNAL_HEADER
 #undef RUNTIME_SURFACE_INTERNAL_SYMBOL
 #undef RUNTIME_SURFACE_EXPECT_FUNCTION
 #undef RUNTIME_SURFACE_EXPECT_METHOD
 #undef RUNTIME_SURFACE_EXPECT_PROPERTY
+#undef RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT
     return symbols;
 }
 
@@ -91,12 +103,14 @@ std::vector<FunctionExpectation> expectedFunctions() {
     functions.push_back(FunctionExpectation{canonical, symbol});
 #define RUNTIME_SURFACE_EXPECT_METHOD(class_name, method_name, signature)
 #define RUNTIME_SURFACE_EXPECT_PROPERTY(class_name, property_name, type_name)
+#define RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT(canonical)
 #include "il/runtime/RuntimeSurfacePolicy.inc"
 #undef RUNTIME_SURFACE_INTERNAL_HEADER
 #undef RUNTIME_SURFACE_INTERNAL_SYMBOL
 #undef RUNTIME_SURFACE_EXPECT_FUNCTION
 #undef RUNTIME_SURFACE_EXPECT_METHOD
 #undef RUNTIME_SURFACE_EXPECT_PROPERTY
+#undef RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT
     return functions;
 }
 
@@ -108,12 +122,14 @@ std::vector<MethodExpectation> expectedMethods() {
 #define RUNTIME_SURFACE_EXPECT_METHOD(class_name, method_name, signature)                          \
     methods.push_back(MethodExpectation{class_name, method_name, signature});
 #define RUNTIME_SURFACE_EXPECT_PROPERTY(class_name, property_name, type_name)
+#define RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT(canonical)
 #include "il/runtime/RuntimeSurfacePolicy.inc"
 #undef RUNTIME_SURFACE_INTERNAL_HEADER
 #undef RUNTIME_SURFACE_INTERNAL_SYMBOL
 #undef RUNTIME_SURFACE_EXPECT_FUNCTION
 #undef RUNTIME_SURFACE_EXPECT_METHOD
 #undef RUNTIME_SURFACE_EXPECT_PROPERTY
+#undef RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT
     return methods;
 }
 
@@ -125,13 +141,34 @@ std::vector<PropertyExpectation> expectedProperties() {
 #define RUNTIME_SURFACE_EXPECT_METHOD(class_name, method_name, signature)
 #define RUNTIME_SURFACE_EXPECT_PROPERTY(class_name, property_name, type_name)                      \
     properties.push_back(PropertyExpectation{class_name, property_name, type_name});
+#define RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT(canonical)
 #include "il/runtime/RuntimeSurfacePolicy.inc"
 #undef RUNTIME_SURFACE_INTERNAL_HEADER
 #undef RUNTIME_SURFACE_INTERNAL_SYMBOL
 #undef RUNTIME_SURFACE_EXPECT_FUNCTION
 #undef RUNTIME_SURFACE_EXPECT_METHOD
 #undef RUNTIME_SURFACE_EXPECT_PROPERTY
+#undef RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT
     return properties;
+}
+
+/// @brief Functions whose object result deliberately declares no class (ADR 0356).
+std::unordered_set<std::string> untypedObjectResults() {
+    std::unordered_set<std::string> canonicals;
+#define RUNTIME_SURFACE_INTERNAL_HEADER(path)
+#define RUNTIME_SURFACE_INTERNAL_SYMBOL(symbol)
+#define RUNTIME_SURFACE_EXPECT_FUNCTION(canonical, symbol)
+#define RUNTIME_SURFACE_EXPECT_METHOD(class_name, method_name, signature)
+#define RUNTIME_SURFACE_EXPECT_PROPERTY(class_name, property_name, type_name)
+#define RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT(canonical) canonicals.insert(canonical);
+#include "il/runtime/RuntimeSurfacePolicy.inc"
+#undef RUNTIME_SURFACE_INTERNAL_HEADER
+#undef RUNTIME_SURFACE_INTERNAL_SYMBOL
+#undef RUNTIME_SURFACE_EXPECT_FUNCTION
+#undef RUNTIME_SURFACE_EXPECT_METHOD
+#undef RUNTIME_SURFACE_EXPECT_PROPERTY
+#undef RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT
+    return canonicals;
 }
 
 fs::path repoRoot() {
@@ -530,6 +567,91 @@ TEST(RuntimeSurfaceAudit, RuntimeCatalogHasNoPropertyMethodNameCollisions) {
 
     for (const std::string &failure : failures)
         std::cerr << "Runtime property/method collision: " << failure << "\n";
+    EXPECT_TRUE(failures.empty());
+}
+
+// Every object result names its class, and frontends never guess one (ADR 0356). A bare `obj`
+// result is allowed only for a function listed with RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT;
+// methods and property getters that target such a function inherit the allowance.
+TEST(RuntimeSurfaceAudit, ObjectResultsDeclareTheirClass) {
+    const std::unordered_set<std::string> allowed = untypedObjectResults();
+    std::unordered_set<std::string> classNames;
+    for (const auto &cls : il::runtime::runtimeClassCatalog())
+        classNames.insert(cls.qname);
+
+    std::vector<std::string> failures;
+    /// @brief Check one declared result token for an undeclared or unknown class.
+    /// @param where Row description used in failure messages.
+    /// @param token Result token such as `obj`, `obj<Zanna.Graphics.Pixels>`, or `seq<str>`.
+    /// @param canonical Function that owns the result (the allowance key).
+    auto checkResult =
+        [&](const std::string &where, std::string token, const std::string &canonical) {
+            while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back())))
+                token.pop_back();
+            if (!token.empty() && token.back() == '?')
+                token.pop_back();
+            if (token == "obj") {
+                if (!allowed.count(canonical)) {
+                    failures.push_back(where +
+                                       " returns an object without declaring its class; use "
+                                       "obj<Class>, seq<T>, or list<T>, or list " +
+                                       canonical + " with RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT");
+                }
+                return;
+            }
+            if (token.rfind("obj<", 0) == 0 && token.back() == '>') {
+                const std::string className = token.substr(4, token.size() - 5);
+                if (!classNames.count(className))
+                    failures.push_back(where + " declares unknown runtime class " + className);
+            }
+        };
+
+    const std::string text = stripComments(zanna::tests::runtimeDefinitionText());
+    const std::regex funcRe(
+        R"RTFUNC(RT_FUNC\(\s*[A-Za-z0-9_]+\s*,\s*[A-Za-z0-9_]+\s*,\s*"([^"]+)"\s*,\s*"([^"]+)")RTFUNC");
+    std::unordered_map<std::string, std::string> functionResults;
+    for (std::sregex_iterator it(text.begin(), text.end(), funcRe), end; it != end; ++it) {
+        const std::string canonical = (*it)[1].str();
+        const std::string signature = (*it)[2].str();
+        const std::string token = signature.substr(0, signature.find('('));
+        functionResults[canonical] = token;
+        checkResult("function " + canonical, token, canonical);
+    }
+
+    for (const auto &cls : il::runtime::runtimeClassCatalog()) {
+        for (const auto &method : cls.methods) {
+            if (!method.signature || !method.target || !*method.target)
+                continue;
+            const std::string signature = method.signature;
+            checkResult(std::string("method ") + cls.qname + "." + method.name,
+                        signature.substr(0, signature.find('(')),
+                        method.target);
+        }
+        // A write-only property's type describes its setter argument, not a result.
+        for (const auto &prop : cls.properties) {
+            if (!prop.type || !prop.getter || !*prop.getter)
+                continue;
+            checkResult(
+                std::string("property ") + cls.qname + "." + prop.name, prop.type, prop.getter);
+        }
+    }
+
+    for (const auto &canonical : allowed) {
+        const auto it = functionResults.find(canonical);
+        if (it == functionResults.end()) {
+            failures.push_back("untyped object result " + canonical + " is not a runtime function");
+            continue;
+        }
+        std::string token = it->second;
+        if (!token.empty() && token.back() == '?')
+            token.pop_back();
+        if (token != "obj")
+            failures.push_back("untyped object result " + canonical + " now declares " + token +
+                               "; remove it from the policy");
+    }
+
+    for (const std::string &failure : failures)
+        std::cerr << "Object result audit: " << failure << "\n";
     EXPECT_TRUE(failures.empty());
 }
 

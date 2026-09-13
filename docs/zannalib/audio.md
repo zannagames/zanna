@@ -165,7 +165,7 @@ Zanna.Audio.Voice.Stop(engineSound)
 Buffered music class for longer audio tracks. Playback uses incremental decode and fixed-size buffers for memory efficiency.
 
 **Type:** Instance (obj)
-**Constructor:** `Zanna.Audio.Music.Load(path)`
+**Constructor:** `Zanna.Audio.Music.Load(path)` or `Zanna.Audio.Music.LoadAsset(name)`
 
 > **Concurrent limit:** Up to **4** music streams may be loaded at the same time.
 > `Music.Load()` returns `null` if this limit is exceeded. Stop and free unused
@@ -183,6 +183,7 @@ remain paused and retain their load slots.
 | Method       | Signature        | Description                                       |
 |--------------|------------------|---------------------------------------------------|
 | `Load(path)` | `Music(String)`  | Load music from WAV, OGG Vorbis, or MP3. Returns `null` on failure or when the 4-stream limit is reached |
+| `LoadAsset(name)` | `Music(String)` | Load music through `Zanna.IO.Assets` (embedded, mounted `.zpak` packs, then loose files), so a track can ship inside a pack. The stream keeps its own copy of the encoded bytes and behaves exactly like `Load`. Returns `null` for a missing or undecodable asset or at the 4-stream limit |
 
 ### Properties
 

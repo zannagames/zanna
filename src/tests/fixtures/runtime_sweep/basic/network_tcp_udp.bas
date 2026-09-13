@@ -84,12 +84,8 @@ client2.SetSendTimeout(1000)
 serverConn2.SetRecvTimeout(1000)
 serverConn2.SetSendTimeout(1000)
 
-DIM payload AS Zanna.IO.BinaryBuffer
-payload = Zanna.IO.BinaryBuffer.NewCapacity(4)
-payload.WriteByte(112)
-payload.WriteByte(105)
-payload.WriteByte(110)
-payload.WriteByte(103)
+DIM payload AS Zanna.Collections.Bytes
+payload = Zanna.Collections.Bytes.FromStr("ping")
 
 DIM sent AS INTEGER
 sent = client2.Send(payload)
@@ -106,12 +102,12 @@ WHILE avail < 4 AND tries < 100
 WEND
 Zanna.Core.Diagnostics.Assert(avail >= 4, "tcp.available")
 
-DIM recvBytes AS Zanna.IO.BinaryBuffer
+DIM recvBytes AS Zanna.Collections.Bytes
 recvBytes = serverConn2.Recv(4)
 Zanna.Core.Diagnostics.AssertEq(recvBytes.Length, 4, "tcp.recv")
 
 sent = client2.Send(payload)
-DIM recvExact AS Zanna.IO.BinaryBuffer
+DIM recvExact AS Zanna.Collections.Bytes
 recvExact = serverConn2.RecvExact(4)
 Zanna.Core.Diagnostics.AssertEq(recvExact.Length, 4, "tcp.recvexact")
 
@@ -126,7 +122,7 @@ word = serverConn2.RecvStr(4)
 Zanna.Core.Diagnostics.AssertEqStr(word, "word", "tcp.recvstr")
 
 serverConn2.SendAll(payload)
-DIM back AS Zanna.IO.BinaryBuffer
+DIM back AS Zanna.Collections.Bytes
 back = client2.RecvExact(4)
 Zanna.Core.Diagnostics.AssertEq(back.Length, 4, "tcp.sendall")
 
@@ -161,34 +157,30 @@ udpPort = udpServer.Port
 DIM msg AS STRING
 msg = "ping"
 udpClient.SendToStr("127.0.0.1", udpPort, msg)
-DIM udpRecv1 AS Zanna.IO.BinaryBuffer
+DIM udpRecv1 AS Zanna.Collections.Bytes
 udpRecv1 = udpServer.RecvFrom(32)
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToStr(udpRecv1.ToBytes()), msg, "udp.recvfrom")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToStr(udpRecv1), msg, "udp.recvfrom")
 
 DIM senderHost AS STRING
 senderHost = udpServer.SenderHost()
 Zanna.Core.Diagnostics.Assert(LEN(senderHost) > 0, "udp.senderhost")
 Zanna.Core.Diagnostics.Assert(udpServer.SenderPort() > 0, "udp.senderport")
 
-DIM msgBytes AS Zanna.IO.BinaryBuffer
-msgBytes = Zanna.IO.BinaryBuffer.NewCapacity(4)
-msgBytes.WriteByte(112)
-msgBytes.WriteByte(111)
-msgBytes.WriteByte(110)
-msgBytes.WriteByte(103)
+DIM msgBytes AS Zanna.Collections.Bytes
+msgBytes = Zanna.Collections.Bytes.FromStr("pong")
 udpClient.SendTo("127.0.0.1", udpPort, msgBytes)
-DIM udpRecv2 AS Zanna.IO.BinaryBuffer
+DIM udpRecv2 AS Zanna.Collections.Bytes
 udpRecv2 = udpServer.Recv(32)
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToStr(udpRecv2.ToBytes()), "pong", "udp.recv")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToStr(udpRecv2), "pong", "udp.recv")
 
 udpClient.SendToStr("127.0.0.1", udpPort, "data")
-DIM udpRecv3 AS Zanna.IO.BinaryBuffer
+DIM udpRecv3 AS Zanna.Collections.Bytes
 udpRecv3 = udpServer.RecvFor(32, 1000)
 IF Zanna.Core.Object.RefEquals(udpRecv3, NOTHING) THEN
     udpRecv3 = udpServer.Recv(32)
 END IF
 Zanna.Core.Diagnostics.AssertNotNull(udpRecv3, "udp.recvfor")
-Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToStr(udpRecv3.ToBytes()), "data", "udp.recvfor")
+Zanna.Core.Diagnostics.AssertEqStr(Zanna.Collections.Bytes.ToStr(udpRecv3), "data", "udp.recvfor")
 
 udpClient.Close()
 udpServer.Close()

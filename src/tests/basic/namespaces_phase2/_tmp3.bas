@@ -1,7 +1,0 @@
-NAMESPACE Foo.Bar
-  SUB Zap: PRINT "ok": END SUB
-END NAMESPACE
-
-USING Foo.Bar
-
-Zap()

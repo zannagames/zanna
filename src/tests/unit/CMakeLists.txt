@@ -1293,6 +1293,12 @@ function(zanna_add_runtime_tests)
     target_link_libraries(test_rt_asset PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_asset test_rt_asset)
 
+    # Pack auto-discovery beside the executable needs its own process: asset
+    # initialization runs once, so the pack must exist before the first asset call.
+    zanna_add_test(test_rt_asset_discovery ${ZANNA_TESTS_DIR}/runtime/RTAssetDiscoveryTests.cpp)
+    target_link_libraries(test_rt_asset_discovery PRIVATE ${ZANNA_RUNTIME_TEST_LIBS} zanna_packaging)
+    zanna_add_ctest(test_rt_asset_discovery test_rt_asset_discovery)
+
     zanna_add_test(test_rt_savedata ${ZANNA_TESTS_DIR}/runtime/RTSaveDataTests.cpp)
     target_link_libraries(test_rt_savedata PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_savedata test_rt_savedata)
@@ -1572,11 +1578,13 @@ function(zanna_add_runtime_tests)
     target_link_libraries(test_rt_archive PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_archive test_rt_archive)
 
-    # Platform services (ADR 0352). Three from-scratch fake steam_api shared
-    # libraries built from one source exercise run-time loading without Steam:
-    # the SDK 1.65 accessor set, the SDK 1.61-1.64 set, and a library that lacks
-    # SteamAPI_InitFlat. They are test-only and never installed.
-    foreach (_fake_profile IN ITEMS default 164 noinit)
+    # Platform services (ADR 0352, ADR 0353). Four from-scratch fake steam_api
+    # shared libraries built from one source exercise run-time loading without
+    # Steam: the SDK 1.65 accessor set, the SDK 1.61-1.64 set, a library that
+    # lacks SteamAPI_InitFlat, and a library exporting only the ADR 0352 core
+    # (no player features). The fake writes payloads under the redistributable
+    # packing (8 on Windows, 4 elsewhere). They are test-only and never installed.
+    foreach (_fake_profile IN ITEMS default 164 noinit core)
         if (_fake_profile STREQUAL "default")
             set(_fake_target zanna_fake_steam_api)
         else ()
@@ -1590,24 +1598,38 @@ function(zanna_add_runtime_tests)
                     C_VISIBILITY_PRESET default
                     WINDOWS_EXPORT_ALL_SYMBOLS ON)
             # getenv is intentional in the fake; keep MSVC's CRT deprecation warnings quiet.
-            target_compile_definitions(${_fake_target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+            target_compile_definitions(${_fake_target} PRIVATE
+                    _CRT_SECURE_NO_WARNINGS
+                    ZANNA_FAKE_STEAM_PACK=$<IF:$<PLATFORM_ID:Windows>,8,4>)
             if (_fake_profile STREQUAL "164")
                 target_compile_definitions(${_fake_target} PRIVATE ZANNA_FAKE_STEAM_PROFILE_164=1)
             elseif (_fake_profile STREQUAL "noinit")
                 target_compile_definitions(${_fake_target} PRIVATE ZANNA_FAKE_STEAM_OMIT_INIT_FLAT=1)
+            elseif (_fake_profile STREQUAL "core")
+                target_compile_definitions(${_fake_target} PRIVATE ZANNA_FAKE_STEAM_CORE_ONLY=1)
             endif ()
         endif ()
     endforeach ()
 
-    zanna_add_test(test_rt_services ${ZANNA_TESTS_DIR}/runtime/RTServicesTests.cpp)
-    target_link_libraries(test_rt_services PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
-    target_compile_definitions(test_rt_services PRIVATE
-            ZANNA_FAKE_STEAM_LIBRARY="$<TARGET_FILE:zanna_fake_steam_api>"
-            ZANNA_FAKE_STEAM_LIBRARY_164="$<TARGET_FILE:zanna_fake_steam_api_164>"
-            ZANNA_FAKE_STEAM_LIBRARY_NOINIT="$<TARGET_FILE:zanna_fake_steam_api_noinit>")
-    add_dependencies(test_rt_services
-            zanna_fake_steam_api zanna_fake_steam_api_164 zanna_fake_steam_api_noinit)
-    zanna_add_ctest(test_rt_services test_rt_services)
+    foreach (_services_test IN ITEMS test_rt_services test_rt_services_features)
+        if (_services_test STREQUAL "test_rt_services")
+            zanna_add_test(${_services_test} ${ZANNA_TESTS_DIR}/runtime/RTServicesTests.cpp)
+        else ()
+            zanna_add_test(${_services_test} ${ZANNA_TESTS_DIR}/runtime/RTServicesFeatureTests.cpp)
+        endif ()
+        target_link_libraries(${_services_test} PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+        target_compile_definitions(${_services_test} PRIVATE
+                ZANNA_FAKE_STEAM_LIBRARY="$<TARGET_FILE:zanna_fake_steam_api>"
+                ZANNA_FAKE_STEAM_LIBRARY_164="$<TARGET_FILE:zanna_fake_steam_api_164>"
+                ZANNA_FAKE_STEAM_LIBRARY_NOINIT="$<TARGET_FILE:zanna_fake_steam_api_noinit>"
+                ZANNA_FAKE_STEAM_LIBRARY_CORE="$<TARGET_FILE:zanna_fake_steam_api_core>")
+        add_dependencies(${_services_test}
+                zanna_fake_steam_api
+                zanna_fake_steam_api_164
+                zanna_fake_steam_api_noinit
+                zanna_fake_steam_api_core)
+        zanna_add_ctest(${_services_test} ${_services_test})
+    endforeach ()
 
     zanna_add_test(test_rt_canvas_window ${ZANNA_TESTS_DIR}/runtime/RTCanvasWindowTests.cpp)
     target_link_libraries(test_rt_canvas_window PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})

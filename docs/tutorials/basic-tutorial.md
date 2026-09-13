@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-09-01
+last-verified: 2026-09-13
 ---
 
 # Zanna BASIC — Tutorial
@@ -357,7 +357,7 @@ END NAMESPACE
 
 NAMESPACE Graphics.UI
   CLASS Button
-    LABEL AS STR
+    LABEL AS STRING
   END CLASS
 END NAMESPACE
 ```

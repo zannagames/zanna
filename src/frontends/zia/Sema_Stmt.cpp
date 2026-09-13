@@ -250,26 +250,10 @@ void Sema::analyzeBlockStmt(BlockStmt *stmt) {
     /// @param condition Condition whose null comparison is inspected.
     /// @param conditionHoldsAfterStmt Whether the condition is true on fallthrough.
     auto persistOptionalNullCheckNarrowing = [&](Expr *condition, bool conditionHoldsAfterStmt) {
-        std::string nullCheckVar;
-        bool isNotNull = false;
-        TypeRef checkedType = nullptr;
-        if (!tryExtractNullCheck(condition, nullCheckVar, isNotNull, &checkedType))
-            return;
-
-        TypeRef varType = checkedType ? checkedType : lookupVarType(nullCheckVar);
-        if (!varType || varType->kind != TypeKindSem::Optional)
-            return;
-
-        // If the condition holds after the statement, `x != null` narrows to T.
-        // If the condition does not hold after the statement, `x == null` having
-        // exited implies `x != null` on the fallthrough path.
-        bool isNonNullAfterStmt = conditionHoldsAfterStmt ? isNotNull : !isNotNull;
-        if (!isNonNullAfterStmt || !varType->innerType())
-            return;
-
-        pushNarrowingScope();
-        narrowType(nullCheckVar, varType->innerType());
-        guardNarrowings++;
+        // The fallthrough path sees the condition's outcome: `guard x != null` and
+        // `if (x == null || y == null) return;` both leave their values non-null.
+        if (pushConditionNarrowing(condition, conditionHoldsAfterStmt))
+            guardNarrowings++;
     };
 
     for (auto &s : stmt->statements) {
@@ -546,35 +530,14 @@ void Sema::analyzeIfStmt(IfStmt *stmt) {
         }
     }
 
-    // Check for null check pattern for type narrowing
-    std::string nullCheckVar;
-    bool isNotNull = false;
-    TypeRef checkedNullType = nullptr;
-    bool hasNullCheck =
-        tryExtractNullCheck(stmt->condition.get(), nullCheckVar, isNotNull, &checkedNullType);
-
-    TypeRef narrowedType = nullptr;
-    if (hasNullCheck) {
-        // Look up the variable's current type
-        TypeRef varType = checkedNullType ? checkedNullType : lookupVarType(nullCheckVar);
-        if (varType && varType->kind == TypeKindSem::Optional) {
-            // Get the inner (non-optional) type
-            narrowedType = varType->innerType();
-        }
-    }
-
     // Save initialization state before branches for definite-assignment analysis
     auto preIfState = saveInitState();
 
-    // Analyze then-branch with narrowing if condition is "x != null"
-    if (hasNullCheck && isNotNull && narrowedType) {
-        pushNarrowingScope();
-        narrowType(nullCheckVar, narrowedType);
-        analyzeStmt(stmt->thenBranch.get());
+    // The then-branch sees the values the condition proves non-null when it holds.
+    const bool narrowedThen = pushConditionNarrowing(stmt->condition.get(), /*whenTrue=*/true);
+    analyzeStmt(stmt->thenBranch.get());
+    if (narrowedThen)
         popNarrowingScope();
-    } else {
-        analyzeStmt(stmt->thenBranch.get());
-    }
 
     auto thenState = saveInitState();
 
@@ -583,15 +546,11 @@ void Sema::analyzeIfStmt(IfStmt *stmt) {
         // Restore pre-if state before analyzing else-branch
         initializedVars_ = preIfState;
 
-        if (hasNullCheck && !isNotNull && narrowedType) {
-            // In else branch of "x == null", x is not null
-            pushNarrowingScope();
-            narrowType(nullCheckVar, narrowedType);
-            analyzeStmt(stmt->elseBranch.get());
+        // The else-branch sees the values the condition proves non-null when it fails.
+        const bool narrowedElse = pushConditionNarrowing(stmt->condition.get(), /*whenTrue=*/false);
+        analyzeStmt(stmt->elseBranch.get());
+        if (narrowedElse)
             popNarrowingScope();
-        } else {
-            analyzeStmt(stmt->elseBranch.get());
-        }
 
         auto elseState = saveInitState();
 

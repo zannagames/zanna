@@ -3,18 +3,18 @@ DIM bs AS Zanna.Collections.BitSet
 bs = Zanna.Collections.BitSet.New(64)
 PRINT "bs empty: "; bs.IsEmpty
 PRINT "bs len: "; bs.Length
-bs.Set(3)
-bs.Set(7)
-bs.Set(15)
+bs.SetBit(3)
+bs.SetBit(7)
+bs.SetBit(15)
 PRINT "bs count: "; bs.Count
-PRINT "bs get 3: "; bs.Get(3)
-PRINT "bs get 4: "; bs.Get(4)
-bs.Toggle(3)
-PRINT "bs get 3 after toggle: "; bs.Get(3)
-bs.Clear(7)
+PRINT "bs get 3: "; bs.GetBit(3)
+PRINT "bs get 4: "; bs.GetBit(4)
+bs.ToggleBit(3)
+PRINT "bs get 3 after toggle: "; bs.GetBit(3)
+bs.ClearBit(7)
 PRINT "bs count after clear: "; bs.Count
 PRINT "bs tostring: "; bs.ToString()
-bs.ClearAll()
+bs.Clear()
 PRINT "bs count after clearall: "; bs.Count
 
 DIM bf AS Zanna.Collections.BloomFilter
@@ -31,9 +31,9 @@ PRINT "uf count: "; uf.Count
 uf.Union(1, 2)
 uf.Union(3, 4)
 uf.Union(2, 3)
-PRINT "uf connected 1,4: "; uf.Connected(1, 4)
-PRINT "uf connected 1,5: "; uf.Connected(1, 5)
-PRINT "uf setsize 1: "; uf.SetSize(1)
+PRINT "uf connected 1,4: "; uf.IsConnected(1, 4)
+PRINT "uf connected 1,5: "; uf.IsConnected(1, 5)
+PRINT "uf setsize 1: "; uf.ComponentSize(1)
 
 DIM by AS Zanna.Collections.Bytes
 by = Zanna.Collections.Bytes.New(8)
@@ -49,13 +49,13 @@ PRINT "by tohex: "; by.ToHex()
 DIM lru AS Zanna.Collections.LruCache
 lru = Zanna.Collections.LruCache.New(3)
 PRINT "lru empty: "; lru.IsEmpty
-PRINT "lru cap: "; lru.Cap
-lru.Put("a", "1")
-lru.Put("b", "2")
-lru.Put("c", "3")
+PRINT "lru cap: "; lru.Capacity
+lru.Set("a", "1")
+lru.Set("b", "2")
+lru.Set("c", "3")
 PRINT "lru count: "; lru.Count
 PRINT "lru has a: "; lru.Has("a")
-lru.Put("d", "4")
+lru.Set("d", "4")
 PRINT "lru count after evict: "; lru.Count
 lru.Remove("d")
 PRINT "lru count after remove: "; lru.Count
@@ -63,9 +63,9 @@ PRINT "lru count after remove: "; lru.Count
 DIM mm AS Zanna.Collections.MultiMap
 mm = Zanna.Collections.MultiMap.New()
 PRINT "mm empty: "; mm.IsEmpty
-mm.Put("color", "red")
-mm.Put("color", "blue")
-mm.Put("size", "large")
+mm.Add("color", "red")
+mm.Add("color", "blue")
+mm.Add("size", "large")
 PRINT "mm count: "; mm.Count
 PRINT "mm keycount: "; mm.KeyCount
 PRINT "mm countfor color: "; mm.CountFor("color")

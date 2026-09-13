@@ -19,48 +19,48 @@ operations including `FromInt`, `FromStr`, `FromBytes`, `ToInt`.
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-math-bigint-zero"></a>`Zero` | `obj` | read-only |
-| <a id="zanna-math-bigint-one"></a>`One` | `obj` | read-only |
+| <a id="zanna-math-bigint-zero"></a>`Zero` | `obj<Zanna.Math.BigInt>` | read-only |
+| <a id="zanna-math-bigint-one"></a>`One` | `obj<Zanna.Math.BigInt>` | read-only |
 
 #### Methods
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-math-bigint-fromint"></a>`FromInt` | `obj(i64)` | `Zanna.Math.BigInt.FromInt` |
-| <a id="zanna-math-bigint-fromstr"></a>`FromStr` | `obj(str)` | `Zanna.Math.BigInt.FromStr` |
-| <a id="zanna-math-bigint-frombytes"></a>`FromBytes` | `obj(obj)` | `Zanna.Math.BigInt.FromBytes` |
+| <a id="zanna-math-bigint-fromint"></a>`FromInt` | `obj<Zanna.Math.BigInt>(i64)` | `Zanna.Math.BigInt.FromInt` |
+| <a id="zanna-math-bigint-fromstr"></a>`FromStr` | `obj<Zanna.Math.BigInt>(str)` | `Zanna.Math.BigInt.FromStr` |
+| <a id="zanna-math-bigint-frombytes"></a>`FromBytes` | `obj<Zanna.Math.BigInt>(obj)` | `Zanna.Math.BigInt.FromBytes` |
 | <a id="zanna-math-bigint-toint"></a>`ToInt` | `i64(obj)` | `Zanna.Math.BigInt.ToInt` |
 | <a id="zanna-math-bigint-tostring"></a>`ToString` | `str(obj)` | `Zanna.Math.BigInt.ToString` |
 | <a id="zanna-math-bigint-tostringbase"></a>`ToStringBase` | `str(obj,i64)` | `Zanna.Math.BigInt.ToStringBase` |
-| <a id="zanna-math-bigint-tobytes"></a>`ToBytes` | `obj(obj)` | `Zanna.Math.BigInt.ToBytes` |
+| <a id="zanna-math-bigint-tobytes"></a>`ToBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `Zanna.Math.BigInt.ToBytes` |
 | <a id="zanna-math-bigint-fitsint"></a>`FitsInt` | `i1(obj)` | `Zanna.Math.BigInt.FitsInt` |
-| <a id="zanna-math-bigint-add"></a>`Add` | `obj(obj,obj)` | `Zanna.Math.BigInt.Add` |
-| <a id="zanna-math-bigint-sub"></a>`Sub` | `obj(obj,obj)` | `Zanna.Math.BigInt.Sub` |
-| <a id="zanna-math-bigint-mul"></a>`Mul` | `obj(obj,obj)` | `Zanna.Math.BigInt.Mul` |
-| <a id="zanna-math-bigint-div"></a>`Div` | `obj(obj,obj)` | `Zanna.Math.BigInt.Div` |
-| <a id="zanna-math-bigint-mod"></a>`Mod` | `obj(obj,obj)` | `Zanna.Math.BigInt.Mod` |
-| <a id="zanna-math-bigint-negate"></a>`Negate` | `obj(obj)` | `Zanna.Math.BigInt.Negate` |
-| <a id="zanna-math-bigint-abs"></a>`Abs` | `obj(obj)` | `Zanna.Math.BigInt.Abs` |
+| <a id="zanna-math-bigint-add"></a>`Add` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Add` |
+| <a id="zanna-math-bigint-sub"></a>`Sub` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Sub` |
+| <a id="zanna-math-bigint-mul"></a>`Mul` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Mul` |
+| <a id="zanna-math-bigint-div"></a>`Div` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Div` |
+| <a id="zanna-math-bigint-mod"></a>`Mod` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Mod` |
+| <a id="zanna-math-bigint-negate"></a>`Negate` | `obj<Zanna.Math.BigInt>(obj)` | `Zanna.Math.BigInt.Negate` |
+| <a id="zanna-math-bigint-abs"></a>`Abs` | `obj<Zanna.Math.BigInt>(obj)` | `Zanna.Math.BigInt.Abs` |
 | <a id="zanna-math-bigint-compare"></a>`Compare` | `i64(obj,obj)` | `Zanna.Math.BigInt.Compare` |
 | <a id="zanna-math-bigint-equals"></a>`Equals` | `i1(obj,obj)` | `Zanna.Math.BigInt.Equals` |
 | <a id="zanna-math-bigint-iszero"></a>`IsZero` | `i1(obj)` | `Zanna.Math.BigInt.IsZero` |
 | <a id="zanna-math-bigint-isnegative"></a>`IsNegative` | `i1(obj)` | `Zanna.Math.BigInt.IsNegative` |
 | <a id="zanna-math-bigint-sign"></a>`Sign` | `i64(obj)` | `Zanna.Math.BigInt.Sign` |
-| <a id="zanna-math-bigint-and"></a>`And` | `obj(obj,obj)` | `Zanna.Math.BigInt.And` |
-| <a id="zanna-math-bigint-or"></a>`Or` | `obj(obj,obj)` | `Zanna.Math.BigInt.Or` |
-| <a id="zanna-math-bigint-xor"></a>`Xor` | `obj(obj,obj)` | `Zanna.Math.BigInt.Xor` |
-| <a id="zanna-math-bigint-not"></a>`Not` | `obj(obj)` | `Zanna.Math.BigInt.Not` |
-| <a id="zanna-math-bigint-shl"></a>`Shl` | `obj(obj,i64)` | `Zanna.Math.BigInt.Shl` |
-| <a id="zanna-math-bigint-shr"></a>`Shr` | `obj(obj,i64)` | `Zanna.Math.BigInt.Shr` |
-| <a id="zanna-math-bigint-pow"></a>`Pow` | `obj(obj,i64)` | `Zanna.Math.BigInt.Pow` |
-| <a id="zanna-math-bigint-powmod"></a>`PowMod` | `obj(obj,obj,obj)` | `Zanna.Math.BigInt.PowMod` |
-| <a id="zanna-math-bigint-gcd"></a>`Gcd` | `obj(obj,obj)` | `Zanna.Math.BigInt.Gcd` |
-| <a id="zanna-math-bigint-lcm"></a>`Lcm` | `obj(obj,obj)` | `Zanna.Math.BigInt.Lcm` |
+| <a id="zanna-math-bigint-and"></a>`And` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.And` |
+| <a id="zanna-math-bigint-or"></a>`Or` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Or` |
+| <a id="zanna-math-bigint-xor"></a>`Xor` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Xor` |
+| <a id="zanna-math-bigint-not"></a>`Not` | `obj<Zanna.Math.BigInt>(obj)` | `Zanna.Math.BigInt.Not` |
+| <a id="zanna-math-bigint-shl"></a>`Shl` | `obj<Zanna.Math.BigInt>(obj,i64)` | `Zanna.Math.BigInt.Shl` |
+| <a id="zanna-math-bigint-shr"></a>`Shr` | `obj<Zanna.Math.BigInt>(obj,i64)` | `Zanna.Math.BigInt.Shr` |
+| <a id="zanna-math-bigint-pow"></a>`Pow` | `obj<Zanna.Math.BigInt>(obj,i64)` | `Zanna.Math.BigInt.Pow` |
+| <a id="zanna-math-bigint-powmod"></a>`PowMod` | `obj<Zanna.Math.BigInt>(obj,obj,obj)` | `Zanna.Math.BigInt.PowMod` |
+| <a id="zanna-math-bigint-gcd"></a>`Gcd` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Gcd` |
+| <a id="zanna-math-bigint-lcm"></a>`Lcm` | `obj<Zanna.Math.BigInt>(obj,obj)` | `Zanna.Math.BigInt.Lcm` |
 | <a id="zanna-math-bigint-bitlength"></a>`BitLength` | `i64(obj)` | `Zanna.Math.BigInt.BitLength` |
 | <a id="zanna-math-bigint-testbit"></a>`TestBit` | `i1(obj,i64)` | `Zanna.Math.BigInt.TestBit` |
-| <a id="zanna-math-bigint-setbit"></a>`SetBit` | `obj(obj,i64)` | `Zanna.Math.BigInt.SetBit` |
-| <a id="zanna-math-bigint-clearbit"></a>`ClearBit` | `obj(obj,i64)` | `Zanna.Math.BigInt.ClearBit` |
-| <a id="zanna-math-bigint-sqrt"></a>`Sqrt` | `obj(obj)` | `Zanna.Math.BigInt.Sqrt` |
+| <a id="zanna-math-bigint-setbit"></a>`SetBit` | `obj<Zanna.Math.BigInt>(obj,i64)` | `Zanna.Math.BigInt.SetBit` |
+| <a id="zanna-math-bigint-clearbit"></a>`ClearBit` | `obj<Zanna.Math.BigInt>(obj,i64)` | `Zanna.Math.BigInt.ClearBit` |
+| <a id="zanna-math-bigint-sqrt"></a>`Sqrt` | `obj<Zanna.Math.BigInt>(obj)` | `Zanna.Math.BigInt.Sqrt` |
 
 <a id="zanna-math-mat3"></a>
 ### `Zanna.Math.Mat3`
@@ -77,27 +77,27 @@ Constructor: `Zanna.Math.Mat3.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-math-mat3-new"></a>`New` | `obj(f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Math.Mat3.New` |
-| <a id="zanna-math-mat3-identity"></a>`Identity` | `obj()` | `Zanna.Math.Mat3.Identity` |
-| <a id="zanna-math-mat3-zero"></a>`Zero` | `obj()` | `Zanna.Math.Mat3.Zero` |
-| <a id="zanna-math-mat3-translate"></a>`Translate` | `obj(f64,f64)` | `Zanna.Math.Mat3.Translate` |
-| <a id="zanna-math-mat3-scale"></a>`Scale` | `obj(f64,f64)` | `Zanna.Math.Mat3.Scale` |
-| <a id="zanna-math-mat3-scaleuniform"></a>`ScaleUniform` | `obj(f64)` | `Zanna.Math.Mat3.ScaleUniform` |
-| <a id="zanna-math-mat3-rotate"></a>`Rotate` | `obj(f64)` | `Zanna.Math.Mat3.Rotate` |
-| <a id="zanna-math-mat3-shear"></a>`Shear` | `obj(f64,f64)` | `Zanna.Math.Mat3.Shear` |
+| <a id="zanna-math-mat3-new"></a>`New` | `obj<Zanna.Math.Mat3>(f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Math.Mat3.New` |
+| <a id="zanna-math-mat3-identity"></a>`Identity` | `obj<Zanna.Math.Mat3>()` | `Zanna.Math.Mat3.Identity` |
+| <a id="zanna-math-mat3-zero"></a>`Zero` | `obj<Zanna.Math.Mat3>()` | `Zanna.Math.Mat3.Zero` |
+| <a id="zanna-math-mat3-translate"></a>`Translate` | `obj<Zanna.Math.Mat3>(f64,f64)` | `Zanna.Math.Mat3.Translate` |
+| <a id="zanna-math-mat3-scale"></a>`Scale` | `obj<Zanna.Math.Mat3>(f64,f64)` | `Zanna.Math.Mat3.Scale` |
+| <a id="zanna-math-mat3-scaleuniform"></a>`ScaleUniform` | `obj<Zanna.Math.Mat3>(f64)` | `Zanna.Math.Mat3.ScaleUniform` |
+| <a id="zanna-math-mat3-rotate"></a>`Rotate` | `obj<Zanna.Math.Mat3>(f64)` | `Zanna.Math.Mat3.Rotate` |
+| <a id="zanna-math-mat3-shear"></a>`Shear` | `obj<Zanna.Math.Mat3>(f64,f64)` | `Zanna.Math.Mat3.Shear` |
 | <a id="zanna-math-mat3-get"></a>`Get` | `f64(obj,i64,i64)` | `Zanna.Math.Mat3.Get` |
-| <a id="zanna-math-mat3-row"></a>`Row` | `obj(obj,i64)` | `Zanna.Math.Mat3.Row` |
-| <a id="zanna-math-mat3-col"></a>`Col` | `obj(obj,i64)` | `Zanna.Math.Mat3.Col` |
-| <a id="zanna-math-mat3-add"></a>`Add` | `obj(obj,obj)` | `Zanna.Math.Mat3.Add` |
-| <a id="zanna-math-mat3-sub"></a>`Sub` | `obj(obj,obj)` | `Zanna.Math.Mat3.Sub` |
-| <a id="zanna-math-mat3-mul"></a>`Mul` | `obj(obj,obj)` | `Zanna.Math.Mat3.Mul` |
-| <a id="zanna-math-mat3-mulscalar"></a>`MulScalar` | `obj(obj,f64)` | `Zanna.Math.Mat3.MulScalar` |
-| <a id="zanna-math-mat3-transformpoint"></a>`TransformPoint` | `obj(obj,obj)` | `Zanna.Math.Mat3.TransformPoint` |
-| <a id="zanna-math-mat3-transformvector"></a>`TransformVector` | `obj(obj,obj)` | `Zanna.Math.Mat3.TransformVector` |
-| <a id="zanna-math-mat3-transpose"></a>`Transpose` | `obj(obj)` | `Zanna.Math.Mat3.Transpose` |
+| <a id="zanna-math-mat3-row"></a>`Row` | `obj<Zanna.Math.Vec3>(obj,i64)` | `Zanna.Math.Mat3.Row` |
+| <a id="zanna-math-mat3-col"></a>`Col` | `obj<Zanna.Math.Vec3>(obj,i64)` | `Zanna.Math.Mat3.Col` |
+| <a id="zanna-math-mat3-add"></a>`Add` | `obj<Zanna.Math.Mat3>(obj,obj)` | `Zanna.Math.Mat3.Add` |
+| <a id="zanna-math-mat3-sub"></a>`Sub` | `obj<Zanna.Math.Mat3>(obj,obj)` | `Zanna.Math.Mat3.Sub` |
+| <a id="zanna-math-mat3-mul"></a>`Mul` | `obj<Zanna.Math.Mat3>(obj,obj)` | `Zanna.Math.Mat3.Mul` |
+| <a id="zanna-math-mat3-mulscalar"></a>`MulScalar` | `obj<Zanna.Math.Mat3>(obj,f64)` | `Zanna.Math.Mat3.MulScalar` |
+| <a id="zanna-math-mat3-transformpoint"></a>`TransformPoint` | `obj<Zanna.Math.Vec2>(obj,obj)` | `Zanna.Math.Mat3.TransformPoint` |
+| <a id="zanna-math-mat3-transformvector"></a>`TransformVector` | `obj<Zanna.Math.Vec2>(obj,obj)` | `Zanna.Math.Mat3.TransformVector` |
+| <a id="zanna-math-mat3-transpose"></a>`Transpose` | `obj<Zanna.Math.Mat3>(obj)` | `Zanna.Math.Mat3.Transpose` |
 | <a id="zanna-math-mat3-determinant"></a>`Determinant` | `f64(obj)` | `Zanna.Math.Mat3.Determinant` |
-| <a id="zanna-math-mat3-inverse"></a>`Inverse` | `obj(obj)` | `Zanna.Math.Mat3.Inverse` |
-| <a id="zanna-math-mat3-negate"></a>`Negate` | `obj(obj)` | `Zanna.Math.Mat3.Negate` |
+| <a id="zanna-math-mat3-inverse"></a>`Inverse` | `obj<Zanna.Math.Mat3>(obj)` | `Zanna.Math.Mat3.Inverse` |
+| <a id="zanna-math-mat3-negate"></a>`Negate` | `obj<Zanna.Math.Mat3>(obj)` | `Zanna.Math.Mat3.Negate` |
 | <a id="zanna-math-mat3-approxequals"></a>`ApproxEquals` | `i1(obj,obj,f64)` | `Zanna.Math.Mat3.ApproxEquals` |
 
 <a id="zanna-math-mat4"></a>
@@ -115,30 +115,30 @@ Constructor: `Zanna.Math.Mat4.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-math-mat4-new"></a>`New` | `obj(f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Math.Mat4.New` |
-| <a id="zanna-math-mat4-identity"></a>`Identity` | `obj()` | `Zanna.Math.Mat4.Identity` |
-| <a id="zanna-math-mat4-zero"></a>`Zero` | `obj()` | `Zanna.Math.Mat4.Zero` |
-| <a id="zanna-math-mat4-translate"></a>`Translate` | `obj(f64,f64,f64)` | `Zanna.Math.Mat4.Translate` |
-| <a id="zanna-math-mat4-scale"></a>`Scale` | `obj(f64,f64,f64)` | `Zanna.Math.Mat4.Scale` |
-| <a id="zanna-math-mat4-scaleuniform"></a>`ScaleUniform` | `obj(f64)` | `Zanna.Math.Mat4.ScaleUniform` |
-| <a id="zanna-math-mat4-rotatex"></a>`RotateX` | `obj(f64)` | `Zanna.Math.Mat4.RotateX` |
-| <a id="zanna-math-mat4-rotatey"></a>`RotateY` | `obj(f64)` | `Zanna.Math.Mat4.RotateY` |
-| <a id="zanna-math-mat4-rotatez"></a>`RotateZ` | `obj(f64)` | `Zanna.Math.Mat4.RotateZ` |
-| <a id="zanna-math-mat4-rotateaxis"></a>`RotateAxis` | `obj(obj,f64)` | `Zanna.Math.Mat4.RotateAxis` |
-| <a id="zanna-math-mat4-perspective"></a>`Perspective` | `obj(f64,f64,f64,f64)` | `Zanna.Math.Mat4.Perspective` |
-| <a id="zanna-math-mat4-orthographic"></a>`Orthographic` | `obj(f64,f64,f64,f64,f64,f64)` | `Zanna.Math.Mat4.Orthographic` |
-| <a id="zanna-math-mat4-lookat"></a>`LookAt` | `obj(obj,obj,obj)` | `Zanna.Math.Mat4.LookAt` |
+| <a id="zanna-math-mat4-new"></a>`New` | `obj<Zanna.Math.Mat4>(f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Math.Mat4.New` |
+| <a id="zanna-math-mat4-identity"></a>`Identity` | `obj<Zanna.Math.Mat4>()` | `Zanna.Math.Mat4.Identity` |
+| <a id="zanna-math-mat4-zero"></a>`Zero` | `obj<Zanna.Math.Mat4>()` | `Zanna.Math.Mat4.Zero` |
+| <a id="zanna-math-mat4-translate"></a>`Translate` | `obj<Zanna.Math.Mat4>(f64,f64,f64)` | `Zanna.Math.Mat4.Translate` |
+| <a id="zanna-math-mat4-scale"></a>`Scale` | `obj<Zanna.Math.Mat4>(f64,f64,f64)` | `Zanna.Math.Mat4.Scale` |
+| <a id="zanna-math-mat4-scaleuniform"></a>`ScaleUniform` | `obj<Zanna.Math.Mat4>(f64)` | `Zanna.Math.Mat4.ScaleUniform` |
+| <a id="zanna-math-mat4-rotatex"></a>`RotateX` | `obj<Zanna.Math.Mat4>(f64)` | `Zanna.Math.Mat4.RotateX` |
+| <a id="zanna-math-mat4-rotatey"></a>`RotateY` | `obj<Zanna.Math.Mat4>(f64)` | `Zanna.Math.Mat4.RotateY` |
+| <a id="zanna-math-mat4-rotatez"></a>`RotateZ` | `obj<Zanna.Math.Mat4>(f64)` | `Zanna.Math.Mat4.RotateZ` |
+| <a id="zanna-math-mat4-rotateaxis"></a>`RotateAxis` | `obj<Zanna.Math.Mat4>(obj,f64)` | `Zanna.Math.Mat4.RotateAxis` |
+| <a id="zanna-math-mat4-perspective"></a>`Perspective` | `obj<Zanna.Math.Mat4>(f64,f64,f64,f64)` | `Zanna.Math.Mat4.Perspective` |
+| <a id="zanna-math-mat4-orthographic"></a>`Orthographic` | `obj<Zanna.Math.Mat4>(f64,f64,f64,f64,f64,f64)` | `Zanna.Math.Mat4.Orthographic` |
+| <a id="zanna-math-mat4-lookat"></a>`LookAt` | `obj<Zanna.Math.Mat4>(obj,obj,obj)` | `Zanna.Math.Mat4.LookAt` |
 | <a id="zanna-math-mat4-get"></a>`Get` | `f64(obj,i64,i64)` | `Zanna.Math.Mat4.Get` |
-| <a id="zanna-math-mat4-add"></a>`Add` | `obj(obj,obj)` | `Zanna.Math.Mat4.Add` |
-| <a id="zanna-math-mat4-sub"></a>`Sub` | `obj(obj,obj)` | `Zanna.Math.Mat4.Sub` |
-| <a id="zanna-math-mat4-mul"></a>`Mul` | `obj(obj,obj)` | `Zanna.Math.Mat4.Mul` |
-| <a id="zanna-math-mat4-mulscalar"></a>`MulScalar` | `obj(obj,f64)` | `Zanna.Math.Mat4.MulScalar` |
-| <a id="zanna-math-mat4-transformpoint"></a>`TransformPoint` | `obj(obj,obj)` | `Zanna.Math.Mat4.TransformPoint` |
-| <a id="zanna-math-mat4-transformvector"></a>`TransformVector` | `obj(obj,obj)` | `Zanna.Math.Mat4.TransformVector` |
-| <a id="zanna-math-mat4-transpose"></a>`Transpose` | `obj(obj)` | `Zanna.Math.Mat4.Transpose` |
+| <a id="zanna-math-mat4-add"></a>`Add` | `obj<Zanna.Math.Mat4>(obj,obj)` | `Zanna.Math.Mat4.Add` |
+| <a id="zanna-math-mat4-sub"></a>`Sub` | `obj<Zanna.Math.Mat4>(obj,obj)` | `Zanna.Math.Mat4.Sub` |
+| <a id="zanna-math-mat4-mul"></a>`Mul` | `obj<Zanna.Math.Mat4>(obj,obj)` | `Zanna.Math.Mat4.Mul` |
+| <a id="zanna-math-mat4-mulscalar"></a>`MulScalar` | `obj<Zanna.Math.Mat4>(obj,f64)` | `Zanna.Math.Mat4.MulScalar` |
+| <a id="zanna-math-mat4-transformpoint"></a>`TransformPoint` | `obj<Zanna.Math.Vec3>(obj,obj)` | `Zanna.Math.Mat4.TransformPoint` |
+| <a id="zanna-math-mat4-transformvector"></a>`TransformVector` | `obj<Zanna.Math.Vec3>(obj,obj)` | `Zanna.Math.Mat4.TransformVector` |
+| <a id="zanna-math-mat4-transpose"></a>`Transpose` | `obj<Zanna.Math.Mat4>(obj)` | `Zanna.Math.Mat4.Transpose` |
 | <a id="zanna-math-mat4-determinant"></a>`Determinant` | `f64(obj)` | `Zanna.Math.Mat4.Determinant` |
-| <a id="zanna-math-mat4-inverse"></a>`Inverse` | `obj(obj)` | `Zanna.Math.Mat4.Inverse` |
-| <a id="zanna-math-mat4-negate"></a>`Negate` | `obj(obj)` | `Zanna.Math.Mat4.Negate` |
+| <a id="zanna-math-mat4-inverse"></a>`Inverse` | `obj<Zanna.Math.Mat4>(obj)` | `Zanna.Math.Mat4.Inverse` |
+| <a id="zanna-math-mat4-negate"></a>`Negate` | `obj<Zanna.Math.Mat4>(obj)` | `Zanna.Math.Mat4.Negate` |
 | <a id="zanna-math-mat4-approxequals"></a>`ApproxEquals` | `i1(obj,obj,f64)` | `Zanna.Math.Mat4.ApproxEquals` |
 
 <a id="zanna-math-bits"></a>
@@ -334,7 +334,7 @@ Constructor: `Zanna.Math.Random.New`
 | <a id="zanna-math-random-chancepercent"></a>`ChancePercent` | `i1(i64)` | `Zanna.Math.Random.inst_ChancePercent` |
 | <a id="zanna-math-random-getglobalstate"></a>`GetGlobalState` | `i64()` | `Zanna.Math.Random.GetGlobalState` |
 | <a id="zanna-math-random-setglobalstate"></a>`SetGlobalState` | `void(i64)` | `Zanna.Math.Random.SetGlobalState` |
-| <a id="zanna-math-random-new"></a>`New` | `obj(i64)` | `Zanna.Math.Random.New` |
+| <a id="zanna-math-random-new"></a>`New` | `obj<Zanna.Math.Random>(i64)` | `Zanna.Math.Random.New` |
 | <a id="zanna-math-random-gaussian"></a>`Gaussian` | `f64(f64,f64)` | `Zanna.Math.Random.Gaussian` |
 | <a id="zanna-math-random-exponential"></a>`Exponential` | `f64(f64)` | `Zanna.Math.Random.Exponential` |
 | <a id="zanna-math-random-dice"></a>`Dice` | `i64(i64)` | `Zanna.Math.Random.Dice` |
@@ -364,26 +364,26 @@ Constructor: `Zanna.Math.Vec2.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-math-vec2-zero"></a>`Zero` | `obj()` | `Zanna.Math.Vec2.Zero` |
-| <a id="zanna-math-vec2-one"></a>`One` | `obj()` | `Zanna.Math.Vec2.One` |
-| <a id="zanna-math-vec2-add"></a>`Add` | `obj(obj)` | `Zanna.Math.Vec2.Add` |
-| <a id="zanna-math-vec2-sub"></a>`Sub` | `obj(obj)` | `Zanna.Math.Vec2.Sub` |
-| <a id="zanna-math-vec2-mul"></a>`Mul` | `obj(f64)` | `Zanna.Math.Vec2.Mul` |
-| <a id="zanna-math-vec2-div"></a>`Div` | `obj(f64)` | `Zanna.Math.Vec2.Div` |
+| <a id="zanna-math-vec2-zero"></a>`Zero` | `obj<Zanna.Math.Vec2>()` | `Zanna.Math.Vec2.Zero` |
+| <a id="zanna-math-vec2-one"></a>`One` | `obj<Zanna.Math.Vec2>()` | `Zanna.Math.Vec2.One` |
+| <a id="zanna-math-vec2-add"></a>`Add` | `obj<Zanna.Math.Vec2>(obj)` | `Zanna.Math.Vec2.Add` |
+| <a id="zanna-math-vec2-sub"></a>`Sub` | `obj<Zanna.Math.Vec2>(obj)` | `Zanna.Math.Vec2.Sub` |
+| <a id="zanna-math-vec2-mul"></a>`Mul` | `obj<Zanna.Math.Vec2>(f64)` | `Zanna.Math.Vec2.Mul` |
+| <a id="zanna-math-vec2-div"></a>`Div` | `obj<Zanna.Math.Vec2>(f64)` | `Zanna.Math.Vec2.Div` |
 | <a id="zanna-math-vec2-dot"></a>`Dot` | `f64(obj)` | `Zanna.Math.Vec2.Dot` |
 | <a id="zanna-math-vec2-cross"></a>`Cross` | `f64(obj)` | `Zanna.Math.Vec2.Cross` |
 | <a id="zanna-math-vec2-len"></a>`Len` | `f64()` | `Zanna.Math.Vec2.Len` |
 | <a id="zanna-math-vec2-length"></a>`Length` | `f64()` | `Zanna.Math.Vec2.Len` |
 | <a id="zanna-math-vec2-lengthsquared"></a>`LengthSquared` | `f64()` | `Zanna.Math.Vec2.LengthSquared` |
-| <a id="zanna-math-vec2-norm"></a>`Norm` | `obj()` | `Zanna.Math.Vec2.Norm` |
-| <a id="zanna-math-vec2-normalize"></a>`Normalize` | `obj()` | `Zanna.Math.Vec2.Norm` |
+| <a id="zanna-math-vec2-norm"></a>`Norm` | `obj<Zanna.Math.Vec2>()` | `Zanna.Math.Vec2.Norm` |
+| <a id="zanna-math-vec2-normalize"></a>`Normalize` | `obj<Zanna.Math.Vec2>()` | `Zanna.Math.Vec2.Norm` |
 | <a id="zanna-math-vec2-dist"></a>`Dist` | `f64(obj)` | `Zanna.Math.Vec2.Dist` |
 | <a id="zanna-math-vec2-distance"></a>`Distance` | `f64(obj)` | `Zanna.Math.Vec2.Dist` |
-| <a id="zanna-math-vec2-lerp"></a>`Lerp` | `obj(obj,f64)` | `Zanna.Math.Vec2.Lerp` |
+| <a id="zanna-math-vec2-lerp"></a>`Lerp` | `obj<Zanna.Math.Vec2>(obj,f64)` | `Zanna.Math.Vec2.Lerp` |
 | <a id="zanna-math-vec2-heading"></a>`Heading` | `f64()` | `Zanna.Math.Vec2.Heading` |
-| <a id="zanna-math-vec2-rotate"></a>`Rotate` | `obj(f64)` | `Zanna.Math.Vec2.Rotate` |
-| <a id="zanna-math-vec2-negate"></a>`Negate` | `obj()` | `Zanna.Math.Vec2.Negate` |
-| <a id="zanna-math-vec2-new"></a>`New` | `obj(f64,f64)` | `Zanna.Math.Vec2.New` |
+| <a id="zanna-math-vec2-rotate"></a>`Rotate` | `obj<Zanna.Math.Vec2>(f64)` | `Zanna.Math.Vec2.Rotate` |
+| <a id="zanna-math-vec2-negate"></a>`Negate` | `obj<Zanna.Math.Vec2>()` | `Zanna.Math.Vec2.Negate` |
+| <a id="zanna-math-vec2-new"></a>`New` | `obj<Zanna.Math.Vec2>(f64,f64)` | `Zanna.Math.Vec2.New` |
 
 <a id="zanna-math-vec3"></a>
 ### `Zanna.Math.Vec3`
@@ -410,31 +410,31 @@ Constructor: `Zanna.Math.Vec3.New`
 |---|---|---|
 | <a id="zanna-math-vec3-set"></a>`Set` | `void(f64,f64,f64)` | `Zanna.Math.Vec3.Set` |
 | <a id="zanna-math-vec3-copyfrom"></a>`CopyFrom` | `void(obj)` | `Zanna.Math.Vec3.CopyFrom` |
-| <a id="zanna-math-vec3-add"></a>`Add` | `obj(obj)` | `Zanna.Math.Vec3.Add` |
-| <a id="zanna-math-vec3-sub"></a>`Sub` | `obj(obj)` | `Zanna.Math.Vec3.Sub` |
-| <a id="zanna-math-vec3-mul"></a>`Mul` | `obj(f64)` | `Zanna.Math.Vec3.Mul` |
-| <a id="zanna-math-vec3-div"></a>`Div` | `obj(f64)` | `Zanna.Math.Vec3.Div` |
+| <a id="zanna-math-vec3-add"></a>`Add` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Vec3.Add` |
+| <a id="zanna-math-vec3-sub"></a>`Sub` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Vec3.Sub` |
+| <a id="zanna-math-vec3-mul"></a>`Mul` | `obj<Zanna.Math.Vec3>(f64)` | `Zanna.Math.Vec3.Mul` |
+| <a id="zanna-math-vec3-div"></a>`Div` | `obj<Zanna.Math.Vec3>(f64)` | `Zanna.Math.Vec3.Div` |
 | <a id="zanna-math-vec3-dot"></a>`Dot` | `f64(obj)` | `Zanna.Math.Vec3.Dot` |
-| <a id="zanna-math-vec3-cross"></a>`Cross` | `obj(obj)` | `Zanna.Math.Vec3.Cross` |
+| <a id="zanna-math-vec3-cross"></a>`Cross` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Vec3.Cross` |
 | <a id="zanna-math-vec3-len"></a>`Len` | `f64()` | `Zanna.Math.Vec3.Len` |
 | <a id="zanna-math-vec3-length"></a>`Length` | `f64()` | `Zanna.Math.Vec3.Len` |
 | <a id="zanna-math-vec3-lengthsquared"></a>`LengthSquared` | `f64()` | `Zanna.Math.Vec3.LengthSquared` |
-| <a id="zanna-math-vec3-norm"></a>`Norm` | `obj()` | `Zanna.Math.Vec3.Norm` |
-| <a id="zanna-math-vec3-normalize"></a>`Normalize` | `obj()` | `Zanna.Math.Vec3.Norm` |
+| <a id="zanna-math-vec3-norm"></a>`Norm` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Vec3.Norm` |
+| <a id="zanna-math-vec3-normalize"></a>`Normalize` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Vec3.Norm` |
 | <a id="zanna-math-vec3-dist"></a>`Dist` | `f64(obj)` | `Zanna.Math.Vec3.Dist` |
 | <a id="zanna-math-vec3-distance"></a>`Distance` | `f64(obj)` | `Zanna.Math.Vec3.Dist` |
-| <a id="zanna-math-vec3-lerp"></a>`Lerp` | `obj(obj,f64)` | `Zanna.Math.Vec3.Lerp` |
-| <a id="zanna-math-vec3-negate"></a>`Negate` | `obj()` | `Zanna.Math.Vec3.Negate` |
-| <a id="zanna-math-vec3-reflect"></a>`Reflect` | `obj(obj)` | `Zanna.Math.Vec3.Reflect` |
-| <a id="zanna-math-vec3-project"></a>`Project` | `obj(obj)` | `Zanna.Math.Vec3.Project` |
-| <a id="zanna-math-vec3-clamplength"></a>`ClampLength` | `obj(f64)` | `Zanna.Math.Vec3.ClampLength` |
-| <a id="zanna-math-vec3-movetowards"></a>`MoveTowards` | `obj(obj,f64)` | `Zanna.Math.Vec3.MoveTowards` |
+| <a id="zanna-math-vec3-lerp"></a>`Lerp` | `obj<Zanna.Math.Vec3>(obj,f64)` | `Zanna.Math.Vec3.Lerp` |
+| <a id="zanna-math-vec3-negate"></a>`Negate` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Vec3.Negate` |
+| <a id="zanna-math-vec3-reflect"></a>`Reflect` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Vec3.Reflect` |
+| <a id="zanna-math-vec3-project"></a>`Project` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Vec3.Project` |
+| <a id="zanna-math-vec3-clamplength"></a>`ClampLength` | `obj<Zanna.Math.Vec3>(f64)` | `Zanna.Math.Vec3.ClampLength` |
+| <a id="zanna-math-vec3-movetowards"></a>`MoveTowards` | `obj<Zanna.Math.Vec3>(obj,f64)` | `Zanna.Math.Vec3.MoveTowards` |
 | <a id="zanna-math-vec3-anglebetween"></a>`AngleBetween` | `f64(obj)` | `Zanna.Math.Vec3.AngleBetween` |
-| <a id="zanna-math-vec3-min"></a>`Min` | `obj(obj)` | `Zanna.Math.Vec3.Min` |
-| <a id="zanna-math-vec3-max"></a>`Max` | `obj(obj)` | `Zanna.Math.Vec3.Max` |
-| <a id="zanna-math-vec3-new"></a>`New` | `obj(f64,f64,f64)` | `Zanna.Math.Vec3.New` |
-| <a id="zanna-math-vec3-one"></a>`One` | `obj()` | `Zanna.Math.Vec3.One` |
-| <a id="zanna-math-vec3-zero"></a>`Zero` | `obj()` | `Zanna.Math.Vec3.Zero` |
+| <a id="zanna-math-vec3-min"></a>`Min` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Vec3.Min` |
+| <a id="zanna-math-vec3-max"></a>`Max` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Vec3.Max` |
+| <a id="zanna-math-vec3-new"></a>`New` | `obj<Zanna.Math.Vec3>(f64,f64,f64)` | `Zanna.Math.Vec3.New` |
+| <a id="zanna-math-vec3-one"></a>`One` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Vec3.One` |
+| <a id="zanna-math-vec3-zero"></a>`Zero` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Vec3.Zero` |
 
 <a id="zanna-math-quat"></a>
 ### `Zanna.Math.Quat`
@@ -460,25 +460,25 @@ Constructor: `Zanna.Math.Quat.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-math-quat-identity"></a>`Identity` | `obj()` | `Zanna.Math.Quat.Identity` |
-| <a id="zanna-math-quat-fromaxisangle"></a>`FromAxisAngle` | `obj(obj,f64)` | `Zanna.Math.Quat.FromAxisAngle` |
-| <a id="zanna-math-quat-fromeuler"></a>`FromEuler` | `obj(f64,f64,f64)` | `Zanna.Math.Quat.FromEuler` |
-| <a id="zanna-math-quat-mul"></a>`Mul` | `obj(obj)` | `Zanna.Math.Quat.Mul` |
-| <a id="zanna-math-quat-conjugate"></a>`Conjugate` | `obj()` | `Zanna.Math.Quat.Conjugate` |
-| <a id="zanna-math-quat-inverse"></a>`Inverse` | `obj()` | `Zanna.Math.Quat.Inverse` |
-| <a id="zanna-math-quat-normalize"></a>`Normalize` | `obj()` | `Zanna.Math.Quat.Normalize` |
+| <a id="zanna-math-quat-identity"></a>`Identity` | `obj<Zanna.Math.Quat>()` | `Zanna.Math.Quat.Identity` |
+| <a id="zanna-math-quat-fromaxisangle"></a>`FromAxisAngle` | `obj<Zanna.Math.Quat>(obj,f64)` | `Zanna.Math.Quat.FromAxisAngle` |
+| <a id="zanna-math-quat-fromeuler"></a>`FromEuler` | `obj<Zanna.Math.Quat>(f64,f64,f64)` | `Zanna.Math.Quat.FromEuler` |
+| <a id="zanna-math-quat-mul"></a>`Mul` | `obj<Zanna.Math.Quat>(obj)` | `Zanna.Math.Quat.Mul` |
+| <a id="zanna-math-quat-conjugate"></a>`Conjugate` | `obj<Zanna.Math.Quat>()` | `Zanna.Math.Quat.Conjugate` |
+| <a id="zanna-math-quat-inverse"></a>`Inverse` | `obj<Zanna.Math.Quat>()` | `Zanna.Math.Quat.Inverse` |
+| <a id="zanna-math-quat-normalize"></a>`Normalize` | `obj<Zanna.Math.Quat>()` | `Zanna.Math.Quat.Normalize` |
 | <a id="zanna-math-quat-length"></a>`Length` | `f64()` | `Zanna.Math.Quat.Length` |
 | <a id="zanna-math-quat-lengthsquared"></a>`LengthSquared` | `f64()` | `Zanna.Math.Quat.LengthSquared` |
 | <a id="zanna-math-quat-dot"></a>`Dot` | `f64(obj)` | `Zanna.Math.Quat.Dot` |
-| <a id="zanna-math-quat-slerp"></a>`Slerp` | `obj(obj,f64)` | `Zanna.Math.Quat.Slerp` |
-| <a id="zanna-math-quat-lerp"></a>`Lerp` | `obj(obj,f64)` | `Zanna.Math.Quat.Lerp` |
-| <a id="zanna-math-quat-rotatevec3"></a>`RotateVec3` | `obj(obj)` | `Zanna.Math.Quat.RotateVec3` |
-| <a id="zanna-math-quat-tomat4"></a>`ToMat4` | `obj()` | `Zanna.Math.Quat.ToMat4` |
+| <a id="zanna-math-quat-slerp"></a>`Slerp` | `obj<Zanna.Math.Quat>(obj,f64)` | `Zanna.Math.Quat.Slerp` |
+| <a id="zanna-math-quat-lerp"></a>`Lerp` | `obj<Zanna.Math.Quat>(obj,f64)` | `Zanna.Math.Quat.Lerp` |
+| <a id="zanna-math-quat-rotatevec3"></a>`RotateVec3` | `obj<Zanna.Math.Vec3>(obj)` | `Zanna.Math.Quat.RotateVec3` |
+| <a id="zanna-math-quat-tomat4"></a>`ToMat4` | `obj<Zanna.Math.Mat4>()` | `Zanna.Math.Quat.ToMat4` |
 | <a id="zanna-math-quat-toeuler"></a>`ToEuler` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Quat.ToEuler` |
-| <a id="zanna-math-quat-frommat4"></a>`FromMat4` | `obj(obj)` | `Zanna.Math.Quat.FromMat4` |
-| <a id="zanna-math-quat-axis"></a>`Axis` | `obj()` | `Zanna.Math.Quat.Axis` |
+| <a id="zanna-math-quat-frommat4"></a>`FromMat4` | `obj<Zanna.Math.Quat>(obj)` | `Zanna.Math.Quat.FromMat4` |
+| <a id="zanna-math-quat-axis"></a>`Axis` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Quat.Axis` |
 | <a id="zanna-math-quat-angle"></a>`Angle` | `f64()` | `Zanna.Math.Quat.Angle` |
-| <a id="zanna-math-quat-new"></a>`New` | `obj(f64,f64,f64,f64)` | `Zanna.Math.Quat.New` |
+| <a id="zanna-math-quat-new"></a>`New` | `obj<Zanna.Math.Quat>(f64,f64,f64,f64)` | `Zanna.Math.Quat.New` |
 
 <a id="zanna-math-spline"></a>
 ### `Zanna.Math.Spline`
@@ -499,14 +499,14 @@ operations including `CatmullRom`, `Bezier`, `Linear`, `Eval`.
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-math-spline-catmullrom"></a>`CatmullRom` | `obj(obj)` | `Zanna.Math.Spline.CatmullRom` |
-| <a id="zanna-math-spline-bezier"></a>`Bezier` | `obj(obj,obj,obj,obj)` | `Zanna.Math.Spline.Bezier` |
-| <a id="zanna-math-spline-linear"></a>`Linear` | `obj(obj)` | `Zanna.Math.Spline.Linear` |
-| <a id="zanna-math-spline-eval"></a>`Eval` | `obj(obj,f64)` | `Zanna.Math.Spline.Eval` |
-| <a id="zanna-math-spline-tangent"></a>`Tangent` | `obj(obj,f64)` | `Zanna.Math.Spline.Tangent` |
-| <a id="zanna-math-spline-pointat"></a>`PointAt` | `obj(obj,i64)` | `Zanna.Math.Spline.PointAt` |
+| <a id="zanna-math-spline-catmullrom"></a>`CatmullRom` | `obj<Zanna.Math.Spline>(obj)` | `Zanna.Math.Spline.CatmullRom` |
+| <a id="zanna-math-spline-bezier"></a>`Bezier` | `obj<Zanna.Math.Spline>(obj,obj,obj,obj)` | `Zanna.Math.Spline.Bezier` |
+| <a id="zanna-math-spline-linear"></a>`Linear` | `obj<Zanna.Math.Spline>(obj)` | `Zanna.Math.Spline.Linear` |
+| <a id="zanna-math-spline-eval"></a>`Eval` | `obj<Zanna.Math.Vec2>(obj,f64)` | `Zanna.Math.Spline.Eval` |
+| <a id="zanna-math-spline-tangent"></a>`Tangent` | `obj<Zanna.Math.Vec2>(obj,f64)` | `Zanna.Math.Spline.Tangent` |
+| <a id="zanna-math-spline-pointat"></a>`PointAt` | `obj<Zanna.Math.Vec2>(obj,i64)` | `Zanna.Math.Spline.PointAt` |
 | <a id="zanna-math-spline-arclength"></a>`ArcLength` | `f64(obj,f64,f64,i64)` | `Zanna.Math.Spline.ArcLength` |
-| <a id="zanna-math-spline-sample"></a>`Sample` | `obj(obj,i64)` | `Zanna.Math.Spline.Sample` |
+| <a id="zanna-math-spline-sample"></a>`Sample` | `seq<obj>(obj,i64)` | `Zanna.Math.Spline.Sample` |
 
 ## Functions
 
@@ -612,7 +612,7 @@ operations including `CatmullRom`, `Bezier`, `Linear`, `Eval`.
 | `Zanna.Math.Mix2` | `i64(i64,i64)` | `rt_math_mix2` |
 | `Zanna.Math.Mix3` | `i64(i64,i64,i64)` | `rt_math_mix3` |
 | `Zanna.Math.WrapInt` | `i64(i64,i64,i64)` | `rt_wrap_i64` |
-| `Zanna.Math.Random.New` | `obj(i64)` | `rt_random_new` |
+| `Zanna.Math.Random.New` | `obj<Zanna.Math.Random>(i64)` | `rt_random_new` |
 | `Zanna.Math.Random.NextDouble` | `f64()` | `rt_rnd` |
 | `Zanna.Math.Random.NextInt` | `i64(i64)` | `rt_rand_int` |
 | `Zanna.Math.Random.Seed` | `void(i64)` | `rt_randomize_i64` |
@@ -624,176 +624,176 @@ operations including `CatmullRom`, `Bezier`, `Linear`, `Eval`.
 | `Zanna.Math.Random.Shuffle` | `void(obj)` | `rt_rand_shuffle` |
 | <a id="zanna-math-random-get-state"></a>`Zanna.Math.Random.get_State` | `i64(obj)` | `rt_random_get_state` |
 | <a id="zanna-math-random-set-state"></a>`Zanna.Math.Random.set_State` | `void(obj,i64)` | `rt_random_set_state` |
-| `Zanna.Math.Random.Clone` | `obj(obj)` | `rt_random_clone` |
-| `Zanna.Math.Random.Derive` | `obj(obj,i64)` | `rt_random_derive` |
+| `Zanna.Math.Random.Clone` | `obj<Zanna.Math.Random>(obj)` | `rt_random_clone` |
+| `Zanna.Math.Random.Derive` | `obj<Zanna.Math.Random>(obj,i64)` | `rt_random_derive` |
 | `Zanna.Math.Random.GetGlobalState` | `i64()` | `rt_random_get_global_state` |
 | `Zanna.Math.Random.SetGlobalState` | `void(i64)` | `rt_random_set_global_state` |
 | `Zanna.Math.Random.HashRange` | `i64(i64,i64,i64,i64,i64)` | `rt_random_hash_range` |
-| `Zanna.Math.BigInt.FromInt` | `obj(i64)` | `rt_bigint_from_i64` |
-| `Zanna.Math.BigInt.FromStr` | `obj(str)` | `rt_bigint_from_str` |
-| `Zanna.Math.BigInt.FromBytes` | `obj(obj)` | `rt_bigint_from_bytes` |
-| <a id="zanna-math-bigint-get-zero"></a>`Zanna.Math.BigInt.get_Zero` | `obj()` | `rt_bigint_zero` |
-| <a id="zanna-math-bigint-get-one"></a>`Zanna.Math.BigInt.get_One` | `obj()` | `rt_bigint_one` |
+| `Zanna.Math.BigInt.FromInt` | `obj<Zanna.Math.BigInt>(i64)` | `rt_bigint_from_i64` |
+| `Zanna.Math.BigInt.FromStr` | `obj<Zanna.Math.BigInt>(str)` | `rt_bigint_from_str` |
+| `Zanna.Math.BigInt.FromBytes` | `obj<Zanna.Math.BigInt>(obj)` | `rt_bigint_from_bytes` |
+| <a id="zanna-math-bigint-get-zero"></a>`Zanna.Math.BigInt.get_Zero` | `obj<Zanna.Math.BigInt>()` | `rt_bigint_zero` |
+| <a id="zanna-math-bigint-get-one"></a>`Zanna.Math.BigInt.get_One` | `obj<Zanna.Math.BigInt>()` | `rt_bigint_one` |
 | `Zanna.Math.BigInt.ToInt` | `i64(obj)` | `rt_bigint_to_i64` |
 | `Zanna.Math.BigInt.ToString` | `str(obj)` | `rt_bigint_to_str` |
 | `Zanna.Math.BigInt.ToStringBase` | `str(obj,i64)` | `rt_bigint_to_str_base` |
-| `Zanna.Math.BigInt.ToBytes` | `obj(obj)` | `rt_bigint_to_bytes` |
+| `Zanna.Math.BigInt.ToBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_bigint_to_bytes` |
 | `Zanna.Math.BigInt.FitsInt` | `i1(obj)` | `rt_bigint_fits_i64` |
-| `Zanna.Math.BigInt.Add` | `obj(obj,obj)` | `rt_bigint_add` |
-| `Zanna.Math.BigInt.Sub` | `obj(obj,obj)` | `rt_bigint_sub` |
-| `Zanna.Math.BigInt.Mul` | `obj(obj,obj)` | `rt_bigint_mul` |
-| `Zanna.Math.BigInt.Div` | `obj(obj,obj)` | `rt_bigint_div` |
-| `Zanna.Math.BigInt.Mod` | `obj(obj,obj)` | `rt_bigint_mod` |
-| `Zanna.Math.BigInt.Negate` | `obj(obj)` | `rt_bigint_neg` |
-| `Zanna.Math.BigInt.Abs` | `obj(obj)` | `rt_bigint_abs` |
+| `Zanna.Math.BigInt.Add` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_add` |
+| `Zanna.Math.BigInt.Sub` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_sub` |
+| `Zanna.Math.BigInt.Mul` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_mul` |
+| `Zanna.Math.BigInt.Div` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_div` |
+| `Zanna.Math.BigInt.Mod` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_mod` |
+| `Zanna.Math.BigInt.Negate` | `obj<Zanna.Math.BigInt>(obj)` | `rt_bigint_neg` |
+| `Zanna.Math.BigInt.Abs` | `obj<Zanna.Math.BigInt>(obj)` | `rt_bigint_abs` |
 | `Zanna.Math.BigInt.Compare` | `i64(obj,obj)` | `rt_bigint_cmp` |
 | `Zanna.Math.BigInt.Equals` | `i1(obj,obj)` | `rt_bigint_eq` |
 | `Zanna.Math.BigInt.IsZero` | `i1(obj)` | `rt_bigint_is_zero` |
 | `Zanna.Math.BigInt.IsNegative` | `i1(obj)` | `rt_bigint_is_negative` |
 | `Zanna.Math.BigInt.Sign` | `i64(obj)` | `rt_bigint_sign` |
-| `Zanna.Math.BigInt.And` | `obj(obj,obj)` | `rt_bigint_and` |
-| `Zanna.Math.BigInt.Or` | `obj(obj,obj)` | `rt_bigint_or` |
-| `Zanna.Math.BigInt.Xor` | `obj(obj,obj)` | `rt_bigint_xor` |
-| `Zanna.Math.BigInt.Not` | `obj(obj)` | `rt_bigint_not` |
-| `Zanna.Math.BigInt.Shl` | `obj(obj,i64)` | `rt_bigint_shl` |
-| `Zanna.Math.BigInt.Shr` | `obj(obj,i64)` | `rt_bigint_shr` |
-| `Zanna.Math.BigInt.Pow` | `obj(obj,i64)` | `rt_bigint_pow` |
-| `Zanna.Math.BigInt.PowMod` | `obj(obj,obj,obj)` | `rt_bigint_pow_mod` |
-| `Zanna.Math.BigInt.Gcd` | `obj(obj,obj)` | `rt_bigint_gcd` |
-| `Zanna.Math.BigInt.Lcm` | `obj(obj,obj)` | `rt_bigint_lcm` |
+| `Zanna.Math.BigInt.And` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_and` |
+| `Zanna.Math.BigInt.Or` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_or` |
+| `Zanna.Math.BigInt.Xor` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_xor` |
+| `Zanna.Math.BigInt.Not` | `obj<Zanna.Math.BigInt>(obj)` | `rt_bigint_not` |
+| `Zanna.Math.BigInt.Shl` | `obj<Zanna.Math.BigInt>(obj,i64)` | `rt_bigint_shl` |
+| `Zanna.Math.BigInt.Shr` | `obj<Zanna.Math.BigInt>(obj,i64)` | `rt_bigint_shr` |
+| `Zanna.Math.BigInt.Pow` | `obj<Zanna.Math.BigInt>(obj,i64)` | `rt_bigint_pow` |
+| `Zanna.Math.BigInt.PowMod` | `obj<Zanna.Math.BigInt>(obj,obj,obj)` | `rt_bigint_pow_mod` |
+| `Zanna.Math.BigInt.Gcd` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_gcd` |
+| `Zanna.Math.BigInt.Lcm` | `obj<Zanna.Math.BigInt>(obj,obj)` | `rt_bigint_lcm` |
 | `Zanna.Math.BigInt.BitLength` | `i64(obj)` | `rt_bigint_bit_length` |
 | `Zanna.Math.BigInt.TestBit` | `i1(obj,i64)` | `rt_bigint_test_bit` |
-| `Zanna.Math.BigInt.SetBit` | `obj(obj,i64)` | `rt_bigint_set_bit` |
-| `Zanna.Math.BigInt.ClearBit` | `obj(obj,i64)` | `rt_bigint_clear_bit` |
-| `Zanna.Math.BigInt.Sqrt` | `obj(obj)` | `rt_bigint_sqrt` |
-| `Zanna.Math.Vec2.Add` | `obj(obj,obj)` | `rt_vec2_add` |
+| `Zanna.Math.BigInt.SetBit` | `obj<Zanna.Math.BigInt>(obj,i64)` | `rt_bigint_set_bit` |
+| `Zanna.Math.BigInt.ClearBit` | `obj<Zanna.Math.BigInt>(obj,i64)` | `rt_bigint_clear_bit` |
+| `Zanna.Math.BigInt.Sqrt` | `obj<Zanna.Math.BigInt>(obj)` | `rt_bigint_sqrt` |
+| `Zanna.Math.Vec2.Add` | `obj<Zanna.Math.Vec2>(obj,obj)` | `rt_vec2_add` |
 | `Zanna.Math.Vec2.Heading` | `f64(obj)` | `rt_vec2_angle` |
 | `Zanna.Math.Vec2.Cross` | `f64(obj,obj)` | `rt_vec2_cross` |
 | `Zanna.Math.Vec2.Dist` | `f64(obj,obj)` | `rt_vec2_dist` |
-| `Zanna.Math.Vec2.Div` | `obj(obj,f64)` | `rt_vec2_div` |
+| `Zanna.Math.Vec2.Div` | `obj<Zanna.Math.Vec2>(obj,f64)` | `rt_vec2_div` |
 | `Zanna.Math.Vec2.Dot` | `f64(obj,obj)` | `rt_vec2_dot` |
 | `Zanna.Math.Vec2.Len` | `f64(obj)` | `rt_vec2_len` |
 | `Zanna.Math.Vec2.LengthSquared` | `f64(obj)` | `rt_vec2_len_sq` |
-| `Zanna.Math.Vec2.Lerp` | `obj(obj,obj,f64)` | `rt_vec2_lerp` |
-| `Zanna.Math.Vec2.Mul` | `obj(obj,f64)` | `rt_vec2_mul` |
-| `Zanna.Math.Vec2.Negate` | `obj(obj)` | `rt_vec2_neg` |
-| `Zanna.Math.Vec2.New` | `obj(f64,f64)` | `rt_vec2_new` |
-| `Zanna.Math.Vec2.Norm` | `obj(obj)` | `rt_vec2_norm` |
-| `Zanna.Math.Vec2.One` | `obj()` | `rt_vec2_one` |
-| `Zanna.Math.Vec2.Rotate` | `obj(obj,f64)` | `rt_vec2_rotate` |
-| `Zanna.Math.Vec2.Sub` | `obj(obj,obj)` | `rt_vec2_sub` |
+| `Zanna.Math.Vec2.Lerp` | `obj<Zanna.Math.Vec2>(obj,obj,f64)` | `rt_vec2_lerp` |
+| `Zanna.Math.Vec2.Mul` | `obj<Zanna.Math.Vec2>(obj,f64)` | `rt_vec2_mul` |
+| `Zanna.Math.Vec2.Negate` | `obj<Zanna.Math.Vec2>(obj)` | `rt_vec2_neg` |
+| `Zanna.Math.Vec2.New` | `obj<Zanna.Math.Vec2>(f64,f64)` | `rt_vec2_new` |
+| `Zanna.Math.Vec2.Norm` | `obj<Zanna.Math.Vec2>(obj)` | `rt_vec2_norm` |
+| `Zanna.Math.Vec2.One` | `obj<Zanna.Math.Vec2>()` | `rt_vec2_one` |
+| `Zanna.Math.Vec2.Rotate` | `obj<Zanna.Math.Vec2>(obj,f64)` | `rt_vec2_rotate` |
+| `Zanna.Math.Vec2.Sub` | `obj<Zanna.Math.Vec2>(obj,obj)` | `rt_vec2_sub` |
 | <a id="zanna-math-vec2-get-x"></a>`Zanna.Math.Vec2.get_X` | `f64(obj)` | `rt_vec2_x` |
 | <a id="zanna-math-vec2-set-x"></a>`Zanna.Math.Vec2.set_X` | `void(obj,f64)` | `rt_vec2_set_x` |
 | <a id="zanna-math-vec2-set-y"></a>`Zanna.Math.Vec2.set_Y` | `void(obj,f64)` | `rt_vec2_set_y` |
 | <a id="zanna-math-vec2-get-y"></a>`Zanna.Math.Vec2.get_Y` | `f64(obj)` | `rt_vec2_y` |
-| `Zanna.Math.Vec2.Zero` | `obj()` | `rt_vec2_zero` |
-| `Zanna.Math.Vec3.Add` | `obj(obj,obj)` | `rt_vec3_add` |
-| `Zanna.Math.Vec3.Cross` | `obj(obj,obj)` | `rt_vec3_cross` |
+| `Zanna.Math.Vec2.Zero` | `obj<Zanna.Math.Vec2>()` | `rt_vec2_zero` |
+| `Zanna.Math.Vec3.Add` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_vec3_add` |
+| `Zanna.Math.Vec3.Cross` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_vec3_cross` |
 | `Zanna.Math.Vec3.Dist` | `f64(obj,obj)` | `rt_vec3_dist` |
-| `Zanna.Math.Vec3.Div` | `obj(obj,f64)` | `rt_vec3_div` |
+| `Zanna.Math.Vec3.Div` | `obj<Zanna.Math.Vec3>(obj,f64)` | `rt_vec3_div` |
 | `Zanna.Math.Vec3.Dot` | `f64(obj,obj)` | `rt_vec3_dot` |
 | `Zanna.Math.Vec3.Len` | `f64(obj)` | `rt_vec3_len` |
 | `Zanna.Math.Vec3.LengthSquared` | `f64(obj)` | `rt_vec3_len_sq` |
-| `Zanna.Math.Vec3.Lerp` | `obj(obj,obj,f64)` | `rt_vec3_lerp` |
-| `Zanna.Math.Vec3.Mul` | `obj(obj,f64)` | `rt_vec3_mul` |
-| `Zanna.Math.Vec3.Negate` | `obj(obj)` | `rt_vec3_neg` |
-| `Zanna.Math.Vec3.New` | `obj(f64,f64,f64)` | `rt_vec3_new` |
+| `Zanna.Math.Vec3.Lerp` | `obj<Zanna.Math.Vec3>(obj,obj,f64)` | `rt_vec3_lerp` |
+| `Zanna.Math.Vec3.Mul` | `obj<Zanna.Math.Vec3>(obj,f64)` | `rt_vec3_mul` |
+| `Zanna.Math.Vec3.Negate` | `obj<Zanna.Math.Vec3>(obj)` | `rt_vec3_neg` |
+| `Zanna.Math.Vec3.New` | `obj<Zanna.Math.Vec3>(f64,f64,f64)` | `rt_vec3_new` |
 | `Zanna.Math.Vec3.Set` | `void(obj,f64,f64,f64)` | `rt_vec3_set` |
 | <a id="zanna-math-vec3-set-x"></a>`Zanna.Math.Vec3.set_X` | `void(obj,f64)` | `rt_vec3_set_x` |
 | <a id="zanna-math-vec3-set-y"></a>`Zanna.Math.Vec3.set_Y` | `void(obj,f64)` | `rt_vec3_set_y` |
 | <a id="zanna-math-vec3-set-z"></a>`Zanna.Math.Vec3.set_Z` | `void(obj,f64)` | `rt_vec3_set_z` |
-| `Zanna.Math.Vec3.Norm` | `obj(obj)` | `rt_vec3_norm` |
-| `Zanna.Math.Vec3.One` | `obj()` | `rt_vec3_one` |
-| `Zanna.Math.Vec3.Sub` | `obj(obj,obj)` | `rt_vec3_sub` |
+| `Zanna.Math.Vec3.Norm` | `obj<Zanna.Math.Vec3>(obj)` | `rt_vec3_norm` |
+| `Zanna.Math.Vec3.One` | `obj<Zanna.Math.Vec3>()` | `rt_vec3_one` |
+| `Zanna.Math.Vec3.Sub` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_vec3_sub` |
 | <a id="zanna-math-vec3-get-x"></a>`Zanna.Math.Vec3.get_X` | `f64(obj)` | `rt_vec3_x` |
 | <a id="zanna-math-vec3-get-y"></a>`Zanna.Math.Vec3.get_Y` | `f64(obj)` | `rt_vec3_y` |
 | <a id="zanna-math-vec3-get-z"></a>`Zanna.Math.Vec3.get_Z` | `f64(obj)` | `rt_vec3_z` |
-| `Zanna.Math.Vec3.Zero` | `obj()` | `rt_vec3_zero` |
+| `Zanna.Math.Vec3.Zero` | `obj<Zanna.Math.Vec3>()` | `rt_vec3_zero` |
 | `Zanna.Math.Vec3.CopyFrom` | `void(obj,obj)` | `rt_vec3_copy_from` |
-| `Zanna.Math.Vec3.Reflect` | `obj(obj,obj)` | `rt_vec3_reflect` |
-| `Zanna.Math.Vec3.Project` | `obj(obj,obj)` | `rt_vec3_project` |
-| `Zanna.Math.Vec3.ClampLength` | `obj(obj,f64)` | `rt_vec3_clamp_len` |
-| `Zanna.Math.Vec3.MoveTowards` | `obj(obj,obj,f64)` | `rt_vec3_move_towards` |
+| `Zanna.Math.Vec3.Reflect` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_vec3_reflect` |
+| `Zanna.Math.Vec3.Project` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_vec3_project` |
+| `Zanna.Math.Vec3.ClampLength` | `obj<Zanna.Math.Vec3>(obj,f64)` | `rt_vec3_clamp_len` |
+| `Zanna.Math.Vec3.MoveTowards` | `obj<Zanna.Math.Vec3>(obj,obj,f64)` | `rt_vec3_move_towards` |
 | `Zanna.Math.Vec3.AngleBetween` | `f64(obj,obj)` | `rt_vec3_angle` |
-| `Zanna.Math.Vec3.Min` | `obj(obj,obj)` | `rt_vec3_min` |
-| `Zanna.Math.Vec3.Max` | `obj(obj,obj)` | `rt_vec3_max` |
-| `Zanna.Math.Mat3.New` | `obj(f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_mat3_new` |
-| `Zanna.Math.Mat3.Identity` | `obj()` | `rt_mat3_identity` |
-| `Zanna.Math.Mat3.Zero` | `obj()` | `rt_mat3_zero` |
-| `Zanna.Math.Mat3.Translate` | `obj(f64,f64)` | `rt_mat3_translate` |
-| `Zanna.Math.Mat3.Scale` | `obj(f64,f64)` | `rt_mat3_scale` |
-| `Zanna.Math.Mat3.ScaleUniform` | `obj(f64)` | `rt_mat3_scale_uniform` |
-| `Zanna.Math.Mat3.Rotate` | `obj(f64)` | `rt_mat3_rotate` |
-| `Zanna.Math.Mat3.Shear` | `obj(f64,f64)` | `rt_mat3_shear` |
+| `Zanna.Math.Vec3.Min` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_vec3_min` |
+| `Zanna.Math.Vec3.Max` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_vec3_max` |
+| `Zanna.Math.Mat3.New` | `obj<Zanna.Math.Mat3>(f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_mat3_new` |
+| `Zanna.Math.Mat3.Identity` | `obj<Zanna.Math.Mat3>()` | `rt_mat3_identity` |
+| `Zanna.Math.Mat3.Zero` | `obj<Zanna.Math.Mat3>()` | `rt_mat3_zero` |
+| `Zanna.Math.Mat3.Translate` | `obj<Zanna.Math.Mat3>(f64,f64)` | `rt_mat3_translate` |
+| `Zanna.Math.Mat3.Scale` | `obj<Zanna.Math.Mat3>(f64,f64)` | `rt_mat3_scale` |
+| `Zanna.Math.Mat3.ScaleUniform` | `obj<Zanna.Math.Mat3>(f64)` | `rt_mat3_scale_uniform` |
+| `Zanna.Math.Mat3.Rotate` | `obj<Zanna.Math.Mat3>(f64)` | `rt_mat3_rotate` |
+| `Zanna.Math.Mat3.Shear` | `obj<Zanna.Math.Mat3>(f64,f64)` | `rt_mat3_shear` |
 | `Zanna.Math.Mat3.Get` | `f64(obj,i64,i64)` | `rt_mat3_get` |
-| `Zanna.Math.Mat3.Row` | `obj(obj,i64)` | `rt_mat3_row` |
-| `Zanna.Math.Mat3.Col` | `obj(obj,i64)` | `rt_mat3_col` |
-| `Zanna.Math.Mat3.Add` | `obj(obj,obj)` | `rt_mat3_add` |
-| `Zanna.Math.Mat3.Sub` | `obj(obj,obj)` | `rt_mat3_sub` |
-| `Zanna.Math.Mat3.Mul` | `obj(obj,obj)` | `rt_mat3_mul` |
-| `Zanna.Math.Mat3.MulScalar` | `obj(obj,f64)` | `rt_mat3_mul_scalar` |
-| `Zanna.Math.Mat3.TransformPoint` | `obj(obj,obj)` | `rt_mat3_transform_point` |
-| `Zanna.Math.Mat3.TransformVector` | `obj(obj,obj)` | `rt_mat3_transform_vec` |
-| `Zanna.Math.Mat3.Transpose` | `obj(obj)` | `rt_mat3_transpose` |
+| `Zanna.Math.Mat3.Row` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_mat3_row` |
+| `Zanna.Math.Mat3.Col` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_mat3_col` |
+| `Zanna.Math.Mat3.Add` | `obj<Zanna.Math.Mat3>(obj,obj)` | `rt_mat3_add` |
+| `Zanna.Math.Mat3.Sub` | `obj<Zanna.Math.Mat3>(obj,obj)` | `rt_mat3_sub` |
+| `Zanna.Math.Mat3.Mul` | `obj<Zanna.Math.Mat3>(obj,obj)` | `rt_mat3_mul` |
+| `Zanna.Math.Mat3.MulScalar` | `obj<Zanna.Math.Mat3>(obj,f64)` | `rt_mat3_mul_scalar` |
+| `Zanna.Math.Mat3.TransformPoint` | `obj<Zanna.Math.Vec2>(obj,obj)` | `rt_mat3_transform_point` |
+| `Zanna.Math.Mat3.TransformVector` | `obj<Zanna.Math.Vec2>(obj,obj)` | `rt_mat3_transform_vec` |
+| `Zanna.Math.Mat3.Transpose` | `obj<Zanna.Math.Mat3>(obj)` | `rt_mat3_transpose` |
 | `Zanna.Math.Mat3.Determinant` | `f64(obj)` | `rt_mat3_det` |
-| `Zanna.Math.Mat3.Inverse` | `obj(obj)` | `rt_mat3_inverse` |
-| `Zanna.Math.Mat3.Negate` | `obj(obj)` | `rt_mat3_neg` |
+| `Zanna.Math.Mat3.Inverse` | `obj<Zanna.Math.Mat3>(obj)` | `rt_mat3_inverse` |
+| `Zanna.Math.Mat3.Negate` | `obj<Zanna.Math.Mat3>(obj)` | `rt_mat3_neg` |
 | `Zanna.Math.Mat3.ApproxEquals` | `i1(obj,obj,f64)` | `rt_mat3_eq` |
-| `Zanna.Math.Mat4.New` | `obj(f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_mat4_new` |
-| `Zanna.Math.Mat4.Identity` | `obj()` | `rt_mat4_identity` |
-| `Zanna.Math.Mat4.Zero` | `obj()` | `rt_mat4_zero` |
-| `Zanna.Math.Mat4.Translate` | `obj(f64,f64,f64)` | `rt_mat4_translate` |
-| `Zanna.Math.Mat4.Scale` | `obj(f64,f64,f64)` | `rt_mat4_scale` |
-| `Zanna.Math.Mat4.ScaleUniform` | `obj(f64)` | `rt_mat4_scale_uniform` |
-| `Zanna.Math.Mat4.RotateX` | `obj(f64)` | `rt_mat4_rotate_x` |
-| `Zanna.Math.Mat4.RotateY` | `obj(f64)` | `rt_mat4_rotate_y` |
-| `Zanna.Math.Mat4.RotateZ` | `obj(f64)` | `rt_mat4_rotate_z` |
-| `Zanna.Math.Mat4.RotateAxis` | `obj(obj,f64)` | `rt_mat4_rotate_axis` |
-| `Zanna.Math.Mat4.Perspective` | `obj(f64,f64,f64,f64)` | `rt_mat4_perspective` |
-| `Zanna.Math.Mat4.Orthographic` | `obj(f64,f64,f64,f64,f64,f64)` | `rt_mat4_ortho` |
-| `Zanna.Math.Mat4.LookAt` | `obj(obj,obj,obj)` | `rt_mat4_look_at` |
+| `Zanna.Math.Mat4.New` | `obj<Zanna.Math.Mat4>(f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_mat4_new` |
+| `Zanna.Math.Mat4.Identity` | `obj<Zanna.Math.Mat4>()` | `rt_mat4_identity` |
+| `Zanna.Math.Mat4.Zero` | `obj<Zanna.Math.Mat4>()` | `rt_mat4_zero` |
+| `Zanna.Math.Mat4.Translate` | `obj<Zanna.Math.Mat4>(f64,f64,f64)` | `rt_mat4_translate` |
+| `Zanna.Math.Mat4.Scale` | `obj<Zanna.Math.Mat4>(f64,f64,f64)` | `rt_mat4_scale` |
+| `Zanna.Math.Mat4.ScaleUniform` | `obj<Zanna.Math.Mat4>(f64)` | `rt_mat4_scale_uniform` |
+| `Zanna.Math.Mat4.RotateX` | `obj<Zanna.Math.Mat4>(f64)` | `rt_mat4_rotate_x` |
+| `Zanna.Math.Mat4.RotateY` | `obj<Zanna.Math.Mat4>(f64)` | `rt_mat4_rotate_y` |
+| `Zanna.Math.Mat4.RotateZ` | `obj<Zanna.Math.Mat4>(f64)` | `rt_mat4_rotate_z` |
+| `Zanna.Math.Mat4.RotateAxis` | `obj<Zanna.Math.Mat4>(obj,f64)` | `rt_mat4_rotate_axis` |
+| `Zanna.Math.Mat4.Perspective` | `obj<Zanna.Math.Mat4>(f64,f64,f64,f64)` | `rt_mat4_perspective` |
+| `Zanna.Math.Mat4.Orthographic` | `obj<Zanna.Math.Mat4>(f64,f64,f64,f64,f64,f64)` | `rt_mat4_ortho` |
+| `Zanna.Math.Mat4.LookAt` | `obj<Zanna.Math.Mat4>(obj,obj,obj)` | `rt_mat4_look_at` |
 | `Zanna.Math.Mat4.Get` | `f64(obj,i64,i64)` | `rt_mat4_get` |
-| `Zanna.Math.Mat4.Add` | `obj(obj,obj)` | `rt_mat4_add` |
-| `Zanna.Math.Mat4.Sub` | `obj(obj,obj)` | `rt_mat4_sub` |
-| `Zanna.Math.Mat4.Mul` | `obj(obj,obj)` | `rt_mat4_mul` |
-| `Zanna.Math.Mat4.MulScalar` | `obj(obj,f64)` | `rt_mat4_mul_scalar` |
-| `Zanna.Math.Mat4.TransformPoint` | `obj(obj,obj)` | `rt_mat4_transform_point` |
-| `Zanna.Math.Mat4.TransformVector` | `obj(obj,obj)` | `rt_mat4_transform_vec` |
-| `Zanna.Math.Mat4.Transpose` | `obj(obj)` | `rt_mat4_transpose` |
+| `Zanna.Math.Mat4.Add` | `obj<Zanna.Math.Mat4>(obj,obj)` | `rt_mat4_add` |
+| `Zanna.Math.Mat4.Sub` | `obj<Zanna.Math.Mat4>(obj,obj)` | `rt_mat4_sub` |
+| `Zanna.Math.Mat4.Mul` | `obj<Zanna.Math.Mat4>(obj,obj)` | `rt_mat4_mul` |
+| `Zanna.Math.Mat4.MulScalar` | `obj<Zanna.Math.Mat4>(obj,f64)` | `rt_mat4_mul_scalar` |
+| `Zanna.Math.Mat4.TransformPoint` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_mat4_transform_point` |
+| `Zanna.Math.Mat4.TransformVector` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_mat4_transform_vec` |
+| `Zanna.Math.Mat4.Transpose` | `obj<Zanna.Math.Mat4>(obj)` | `rt_mat4_transpose` |
 | `Zanna.Math.Mat4.Determinant` | `f64(obj)` | `rt_mat4_det` |
-| `Zanna.Math.Mat4.Inverse` | `obj(obj)` | `rt_mat4_inverse` |
-| `Zanna.Math.Mat4.Negate` | `obj(obj)` | `rt_mat4_neg` |
+| `Zanna.Math.Mat4.Inverse` | `obj<Zanna.Math.Mat4>(obj)` | `rt_mat4_inverse` |
+| `Zanna.Math.Mat4.Negate` | `obj<Zanna.Math.Mat4>(obj)` | `rt_mat4_neg` |
 | `Zanna.Math.Mat4.ApproxEquals` | `i1(obj,obj,f64)` | `rt_mat4_eq` |
-| `Zanna.Math.Quat.New` | `obj(f64,f64,f64,f64)` | `rt_quat_new` |
-| `Zanna.Math.Quat.Identity` | `obj()` | `rt_quat_identity` |
-| `Zanna.Math.Quat.FromAxisAngle` | `obj(obj,f64)` | `rt_quat_from_axis_angle` |
-| `Zanna.Math.Quat.FromEuler` | `obj(f64,f64,f64)` | `rt_quat_from_euler` |
+| `Zanna.Math.Quat.New` | `obj<Zanna.Math.Quat>(f64,f64,f64,f64)` | `rt_quat_new` |
+| `Zanna.Math.Quat.Identity` | `obj<Zanna.Math.Quat>()` | `rt_quat_identity` |
+| `Zanna.Math.Quat.FromAxisAngle` | `obj<Zanna.Math.Quat>(obj,f64)` | `rt_quat_from_axis_angle` |
+| `Zanna.Math.Quat.FromEuler` | `obj<Zanna.Math.Quat>(f64,f64,f64)` | `rt_quat_from_euler` |
 | <a id="zanna-math-quat-get-x"></a>`Zanna.Math.Quat.get_X` | `f64(obj)` | `rt_quat_x` |
 | <a id="zanna-math-quat-get-y"></a>`Zanna.Math.Quat.get_Y` | `f64(obj)` | `rt_quat_y` |
 | <a id="zanna-math-quat-get-z"></a>`Zanna.Math.Quat.get_Z` | `f64(obj)` | `rt_quat_z` |
 | <a id="zanna-math-quat-get-w"></a>`Zanna.Math.Quat.get_W` | `f64(obj)` | `rt_quat_w` |
-| `Zanna.Math.Quat.Mul` | `obj(obj,obj)` | `rt_quat_mul` |
-| `Zanna.Math.Quat.Conjugate` | `obj(obj)` | `rt_quat_conjugate` |
-| `Zanna.Math.Quat.Inverse` | `obj(obj)` | `rt_quat_inverse` |
-| `Zanna.Math.Quat.Normalize` | `obj(obj)` | `rt_quat_norm` |
+| `Zanna.Math.Quat.Mul` | `obj<Zanna.Math.Quat>(obj,obj)` | `rt_quat_mul` |
+| `Zanna.Math.Quat.Conjugate` | `obj<Zanna.Math.Quat>(obj)` | `rt_quat_conjugate` |
+| `Zanna.Math.Quat.Inverse` | `obj<Zanna.Math.Quat>(obj)` | `rt_quat_inverse` |
+| `Zanna.Math.Quat.Normalize` | `obj<Zanna.Math.Quat>(obj)` | `rt_quat_norm` |
 | `Zanna.Math.Quat.Length` | `f64(obj)` | `rt_quat_len` |
 | `Zanna.Math.Quat.LengthSquared` | `f64(obj)` | `rt_quat_len_sq` |
 | `Zanna.Math.Quat.Dot` | `f64(obj,obj)` | `rt_quat_dot` |
-| `Zanna.Math.Quat.Slerp` | `obj(obj,obj,f64)` | `rt_quat_slerp` |
-| `Zanna.Math.Quat.Lerp` | `obj(obj,obj,f64)` | `rt_quat_lerp` |
-| `Zanna.Math.Quat.RotateVec3` | `obj(obj,obj)` | `rt_quat_rotate_vec3` |
-| `Zanna.Math.Quat.ToMat4` | `obj(obj)` | `rt_quat_to_mat4` |
-| `Zanna.Math.Quat.ToEuler` | `obj(obj)` | `rt_quat_to_euler` |
-| `Zanna.Math.Quat.FromMat4` | `obj(obj)` | `rt_quat_from_mat4` |
-| `Zanna.Math.Quat.Axis` | `obj(obj)` | `rt_quat_axis` |
+| `Zanna.Math.Quat.Slerp` | `obj<Zanna.Math.Quat>(obj,obj,f64)` | `rt_quat_slerp` |
+| `Zanna.Math.Quat.Lerp` | `obj<Zanna.Math.Quat>(obj,obj,f64)` | `rt_quat_lerp` |
+| `Zanna.Math.Quat.RotateVec3` | `obj<Zanna.Math.Vec3>(obj,obj)` | `rt_quat_rotate_vec3` |
+| `Zanna.Math.Quat.ToMat4` | `obj<Zanna.Math.Mat4>(obj)` | `rt_quat_to_mat4` |
+| `Zanna.Math.Quat.ToEuler` | `obj<Zanna.Math.Vec3>(obj)` | `rt_quat_to_euler` |
+| `Zanna.Math.Quat.FromMat4` | `obj<Zanna.Math.Quat>(obj)` | `rt_quat_from_mat4` |
+| `Zanna.Math.Quat.Axis` | `obj<Zanna.Math.Vec3>(obj)` | `rt_quat_axis` |
 | `Zanna.Math.Quat.Angle` | `f64(obj)` | `rt_quat_angle` |
-| `Zanna.Math.Spline.CatmullRom` | `obj(obj)` | `rt_spline_catmull_rom` |
-| `Zanna.Math.Spline.Bezier` | `obj(obj,obj,obj,obj)` | `rt_spline_bezier` |
-| `Zanna.Math.Spline.Linear` | `obj(obj)` | `rt_spline_linear` |
-| `Zanna.Math.Spline.Eval` | `obj(obj,f64)` | `rt_spline_eval` |
-| `Zanna.Math.Spline.Tangent` | `obj(obj,f64)` | `rt_spline_tangent` |
+| `Zanna.Math.Spline.CatmullRom` | `obj<Zanna.Math.Spline>(obj)` | `rt_spline_catmull_rom` |
+| `Zanna.Math.Spline.Bezier` | `obj<Zanna.Math.Spline>(obj,obj,obj,obj)` | `rt_spline_bezier` |
+| `Zanna.Math.Spline.Linear` | `obj<Zanna.Math.Spline>(obj)` | `rt_spline_linear` |
+| `Zanna.Math.Spline.Eval` | `obj<Zanna.Math.Vec2>(obj,f64)` | `rt_spline_eval` |
+| `Zanna.Math.Spline.Tangent` | `obj<Zanna.Math.Vec2>(obj,f64)` | `rt_spline_tangent` |
 | <a id="zanna-math-spline-get-pointcount"></a>`Zanna.Math.Spline.get_PointCount` | `i64(obj)` | `rt_spline_point_count` |
-| `Zanna.Math.Spline.PointAt` | `obj(obj,i64)` | `rt_spline_point_at` |
+| `Zanna.Math.Spline.PointAt` | `obj<Zanna.Math.Vec2>(obj,i64)` | `rt_spline_point_at` |
 | `Zanna.Math.Spline.ArcLength` | `f64(obj,f64,f64,i64)` | `rt_spline_arc_length` |
-| `Zanna.Math.Spline.Sample` | `obj(obj,i64)` | `rt_spline_sample` |
+| `Zanna.Math.Spline.Sample` | `seq<obj>(obj,i64)` | `rt_spline_sample` |
 

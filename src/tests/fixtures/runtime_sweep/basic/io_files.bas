@@ -81,11 +81,8 @@ DIM linesSeq AS Zanna.Collections.Seq
 linesSeq = Zanna.IO.File.ReadAllLines(fileB)
 Zanna.Core.Diagnostics.AssertEq(linesSeq.Count, 2, "file.readlines")
 
-DIM bytes AS Zanna.IO.BinaryBuffer
-bytes = Zanna.IO.BinaryBuffer.NewCapacity(3)
-bytes.WriteByte(1)
-bytes.WriteByte(2)
-bytes.WriteByte(3)
+DIM bytes AS Zanna.Collections.Bytes
+bytes = Zanna.Collections.Bytes.FromHex("010203")
 DIM fileBin AS STRING
 fileBin = Zanna.IO.Path.Join(base, "c.bin")
 Zanna.IO.File.WriteAllBytes(fileBin, bytes)

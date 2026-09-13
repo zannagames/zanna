@@ -45,9 +45,9 @@ PRINT tm.Last()           ' date
 ' --- Floor / Ceil ---
 PRINT "--- Floor / Ceil ---"
 PRINT tm.Floor("cat")    ' banana
-PRINT tm.Ceil("cat")     ' cherry
+PRINT tm.Ceiling("cat")     ' cherry
 PRINT tm.Floor("apple")  ' apple
-PRINT tm.Ceil("date")    ' date
+PRINT tm.Ceiling("date")    ' date
 
 ' --- Keys (sorted order) ---
 PRINT "--- Keys ---"

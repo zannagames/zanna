@@ -37,6 +37,8 @@ extern @Zanna.Terminal.PrintI64(i64) -> void
 extern @Zanna.Terminal.PrintStr(str) -> void
 extern @rt_str_empty() -> str
 extern @rt_trap_string(str) -> void
+extern @rt_str_retain_maybe(str) -> void
+extern @rt_str_release_maybe(str) -> void
 global const str @.L0 = ""
 global const str @.L1 = "\n"
 global const str @.L2 = "HI"
@@ -65,6 +67,8 @@ entry_ID$(%S$:str):
 L-1000000000_ID$:
   .loc 1 5 8
   %t2 = load str, %t1
+  .loc 1 5 8
+  call @rt_str_retain_maybe(%t2)
   .loc 1 5 8
   ret %t2
 ret_ID$:
@@ -189,6 +193,8 @@ L20:
   %t5 = const_str @.L1
   .loc 1 16 10
   call @Zanna.Terminal.PrintStr(%t5)
+  .loc 1 16 4
+  call @rt_str_release_maybe(%t4)
   .loc 1 16 4
   br L30
 L30:

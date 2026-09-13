@@ -6,8 +6,10 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/unit/test_basic_class_return.cpp
-// Purpose: Repro and guard for BUG-040 — ensure FUNCTIONS returning custom
-// Key invariants: The ret operand must originate from a Load typed as Ptr.
+// Purpose: Repro and guard for BUG-040 — ensure FUNCTIONs returning custom
+//          classes return a pointer-typed value.
+// Key invariants: The ret operand must originate from a Load typed as Ptr,
+//                 wherever in the function that load is.
 // Ownership/Lifetime: Standalone unit test executable.
 // Links: docs/internals/codemap.md, docs/il/il-guide.md#reference
 //
@@ -20,6 +22,7 @@
 
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 using namespace il::frontends::basic;
 
@@ -71,15 +74,17 @@ TEST(BasicClassReturn, ReturnUsesPtrLoad) {
     EXPECT_EQ(fn->retType.kind, il::core::Type::Kind::Ptr);
 
     // Find a Ret, then locate the defining instruction for its operand, and ensure it is a Load
-    // Ptr.
-    bool foundPtrLoadRet = false;
+    // Ptr. RETURN releases the procedure's locals before returning, so the load and the ret may
+    // sit in different blocks.
+    std::unordered_map<unsigned, const il::core::Instr *> defByTemp;
     for (const auto &bb : fn->blocks) {
-        // Build a quick map from result temp id -> instruction index within the block
-        std::unordered_map<unsigned, const il::core::Instr *> defByTemp;
         for (const auto &ins : bb.instructions) {
             if (ins.result)
                 defByTemp[*ins.result] = &ins;
         }
+    }
+    bool foundPtrLoadRet = false;
+    for (const auto &bb : fn->blocks) {
         for (const auto &ins : bb.instructions) {
             if (ins.op != il::core::Opcode::Ret || ins.operands.size() != 1)
                 continue;

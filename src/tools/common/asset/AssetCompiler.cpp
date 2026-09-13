@@ -552,6 +552,18 @@ static bool addSourceToWriter(const std::string &sourcePath,
     return true;
 }
 
+// ─── packFileName ───────────────────────────────────────────────────────────
+
+/// @brief File name of the pack a group compiles to.
+/// @param projectName Project name.
+/// @param packName Pack group name.
+/// @return `<project>-<group>.zpak` with both parts normalized like executable names.
+/// @throws std::runtime_error when either name cannot form a file name.
+std::string packFileName(const std::string &projectName, const std::string &packName) {
+    return zanna::pkg::normalizeExecName(projectName) + "-" +
+           zanna::pkg::normalizeExecName(packName) + ".zpak";
+}
+
 // ─── compileAssets ──────────────────────────────────────────────────────────
 
 /// @brief Compile a project's embed/pack directives into an AssetBundle.
@@ -652,18 +664,15 @@ std::optional<AssetBundle> compileAssets(const il::tools::common::ProjectConfig 
         if (packWriter.entryCount() == 0)
             continue;
 
-        std::string safeProjectName;
-        std::string safeGroupName;
+        std::string zpakName;
         try {
-            safeProjectName = zanna::pkg::normalizeExecName(config.name);
-            safeGroupName = zanna::pkg::normalizeExecName(group.name);
+            zpakName = packFileName(config.name, group.name);
         } catch (const std::exception &e) {
             err = e.what();
             return std::nullopt;
         }
 
         // Output path: <outputDir>/<projectName>-<packName>.zpak
-        std::string zpakName = safeProjectName + "-" + safeGroupName + ".zpak";
         const fs::path zpakPath =
             zanna::filesystem::pathFromUtf8(outputDir) / zanna::filesystem::pathFromUtf8(zpakName);
         const std::string zpakPathUtf8 = zanna::filesystem::pathToUtf8(zpakPath);

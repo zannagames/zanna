@@ -228,6 +228,8 @@ TypeRef Sema::analyzeField(FieldExpr *expr) {
             expr->field == "Count" || expr->field == "count" || expr->field == "size") {
             return types::integer();
         }
+        if (expr->field == "IsEmpty")
+            return types::boolean();
         error(expr->loc, "Unknown field '" + expr->field + "' on List");
         return types::unknown();
     }
@@ -238,6 +240,8 @@ TypeRef Sema::analyzeField(FieldExpr *expr) {
             expr->field == "Count" || expr->field == "count" || expr->field == "size") {
             return types::integer();
         }
+        if (expr->field == "IsEmpty")
+            return types::boolean();
         error(expr->loc, "Unknown field '" + expr->field + "' on Map");
         return types::unknown();
     }
@@ -248,6 +252,8 @@ TypeRef Sema::analyzeField(FieldExpr *expr) {
             expr->field == "Count" || expr->field == "count" || expr->field == "size") {
             return types::integer();
         }
+        if (expr->field == "IsEmpty")
+            return types::boolean();
         error(expr->loc, "Unknown field '" + expr->field + "' on Set");
         return types::unknown();
     }
@@ -317,8 +323,7 @@ TypeRef Sema::resolveRuntimeClassFieldAccess(FieldExpr *expr, TypeRef baseType) 
     if (auto prop = registry.findProperty(baseType->name, expr->field); prop) {
         if (!prop->getter || !*prop->getter) {
             error(expr->loc,
-                  "Property '" + expr->field + "' of type '" + baseType->name +
-                      "' is write-only");
+                  "Property '" + expr->field + "' of type '" + baseType->name + "' is write-only");
             return types::unknown();
         }
         getterName = prop->getter;
@@ -346,8 +351,7 @@ TypeRef Sema::resolveRuntimeClassFieldAccess(FieldExpr *expr, TypeRef baseType) 
 
     // Genuinely not a member of this runtime class — diagnose symmetrically with
     // every other field-access branch (List/Map/Set/String/primitive/...).
-    error(expr->loc,
-          "Type '" + baseType->name + "' has no member '" + expr->field + "'");
+    error(expr->loc, "Type '" + baseType->name + "' has no member '" + expr->field + "'");
     return types::unknown();
 }
 
@@ -658,18 +662,24 @@ TypeRef Sema::analyzeOptionalChain(OptionalChainExpr *expr) {
     } else if (innerType->kind == TypeKindSem::List) {
         if (isCountLikeProperty(expr->field)) {
             fieldType = types::integer();
+        } else if (expr->field == "IsEmpty") {
+            fieldType = types::boolean();
         } else {
             error(expr->loc, "Unknown field '" + expr->field + "' on List");
         }
     } else if (innerType->kind == TypeKindSem::Map) {
         if (isCountLikeProperty(expr->field)) {
             fieldType = types::integer();
+        } else if (expr->field == "IsEmpty") {
+            fieldType = types::boolean();
         } else {
             error(expr->loc, "Unknown field '" + expr->field + "' on Map");
         }
     } else if (innerType->kind == TypeKindSem::Set) {
         if (isCountLikeProperty(expr->field)) {
             fieldType = types::integer();
+        } else if (expr->field == "IsEmpty") {
+            fieldType = types::boolean();
         } else {
             error(expr->loc, "Unknown field '" + expr->field + "' on Set");
         }
@@ -849,6 +859,12 @@ TypeRef Sema::analyzeAs(AsExpr *expr) {
     if (sourceType->kind == TypeKindSem::Optional && sourceType->innerType())
         effectiveSource = sourceType->innerType();
 
+    // `Zanna.Core.Object` is the root runtime class. A runtime result typed with it is always an
+    // object whose concrete class depends on the value, and `as` narrows it (ADR 0356).
+    if (effectiveSource && effectiveSource->kind == TypeKindSem::Ptr &&
+        effectiveSource->name == "Zanna.Core.Object" && targetType->kind == TypeKindSem::Ptr)
+        return targetType;
+
     // Allow class-to-class casts (downcasts and cross-casts for runtime checking)
     if (effectiveSource && effectiveSource->kind == TypeKindSem::Class &&
         targetType->kind == TypeKindSem::Class)
@@ -879,8 +895,8 @@ TypeRef Sema::analyzeAs(AsExpr *expr) {
     /// @param k Semantic type kind.
     /// @return `true` for integer, number, boolean, or byte.
     auto isScalar = [](TypeKindSem k) {
-        return k == TypeKindSem::Integer || k == TypeKindSem::Number ||
-               k == TypeKindSem::Boolean || k == TypeKindSem::Byte;
+        return k == TypeKindSem::Integer || k == TypeKindSem::Number || k == TypeKindSem::Boolean ||
+               k == TypeKindSem::Byte;
     };
     if (effectiveSource->kind == TypeKindSem::String && isScalar(targetType->kind)) {
         error(expr->loc,

@@ -14,20 +14,20 @@ func start() {
 
     // --- Int ---
     Say("--- Int ---");
-    Say("Rand.Int(1, 100):");
-    SayInt(Rand.Int(1, 100));
-    SayInt(Rand.Int(1, 100));
-    SayInt(Rand.Int(1, 100));
+    Say("SecureRandom.Int(1, 100):");
+    SayInt(SecureRandom.Int(1, 100));
+    SayInt(SecureRandom.Int(1, 100));
+    SayInt(SecureRandom.Int(1, 100));
 
     // --- Bytes ---
     Say("--- Bytes ---");
-    Say("Rand.Bytes(8):");
-    var b = Rand.Bytes(8);
+    Say("SecureRandom.Bytes(8):");
+    var b = SecureRandom.Bytes(8);
     SayInt(Bytes.get_Length(b));
     Say(Bytes.ToHex(b));
 
-    Say("Rand.Bytes(32):");
-    var b2 = Rand.Bytes(32);
+    Say("SecureRandom.Bytes(32):");
+    var b2 = SecureRandom.Bytes(32);
     SayInt(Bytes.get_Length(b2));
     Say(Bytes.ToHex(b2));
 

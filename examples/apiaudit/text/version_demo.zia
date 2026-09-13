@@ -47,9 +47,9 @@ func start() {
     var v3 = Ver.Parse("1.0.0");
     var v4 = Ver.Parse("2.0.0");
     var v5 = Ver.Parse("1.0.0");
-    SayInt(Ver.Compare(v3, v4));
-    SayInt(Ver.Compare(v4, v3));
-    SayInt(Ver.Compare(v3, v5));
+    SayInt(v3.CompareTo(v4));
+    SayInt(v4.CompareTo(v3));
+    SayInt(v3.CompareTo(v5));
 
     // --- Satisfies ---
     Say("--- Satisfies ---");

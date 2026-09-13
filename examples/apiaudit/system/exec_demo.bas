@@ -37,7 +37,7 @@ DIM shellResult AS OBJECT
 shellResult = Zanna.System.Exec.ShellResult("echo result_output")
 PRINT "ShellResult Output: "; Zanna.System.CommandResult.get_Output(shellResult)
 PRINT "ShellResult ExitCode: "; Zanna.System.CommandResult.get_ExitCode(shellResult)
-PRINT "ShellResult Succeeded: "; Zanna.System.CommandResult.get_Succeeded(shellResult)
+PRINT "ShellResult Succeeded: "; Zanna.System.CommandResult.get_IsSuccess(shellResult)
 
 ' Test with shell features
 PRINT "--- ShellCapture with pipe ---"

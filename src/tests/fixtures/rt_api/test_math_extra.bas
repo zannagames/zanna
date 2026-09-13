@@ -15,7 +15,7 @@ DIM qe AS Zanna.Math.Quat
 qe = Zanna.Math.Quat.FromEuler(0.0, 0.0, 0.0)
 PRINT "euler w: "; qe.W
 
-PRINT "quat len: "; qi.Len()
+PRINT "quat len: "; qi.Length()
 PRINT "quat lensq: "; qi.LengthSquared()
 
 DIM qc AS Zanna.Math.Quat

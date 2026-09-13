@@ -1,13 +1,13 @@
 ' test_random_vec.bas — Zanna.Math.Random + Vec2 + Vec3 + Easing + PerlinNoise
 DIM rng AS OBJECT
 LET rng = NEW Zanna.Math.Random(42)
-PRINT rng.Next()
-PRINT rng.NextInt(1, 10)
+PRINT rng.NextDouble()
+PRINT rng.Range(1, 10)
 PRINT rng.NextDouble()
 
 DIM rng2 AS OBJECT
 LET rng2 = NEW Zanna.Math.Random(42)
-PRINT rng2.Next()
+PRINT rng2.NextDouble()
 
 ' Vec2
 DIM v AS OBJECT
@@ -23,7 +23,7 @@ DIM va AS OBJECT
 LET va = v.Add(NEW Zanna.Math.Vec2(1.0, 1.0))
 PRINT va.X
 DIM vs AS OBJECT
-LET vs = v.Scale(2.0)
+LET vs = v.Mul(2.0)
 PRINT vs.X
 PRINT Zanna.Math.Vec2.Dist(NEW Zanna.Math.Vec2(0.0,0.0), NEW Zanna.Math.Vec2(3.0,4.0))
 
@@ -42,15 +42,15 @@ PRINT v3c.X
 
 ' Easing
 PRINT Zanna.Math.Easing.Linear(0.5)
-PRINT Zanna.Math.Easing.InQuad(0.5)
-PRINT Zanna.Math.Easing.OutQuad(0.5)
-PRINT Zanna.Math.Easing.InOutQuad(0.5)
+PRINT Zanna.Math.Easing.EaseInQuad(0.5)
+PRINT Zanna.Math.Easing.EaseOutQuad(0.5)
+PRINT Zanna.Math.Easing.EaseInOutQuad(0.5)
 
 ' PerlinNoise
 DIM pn AS OBJECT
 LET pn = NEW Zanna.Math.PerlinNoise(42)
 DIM noise AS DOUBLE
-LET noise = pn.Noise2D(1.0, 1.0)
+LET noise = Zanna.Math.PerlinNoise.Noise2D(pn, 1.0, 1.0)
 PRINT noise > -1.0
 PRINT noise < 1.0
 

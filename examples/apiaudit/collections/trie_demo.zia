@@ -20,11 +20,11 @@ func start() {
 
     // --- Put / Len ---
     Say("--- Put / Len ---");
-    t.Put("cat", Box.I64(1));
-    t.Put("car", Box.I64(2));
-    t.Put("card", Box.I64(3));
-    t.Put("care", Box.I64(4));
-    t.Put("dog", Box.I64(5));
+    t.Set("cat", Box.I64(1));
+    t.Set("car", Box.I64(2));
+    t.Set("card", Box.I64(3));
+    t.Set("care", Box.I64(4));
+    t.Set("dog", Box.I64(5));
     SayInt(t.Count);       // 5
     SayBool(t.IsEmpty);  // 0
 
@@ -71,7 +71,7 @@ func start() {
 
     // --- Put (update existing) ---
     Say("--- Put (update) ---");
-    t.Put("cat", Box.I64(100));
+    t.Set("cat", Box.I64(100));
     SayInt(Box.ToI64(t.Get("cat")));    // 100
     SayInt(t.Count);                      // 5 (no new entry)
 

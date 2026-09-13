@@ -90,6 +90,12 @@ SemanticAnalyzer::ProcedureScope::~ProcedureScope() noexcept {
         else
             analyzer_.objectClassTypes_.erase(delta.name);
     }
+    for (const auto &delta : declaredObjectClassDeltas_) {
+        if (delta.previous)
+            analyzer_.declaredObjectClasses_[delta.name] = *delta.previous;
+        else
+            analyzer_.declaredObjectClasses_.erase(delta.name);
+    }
     for (const auto &delta : arrayDeltas_) {
         if (delta.previous)
             analyzer_.arrays_[delta.name] = *delta.previous;
@@ -136,6 +142,16 @@ void SemanticAnalyzer::ProcedureScope::noteObjectClassMutation(
     objectClassDeltas_.push_back({name, std::move(previous)});
 }
 
+/// @brief Records the first declared-class baseline for a key.
+/// @param name Exact declared-class map key.
+/// @param previous Prior declared class, or no value when absent.
+void SemanticAnalyzer::ProcedureScope::noteDeclaredObjectClassMutation(
+    const std::string &name, std::optional<std::string> previous) {
+    if (!trackedDeclaredObjectClasses_.insert(name).second)
+        return;
+    declaredObjectClassDeltas_.push_back({name, std::move(previous)});
+}
+
 /// @brief Records the first array-metadata baseline for a key.
 /// @param name Exact array map key.
 /// @param previous Prior metadata, or no value when absent.
@@ -176,17 +192,28 @@ void SemanticAnalyzer::ProcedureScope::noteLabelRefInserted(int label) {
 /// @param param Parsed parameter metadata.
 /// @pre A lexical scope is active; normally a @ref ProcedureScope is active.
 void SemanticAnalyzer::registerProcedureParam(const Param &param) {
+    checkClassTypeName(param.objectClass, param.loc);
     scopes_.bind(param.name, param.name);
 
     std::string paramName = param.name;
     Type paramType = astToSemanticType(param.type);
+    // A scalar `AS <Class>` parameter is an object of that class, not the INTEGER default.
+    const bool isStringClass = string_utils::iequals(param.objectClass, "zanna.system.string") ||
+                               string_utils::iequals(param.objectClass, "zanna.string");
+    const bool isObjectParam = !param.is_array && !param.objectClass.empty() && !isStringClass;
     if (param.is_array) {
         if (!param.objectClass.empty())
             paramType = Type::ArrayObject;
         else if (param.type == ::il::frontends::basic::Type::Str)
             paramType = Type::ArrayString;
+        else if (param.type == ::il::frontends::basic::Type::F64)
+            paramType = Type::ArrayFloat;
         else
             paramType = Type::ArrayInt;
+    } else if (isStringClass) {
+        paramType = Type::String;
+    } else if (isObjectParam) {
+        paramType = Type::Object;
     }
 
     auto itType = varTypes_.find(paramName);
@@ -197,6 +224,29 @@ void SemanticAnalyzer::registerProcedureParam(const Param &param) {
         activeProcScope_->noteVarTypeMutation(paramName, previous);
     }
     varTypes_[paramName] = paramType;
+
+    // The declared class types member access on the parameter and survives assignments to it.
+    auto itClass = objectClassTypes_.find(paramName);
+    auto itDeclared = declaredObjectClasses_.find(paramName);
+    if (activeProcScope_) {
+        std::optional<std::string> previousClass;
+        if (itClass != objectClassTypes_.end())
+            previousClass = itClass->second;
+        activeProcScope_->noteObjectClassMutation(paramName, previousClass);
+        std::optional<std::string> previousDeclared;
+        if (itDeclared != declaredObjectClasses_.end())
+            previousDeclared = itDeclared->second;
+        activeProcScope_->noteDeclaredObjectClassMutation(paramName, previousDeclared);
+    }
+    if (isObjectParam) {
+        objectClassTypes_[paramName] = param.objectClass;
+        declaredObjectClasses_[paramName] = param.objectClass;
+    } else {
+        if (itClass != objectClassTypes_.end())
+            objectClassTypes_.erase(itClass);
+        if (itDeclared != declaredObjectClasses_.end())
+            declaredObjectClasses_.erase(itDeclared);
+    }
 
     if (param.is_array) {
         auto itArray = arrays_.find(paramName);
@@ -269,6 +319,7 @@ void SemanticAnalyzer::analyzeProcedureCommon(const Proc &proc,
 ///          All active-function and namespace state is restored afterward.
 /// @param f Function declaration borrowed during analysis.
 void SemanticAnalyzer::analyzeProc(const FunctionDecl &f) {
+    checkClassTypeName(JoinDots(f.explicitClassRetQname), f.loc);
     // Preserve current namespace stack and establish the procedure's namespace context
     auto savedNs = nsStack_;
     if (!f.qualifiedName.empty()) {

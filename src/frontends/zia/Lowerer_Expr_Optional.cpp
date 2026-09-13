@@ -307,23 +307,21 @@ LowerResult Lowerer::lowerOptionalChain(OptionalChainExpr *expr) {
                     fieldValue = emitCallRet(ilFieldType, getterName, {receiver});
                 }
             }
-        } else if (innerType->kind == TypeKindSem::List) {
+        } else if (innerType->kind == TypeKindSem::List || innerType->kind == TypeKindSem::Map ||
+                   innerType->kind == TypeKindSem::Set) {
+            const char *countFn = kSetCount;
+            if (innerType->kind == TypeKindSem::List)
+                countFn = kListCount;
+            else if (innerType->kind == TypeKindSem::Map)
+                countFn = usesIntegerMapRuntime(innerType) ? kIntMapCount : kMapCount;
             if (isCountLikeProperty(expr->field)) {
                 fieldType = types::integer();
-                fieldValue = emitCallRet(Type(Type::Kind::I64), kListCount, {base.value});
-            }
-        } else if (innerType->kind == TypeKindSem::Map) {
-            if (isCountLikeProperty(expr->field)) {
-                fieldType = types::integer();
+                fieldValue = emitCallRet(Type(Type::Kind::I64), countFn, {base.value});
+            } else if (expr->field == "IsEmpty") {
+                Value count = emitCallRet(Type(Type::Kind::I64), countFn, {base.value});
+                fieldType = types::boolean();
                 fieldValue =
-                    emitCallRet(Type(Type::Kind::I64),
-                                usesIntegerMapRuntime(innerType) ? kIntMapCount : kMapCount,
-                                {base.value});
-            }
-        } else if (innerType->kind == TypeKindSem::Set) {
-            if (isCountLikeProperty(expr->field)) {
-                fieldType = types::integer();
-                fieldValue = emitCallRet(Type(Type::Kind::I64), kSetCount, {base.value});
+                    emitBinary(Opcode::ICmpEq, Type(Type::Kind::I1), count, Value::constInt(0));
             }
         } else if (innerType->kind == TypeKindSem::String) {
             if (expr->field == "Length" || expr->field == "length") {

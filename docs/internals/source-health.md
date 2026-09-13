@@ -90,6 +90,16 @@ that surface moves three baselines:
 - `runtime_api_contract_files` rises from 908 to 909: two new stub files, one
   deleted stub file.
 
+ADR 0353 adds the platform services player features. Eleven runtime files are
+intentional contract surface: the public `rt_services_progress.h`,
+`rt_services_social.h`, and `rt_services_cloud.h` ABIs with their
+implementations, the internal `rt_services_internal.h` core helpers, and the
+Steam bindings `steam/rt_steam_user_stats.c`, `steam/rt_steam_social.c`,
+`steam/rt_steam_cloud.c` with their shared `steam/rt_steam_internal.h` state.
+The contract-file baseline moves from 909 to 920. The same change classifies
+the two new internal headers and pins seven player-feature members, raising the
+policy coverage baseline from 1247 to 1256.
+
 ## Current Metrics
 
 | Metric | Purpose |

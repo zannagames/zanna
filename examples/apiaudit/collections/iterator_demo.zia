@@ -25,7 +25,7 @@ func start() {
 
     // --- HasNext ---
     Say("--- HasNext ---");
-    SayInt(it.HasNext);     // 1
+    SayBool(it.HasNext());     // 1
 
     // --- Index ---
     Say("--- Index ---");
@@ -57,14 +57,14 @@ func start() {
     // --- Next to exhaustion ---
     Say("--- Next to exhaustion ---");
     Say(Box.ToStr(it.Next()));   // e
-    SayInt(it.HasNext);          // 0
+    SayBool(it.HasNext());          // 0
     SayInt(it.Index);            // 5
 
     // --- Reset ---
     Say("--- Reset ---");
     it.Reset();
     SayInt(it.Index);            // 0
-    SayInt(it.HasNext);          // 1
+    SayBool(it.HasNext());          // 1
     Say(Box.ToStr(it.Peek()));   // a
 
     // --- ToSeq (collects remaining) ---
@@ -81,13 +81,13 @@ func start() {
     Say("--- Skip past end ---");
     var it2 = Iterator.FromSeq(seq);
     SayInt(it2.Skip(10));        // 5 (only 5 elements to skip)
-    SayInt(it2.HasNext);         // 0
+    SayBool(it2.HasNext());         // 0
 
     // --- Empty iterator ---
     Say("--- Empty iterator ---");
     var emptySeq = Seq.New();
     var it3 = Iterator.FromSeq(emptySeq);
-    SayInt(it3.HasNext);         // 0
+    SayBool(it3.HasNext());         // 0
     SayInt(it3.Count);           // 0
     SayInt(it3.Index);           // 0
 

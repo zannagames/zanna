@@ -1,14 +1,13 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-15
+last-verified: 2026-09-13
 ---
 
 # Zanna.Game.Config
 
-`Config` wraps a parsed JSON value and resolves dotted/JSONPath-style paths. The current registry
-exposes it as a function namespace; construct it with the fully qualified name before using
-instance-style calls.
+`Config` wraps a parsed JSON value and resolves dotted/JSONPath-style paths. Create one with the
+static `Load` or `FromString` factories, which return a `Zanna.Game.Config` or null.
 
 ## Construction
 

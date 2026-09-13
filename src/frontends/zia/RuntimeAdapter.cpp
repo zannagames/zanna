@@ -116,19 +116,42 @@ std::vector<TypeRef> toZiaParamTypes(const il::runtime::ParsedSignature &sig) {
     return result;
 }
 
+/// @brief Build the Zia type for a runtime class named by a registry row.
+/// @param className Fully qualified runtime class from an `obj<Class>` annotation.
+/// @return The same shape source code gets for that class name: collection classes carry their
+///         element (and key) arguments, with `Any` elements because the row does not name them;
+///         every other class is a named runtime class.
+TypeRef runtimeObjectType(const std::string &className) {
+    if (className == "Zanna.Collections.Seq")
+        return types::seqOf(types::any());
+    if (className == "Zanna.Collections.List" || className == "Zanna.Collections.Queue" ||
+        className == "Zanna.Collections.Stack" || className == "Zanna.Collections.Deque" ||
+        className == "Zanna.Collections.Ring" || className == "Zanna.Collections.Heap")
+        return types::runtimeClass(className, {types::any()});
+    if (className == "Zanna.Collections.Map" || className == "Zanna.Collections.OrderedMap" ||
+        className == "Zanna.Collections.SortedMap" || className == "Zanna.Collections.Trie" ||
+        className == "Zanna.Collections.FrozenMap" || className == "Zanna.Collections.DefaultMap" ||
+        className == "Zanna.Collections.WeakMap" || className == "Zanna.Collections.LruCache" ||
+        className == "Zanna.Collections.MultiMap")
+        return types::runtimeClass(className, {types::string(), types::any()});
+    return types::runtimeClass(className);
+}
+
 /// @brief Convert a runtime return signature with parameterized-type metadata.
 /// @param sig Parsed runtime signature.
-/// @return Runtime-class type for annotated objects, typed Seq for element-
-///         annotated sequences, or the scalar mapping of the return token.
+/// @return The declared class for `obj<Class>`, a typed Seq or List for element-annotated
+///         containers, or the scalar mapping of the return token (a bare `obj` is Any).
 TypeRef toZiaReturnType(const il::runtime::ParsedSignature &sig) {
     if (!sig.objectTypeName.empty())
-        return types::runtimeClass(sig.objectTypeName);
+        return runtimeObjectType(sig.objectTypeName);
 
     // When the signature carries an element type (e.g. "seq<str>"), produce a typed
-    // Seq type so the lowerer can use kSeqLen/kSeqGet for safe rt_seq iteration.
+    // container so the lowerer can use kSeqLen/kSeqGet for safe rt_seq iteration.
     if (!sig.elementTypeName.empty()) {
         auto elemScalar = il::runtime::mapILToken(sig.elementTypeName);
         TypeRef elemType = toZiaType(elemScalar);
+        if (sig.containerTypeName == "list")
+            return types::list(elemType);
         return types::seqOf(elemType);
     }
     return toZiaType(sig.returnType);

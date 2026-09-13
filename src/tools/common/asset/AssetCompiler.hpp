@@ -64,6 +64,14 @@ struct AssetBundle {
     std::vector<std::string> packFileHashes;
 };
 
+/// @brief File name of the pack a `pack` group compiles to.
+/// @details Package builders and dry runs use this to name packs without compiling them.
+/// @param projectName Project name.
+/// @param packName Pack group name.
+/// @return `<project>-<group>.zpak`, each part normalized like an executable name.
+/// @throws std::runtime_error when either name cannot form a file name.
+std::string packFileName(const std::string &projectName, const std::string &packName);
+
 /// @brief Compile assets declared in a project configuration.
 ///
 /// @details Resolves every `embed` entry into one in-memory ZPAK blob and writes

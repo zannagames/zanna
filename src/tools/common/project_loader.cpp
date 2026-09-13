@@ -15,7 +15,9 @@
 // Ownership/Lifetime: All helpers return values or Expected<>; the caller owns
 //                     the resulting ProjectConfig. No global state is mutated.
 // Links: src/tools/common/project_loader.hpp,
-//        src/tools/common/packaging/PkgUtils.hpp, docs/internals/codemap.md#tools
+//        src/tools/common/packaging/PkgUtils.hpp,
+//        src/tools/common/packaging/StoreDepotBuilder.hpp (steam-* directive rules),
+//        docs/internals/codemap.md#tools
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,11 +27,12 @@
 /// @details Provides two entry points: resolveProject() classifies a CLI target
 ///          (file, directory, or manifest) and either discovers sources by
 ///          convention or delegates to parseManifest(), which interprets the
-///          line-oriented manifest grammar including the package-* directive
-///          family.
+///          line-oriented manifest grammar including the package-* and steam-*
+///          directive families.
 
 #include "tools/common/project_loader.hpp"
 #include "tools/common/packaging/PkgUtils.hpp"
+#include "tools/common/packaging/StoreDepotBuilder.hpp"
 
 #include "common/Filesystem.hpp"
 #include "frontends/basic/Lexer.hpp"
@@ -1541,6 +1544,94 @@ il::support::Expected<bool> parsePackageDirective(ProjectConfig &config,
         if (!b)
             return il::support::Expected<bool>(b.error());
         config.packageConfig.allowInstallHooks = b.value();
+    } else if (directive == "steam-app-id") {
+        auto scalar =
+            parsePackageScalar(packageScalarDirectives, directive, value, manifestPath, lineNum);
+        if (!scalar)
+            return il::support::Expected<bool>(scalar.error());
+        const auto id = zanna::pkg::canonicalSteamId(scalar.value());
+        if (!id) {
+            return makeManifestErr(manifestPath,
+                                   lineNum,
+                                   "invalid steam-app-id '" + scalar.value() +
+                                       "'; expected an integer in 1..4294967295");
+        }
+        config.packageConfig.steamAppId = *id;
+    } else if (directive == "steam-redist") {
+        // A developer tool path like windows-sign-pfx: absolute or project-relative, and it may
+        // leave the project root, so it is resolved when a steam-* target consumes it.
+        auto scalar =
+            parsePackageScalar(packageScalarDirectives, directive, value, manifestPath, lineNum);
+        if (!scalar)
+            return il::support::Expected<bool>(scalar.error());
+        try {
+            zanna::pkg::validateSingleLineField(scalar.value(), "steam-redist");
+        } catch (const std::exception &ex) {
+            return makeManifestErr(manifestPath, lineNum, ex.what());
+        }
+        if (scalar.value().empty())
+            return makeManifestErr(manifestPath, lineNum, "steam-redist path must not be empty");
+        config.packageConfig.steamRedist = scalar.value();
+    } else if (directive == "steam-depot") {
+        // Format: steam-depot <platform> <depot-id>
+        auto tokens = tokenizeManifestValue(value, manifestPath, lineNum, directive);
+        if (!tokens)
+            return il::support::Expected<bool>(tokens.error());
+        if (tokens.value().size() != 2) {
+            return makeManifestErr(manifestPath,
+                                   lineNum,
+                                   "steam-depot requires <platform> <depot-id>; got '" + value +
+                                       "'");
+        }
+        const std::string &platform = tokens.value()[0];
+        if (!zanna::pkg::isSteamDepotPlatform(platform)) {
+            return makeManifestErr(manifestPath,
+                                   lineNum,
+                                   "invalid steam-depot platform '" + platform +
+                                       "'; expected windows, macos, linux, or linux-arm64");
+        }
+        const auto id = zanna::pkg::canonicalSteamId(tokens.value()[1]);
+        if (!id) {
+            return makeManifestErr(manifestPath,
+                                   lineNum,
+                                   "invalid steam-depot id '" + tokens.value()[1] +
+                                       "'; expected an integer in 1..4294967295");
+        }
+        for (const auto &mapping : config.packageConfig.steamDepots) {
+            if (mapping.platform == platform) {
+                return makeManifestErr(
+                    manifestPath, lineNum, "duplicate steam-depot platform '" + platform + "'");
+            }
+            if (mapping.depotId == *id) {
+                return makeManifestErr(manifestPath,
+                                       lineNum,
+                                       "steam-depot id " + *id + " is already mapped to " +
+                                           mapping.platform);
+            }
+        }
+        config.packageConfig.steamDepots.push_back({platform, *id});
+    } else if (directive == "steam-build-description") {
+        auto scalar =
+            parsePackageScalar(packageScalarDirectives, directive, value, manifestPath, lineNum);
+        if (!scalar)
+            return il::support::Expected<bool>(scalar.error());
+        try {
+            zanna::pkg::validateSteamBuildDescription(scalar.value());
+        } catch (const std::exception &ex) {
+            return makeManifestErr(manifestPath, lineNum, ex.what());
+        }
+        config.packageConfig.steamBuildDescription = scalar.value();
+    } else if (directive == "steam-set-live") {
+        auto scalar =
+            parsePackageScalar(packageScalarDirectives, directive, value, manifestPath, lineNum);
+        if (!scalar)
+            return il::support::Expected<bool>(scalar.error());
+        try {
+            zanna::pkg::validateSteamSetLiveBranch(scalar.value());
+        } catch (const std::exception &ex) {
+            return makeManifestErr(manifestPath, lineNum, ex.what());
+        }
+        config.packageConfig.steamSetLive = scalar.value();
     } else {
         return false;
     }
@@ -1702,9 +1793,8 @@ il::support::Expected<ProjectConfig> parseManifest(const std::string &manifestPa
             if (!scalar)
                 return il::support::Expected<ProjectConfig>(scalar.error());
             if (scalar.value() != "vm" && scalar.value() != "native")
-                return makeManifestErr(manifestPath,
-                                       lineNum,
-                                       "run-profile must be 'vm' or 'native'");
+                return makeManifestErr(
+                    manifestPath, lineNum, "run-profile must be 'vm' or 'native'");
             config.runProfile = scalar.value();
         } else if (directive == "profile" || directive == "build-profile") {
             if (hasProfile)

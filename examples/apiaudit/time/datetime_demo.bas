@@ -33,7 +33,7 @@ PRINT "DayOfWeek: "; Zanna.Time.DateTime.DayOfWeek(now)
 ' --- Create ---
 PRINT "--- Create ---"
 DIM ts AS INTEGER
-ts = Zanna.Time.DateTime.Create(2024, 6, 15, 12, 30, 0)
+ts = Zanna.Time.DateTime.FromParts(2024, 6, 15, 12, 30, 0)
 PRINT "Create(2024,6,15,12,30,0): "; ts
 PRINT "Year: "; Zanna.Time.DateTime.Year(ts)
 PRINT "Month: "; Zanna.Time.DateTime.Month(ts)

@@ -80,6 +80,19 @@ const ClassInfo *OopIndex::findClass(const std::string &name) const {
     return nullptr;
 }
 
+/// @brief Look up an interface record by qualified name (case-insensitive).
+/// @details Interfaces are keyed by the spelling their declaration used, while
+///          references (`DIM x AS i`, `o IS I`, `IMPLEMENTS I`) may use any case.
+/// @param name Qualified interface name to locate.
+/// @return Pointer to the stored @ref InterfaceInfo or @c nullptr when absent.
+const InterfaceInfo *OopIndex::findInterface(const std::string &name) const {
+    for (const auto &kv : interfacesByQname_) {
+        if (iequals(kv.first, name))
+            return &kv.second;
+    }
+    return nullptr;
+}
+
 // =============================================================================
 // Field Query API Implementation
 // =============================================================================

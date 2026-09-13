@@ -33,12 +33,12 @@ func start() {
 
     // --- Check (no parent, not cancelled) ---
     Say("--- Check (not cancelled) ---");
-    Say("Check: " + Fmt.Bool(token.IsCancelled)));
+    Say("Check: " + Fmt.Bool(token.IsCancelled));
 
     // --- Cancel and Check ---
     Say("--- Cancel and Check ---");
     token.Cancel();
-    Say("Check after Cancel: " + Fmt.Bool(token.IsCancelled)));
+    Say("Check after Cancel: " + Fmt.Bool(token.IsCancelled));
 
     // --- Reset for linked test ---
     token.Reset();
@@ -47,13 +47,13 @@ func start() {
     Say("--- Linked ---");
     var child = token.Linked();
     Say("Child IsCancelled: " + Fmt.Bool(child.get_IsCancelled()));
-    Say("Child Check: " + Fmt.Bool(child.IsCancelled)));
+    Say("Child Check: " + Fmt.Bool(child.IsCancelled));
 
     // --- Linked: cancel parent ---
     Say("--- Linked: cancel parent ---");
     token.Cancel();
     Say("Parent IsCancelled: " + Fmt.Bool(token.get_IsCancelled()));
-    Say("Child Check (parent cancelled): " + Fmt.Bool(child.IsCancelled)));
+    Say("Child Check (parent cancelled): " + Fmt.Bool(child.IsCancelled));
 
     // --- Linked: independent cancel ---
     Say("--- Linked: independent cancel ---");

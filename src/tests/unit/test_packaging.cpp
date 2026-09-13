@@ -63,6 +63,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
@@ -4436,6 +4437,243 @@ TEST(LinuxAppPackage, DebUsesSharedAppFhsLayout) {
     if (!ok)
         std::cerr << err.str();
     EXPECT_TRUE(ok);
+
+    fs::remove_all(tmpRoot);
+}
+
+/// @brief Write a stand-in ELF executable and one generated pack for pack layout tests.
+/// @param root Temporary project root.
+/// @param packName Pack file name to create under `root/packs`.
+/// @return Absolute pack path as a string.
+static std::string writePackLayoutFixture(const std::filesystem::path &root,
+                                          const std::string &packName) {
+    namespace fs = std::filesystem;
+    fs::remove_all(root);
+    fs::create_directories(root / "packs");
+    std::vector<uint8_t> elf(128, 0);
+    elf[0] = 0x7F;
+    elf[1] = 'E';
+    elf[2] = 'L';
+    elf[3] = 'F';
+    elf[4] = 2;
+    elf[5] = 1;
+    writeBytes(root / "game", elf);
+    writeBytes(root / "packs" / packName, std::vector<uint8_t>{'Z', 'P', 'A', 'K', 2, 0});
+    return (root / "packs" / packName).string();
+}
+
+/// @brief Run @p fn and return the message of the exception it throws, or empty.
+/// @param fn Callable expected to throw.
+/// @return Exception text.
+static std::string packLayoutThrownMessage(const std::function<void()> &fn) {
+    try {
+        fn();
+    } catch (const std::exception &ex) {
+        return ex.what();
+    }
+    return {};
+}
+
+TEST(LinuxAppPackage, DebWithPacksInstallsExecutableBesidePacks) {
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot = fs::temp_directory_path() / "zanna_packaging_appdeb_packs_test";
+    const std::string pack = writePackLayoutFixture(tmpRoot, "spacegame-core.zpak");
+
+    LinuxBuildParams params;
+    params.projectName = "spacegame";
+    params.version = "1.2.0";
+    params.executablePath = (tmpRoot / "game").string();
+    params.projectRoot = tmpRoot.string();
+    params.pkgConfig.displayName = "Space Game";
+    params.outputPath = (tmpRoot / "spacegame.deb").string();
+    params.archStr = "amd64";
+    params.packFiles = {pack};
+
+    buildDebPackage(params);
+    const auto debBytes = readFile(params.outputPath);
+    std::ostringstream err;
+    const bool ok = verifyDebPayload(debBytes,
+                                     {"usr/bin/spacegame",
+                                      "usr/lib/spacegame/spacegame",
+                                      "usr/lib/spacegame/spacegame-core.zpak"},
+                                     err);
+    if (!ok)
+        std::cerr << err.str();
+    EXPECT_TRUE(ok);
+    const auto dataTar = debDataTar(debBytes);
+    uint32_t mode = 0;
+    EXPECT_TRUE(tarEntryMode(dataTar, "usr/lib/spacegame/spacegame", mode));
+    EXPECT_EQ(mode, static_cast<uint32_t>(0755));
+    EXPECT_TRUE(tarEntryMode(dataTar, "usr/lib/spacegame/spacegame-core.zpak", mode));
+    EXPECT_EQ(mode, static_cast<uint32_t>(0644));
+    std::string target;
+    EXPECT_TRUE(tarEntryLinkTarget(dataTar, "usr/bin/spacegame", target));
+    EXPECT_EQ(target, std::string("../lib/spacegame/spacegame"));
+    const std::string md5sums = debControlEntryText(debBytes, "md5sums");
+    EXPECT_CONTAINS(md5sums, "  usr/lib/spacegame/spacegame\n");
+    EXPECT_CONTAINS(md5sums, "  usr/lib/spacegame/spacegame-core.zpak\n");
+    EXPECT_EQ(md5sums.find("usr/bin/spacegame"), std::string::npos);
+
+    // Without packs the executable stays a regular file in usr/bin.
+    params.packFiles.clear();
+    buildDebPackage(params);
+    const auto plainTar = debDataTar(readFile(params.outputPath));
+    EXPECT_TRUE(tarEntryMode(plainTar, "usr/bin/spacegame", mode));
+    EXPECT_EQ(mode, static_cast<uint32_t>(0755));
+    EXPECT_FALSE(tarEntryLinkTarget(plainTar, "usr/bin/spacegame", target));
+    EXPECT_FALSE(tarEntryMode(plainTar, "usr/lib/spacegame/spacegame", mode));
+
+    fs::remove_all(tmpRoot);
+}
+
+TEST(LinuxPackageBuilder, TarballShipsPacksBesideExecutable) {
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot = fs::temp_directory_path() / "zanna_packaging_tarball_packs_test";
+    const std::string pack = writePackLayoutFixture(tmpRoot, "spacegame-core.zpak");
+
+    LinuxBuildParams params;
+    params.projectName = "spacegame";
+    params.version = "1.2.0";
+    params.executablePath = (tmpRoot / "game").string();
+    params.projectRoot = tmpRoot.string();
+    params.pkgConfig.displayName = "Space Game";
+    params.outputPath = (tmpRoot / "spacegame.tar.gz").string();
+    params.archStr = "x64";
+    params.packFiles = {pack};
+
+    buildTarball(params);
+    const auto tarGz = readFile(params.outputPath);
+    std::ostringstream err;
+    EXPECT_TRUE(verifyTarGzPayload(
+        tarGz, {"spacegame-1.2.0/spacegame", "spacegame-1.2.0/spacegame-core.zpak"}, err));
+    uint32_t mode = 0;
+    EXPECT_TRUE(
+        tarEntryMode(inflateGzipPayload(tarGz), "spacegame-1.2.0/spacegame-core.zpak", mode));
+    EXPECT_EQ(mode, static_cast<uint32_t>(0644));
+
+    // The same pack listed as a top-level asset collides with the generated copy.
+    params.pkgConfig.assets.push_back({"packs/spacegame-core.zpak", ""});
+    EXPECT_CONTAINS(packLayoutThrownMessage([&] { buildTarball(params); }),
+                    "duplicate tar entry path: spacegame-1.2.0/spacegame-core.zpak");
+
+    fs::remove_all(tmpRoot);
+}
+
+TEST(AppImage, LaunchesThroughAppRunScriptAndShipsPacks) {
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot = fs::temp_directory_path() / "zanna_packaging_appimage_packs_test";
+    const std::string pack = writePackLayoutFixture(tmpRoot, "spacegame-core.zpak");
+
+    LinuxBuildParams params;
+    params.projectName = "spacegame";
+    params.version = "1.2.0";
+    params.executablePath = (tmpRoot / "game").string();
+    params.projectRoot = tmpRoot.string();
+    params.pkgConfig.displayName = "Space Game";
+    params.outputPath = (tmpRoot / "spacegame.run").string();
+    params.archStr = "x64";
+    params.packFiles = {pack};
+
+    buildAppImage(params);
+    std::vector<uint8_t> payloadGz = appImagePayloadBytes(readFile(params.outputPath));
+    ASSERT_FALSE(payloadGz.empty());
+    std::vector<uint8_t> tarBytes = gunzip(payloadGz.data(), payloadGz.size());
+
+    // The extractor refuses a symbolic-link entry point, so AppRun must be a script.
+    std::vector<uint8_t> appRun;
+    ASSERT_TRUE(tarEntryData(tarBytes, "AppRun", appRun));
+    const std::string appRunText(appRun.begin(), appRun.end());
+    EXPECT_CONTAINS(appRunText, "#!/bin/sh\n");
+    EXPECT_CONTAINS(appRunText, "exec \"$appdir/usr/bin/\"'spacegame' \"$@\"\n");
+    std::string target;
+    EXPECT_FALSE(tarEntryLinkTarget(tarBytes, "AppRun", target));
+    uint32_t mode = 0;
+    EXPECT_TRUE(tarEntryMode(tarBytes, "AppRun", mode));
+    EXPECT_EQ(mode, static_cast<uint32_t>(0755));
+
+    EXPECT_TRUE(tarEntryLinkTarget(tarBytes, "usr/bin/spacegame", target));
+    EXPECT_EQ(target, std::string("../lib/spacegame/spacegame"));
+    EXPECT_TRUE(tarEntryMode(tarBytes, "usr/lib/spacegame/spacegame", mode));
+    EXPECT_EQ(mode, static_cast<uint32_t>(0755));
+    EXPECT_TRUE(tarEntryMode(tarBytes, "usr/lib/spacegame/spacegame-core.zpak", mode));
+    EXPECT_EQ(mode, static_cast<uint32_t>(0644));
+
+    // Without packs the executable stays a regular file in usr/bin behind the same script.
+    params.packFiles.clear();
+    buildAppImage(params);
+    payloadGz = appImagePayloadBytes(readFile(params.outputPath));
+    ASSERT_FALSE(payloadGz.empty());
+    tarBytes = gunzip(payloadGz.data(), payloadGz.size());
+    EXPECT_TRUE(tarEntryMode(tarBytes, "usr/bin/spacegame", mode));
+    EXPECT_FALSE(tarEntryLinkTarget(tarBytes, "usr/bin/spacegame", target));
+    EXPECT_TRUE(tarEntryData(tarBytes, "AppRun", appRun));
+
+    fs::remove_all(tmpRoot);
+}
+
+TEST(MacOSPackageBuilder, ShipsPacksInResources) {
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot = fs::temp_directory_path() / "zanna_packaging_macos_packs_test";
+    const std::string pack = writePackLayoutFixture(tmpRoot, "packapp-core.zpak");
+
+    MacOSBuildParams params;
+    params.projectName = "packapp";
+    params.version = "1.0.0";
+    params.executablePath = (tmpRoot / "game").string();
+    params.projectRoot = tmpRoot.string();
+    params.outputPath = (tmpRoot / "packapp.zip").string();
+    params.pkgConfig.displayName = "Pack App";
+    params.pkgConfig.identifier = "org.zanna.packapp";
+    params.pkgConfig.macosSignMode = "none";
+    params.packFiles = {pack};
+
+    buildMacOSPackage(params);
+    const std::vector<uint8_t> zip = readFile(params.outputPath);
+    uint16_t mode = 0;
+    EXPECT_TRUE(zipEntryUnixMode(zip, "Pack App.app/Contents/Resources/packapp-core.zpak", mode));
+    EXPECT_EQ(mode, static_cast<uint16_t>(0100644));
+    std::ostringstream err;
+    EXPECT_TRUE(
+        verifyMacOSAppZipPayload(zip, "Pack App.app", "packapp", {"packapp-core.zpak"}, err));
+
+    // The same pack listed as an asset in the resources root collides with the generated copy.
+    params.pkgConfig.assets.push_back({"packs/packapp-core.zpak", ""});
+    EXPECT_CONTAINS(packLayoutThrownMessage([&] { buildMacOSPackage(params); }),
+                    "generated macOS resource would replace a staged file: packapp-core.zpak");
+
+    fs::remove_all(tmpRoot);
+}
+
+TEST(WindowsPackageBuilder, ShipsPacksBesideExecutable) {
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot = fs::temp_directory_path() / "zanna_packaging_windows_packs_test";
+    const std::string pack = writePackLayoutFixture(tmpRoot, "packapp-core.zpak");
+    writeTestWindowsPe(tmpRoot / "app.exe");
+
+    WindowsBuildParams params;
+    params.projectName = "packapp";
+    params.version = "1.0.0";
+    params.executablePath = (tmpRoot / "app.exe").string();
+    params.projectRoot = tmpRoot.string();
+    params.pkgConfig.displayName = "Pack App";
+    params.pkgConfig.identifier = "org.zanna.packapp";
+    params.outputPath = (tmpRoot / "packapp_setup.exe").string();
+    params.archStr = "x64";
+    params.packFiles = {pack};
+
+    buildWindowsPackage(params);
+    const auto pe = readFile(params.outputPath);
+    const auto payloadZip = extractPeOverlayZipEntry(pe, "meta/payload.zip");
+    ASSERT_FALSE(payloadZip.empty());
+    EXPECT_TRUE(zipContainsEntries(payloadZip, {"packapp.exe", "packapp-core.zpak"}));
+    const auto nextManifest = extractPeOverlayZipEntry(pe, "meta/install_manifest.next");
+    const std::string nextManifestText(nextManifest.begin(), nextManifest.end());
+    EXPECT_CONTAINS(nextManifestText, "packapp-core.zpak\n");
+
+    // The same pack listed as an install-root asset collides with the generated copy.
+    params.pkgConfig.assets.push_back({"packs/packapp-core.zpak", ""});
+    EXPECT_CONTAINS(packLayoutThrownMessage([&] { buildWindowsPackage(params); }),
+                    "Windows package install path collision: packapp-core.zpak");
 
     fs::remove_all(tmpRoot);
 }

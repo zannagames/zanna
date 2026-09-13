@@ -219,7 +219,7 @@ expose func UpsertEntryText(text: String,
         Map.SetStr(raw, "path", cleanPath);
         Seq.Push(entries, raw);
     }
-    var tags = Json.Parse("[]");
+    var tags = Json.Parse("[]") as Seq;
     var parts = Str.Split(Str.Trim(tagsCsv), ",");
     var partIndex = 0;
     while partIndex < Seq.get_Count(parts) {

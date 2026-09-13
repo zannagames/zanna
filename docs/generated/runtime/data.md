@@ -19,13 +19,13 @@ construct the class directly. Its public surface exposes operations including `P
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-data-xml-parse"></a>`Parse` | `obj(str)` | `Zanna.Data.Xml.Parse` |
+| <a id="zanna-data-xml-parse"></a>`Parse` | `obj<Zanna.Core.Object>(str)` | `Zanna.Data.Xml.Parse` |
 | <a id="zanna-data-xml-parseresult"></a>`ParseResult` | `obj<Zanna.Result>(str)` | `Zanna.Data.Xml.ParseResult` |
 | <a id="zanna-data-xml-isvalid"></a>`IsValid` | `i1(str)` | `Zanna.Data.Xml.IsValid` |
-| <a id="zanna-data-xml-element"></a>`Element` | `obj(str)` | `Zanna.Data.Xml.Element` |
-| <a id="zanna-data-xml-text"></a>`Text` | `obj(str)` | `Zanna.Data.Xml.Text` |
-| <a id="zanna-data-xml-comment"></a>`Comment` | `obj(str)` | `Zanna.Data.Xml.Comment` |
-| <a id="zanna-data-xml-cdata"></a>`Cdata` | `obj(str)` | `Zanna.Data.Xml.Cdata` |
+| <a id="zanna-data-xml-element"></a>`Element` | `obj<Zanna.Core.Object>(str)` | `Zanna.Data.Xml.Element` |
+| <a id="zanna-data-xml-text"></a>`Text` | `obj<Zanna.Core.Object>(str)` | `Zanna.Data.Xml.Text` |
+| <a id="zanna-data-xml-comment"></a>`Comment` | `obj<Zanna.Core.Object>(str)` | `Zanna.Data.Xml.Comment` |
+| <a id="zanna-data-xml-cdata"></a>`Cdata` | `obj<Zanna.Core.Object>(str)` | `Zanna.Data.Xml.Cdata` |
 | <a id="zanna-data-xml-nodetype"></a>`NodeType` | `i64(obj)` | `Zanna.Data.Xml.NodeType` |
 | <a id="zanna-data-xml-tag"></a>`Tag` | `str(obj)` | `Zanna.Data.Xml.Tag` |
 | <a id="zanna-data-xml-content"></a>`Content` | `str(obj)` | `Zanna.Data.Xml.Content` |
@@ -37,16 +37,16 @@ construct the class directly. Its public surface exposes operations including `P
 | <a id="zanna-data-xml-attrnames"></a>`AttrNames` | `seq<str>(obj)` | `Zanna.Data.Xml.AttrNames` |
 | <a id="zanna-data-xml-children"></a>`Children` | `seq<obj>(obj)` | `Zanna.Data.Xml.Children` |
 | <a id="zanna-data-xml-childcount"></a>`ChildCount` | `i64(obj)` | `Zanna.Data.Xml.ChildCount` |
-| <a id="zanna-data-xml-childat"></a>`ChildAt` | `obj(obj,i64)` | `Zanna.Data.Xml.ChildAt` |
-| <a id="zanna-data-xml-child"></a>`Child` | `obj(obj,str)` | `Zanna.Data.Xml.Child` |
+| <a id="zanna-data-xml-childat"></a>`ChildAt` | `obj<Zanna.Core.Object>(obj,i64)` | `Zanna.Data.Xml.ChildAt` |
+| <a id="zanna-data-xml-child"></a>`Child` | `obj<Zanna.Core.Object>(obj,str)` | `Zanna.Data.Xml.Child` |
 | <a id="zanna-data-xml-childrenbytag"></a>`ChildrenByTag` | `seq<obj>(obj,str)` | `Zanna.Data.Xml.ChildrenByTag` |
 | <a id="zanna-data-xml-append"></a>`Append` | `void(obj,obj)` | `Zanna.Data.Xml.Append` |
 | <a id="zanna-data-xml-insert"></a>`Insert` | `void(obj,i64,obj)` | `Zanna.Data.Xml.Insert` |
 | <a id="zanna-data-xml-remove"></a>`Remove` | `i1(obj,obj)` | `Zanna.Data.Xml.Remove` |
 | <a id="zanna-data-xml-removeat"></a>`RemoveAt` | `void(obj,i64)` | `Zanna.Data.Xml.RemoveAt` |
 | <a id="zanna-data-xml-settext"></a>`SetText` | `void(obj,str)` | `Zanna.Data.Xml.SetText` |
-| <a id="zanna-data-xml-parent"></a>`Parent` | `obj(obj)` | `Zanna.Data.Xml.Parent` |
-| <a id="zanna-data-xml-root"></a>`Root` | `obj(obj)` | `Zanna.Data.Xml.Root` |
+| <a id="zanna-data-xml-parent"></a>`Parent` | `obj<Zanna.Core.Object>(obj)` | `Zanna.Data.Xml.Parent` |
+| <a id="zanna-data-xml-root"></a>`Root` | `obj<Zanna.Core.Object>(obj)` | `Zanna.Data.Xml.Root` |
 | <a id="zanna-data-xml-findall"></a>`FindAll` | `seq<obj>(obj,str)` | `Zanna.Data.Xml.FindAll` |
 | <a id="zanna-data-xml-find"></a>`Find` | `obj<Zanna.Option>(obj,str)` | `Zanna.Data.Xml.Find` |
 | <a id="zanna-data-xml-format"></a>`Format` | `str(obj)` | `Zanna.Data.Xml.Format` |
@@ -136,7 +136,7 @@ construct the class directly. Its public surface exposes operations including `P
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-data-ini-parse"></a>`Parse` | `obj(str)` | `Zanna.Data.Ini.Parse` |
+| <a id="zanna-data-ini-parse"></a>`Parse` | `obj<Zanna.Collections.Map>(str)` | `Zanna.Data.Ini.Parse` |
 | <a id="zanna-data-ini-format"></a>`Format` | `str(obj)` | `Zanna.Data.Ini.Format` |
 | <a id="zanna-data-ini-get"></a>`Get` | `str(obj,str,str)` | `Zanna.Data.Ini.Get` |
 | <a id="zanna-data-ini-set"></a>`Set` | `void(obj,str,str,str)` | `Zanna.Data.Ini.Set` |
@@ -202,7 +202,7 @@ Constructor: `Zanna.Data.JsonStream.New`
 | <a id="zanna-data-jsonstream-numbervalue"></a>`NumberValue` | `f64()` | `Zanna.Data.JsonStream.NumberValue` |
 | <a id="zanna-data-jsonstream-skip"></a>`Skip` | `void()` | `Zanna.Data.JsonStream.Skip` |
 | <a id="zanna-data-jsonstream-stringvalue"></a>`StringValue` | `str()` | `Zanna.Data.JsonStream.StringValue` |
-| <a id="zanna-data-jsonstream-new"></a>`New` | `obj(str)` | `Zanna.Data.JsonStream.New` |
+| <a id="zanna-data-jsonstream-new"></a>`New` | `obj<Zanna.Data.JsonStream>(str)` | `Zanna.Data.JsonStream.New` |
 
 <a id="zanna-data-toml"></a>
 ### `Zanna.Data.Toml`
@@ -217,7 +217,7 @@ construct the class directly. Its public surface exposes operations including `P
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-data-toml-parse"></a>`Parse` | `obj(str)` | `Zanna.Data.Toml.Parse` |
+| <a id="zanna-data-toml-parse"></a>`Parse` | `obj<Zanna.Collections.Map>(str)` | `Zanna.Data.Toml.Parse` |
 | <a id="zanna-data-toml-isvalid"></a>`IsValid` | `i1(str)` | `Zanna.Data.Toml.IsValid` |
 | <a id="zanna-data-toml-format"></a>`Format` | `str(obj)` | `Zanna.Data.Toml.Format` |
 | <a id="zanna-data-toml-get"></a>`Get` | `obj(obj,str)` | `Zanna.Data.Toml.Get` |
@@ -256,7 +256,7 @@ construct the class directly. Its public surface exposes operations including `G
 | `Zanna.Data.Csv.Format` | `str(obj)` | `rt_csv_format` |
 | `Zanna.Data.Csv.FormatWith` | `str(obj,str)` | `rt_csv_format_with` |
 | `Zanna.Data.Csv.IsValid` | `i1(str)` | `rt_csv_is_valid` |
-| `Zanna.Data.Ini.Parse` | `obj(str)` | `rt_ini_parse` |
+| `Zanna.Data.Ini.Parse` | `obj<Zanna.Collections.Map>(str)` | `rt_ini_parse` |
 | `Zanna.Data.Ini.Format` | `str(obj)` | `rt_ini_format` |
 | `Zanna.Data.Ini.Get` | `str(obj,str,str)` | `rt_ini_get` |
 | `Zanna.Data.Ini.Set` | `void(obj,str,str,str)` | `rt_ini_set` |
@@ -271,7 +271,7 @@ construct the class directly. Its public surface exposes operations including `G
 | `Zanna.Data.Json.IsValid` | `i1(str)` | `rt_json_is_valid` |
 | `Zanna.Data.Json.TypeOf` | `str(obj)` | `rt_json_type_of` |
 | `Zanna.Data.Json.NewObject` | `obj<Zanna.Collections.Map>()` | `rt_map_new` |
-| `Zanna.Data.JsonStream.New` | `obj(str)` | `rt_json_stream_new` |
+| `Zanna.Data.JsonStream.New` | `obj<Zanna.Data.JsonStream>(str)` | `rt_json_stream_new` |
 | `Zanna.Data.JsonStream.Next` | `i64(obj)` | `rt_json_stream_next` |
 | `Zanna.Data.JsonStream.NextResult` | `obj<Zanna.Result>(obj)` | `rt_json_stream_next_result` |
 | `Zanna.Data.JsonStream.TokenType` | `i64(obj)` | `rt_json_stream_token_type` |
@@ -281,13 +281,13 @@ construct the class directly. Its public surface exposes operations including `G
 | `Zanna.Data.JsonStream.Depth` | `i64(obj)` | `rt_json_stream_depth` |
 | `Zanna.Data.JsonStream.Skip` | `void(obj)` | `rt_json_stream_skip` |
 | `Zanna.Data.JsonStream.HasNext` | `i1(obj)` | `rt_json_stream_has_next` |
-| `Zanna.Data.Xml.Parse` | `obj(str)` | `rt_xml_parse` |
+| `Zanna.Data.Xml.Parse` | `obj<Zanna.Core.Object>(str)` | `rt_xml_parse` |
 | `Zanna.Data.Xml.ParseResult` | `obj<Zanna.Result>(str)` | `rt_xml_parse_result` |
 | `Zanna.Data.Xml.IsValid` | `i1(str)` | `rt_xml_is_valid` |
-| `Zanna.Data.Xml.Element` | `obj(str)` | `rt_xml_element` |
-| `Zanna.Data.Xml.Text` | `obj(str)` | `rt_xml_text` |
-| `Zanna.Data.Xml.Comment` | `obj(str)` | `rt_xml_comment` |
-| `Zanna.Data.Xml.Cdata` | `obj(str)` | `rt_xml_cdata` |
+| `Zanna.Data.Xml.Element` | `obj<Zanna.Core.Object>(str)` | `rt_xml_element` |
+| `Zanna.Data.Xml.Text` | `obj<Zanna.Core.Object>(str)` | `rt_xml_text` |
+| `Zanna.Data.Xml.Comment` | `obj<Zanna.Core.Object>(str)` | `rt_xml_comment` |
+| `Zanna.Data.Xml.Cdata` | `obj<Zanna.Core.Object>(str)` | `rt_xml_cdata` |
 | `Zanna.Data.Xml.NodeType` | `i64(obj)` | `rt_xml_node_type` |
 | `Zanna.Data.Xml.Tag` | `str(obj)` | `rt_xml_tag` |
 | `Zanna.Data.Xml.Content` | `str(obj)` | `rt_xml_content` |
@@ -299,16 +299,16 @@ construct the class directly. Its public surface exposes operations including `G
 | `Zanna.Data.Xml.AttrNames` | `seq<str>(obj)` | `rt_xml_attr_names` |
 | `Zanna.Data.Xml.Children` | `seq<obj>(obj)` | `rt_xml_children` |
 | `Zanna.Data.Xml.ChildCount` | `i64(obj)` | `rt_xml_child_count` |
-| `Zanna.Data.Xml.ChildAt` | `obj(obj,i64)` | `rt_xml_child_at` |
-| `Zanna.Data.Xml.Child` | `obj(obj,str)` | `rt_xml_child` |
+| `Zanna.Data.Xml.ChildAt` | `obj<Zanna.Core.Object>(obj,i64)` | `rt_xml_child_at` |
+| `Zanna.Data.Xml.Child` | `obj<Zanna.Core.Object>(obj,str)` | `rt_xml_child` |
 | `Zanna.Data.Xml.ChildrenByTag` | `seq<obj>(obj,str)` | `rt_xml_children_by_tag` |
 | `Zanna.Data.Xml.Append` | `void(obj,obj)` | `rt_xml_append` |
 | `Zanna.Data.Xml.Insert` | `void(obj,i64,obj)` | `rt_xml_insert` |
 | `Zanna.Data.Xml.Remove` | `i1(obj,obj)` | `rt_xml_remove` |
 | `Zanna.Data.Xml.RemoveAt` | `void(obj,i64)` | `rt_xml_remove_at` |
 | `Zanna.Data.Xml.SetText` | `void(obj,str)` | `rt_xml_set_text` |
-| `Zanna.Data.Xml.Parent` | `obj(obj)` | `rt_xml_parent` |
-| `Zanna.Data.Xml.Root` | `obj(obj)` | `rt_xml_root` |
+| `Zanna.Data.Xml.Parent` | `obj<Zanna.Core.Object>(obj)` | `rt_xml_parent` |
+| `Zanna.Data.Xml.Root` | `obj<Zanna.Core.Object>(obj)` | `rt_xml_root` |
 | `Zanna.Data.Xml.FindAll` | `seq<obj>(obj,str)` | `rt_xml_find_all` |
 | `Zanna.Data.Xml.Find` | `obj<Zanna.Option>(obj,str)` | `rt_xml_find_option` |
 | `Zanna.Data.Xml.Format` | `str(obj)` | `rt_xml_format` |
@@ -321,7 +321,7 @@ construct the class directly. Its public surface exposes operations including `G
 | `Zanna.Data.Yaml.Format` | `str(obj)` | `rt_yaml_format` |
 | `Zanna.Data.Yaml.FormatIndent` | `str(obj,i64)` | `rt_yaml_format_indent` |
 | `Zanna.Data.Yaml.TypeOf` | `str(obj)` | `rt_yaml_type_of` |
-| `Zanna.Data.Toml.Parse` | `obj(str)` | `rt_toml_parse` |
+| `Zanna.Data.Toml.Parse` | `obj<Zanna.Collections.Map>(str)` | `rt_toml_parse` |
 | `Zanna.Data.Toml.IsValid` | `i1(str)` | `rt_toml_is_valid` |
 | `Zanna.Data.Toml.Format` | `str(obj)` | `rt_toml_format` |
 | `Zanna.Data.Toml.Get` | `obj(obj,str)` | `rt_toml_get` |

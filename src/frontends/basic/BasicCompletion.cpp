@@ -326,6 +326,9 @@ std::vector<CompletionItem> BasicCompletionEngine::provideScopeSymbols(
                     case SemanticAnalyzer::Type::ArrayInt:
                         detail = "INTEGER()";
                         break;
+                    case SemanticAnalyzer::Type::ArrayFloat:
+                        detail = "DOUBLE()";
+                        break;
                     case SemanticAnalyzer::Type::ArrayString:
                         detail = "STRING()";
                         break;

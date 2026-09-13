@@ -123,6 +123,13 @@ const ProcTable &SemanticAnalyzer::procs() const {
     return procReg_.procs();
 }
 
+/// @brief Looks up a procedure signature by exact, canonical or qualified spelling.
+/// @param name Procedure name as written at a call site.
+/// @return Registry-owned signature, or null when no procedure has that name.
+const ProcSignature *SemanticAnalyzer::lookupProcSignature(std::string_view name) const {
+    return procReg_.lookup(name);
+}
+
 /// @brief Reports the class that supplies the active implicit instance.
 /// @details A qualified class name is returned only while analysis is inside a
 ///          member that has an implicit `ME` receiver and the active class name
@@ -345,6 +352,8 @@ const char *semanticTypeName(SemanticAnalyzer::Type type) {
             return "BOOLEAN";
         case Type::ArrayInt:
             return "ARRAY(INT)";
+        case Type::ArrayFloat:
+            return "ARRAY(FLOAT)";
         case Type::ArrayString:
             return "ARRAY(STRING)";
         case Type::ArrayObject:
@@ -465,6 +474,30 @@ std::string uppercaseBasicTypeName(BasicType type) {
 bool isNumericSemanticType(SemanticAnalyzer::Type type) noexcept {
     using Type = SemanticAnalyzer::Type;
     return type == Type::Int || type == Type::Float || type == Type::Bool;
+}
+
+/// @brief Tests the whole-array semantic categories.
+/// @param type Type category to classify.
+/// @return @c true for integer, float, string, or object arrays.
+bool isSemanticArrayType(SemanticAnalyzer::Type type) noexcept {
+    using Type = SemanticAnalyzer::Type;
+    return type == Type::ArrayInt || type == Type::ArrayFloat || type == Type::ArrayString ||
+           type == Type::ArrayObject;
+}
+
+/// @brief Tests whether a FUNCTION result of one category can hold a value of another.
+/// @param result Result type the FUNCTION declares.
+/// @param value Type of the RETURN expression or result-name assignment.
+/// @return @c true when the value fits the result's category.
+bool functionResultAccepts(SemanticAnalyzer::Type result, SemanticAnalyzer::Type value) noexcept {
+    using Type = SemanticAnalyzer::Type;
+    if (result == Type::Object || value == Type::Object)
+        return result == value;
+    if (result == Type::String || value == Type::String)
+        return result == value;
+    if (!isNumericSemanticType(result) || !isNumericSemanticType(value))
+        return false;
+    return !(result == Type::Bool && value == Type::Float);
 }
 
 } // namespace il::frontends::basic::semantic_analyzer_detail

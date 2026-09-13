@@ -547,6 +547,7 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
             if (rtSig->retType.kind != IlType::Kind::Void) {
                 const std::string &target = calleeResolved.empty() ? calleeKey : calleeResolved;
                 IlValue res = lowerer_.emitCallRet(rtSig->retType, target, args);
+                lowerer_.deferReleaseRuntimeResult(res, rtSig->retType, target);
                 result_ = Lowerer::RVal{res, rtSig->retType};
             } else {
                 const std::string &target = calleeResolved.empty() ? calleeKey : calleeResolved;
@@ -585,6 +586,16 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
             const std::string calleeName = lowerer_.resolveCalleeName(calleeKey);
             if (signature && signature->retType.kind != IlType::Kind::Void) {
                 IlValue res = lowerer_.emitCallRet(signature->retType, calleeName, args);
+                // A FUNCTION hands its STRING or object result to the caller owned.
+                if (signature->retType.kind == IlType::Kind::Str) {
+                    lowerer_.deferReleaseStr(res);
+                } else if (signature->retType.kind == IlType::Kind::Ptr) {
+                    lowerer_.deferReleaseObj(
+                        res,
+                        signature->returnClassQName.empty()
+                            ? std::string{}
+                            : lowerer_.resolveQualifiedClassCasing(signature->returnClassQName));
+                }
                 result_ = Lowerer::RVal{res, signature->retType};
             } else {
                 lowerer_.emitCall(calleeName, args);
@@ -746,12 +757,9 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
         bool isIface = false;
         int targetId = -1;
         // Interface lookup via OOP index
-        for (const auto &p : lowerer_.oopIndex_.interfacesByQname()) {
-            if (p.first == dotted) {
-                isIface = true;
-                targetId = p.second.ifaceId;
-                break;
-            }
+        if (const auto *iface = lowerer_.oopIndex_.findInterface(dotted)) {
+            isIface = true;
+            targetId = iface->ifaceId;
         }
         if (!isIface) {
             // Use last segment as class key for layout map
@@ -809,12 +817,9 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
         }
         bool isIface = false;
         int targetId = -1;
-        for (const auto &p : lowerer_.oopIndex_.interfacesByQname()) {
-            if (p.first == dotted) {
-                isIface = true;
-                targetId = p.second.ifaceId;
-                break;
-            }
+        if (const auto *iface = lowerer_.oopIndex_.findInterface(dotted)) {
+            isIface = true;
+            targetId = iface->ifaceId;
         }
         if (!isIface) {
             std::string cls = expr.typeName.empty() ? std::string{} : expr.typeName.back();

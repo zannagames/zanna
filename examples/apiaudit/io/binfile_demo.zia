@@ -1,7 +1,7 @@
 // =============================================================================
 // API Audit: Zanna.IO.BinFile - Binary File I/O
 // =============================================================================
-// Tests: Open, Close, ReadByte, WriteByte, Read, Write, Seek, Pos, Size, Eof, Flush
+// Tests: Open, Close, ReadByte, WriteByte, Read, Write, Seek, Position, SizeBytes, Eof, Flush
 // =============================================================================
 
 module BinFileDemo;
@@ -31,7 +31,7 @@ func start() {
     Say("Wrote 4 bytes: 65(A) 66(B) 67(C) 0");
 
     // --- Pos (after writing) ---
-    Say("--- Pos ---");
+    Say("--- Position ---");
     Say("Pos after write:");
     SayInt(BinFile.get_Position(wf));
 
@@ -50,10 +50,10 @@ func start() {
     var rf = BinFile.Open(testPath, "r");
     Say("Opened for reading");
 
-    // --- Size ---
-    Say("--- Size ---");
+    // --- SizeBytes ---
+    Say("--- SizeBytes ---");
     Say("Size:");
-    SayInt(BinFile.get_Size(rf));
+    SayInt(BinFile.get_SizeBytes(rf));
 
     // --- ReadByte ---
     Say("--- ReadByte ---");
@@ -64,7 +64,7 @@ func start() {
     Say("ReadByte 3:");
     SayInt(BinFile.ReadByte(rf));
 
-    // --- Pos ---
+    // --- Position ---
     Say("--- Pos (after reads) ---");
     Say("Pos:");
     SayInt(BinFile.get_Position(rf));

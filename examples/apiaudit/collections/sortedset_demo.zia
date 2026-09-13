@@ -1,6 +1,6 @@
 // sortedset_demo.zia - Comprehensive API audit for Zanna.Collections.SortedSet
-// Tests: New, Put, Drop, Has, First, Last, Floor, Ceil, Lower, Higher,
-//        At, IndexOf, Items, Range, Take, Skip, Merge, Common, Diff,
+// Tests: New, Add, Remove, Has, First, Last, Floor, Ceiling, Lower, Higher,
+//        At, IndexOf, ToSeq, Range, Take, Skip, Union, Intersect, Difference,
 //        IsSubset, Len, IsEmpty, Clear
 
 module SortedSetDemo;
@@ -18,14 +18,14 @@ func start() {
     SayInt(ss.Count);       // 0
     SayBool(ss.IsEmpty);  // 1
 
-    // --- Put ---
-    Say("--- Put ---");
-    SayBool(ss.Put("cherry"));   // 1 (new)
-    SayBool(ss.Put("apple"));    // 1 (new)
-    SayBool(ss.Put("banana"));   // 1 (new)
-    SayBool(ss.Put("date"));     // 1 (new)
-    SayBool(ss.Put("elderberry")); // 1 (new)
-    SayBool(ss.Put("apple"));    // 0 (duplicate)
+    // --- Add ---
+    Say("--- Add ---");
+    SayBool(ss.Add("cherry"));   // 1 (new)
+    SayBool(ss.Add("apple"));    // 1 (new)
+    SayBool(ss.Add("banana"));   // 1 (new)
+    SayBool(ss.Add("date"));     // 1 (new)
+    SayBool(ss.Add("elderberry")); // 1 (new)
+    SayBool(ss.Add("apple"));    // 0 (duplicate)
     SayInt(ss.Count);              // 5
     SayBool(ss.IsEmpty);         // 0
 
@@ -59,8 +59,8 @@ func start() {
     Say(ss.Floor("cherry"));  // cherry
     Say(ss.Floor("c"));       // banana (greatest <= "c")
 
-    // --- Ceil (smallest element >= key) ---
-    Say("--- Ceil ---");
+    // --- Ceiling (smallest element >= key) ---
+    Say("--- Ceiling ---");
     Say(ss.Ceiling("cherry"));   // cherry
     Say(ss.Ceiling("c"));        // cherry (smallest >= "c")
 
@@ -72,8 +72,8 @@ func start() {
     Say("--- Higher ---");
     Say(ss.Higher("cherry")); // date
 
-    // --- Items ---
-    Say("--- Items ---");
+    // --- ToSeq ---
+    Say("--- ToSeq ---");
     var items = ss.ToSeq();
     SayInt(items.Count);  // 5
 
@@ -92,19 +92,19 @@ func start() {
     var skipped = ss.Skip(2);
     SayInt(skipped.Count);  // 3
 
-    // --- Drop ---
-    Say("--- Drop ---");
-    SayBool(ss.Drop("banana"));  // 1 (removed)
+    // --- Remove ---
+    Say("--- Remove ---");
+    SayBool(ss.Remove("banana"));  // 1 (removed)
     SayBool(ss.Has("banana"));   // 0
     SayInt(ss.Count);              // 4
-    SayBool(ss.Drop("banana"));  // 0 (already removed)
+    SayBool(ss.Remove("banana"));  // 0 (already removed)
 
-    // --- Merge ---
-    Say("--- Merge ---");
+    // --- Union ---
+    Say("--- Union ---");
     var ss2 = SortedSet.New();
-    ss2.Put("apple");
-    ss2.Put("fig");
-    ss2.Put("grape");
+    ss2.Add("apple");
+    ss2.Add("fig");
+    ss2.Add("grape");
     var merged = ss.Union(ss2);
     SayInt(merged.Count);  // 6 (apple, cherry, date, elderberry, fig, grape)
 
@@ -121,8 +121,8 @@ func start() {
     // --- IsSubset ---
     Say("--- IsSubset ---");
     var sub = SortedSet.New();
-    sub.Put("apple");
-    sub.Put("cherry");
+    sub.Add("apple");
+    sub.Add("cherry");
     SayBool(sub.IsSubset(ss));  // 1
 
     // --- Clear ---

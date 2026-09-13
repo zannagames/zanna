@@ -134,7 +134,7 @@ RT_FUNC(ObjIsNull,          rt_obj_is_null,          "Zanna.Core.Object.IsNull",
 // RANDOM
 //=============================================================================
 
-RT_FUNC(RandomNew, rt_random_new, "Zanna.Math.Random.New", "obj(i64)", owned)
+RT_FUNC(RandomNew, rt_random_new, "Zanna.Math.Random.New", "obj<Zanna.Math.Random>(i64)", owned)
 RT_FUNC(RandomNext,          rt_rnd,                    "Zanna.Math.Random.NextDouble", "f64()")
 RT_FUNC(RandomNextInt,       rt_rand_int,               "Zanna.Math.Random.NextInt",   "i64(i64)")
 RT_FUNC(RandomSeed,          rt_randomize_i64,          "Zanna.Math.Random.Seed",      "void(i64)")
@@ -157,8 +157,8 @@ RT_FUNC(RandomShuffle,     rt_rand_shuffle,     "Zanna.Math.Random.Shuffle",    
 // save-games, and deterministic test harnesses all need the cursor.
 RT_FUNC(RandomGetState,     rt_random_get_state,        "Zanna.Math.Random.get_State",       "i64(obj)")
 RT_FUNC(RandomSetState,     rt_random_set_state,        "Zanna.Math.Random.set_State",       "void(obj,i64)")
-RT_FUNC(RandomClone, rt_random_clone, "Zanna.Math.Random.Clone", "obj(obj)", owned)
-RT_FUNC(RandomDerive, rt_random_derive, "Zanna.Math.Random.Derive", "obj(obj,i64)", owned)
+RT_FUNC(RandomClone, rt_random_clone, "Zanna.Math.Random.Clone", "obj<Zanna.Math.Random>(obj)", owned)
+RT_FUNC(RandomDerive, rt_random_derive, "Zanna.Math.Random.Derive", "obj<Zanna.Math.Random>(obj,i64)", owned)
 RT_FUNC(RandomGetGlobalState, rt_random_get_global_state, "Zanna.Math.Random.GetGlobalState",  "i64()")
 RT_FUNC(RandomSetGlobalState, rt_random_set_global_state, "Zanna.Math.Random.SetGlobalState",  "void(i64)")
 RT_FUNC(RandomHashRange,    rt_random_hash_range,       "Zanna.Math.Random.HashRange",       "i64(i64,i64,i64,i64,i64)")
@@ -169,27 +169,27 @@ RT_INTERNAL_FUNC(RandomChancePercentMethod, rt_rand_chance_percent_method, "Zann
 //=============================================================================
 
 // Creation
-RT_FUNC(BigIntFromI64, rt_bigint_from_i64, "Zanna.Math.BigInt.FromInt", "obj(i64)", owned)
-RT_FUNC(BigIntFromStr, rt_bigint_from_str, "Zanna.Math.BigInt.FromStr", "obj(str)", owned)
-RT_FUNC(BigIntFromBytes, rt_bigint_from_bytes, "Zanna.Math.BigInt.FromBytes", "obj(obj)", owned)
-RT_FUNC(BigIntZero, rt_bigint_zero, "Zanna.Math.BigInt.get_Zero", "obj()", owned)
-RT_FUNC(BigIntOne, rt_bigint_one, "Zanna.Math.BigInt.get_One", "obj()", owned)
+RT_FUNC(BigIntFromI64, rt_bigint_from_i64, "Zanna.Math.BigInt.FromInt", "obj<Zanna.Math.BigInt>(i64)", owned)
+RT_FUNC(BigIntFromStr, rt_bigint_from_str, "Zanna.Math.BigInt.FromStr", "obj<Zanna.Math.BigInt>(str)", owned)
+RT_FUNC(BigIntFromBytes, rt_bigint_from_bytes, "Zanna.Math.BigInt.FromBytes", "obj<Zanna.Math.BigInt>(obj)", owned)
+RT_FUNC(BigIntZero, rt_bigint_zero, "Zanna.Math.BigInt.get_Zero", "obj<Zanna.Math.BigInt>()", owned)
+RT_FUNC(BigIntOne, rt_bigint_one, "Zanna.Math.BigInt.get_One", "obj<Zanna.Math.BigInt>()", owned)
 
 // Conversion
 RT_FUNC(BigIntToI64,        rt_bigint_to_i64,       "Zanna.Math.BigInt.ToInt",        "i64(obj)")
 RT_FUNC(BigIntToStr, rt_bigint_to_str, "Zanna.Math.BigInt.ToString", "str(obj)", owned)
 RT_FUNC(BigIntToStrBase, rt_bigint_to_str_base, "Zanna.Math.BigInt.ToStringBase", "str(obj,i64)", owned)
-RT_FUNC(BigIntToBytes, rt_bigint_to_bytes, "Zanna.Math.BigInt.ToBytes", "obj(obj)", owned)
+RT_FUNC(BigIntToBytes, rt_bigint_to_bytes, "Zanna.Math.BigInt.ToBytes", "obj<Zanna.Collections.Bytes>(obj)", owned)
 RT_FUNC(BigIntFitsI64,      rt_bigint_fits_i64,     "Zanna.Math.BigInt.FitsInt",      "i1(obj)")
 
 // Arithmetic
-RT_FUNC(BigIntAdd, rt_bigint_add, "Zanna.Math.BigInt.Add", "obj(obj,obj)", owned)
-RT_FUNC(BigIntSub, rt_bigint_sub, "Zanna.Math.BigInt.Sub", "obj(obj,obj)", owned)
-RT_FUNC(BigIntMul, rt_bigint_mul, "Zanna.Math.BigInt.Mul", "obj(obj,obj)", owned)
-RT_FUNC(BigIntDiv, rt_bigint_div, "Zanna.Math.BigInt.Div", "obj(obj,obj)", owned)
-RT_FUNC(BigIntMod, rt_bigint_mod, "Zanna.Math.BigInt.Mod", "obj(obj,obj)", owned)
-RT_FUNC(BigIntNeg, rt_bigint_neg, "Zanna.Math.BigInt.Negate", "obj(obj)", owned)
-RT_FUNC(BigIntAbs, rt_bigint_abs, "Zanna.Math.BigInt.Abs", "obj(obj)", owned)
+RT_FUNC(BigIntAdd, rt_bigint_add, "Zanna.Math.BigInt.Add", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntSub, rt_bigint_sub, "Zanna.Math.BigInt.Sub", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntMul, rt_bigint_mul, "Zanna.Math.BigInt.Mul", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntDiv, rt_bigint_div, "Zanna.Math.BigInt.Div", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntMod, rt_bigint_mod, "Zanna.Math.BigInt.Mod", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntNeg, rt_bigint_neg, "Zanna.Math.BigInt.Negate", "obj<Zanna.Math.BigInt>(obj)", owned)
+RT_FUNC(BigIntAbs, rt_bigint_abs, "Zanna.Math.BigInt.Abs", "obj<Zanna.Math.BigInt>(obj)", owned)
 
 // Comparison
 RT_FUNC(BigIntCmp,          rt_bigint_cmp,          "Zanna.Math.BigInt.Compare",          "i64(obj,obj)")
@@ -199,23 +199,23 @@ RT_FUNC(BigIntIsNegative,   rt_bigint_is_negative,  "Zanna.Math.BigInt.IsNegativ
 RT_FUNC(BigIntSign,         rt_bigint_sign,         "Zanna.Math.BigInt.Sign",         "i64(obj)")
 
 // Bitwise
-RT_FUNC(BigIntAnd, rt_bigint_and, "Zanna.Math.BigInt.And", "obj(obj,obj)", owned)
-RT_FUNC(BigIntOr, rt_bigint_or, "Zanna.Math.BigInt.Or", "obj(obj,obj)", owned)
-RT_FUNC(BigIntXor, rt_bigint_xor, "Zanna.Math.BigInt.Xor", "obj(obj,obj)", owned)
-RT_FUNC(BigIntNot, rt_bigint_not, "Zanna.Math.BigInt.Not", "obj(obj)", owned)
-RT_FUNC(BigIntShl, rt_bigint_shl, "Zanna.Math.BigInt.Shl", "obj(obj,i64)", owned)
-RT_FUNC(BigIntShr, rt_bigint_shr, "Zanna.Math.BigInt.Shr", "obj(obj,i64)", owned)
+RT_FUNC(BigIntAnd, rt_bigint_and, "Zanna.Math.BigInt.And", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntOr, rt_bigint_or, "Zanna.Math.BigInt.Or", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntXor, rt_bigint_xor, "Zanna.Math.BigInt.Xor", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntNot, rt_bigint_not, "Zanna.Math.BigInt.Not", "obj<Zanna.Math.BigInt>(obj)", owned)
+RT_FUNC(BigIntShl, rt_bigint_shl, "Zanna.Math.BigInt.Shl", "obj<Zanna.Math.BigInt>(obj,i64)", owned)
+RT_FUNC(BigIntShr, rt_bigint_shr, "Zanna.Math.BigInt.Shr", "obj<Zanna.Math.BigInt>(obj,i64)", owned)
 
 // Advanced
-RT_FUNC(BigIntPow, rt_bigint_pow, "Zanna.Math.BigInt.Pow", "obj(obj,i64)", owned)
-RT_FUNC(BigIntPowMod, rt_bigint_pow_mod, "Zanna.Math.BigInt.PowMod", "obj(obj,obj,obj)", owned)
-RT_FUNC(BigIntGcd, rt_bigint_gcd, "Zanna.Math.BigInt.Gcd", "obj(obj,obj)", owned)
-RT_FUNC(BigIntLcm, rt_bigint_lcm, "Zanna.Math.BigInt.Lcm", "obj(obj,obj)", owned)
+RT_FUNC(BigIntPow, rt_bigint_pow, "Zanna.Math.BigInt.Pow", "obj<Zanna.Math.BigInt>(obj,i64)", owned)
+RT_FUNC(BigIntPowMod, rt_bigint_pow_mod, "Zanna.Math.BigInt.PowMod", "obj<Zanna.Math.BigInt>(obj,obj,obj)", owned)
+RT_FUNC(BigIntGcd, rt_bigint_gcd, "Zanna.Math.BigInt.Gcd", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
+RT_FUNC(BigIntLcm, rt_bigint_lcm, "Zanna.Math.BigInt.Lcm", "obj<Zanna.Math.BigInt>(obj,obj)", owned)
 RT_FUNC(BigIntBitLen,       rt_bigint_bit_length,   "Zanna.Math.BigInt.BitLength",    "i64(obj)")
 RT_FUNC(BigIntTestBit,      rt_bigint_test_bit,     "Zanna.Math.BigInt.TestBit",      "i1(obj,i64)")
-RT_FUNC(BigIntSetBit, rt_bigint_set_bit, "Zanna.Math.BigInt.SetBit", "obj(obj,i64)", owned)
-RT_FUNC(BigIntClearBit, rt_bigint_clear_bit, "Zanna.Math.BigInt.ClearBit", "obj(obj,i64)", owned)
-RT_FUNC(BigIntSqrt, rt_bigint_sqrt, "Zanna.Math.BigInt.Sqrt", "obj(obj)", owned)
+RT_FUNC(BigIntSetBit, rt_bigint_set_bit, "Zanna.Math.BigInt.SetBit", "obj<Zanna.Math.BigInt>(obj,i64)", owned)
+RT_FUNC(BigIntClearBit, rt_bigint_clear_bit, "Zanna.Math.BigInt.ClearBit", "obj<Zanna.Math.BigInt>(obj,i64)", owned)
+RT_FUNC(BigIntSqrt, rt_bigint_sqrt, "Zanna.Math.BigInt.Sqrt", "obj<Zanna.Math.BigInt>(obj)", owned)
 
 /// @summary Provides Big Int functionality for numeric and geometric calculations.
 /// @details
@@ -223,43 +223,43 @@ RT_FUNC(BigIntSqrt, rt_bigint_sqrt, "Zanna.Math.BigInt.Sqrt", "obj(obj)", owned)
 /// construct the class directly. Its public surface exposes properties such as `Zero`, `One` and
 /// operations including `FromInt`, `FromStr`, `FromBytes`, `ToInt`.
 RT_CLASS_BEGIN("Zanna.Math.BigInt", MathBigInt, "obj", none)
-    RT_METHOD("FromInt",    "obj(i64)",        BigIntFromI64)
-    RT_METHOD("FromStr",    "obj(str)",        BigIntFromStr)
-    RT_METHOD("FromBytes",  "obj(obj)",        BigIntFromBytes)
-    RT_PROP("Zero",         "obj",             BigIntZero,     none)
-    RT_PROP("One",          "obj",             BigIntOne,      none)
+    RT_METHOD("FromInt",    "obj<Zanna.Math.BigInt>(i64)",        BigIntFromI64)
+    RT_METHOD("FromStr",    "obj<Zanna.Math.BigInt>(str)",        BigIntFromStr)
+    RT_METHOD("FromBytes",  "obj<Zanna.Math.BigInt>(obj)",        BigIntFromBytes)
+    RT_PROP("Zero",         "obj<Zanna.Math.BigInt>",             BigIntZero,     none)
+    RT_PROP("One",          "obj<Zanna.Math.BigInt>",             BigIntOne,      none)
     RT_METHOD("ToInt",      "i64(obj)",        BigIntToI64)
     RT_METHOD("ToString",   "str(obj)",        BigIntToStr)
     RT_METHOD("ToStringBase",  "str(obj,i64)",    BigIntToStrBase)
-    RT_METHOD("ToBytes",    "obj(obj)",        BigIntToBytes)
+    RT_METHOD("ToBytes",    "obj<Zanna.Collections.Bytes>(obj)",        BigIntToBytes)
     RT_METHOD("FitsInt",    "i1(obj)",         BigIntFitsI64)
-    RT_METHOD("Add",        "obj(obj,obj)",    BigIntAdd)
-    RT_METHOD("Sub",        "obj(obj,obj)",    BigIntSub)
-    RT_METHOD("Mul",        "obj(obj,obj)",    BigIntMul)
-    RT_METHOD("Div",        "obj(obj,obj)",    BigIntDiv)
-    RT_METHOD("Mod",        "obj(obj,obj)",    BigIntMod)
-    RT_METHOD("Negate",        "obj(obj)",        BigIntNeg)
-    RT_METHOD("Abs",        "obj(obj)",        BigIntAbs)
+    RT_METHOD("Add",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntAdd)
+    RT_METHOD("Sub",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntSub)
+    RT_METHOD("Mul",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntMul)
+    RT_METHOD("Div",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntDiv)
+    RT_METHOD("Mod",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntMod)
+    RT_METHOD("Negate",        "obj<Zanna.Math.BigInt>(obj)",        BigIntNeg)
+    RT_METHOD("Abs",        "obj<Zanna.Math.BigInt>(obj)",        BigIntAbs)
     RT_METHOD("Compare",        "i64(obj,obj)",    BigIntCmp)
     RT_METHOD("Equals",         "i1(obj,obj)",     BigIntEq)
     RT_METHOD("IsZero",     "i1(obj)",         BigIntIsZero)
     RT_METHOD("IsNegative", "i1(obj)",         BigIntIsNegative)
     RT_METHOD("Sign",       "i64(obj)",        BigIntSign)
-    RT_METHOD("And",        "obj(obj,obj)",    BigIntAnd)
-    RT_METHOD("Or",         "obj(obj,obj)",    BigIntOr)
-    RT_METHOD("Xor",        "obj(obj,obj)",    BigIntXor)
-    RT_METHOD("Not",        "obj(obj)",        BigIntNot)
-    RT_METHOD("Shl",        "obj(obj,i64)",    BigIntShl)
-    RT_METHOD("Shr",        "obj(obj,i64)",    BigIntShr)
-    RT_METHOD("Pow",        "obj(obj,i64)",    BigIntPow)
-    RT_METHOD("PowMod",     "obj(obj,obj,obj)",BigIntPowMod)
-    RT_METHOD("Gcd",        "obj(obj,obj)",    BigIntGcd)
-    RT_METHOD("Lcm",        "obj(obj,obj)",    BigIntLcm)
+    RT_METHOD("And",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntAnd)
+    RT_METHOD("Or",         "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntOr)
+    RT_METHOD("Xor",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntXor)
+    RT_METHOD("Not",        "obj<Zanna.Math.BigInt>(obj)",        BigIntNot)
+    RT_METHOD("Shl",        "obj<Zanna.Math.BigInt>(obj,i64)",    BigIntShl)
+    RT_METHOD("Shr",        "obj<Zanna.Math.BigInt>(obj,i64)",    BigIntShr)
+    RT_METHOD("Pow",        "obj<Zanna.Math.BigInt>(obj,i64)",    BigIntPow)
+    RT_METHOD("PowMod",     "obj<Zanna.Math.BigInt>(obj,obj,obj)",BigIntPowMod)
+    RT_METHOD("Gcd",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntGcd)
+    RT_METHOD("Lcm",        "obj<Zanna.Math.BigInt>(obj,obj)",    BigIntLcm)
     RT_METHOD("BitLength",  "i64(obj)",        BigIntBitLen)
     RT_METHOD("TestBit",    "i1(obj,i64)",     BigIntTestBit)
-    RT_METHOD("SetBit",     "obj(obj,i64)",    BigIntSetBit)
-    RT_METHOD("ClearBit",   "obj(obj,i64)",    BigIntClearBit)
-    RT_METHOD("Sqrt",       "obj(obj)",        BigIntSqrt)
+    RT_METHOD("SetBit",     "obj<Zanna.Math.BigInt>(obj,i64)",    BigIntSetBit)
+    RT_METHOD("ClearBit",   "obj<Zanna.Math.BigInt>(obj,i64)",    BigIntClearBit)
+    RT_METHOD("Sqrt",       "obj<Zanna.Math.BigInt>(obj)",        BigIntSqrt)
 RT_CLASS_END()
 
 //=============================================================================
@@ -368,7 +368,7 @@ RT_FUNC(Singularize, rt_singularize, "Zanna.Text.Pluralize.Singular", "str(str)"
 RT_FUNC(PluralizeCount, rt_pluralize_count, "Zanna.Text.Pluralize.Count", "str(i64,str)", owned)
 
 // Semantic versioning
-RT_FUNC(VersionParse, rt_version_parse, "Zanna.Text.Version.Parse", "obj(str)", owned)
+RT_FUNC(VersionParse, rt_version_parse, "Zanna.Text.Version.Parse", "obj<Zanna.Text.Version>(str)", owned)
 RT_FUNC(VersionIsValid,    rt_version_is_valid,   "Zanna.Text.Version.IsValid",    "i1(str)")
 RT_FUNC(VersionMajor,      rt_version_major,      "Zanna.Text.Version.get_Major",  "i64(obj)")
 RT_FUNC(VersionMinor,      rt_version_minor,      "Zanna.Text.Version.get_Minor",  "i64(obj)")
@@ -468,7 +468,7 @@ RT_FUNC(FuzzyMatchMatch, rt_fuzzy_match_match, "Zanna.Text.FuzzyMatch.Match", "o
 // TEXT - INI
 //=============================================================================
 
-RT_FUNC(IniParse, rt_ini_parse, "Zanna.Data.Ini.Parse", "obj(str)", owned)
+RT_FUNC(IniParse, rt_ini_parse, "Zanna.Data.Ini.Parse", "obj<Zanna.Collections.Map>(str)", owned)
 RT_FUNC(IniFormat, rt_ini_format, "Zanna.Data.Ini.Format", "str(obj)", owned)
 RT_FUNC(IniGet, rt_ini_get, "Zanna.Data.Ini.Get", "str(obj,str,str)", owned)
 RT_FUNC(IniSet,            rt_ini_set,               "Zanna.Data.Ini.Set",             "void(obj,str,str,str)")
@@ -493,7 +493,7 @@ RT_FUNC(JsonNewObject, rt_map_new, "Zanna.Data.Json.NewObject", "obj<Zanna.Colle
 // TEXT - JSON Stream (SAX-style streaming parser)
 //=============================================================================
 
-RT_FUNC(JsonStreamNew, rt_json_stream_new, "Zanna.Data.JsonStream.New", "obj(str)", owned)
+RT_FUNC(JsonStreamNew, rt_json_stream_new, "Zanna.Data.JsonStream.New", "obj<Zanna.Data.JsonStream>(str)", owned)
 RT_FUNC(JsonStreamNext,         rt_json_stream_next,          "Zanna.Data.JsonStream.Next",          "i64(obj)")
 RT_FUNC(JsonStreamNextResult, rt_json_stream_next_result, "Zanna.Data.JsonStream.NextResult", "obj<Zanna.Result>(obj)", owned)
 RT_FUNC(JsonStreamTokenType,    rt_json_stream_token_type,    "Zanna.Data.JsonStream.TokenType",     "i64(obj)")
@@ -509,15 +509,15 @@ RT_FUNC(JsonStreamHasNext,      rt_json_stream_has_next,      "Zanna.Data.JsonSt
 //=============================================================================
 
 // Parsing
-RT_FUNC(XmlParse, rt_xml_parse, "Zanna.Data.Xml.Parse", "obj(str)", owned)
+RT_FUNC(XmlParse, rt_xml_parse, "Zanna.Data.Xml.Parse", "obj<Zanna.Core.Object>(str)", owned)
 RT_FUNC(XmlParseResult, rt_xml_parse_result, "Zanna.Data.Xml.ParseResult", "obj<Zanna.Result>(str)", owned)
 RT_FUNC(XmlIsValid,         rt_xml_is_valid,          "Zanna.Data.Xml.IsValid",         "i1(str)")
 
 // Node Creation
-RT_FUNC(XmlElement, rt_xml_element, "Zanna.Data.Xml.Element", "obj(str)", owned)
-RT_FUNC(XmlText, rt_xml_text, "Zanna.Data.Xml.Text", "obj(str)", owned)
-RT_FUNC(XmlComment, rt_xml_comment, "Zanna.Data.Xml.Comment", "obj(str)", owned)
-RT_FUNC(XmlCdata, rt_xml_cdata, "Zanna.Data.Xml.Cdata", "obj(str)", owned)
+RT_FUNC(XmlElement, rt_xml_element, "Zanna.Data.Xml.Element", "obj<Zanna.Core.Object>(str)", owned)
+RT_FUNC(XmlText, rt_xml_text, "Zanna.Data.Xml.Text", "obj<Zanna.Core.Object>(str)", owned)
+RT_FUNC(XmlComment, rt_xml_comment, "Zanna.Data.Xml.Comment", "obj<Zanna.Core.Object>(str)", owned)
+RT_FUNC(XmlCdata, rt_xml_cdata, "Zanna.Data.Xml.Cdata", "obj<Zanna.Core.Object>(str)", owned)
 
 // Node Properties
 RT_FUNC(XmlNodeType,        rt_xml_node_type,         "Zanna.Data.Xml.NodeType",        "i64(obj)")
@@ -535,8 +535,8 @@ RT_FUNC(XmlAttrNames, rt_xml_attr_names, "Zanna.Data.Xml.AttrNames", "seq<str>(o
 // Children
 RT_FUNC(XmlChildren, rt_xml_children, "Zanna.Data.Xml.Children", "seq<obj>(obj)", owned)
 RT_FUNC(XmlChildCount,      rt_xml_child_count,       "Zanna.Data.Xml.ChildCount",      "i64(obj)")
-RT_FUNC(XmlChildAt, rt_xml_child_at, "Zanna.Data.Xml.ChildAt", "obj(obj,i64)", borrowed)
-RT_FUNC(XmlChild, rt_xml_child, "Zanna.Data.Xml.Child", "obj(obj,str)", borrowed)
+RT_FUNC(XmlChildAt, rt_xml_child_at, "Zanna.Data.Xml.ChildAt", "obj<Zanna.Core.Object>(obj,i64)", borrowed)
+RT_FUNC(XmlChild, rt_xml_child, "Zanna.Data.Xml.Child", "obj<Zanna.Core.Object>(obj,str)", borrowed)
 RT_FUNC(XmlChildrenByTag, rt_xml_children_by_tag, "Zanna.Data.Xml.ChildrenByTag", "seq<obj>(obj,str)", owned)
 RT_FUNC(XmlAppend,          rt_xml_append,            "Zanna.Data.Xml.Append",          "void(obj,obj)")
 RT_FUNC(XmlInsert,          rt_xml_insert,            "Zanna.Data.Xml.Insert",          "void(obj,i64,obj)")
@@ -545,8 +545,8 @@ RT_FUNC(XmlRemoveAt,        rt_xml_remove_at,         "Zanna.Data.Xml.RemoveAt",
 RT_FUNC(XmlSetText,         rt_xml_set_text,          "Zanna.Data.Xml.SetText",         "void(obj,str)")
 
 // Navigation
-RT_FUNC(XmlParent, rt_xml_parent, "Zanna.Data.Xml.Parent", "obj(obj)", owned)
-RT_FUNC(XmlRoot, rt_xml_root, "Zanna.Data.Xml.Root", "obj(obj)", borrowed)
+RT_FUNC(XmlParent, rt_xml_parent, "Zanna.Data.Xml.Parent", "obj<Zanna.Core.Object>(obj)", owned)
+RT_FUNC(XmlRoot, rt_xml_root, "Zanna.Data.Xml.Root", "obj<Zanna.Core.Object>(obj)", borrowed)
 RT_FUNC(XmlFindAll, rt_xml_find_all, "Zanna.Data.Xml.FindAll", "seq<obj>(obj,str)", owned)
 RT_FUNC(XmlFindOption, rt_xml_find_option, "Zanna.Data.Xml.Find", "obj<Zanna.Option>(obj,str)", owned)
 
@@ -564,13 +564,13 @@ RT_FUNC(XmlUnescape, rt_xml_unescape, "Zanna.Data.Xml.Unescape", "str(str)", own
 /// construct the class directly. Its public surface exposes operations including `Parse`,
 /// `ParseResult`, `IsValid`, `Element`.
 RT_CLASS_BEGIN("Zanna.Data.Xml", DataXml, "obj", none)
-    RT_METHOD("Parse",          "obj(str)",         XmlParse)
+    RT_METHOD("Parse",          "obj<Zanna.Core.Object>(str)",         XmlParse)
     RT_METHOD("ParseResult",    "obj<Zanna.Result>(str)", XmlParseResult)
     RT_METHOD("IsValid",        "i1(str)",          XmlIsValid)
-    RT_METHOD("Element",        "obj(str)",         XmlElement)
-    RT_METHOD("Text",           "obj(str)",         XmlText)
-    RT_METHOD("Comment",        "obj(str)",         XmlComment)
-    RT_METHOD("Cdata",          "obj(str)",         XmlCdata)
+    RT_METHOD("Element",        "obj<Zanna.Core.Object>(str)",         XmlElement)
+    RT_METHOD("Text",           "obj<Zanna.Core.Object>(str)",         XmlText)
+    RT_METHOD("Comment",        "obj<Zanna.Core.Object>(str)",         XmlComment)
+    RT_METHOD("Cdata",          "obj<Zanna.Core.Object>(str)",         XmlCdata)
     RT_METHOD("NodeType",       "i64(obj)",         XmlNodeType)
     RT_METHOD("Tag",            "str(obj)",         XmlTag)
     RT_METHOD("Content",        "str(obj)",         XmlContent)
@@ -582,16 +582,16 @@ RT_CLASS_BEGIN("Zanna.Data.Xml", DataXml, "obj", none)
     RT_METHOD("AttrNames",      "seq<str>(obj)",         XmlAttrNames)
     RT_METHOD("Children",       "seq<obj>(obj)",         XmlChildren)
     RT_METHOD("ChildCount",     "i64(obj)",         XmlChildCount)
-    RT_METHOD("ChildAt",        "obj(obj,i64)",     XmlChildAt)
-    RT_METHOD("Child",          "obj(obj,str)",     XmlChild)
+    RT_METHOD("ChildAt",        "obj<Zanna.Core.Object>(obj,i64)",     XmlChildAt)
+    RT_METHOD("Child",          "obj<Zanna.Core.Object>(obj,str)",     XmlChild)
     RT_METHOD("ChildrenByTag",  "seq<obj>(obj,str)",     XmlChildrenByTag)
     RT_METHOD("Append",         "void(obj,obj)",    XmlAppend)
     RT_METHOD("Insert",         "void(obj,i64,obj)",XmlInsert)
     RT_METHOD("Remove",         "i1(obj,obj)",      XmlRemove)
     RT_METHOD("RemoveAt",       "void(obj,i64)",    XmlRemoveAt)
     RT_METHOD("SetText",        "void(obj,str)",    XmlSetText)
-    RT_METHOD("Parent",         "obj(obj)",         XmlParent)
-    RT_METHOD("Root",           "obj(obj)",         XmlRoot)
+    RT_METHOD("Parent",         "obj<Zanna.Core.Object>(obj)",         XmlParent)
+    RT_METHOD("Root",           "obj<Zanna.Core.Object>(obj)",         XmlRoot)
     RT_METHOD("FindAll",        "seq<obj>(obj,str)",     XmlFindAll)
     RT_METHOD("Find",     "obj<Zanna.Option>(obj,str)", XmlFindOption)
     RT_METHOD("Format",         "str(obj)",         XmlFormat)
@@ -634,7 +634,7 @@ RT_CLASS_END()
 // TEXT - TOML
 //=============================================================================
 
-RT_FUNC(TomlParse, rt_toml_parse, "Zanna.Data.Toml.Parse", "obj(str)", owned)
+RT_FUNC(TomlParse, rt_toml_parse, "Zanna.Data.Toml.Parse", "obj<Zanna.Collections.Map>(str)", owned)
 RT_FUNC(TomlIsValid,        rt_toml_is_valid,         "Zanna.Data.Toml.IsValid",        "i1(str)")
 RT_FUNC(TomlFormat, rt_toml_format, "Zanna.Data.Toml.Format", "str(obj)", owned)
 RT_FUNC(TomlGet, rt_toml_get, "Zanna.Data.Toml.Get", "obj(obj,str)", borrowed)
@@ -718,18 +718,18 @@ RT_FUNC(UuidEmpty, rt_guid_empty, "Zanna.Text.Uuid.get_Empty", "str()", owned)
 RT_FUNC(UuidFromBytes, rt_guid_from_bytes, "Zanna.Text.Uuid.FromBytes", "str(obj)", owned)
 RT_FUNC(UuidIsValid,   rt_guid_is_valid,   "Zanna.Text.Uuid.IsValid",   "i1(str)")
 RT_FUNC(UuidNew, rt_guid_new, "Zanna.Text.Uuid.Generate", "str()", owned)
-RT_FUNC(UuidToBytes, rt_guid_to_bytes, "Zanna.Text.Uuid.ToBytes", "obj(str)", owned)
+RT_FUNC(UuidToBytes, rt_guid_to_bytes, "Zanna.Text.Uuid.ToBytes", "obj<Zanna.Collections.Bytes>(str)", owned)
 
 //=============================================================================
 // TEXT - STRINGBUILDER
 //=============================================================================
 
-RT_FUNC(SBAppend, rt_text_sb_append, "Zanna.Text.StringBuilder.Append", "obj(obj,str)", borrowed)
-RT_FUNC(SBAppendLine, rt_text_sb_append_line, "Zanna.Text.StringBuilder.AppendLine", "obj(obj,str)", borrowed)
+RT_FUNC(SBAppend, rt_text_sb_append, "Zanna.Text.StringBuilder.Append", "obj<Zanna.Text.StringBuilder>(obj,str)", borrowed)
+RT_FUNC(SBAppendLine, rt_text_sb_append_line, "Zanna.Text.StringBuilder.AppendLine", "obj<Zanna.Text.StringBuilder>(obj,str)", borrowed)
 RT_FUNC(SBClear,       rt_text_sb_clear,        "Zanna.Text.StringBuilder.Clear",        "void(obj)")
 RT_FUNC(SBGetCapacity, rt_text_sb_get_capacity, "Zanna.Text.StringBuilder.get_Capacity", "i64(obj)")
 RT_FUNC(SBGetLength,   rt_text_sb_get_length,   "Zanna.Text.StringBuilder.get_Length",   "i64(obj)")
-RT_FUNC(SBNew, rt_sb_new, "Zanna.Text.StringBuilder.New", "obj()", owned)
+RT_FUNC(SBNew, rt_sb_new, "Zanna.Text.StringBuilder.New", "obj<Zanna.Text.StringBuilder>()", owned)
 RT_FUNC(SBToString, rt_text_sb_to_string, "Zanna.Text.StringBuilder.ToString", "str(obj)", owned)
 
 //=============================================================================
@@ -746,7 +746,7 @@ RT_FUNC(PatternReplaceFirst, rt_pattern_replace_first, "Zanna.Text.Pattern.Repla
 RT_FUNC(PatternSplit, rt_pattern_split, "Zanna.Text.Pattern.Split", "seq<str>(str,str)", owned)
 RT_FUNC(PatternEscape, rt_pattern_escape, "Zanna.Text.Pattern.Escape", "str(str)", owned)
 
-RT_FUNC(CompiledPatternNew, rt_compiled_pattern_new, "Zanna.Text.CompiledPattern.New", "obj(str)", owned)
+RT_FUNC(CompiledPatternNew, rt_compiled_pattern_new, "Zanna.Text.CompiledPattern.New", "obj<Zanna.Text.CompiledPattern>(str)", owned)
 RT_FUNC(CompiledPatternTryNew, rt_compiled_pattern_try_new, "Zanna.Text.CompiledPattern.TryNew", "obj<Zanna.Result>(str,i1)", owned)
 RT_FUNC(CompiledPatternGetPattern, rt_compiled_pattern_get_pattern, "Zanna.Text.CompiledPattern.get_Pattern", "str(obj)", owned)
 RT_FUNC(CompiledPatternIsMatch,      rt_compiled_pattern_is_match,     "Zanna.Text.CompiledPattern.IsMatch",      "i1(obj,str)")
@@ -763,7 +763,7 @@ RT_FUNC(CompiledPatternExpandReplacementAt, rt_compiled_pattern_expand_replaceme
 RT_FUNC(CompiledPatternSplit, rt_compiled_pattern_split, "Zanna.Text.CompiledPattern.Split", "seq<str>(obj,str)", owned)
 RT_FUNC(CompiledPatternSplitN, rt_compiled_pattern_split_n, "Zanna.Text.CompiledPattern.SplitLimited", "seq<str>(obj,str,i64)", owned)
 
-RT_FUNC(ScannerNew, rt_scanner_new, "Zanna.Text.Scanner.New", "obj(str)", owned)
+RT_FUNC(ScannerNew, rt_scanner_new, "Zanna.Text.Scanner.New", "obj<Zanna.Text.Scanner>(str)", owned)
 RT_FUNC(ScannerPos,          rt_scanner_pos,            "Zanna.Text.Scanner.get_Position",      "i64(obj)")
 RT_FUNC(ScannerSetPos,       rt_scanner_set_pos,        "Zanna.Text.Scanner.set_Position",      "void(obj,i64)")
 RT_FUNC(ScannerIsEnd,        rt_scanner_is_end,         "Zanna.Text.Scanner.get_IsEnd",    "i1(obj)")

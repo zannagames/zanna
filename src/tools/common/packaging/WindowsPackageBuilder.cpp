@@ -2085,6 +2085,51 @@ std::vector<std::string> importedDllNamesFromPe(const std::vector<uint8_t> &data
     return importedDllNamesFromPeImpl(data);
 }
 
+/// @brief Collect the DLLs a Windows application directory ships beside its executable.
+/// @param executablePath PE32+ executable (UTF-8).
+/// @param projectRoot Trusted root for `windows-dll` paths (UTF-8).
+/// @param pkg Package configuration supplying `windows-dll` entries.
+/// @param compilerRuntimeDir Trusted MSVC runtime directory (UTF-8), or empty.
+/// @return Discovered DLLs followed by manifest DLLs.
+/// @throws std::runtime_error when an import or manifest DLL cannot be found.
+std::vector<WindowsAppLocalDll> collectWindowsAppLocalDlls(const std::string &executablePath,
+                                                           const std::string &projectRoot,
+                                                           const PackageConfig &pkg,
+                                                           const std::string &compilerRuntimeDir) {
+    const fs::path runtimeDir = compilerRuntimeDir.empty()
+                                    ? fs::path{}
+                                    : zanna::filesystem::pathFromUtf8(compilerRuntimeDir);
+    std::vector<WindowsAppLocalDll> dlls;
+    for (const auto &dep : discoverAdjacentDllDependencies(
+             zanna::filesystem::pathFromUtf8(executablePath), runtimeDir)) {
+        dlls.push_back({zanna::filesystem::pathToUtf8(dep.sourcePath), dep.installRelativePath});
+    }
+    const fs::path root = zanna::filesystem::pathFromUtf8(projectRoot);
+    for (const auto &dllRelPath : pkg.windowsDlls) {
+        const fs::path dllPath =
+            resolvePackageSourcePath(root, dllRelPath, "Windows DLL dependency");
+        if (!fs::is_regular_file(dllPath))
+            throw std::runtime_error("Windows DLL dependency is not a regular file: " + dllRelPath);
+        dlls.push_back({zanna::filesystem::pathToUtf8(dllPath),
+                        sanitizePackageRelativePath(dllRelPath, "Windows DLL dependency path")});
+    }
+    return dlls;
+}
+
+/// @brief Sign one application PE under the installer payload policy.
+/// @param signer Optional Authenticode signer.
+/// @param logicalName Install-relative name.
+/// @param data Unsigned file bytes.
+/// @param arch Required image architecture.
+/// @return Signed or unchanged bytes.
+/// @throws std::runtime_error when signing fails or changes the image architecture.
+std::vector<uint8_t> signWindowsApplicationPe(const WindowsPeSigner &signer,
+                                              std::string_view logicalName,
+                                              const std::vector<uint8_t> &data,
+                                              const std::string &arch) {
+    return signWindowsPayloadPe(signer, logicalName, data, arch);
+}
+
 /// @brief Build a Windows self-extracting installer for a single application binary.
 /// Assembly is a two-pass process: Pass 1 measures the exact overlay offset with
 /// overlayFileOffset=0; Pass 2 bakes the measured offset into the stub and produces
@@ -2202,20 +2247,13 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
                              true,
                              &installedManifestPaths);
 
-    const fs::path compilerRuntimeDir =
+    const std::string compilerRuntimeDir =
         params.installerHostPath.empty()
-            ? fs::path{}
-            : zanna::filesystem::pathFromUtf8(params.installerHostPath).parent_path();
-    std::vector<WindowsDllDependency> dllDependencies =
-        discoverAdjacentDllDependencies(executablePath, compilerRuntimeDir);
-    for (const auto &dllRelPath : pkg.windowsDlls) {
-        const fs::path dllPath =
-            resolvePackageSourcePath(projectRoot, dllRelPath, "Windows DLL dependency");
-        if (!fs::is_regular_file(dllPath))
-            throw std::runtime_error("Windows DLL dependency is not a regular file: " + dllRelPath);
-        dllDependencies.push_back(
-            {dllPath, sanitizePackageRelativePath(dllRelPath, "Windows DLL dependency path")});
-    }
+            ? std::string{}
+            : zanna::filesystem::pathToUtf8(
+                  zanna::filesystem::pathFromUtf8(params.installerHostPath).parent_path());
+    const std::vector<WindowsAppLocalDll> dllDependencies = collectWindowsAppLocalDlls(
+        params.executablePath, params.projectRoot, pkg, compilerRuntimeDir);
     for (const auto &dll : dllDependencies) {
         const std::string dllName = noteInstallFile(dll.installRelativePath);
         validateWindowsRelativePath(dllName, "Windows DLL dependency path");
@@ -2334,6 +2372,24 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
             throw std::runtime_error("asset is not a regular file or directory: " +
                                      asset.sourcePath);
         }
+    }
+
+    // The runtime mounts every *.zpak beside the executable at startup (ADR 0355).
+    for (const auto &pack : params.packFiles) {
+        const std::string relInstall = noteInstallFile(
+            zanna::filesystem::genericPathToUtf8(zanna::filesystem::pathFromUtf8(pack).filename()));
+        validateWindowsRelativePath(relInstall, "Windows pack file path");
+        const auto data = readFile(pack);
+        addCompressedPayloadFile(payloadZip,
+                                 relInstall,
+                                 data.data(),
+                                 data.size(),
+                                 0100644,
+                                 layout,
+                                 WindowsInstallRoot::InstallDir,
+                                 relInstall,
+                                 true,
+                                 &installedManifestPaths);
     }
 
     if (pkg.shortcutMenu) {

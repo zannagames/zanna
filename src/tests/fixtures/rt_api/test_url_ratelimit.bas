@@ -21,8 +21,8 @@ PRINT "get key: "; u.GetQueryParam("key")
 PRINT "has miss: "; u.HasQueryParam("miss")
 
 ' --- Url: static methods ---
-PRINT "encode: "; Zanna.Network.Url.Encode("hello world&foo=bar")
-PRINT "decode: "; Zanna.Network.Url.Decode("hello%20world%26foo%3Dbar")
+PRINT "encode: "; Zanna.Text.Codec.UrlEncode("hello world&foo=bar")
+PRINT "decode: "; Zanna.Text.Codec.UrlDecode("hello%20world%26foo%3Dbar")
 PRINT "isvalid: "; Zanna.Network.Url.IsValid("https://example.com")
 PRINT "isvalid bad: "; Zanna.Network.Url.IsValid("not a url")
 

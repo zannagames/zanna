@@ -6,6 +6,36 @@
 
 ## Classes
 
+<a id="zanna-game2d-leveldocument"></a>
+### `Zanna.Game2D.LevelDocument`
+
+Provides a JSON level document with a tilemap and entity spawn objects.
+
+Load `Zanna.Game2D.LevelDocument` values with `Load` and read the level through the instance
+members below. Its public surface exposes properties such as `Tilemap`, `ObjectCount`,
+`PlayerStartX`, `Theme` and operations including `ObjectType`, `ObjectId`, `ObjectX`,
+`ObjectY`.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-game2d-leveldocument-tilemap"></a>`Tilemap` | `obj<Zanna.Graphics2D.Tilemap>` | read-only |
+| <a id="zanna-game2d-leveldocument-objectcount"></a>`ObjectCount` | `i64` | read-only |
+| <a id="zanna-game2d-leveldocument-playerstartx"></a>`PlayerStartX` | `i64` | read-only |
+| <a id="zanna-game2d-leveldocument-playerstarty"></a>`PlayerStartY` | `i64` | read-only |
+| <a id="zanna-game2d-leveldocument-theme"></a>`Theme` | `str` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-game2d-leveldocument-load"></a>`Load` | `obj<Zanna.Game2D.LevelDocument>(str)` | `Zanna.Game2D.LevelDocument.Load` |
+| <a id="zanna-game2d-leveldocument-objecttype"></a>`ObjectType` | `str(i64)` | `Zanna.Game2D.LevelDocument.ObjectType` |
+| <a id="zanna-game2d-leveldocument-objectid"></a>`ObjectId` | `str(i64)` | `Zanna.Game2D.LevelDocument.ObjectId` |
+| <a id="zanna-game2d-leveldocument-objectx"></a>`ObjectX` | `i64(i64)` | `Zanna.Game2D.LevelDocument.ObjectX` |
+| <a id="zanna-game2d-leveldocument-objecty"></a>`ObjectY` | `i64(i64)` | `Zanna.Game2D.LevelDocument.ObjectY` |
+
 <a id="zanna-game2d-scenedocument"></a>
 ### `Zanna.Game2D.SceneDocument`
 
@@ -165,13 +195,13 @@ Constructor: `Zanna.Game2D.SceneDocument.New`
 
 | Function | Signature | Runtime symbol |
 |---|---|---|
-| <a id="zanna-game2d-leveldocument-load"></a>`Zanna.Game2D.LevelDocument.Load` | `obj(str)` | `rt_leveldata_load` |
-| <a id="zanna-game2d-leveldocument-get-tilemap"></a>`Zanna.Game2D.LevelDocument.get_Tilemap` | `obj(obj)` | `rt_leveldata_get_tilemap` |
+| `Zanna.Game2D.LevelDocument.Load` | `obj<Zanna.Game2D.LevelDocument>(str)` | `rt_leveldata_load` |
+| <a id="zanna-game2d-leveldocument-get-tilemap"></a>`Zanna.Game2D.LevelDocument.get_Tilemap` | `obj<Zanna.Graphics2D.Tilemap>(obj)` | `rt_leveldata_get_tilemap` |
 | <a id="zanna-game2d-leveldocument-get-objectcount"></a>`Zanna.Game2D.LevelDocument.get_ObjectCount` | `i64(obj)` | `rt_leveldata_object_count` |
-| <a id="zanna-game2d-leveldocument-objecttype"></a>`Zanna.Game2D.LevelDocument.ObjectType` | `str(obj,i64)` | `rt_leveldata_object_type` |
-| <a id="zanna-game2d-leveldocument-objectid"></a>`Zanna.Game2D.LevelDocument.ObjectId` | `str(obj,i64)` | `rt_leveldata_object_id` |
-| <a id="zanna-game2d-leveldocument-objectx"></a>`Zanna.Game2D.LevelDocument.ObjectX` | `i64(obj,i64)` | `rt_leveldata_object_x` |
-| <a id="zanna-game2d-leveldocument-objecty"></a>`Zanna.Game2D.LevelDocument.ObjectY` | `i64(obj,i64)` | `rt_leveldata_object_y` |
+| `Zanna.Game2D.LevelDocument.ObjectType` | `str(obj,i64)` | `rt_leveldata_object_type` |
+| `Zanna.Game2D.LevelDocument.ObjectId` | `str(obj,i64)` | `rt_leveldata_object_id` |
+| `Zanna.Game2D.LevelDocument.ObjectX` | `i64(obj,i64)` | `rt_leveldata_object_x` |
+| `Zanna.Game2D.LevelDocument.ObjectY` | `i64(obj,i64)` | `rt_leveldata_object_y` |
 | <a id="zanna-game2d-leveldocument-get-playerstartx"></a>`Zanna.Game2D.LevelDocument.get_PlayerStartX` | `i64(obj)` | `rt_leveldata_player_start_x` |
 | <a id="zanna-game2d-leveldocument-get-playerstarty"></a>`Zanna.Game2D.LevelDocument.get_PlayerStartY` | `i64(obj)` | `rt_leveldata_player_start_y` |
 | <a id="zanna-game2d-leveldocument-get-theme"></a>`Zanna.Game2D.LevelDocument.get_Theme` | `str(obj)` | `rt_leveldata_get_theme` |

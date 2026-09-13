@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-09-13
 ---
 
 # How to Extend the Zanna Runtime
@@ -301,7 +301,8 @@ RT_METHOD("name", "signature", target_id)
 
 `i16` and `i32` are accepted by the runtime signature parser, but new frontend-visible APIs should normally use `i64` for integer values and `f64` for numbers. `i8` and `f32` are legacy catalog-comment tokens, not accepted by the current `RT_FUNC` signature parser.
 
-Use parameterized signatures whenever the runtime object type is known:
+Every object result declares its class; frontends never infer one from the owning class or the
+method name ([ADR 0356](../adr/0356-runtime-object-results-declare-their-class.md)):
 
 | Signature | Meaning |
 |-----------|---------|
@@ -309,6 +310,8 @@ Use parameterized signatures whenever the runtime object type is known:
 | `obj<Zanna.Option>` | An Option object |
 | `seq<str>` | A sequence of strings |
 | `seq<obj>` | A sequence of runtime objects |
+| `obj<Zanna.Core.Object>` | Always a runtime object, but its class depends on the value |
+| `obj` (result) | Any value, including strings and boxed scalars; list the function with `RUNTIME_SURFACE_UNTYPED_OBJECT_RESULT` |
 
 ### Raw Pointer Policy
 
@@ -345,7 +348,7 @@ The `rtgen` tool reads `runtime.def` and generates five output files:
 
 For a function defined as:
 ```c
-RT_FUNC(CounterNew, rt_counter_new, "Zanna.Utils.Counter.New", "obj()")
+RT_FUNC(CounterNew, rt_counter_new, "Zanna.Utils.Counter.New", "obj<Zanna.Utils.Counter>()", owned)
 ```
 
 `RuntimeNameMap.inc` generates:
@@ -712,8 +715,8 @@ Add to `src/il/runtime/runtime.def` in an appropriate section:
 // UTILS - COUNTER
 //=============================================================================
 
-RT_FUNC(CounterNew,         rt_counter_new,           "Zanna.Utils.Counter.New",           "obj()")
-RT_FUNC(CounterNewWithStep, rt_counter_new_with_step, "Zanna.Utils.Counter.NewWithStep",   "obj(i64)")
+RT_FUNC(CounterNew,         rt_counter_new,           "Zanna.Utils.Counter.New",           "obj<Zanna.Utils.Counter>()", owned)
+RT_FUNC(CounterNewWithStep, rt_counter_new_with_step, "Zanna.Utils.Counter.NewWithStep",   "obj<Zanna.Utils.Counter>(i64)", owned)
 RT_FUNC(CounterGetValue,    rt_counter_get_value,     "Zanna.Utils.Counter.get_Value",     "i64(obj)")
 RT_FUNC(CounterGetStep,     rt_counter_get_step,      "Zanna.Utils.Counter.get_Step",      "i64(obj)")
 RT_FUNC(CounterSetStep,     rt_counter_set_step,      "Zanna.Utils.Counter.set_Step",      "void(obj,i64)")
@@ -831,10 +834,10 @@ For classes with multiple constructors:
 
 ```c
 // runtime.def
-RT_FUNC(F64BufNew,     rt_f64buf_new,      "Zanna.Collections.F64Buffer.New",     "obj(i64)")
-RT_FUNC(F64BufFromSeq, rt_f64buf_from_seq, "Zanna.Collections.F64Buffer.FromSeq", "obj<Zanna.Collections.F64Buffer>(obj)")
+RT_FUNC(F64BufNew,     rt_f64buf_new,      "Zanna.Collections.F64Buffer.New",     "obj<Zanna.Collections.F64Buffer>(i64)", owned)
+RT_FUNC(F64BufFromSeq, rt_f64buf_from_seq, "Zanna.Collections.F64Buffer.FromSeq", "obj<Zanna.Collections.F64Buffer>(obj)", owned)
 
-RT_CLASS_BEGIN("Zanna.Collections.F64Buffer", F64Buffer, "obj(i64)", F64BufNew)
+RT_CLASS_BEGIN("Zanna.Collections.F64Buffer", F64Buffer, "obj", F64BufNew)
     // F64BufNew is the default constructor.
     // F64BufFromSeq is a static factory method.
     RT_METHOD("FromSeq", "obj<Zanna.Collections.F64Buffer>(obj)", F64BufFromSeq)
@@ -864,8 +867,8 @@ void *rt_builder_append(void *obj, const char *text)
     return obj;  // Return self for chaining
 }
 
-// runtime.def
-RT_METHOD("Append", "obj(str)", BuilderAppend)
+// runtime.def: the result declares the receiver's class (ADR 0356)
+RT_METHOD("Append", "obj<Zanna.Text.StringBuilder>(str)", BuilderAppend)
 ```
 
 Usage:
@@ -882,8 +885,8 @@ canonical names or implement frontend syntax/lowering that chooses one runtime
 helper:
 
 ```c
-RT_FUNC(BytesNew,      rt_bytes_new,      "Zanna.Collections.Bytes.New",      "obj(i64)")
-RT_FUNC(BytesFromStr,  rt_bytes_from_str, "Zanna.Collections.Bytes.FromStr",  "obj(str)")
+RT_FUNC(BytesNew,      rt_bytes_new,      "Zanna.Collections.Bytes.New",      "obj<Zanna.Collections.Bytes>(i64)", owned)
+RT_FUNC(BytesFromStr,  rt_bytes_from_str, "Zanna.Collections.Bytes.FromStr",  "obj<Zanna.Collections.Bytes>(str)", owned)
 ```
 
 ### Pattern 7: Error Handling with Traps
@@ -1038,7 +1041,7 @@ void rt_myclass_do_thing(void *obj) { ... }
 int64_t rt_myclass_get_value(void *obj) { ... }
 
 // 2. Add RT_FUNCs for all functions
-RT_FUNC(MyClassNew, rt_myclass_new, "Zanna.MyClass.New", "obj()")
+RT_FUNC(MyClassNew, rt_myclass_new, "Zanna.MyClass.New", "obj<Zanna.MyClass>()", owned)
 RT_FUNC(MyClassDoThing, rt_myclass_do_thing, "Zanna.MyClass.DoThing", "void(obj)")
 RT_FUNC(MyClassGetValue, rt_myclass_get_value, "Zanna.MyClass.get_Value", "i64(obj)")
 

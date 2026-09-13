@@ -109,6 +109,7 @@ struct ProcedureSignature {
     il::core::Type retType{il::core::Type(il::core::Type::Kind::I64)}; ///< Declared return type.
     std::vector<il::core::Type> paramTypes; ///< Declared parameter types.
     std::vector<bool> byRefFlags;           ///< True when parameter is BYREF.
+    std::string returnClassQName; ///< Class a FUNCTION's AS clause names, as written; else empty.
 };
 
 /// @brief Computed memory layout for a BASIC CLASS or TYPE declaration.
@@ -193,8 +194,8 @@ struct FieldScope {
 
 /// @brief Layout of blocks emitted for an IF/ELSEIF chain.
 struct IfBlocks {
-    std::vector<std::size_t> tests; ///< indexes of test blocks
-    std::vector<std::size_t> thens; ///< indexes of THEN blocks
+    std::vector<std::size_t> tests;                    ///< indexes of test blocks
+    std::vector<std::size_t> thens;                    ///< indexes of THEN blocks
     std::size_t elseIdx{static_cast<std::size_t>(-1)}; ///< index of ELSE block
     std::size_t exitIdx{static_cast<std::size_t>(-1)}; ///< index of common exit block
 };

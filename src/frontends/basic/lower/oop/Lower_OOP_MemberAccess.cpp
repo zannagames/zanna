@@ -203,8 +203,7 @@ Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr) {
                         runtimeTracker.trackCalleeName(prop->getter);
                         curLoc = expr.loc;
                         Value result = emitCallRet(retTy, prop->getter, {});
-                        if (retTy.kind == Type::Kind::Str)
-                            deferReleaseStr(result);
+                        deferReleaseRuntimeResult(result, retTy, prop->getter);
                         return {result, retTy};
                     }
                 }
@@ -237,8 +236,7 @@ Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr) {
                     runtimeTracker.trackCalleeName(prop->getter);
                     curLoc = expr.loc;
                     Value result = emitCallRet(retTy, prop->getter, {base.value});
-                    if (retTy.kind == Type::Kind::Str)
-                        deferReleaseStr(result);
+                    deferReleaseRuntimeResult(result, retTy, prop->getter);
                     return {result, retTy};
                 } else if (auto *em = diagnosticEmitter()) {
                     std::string msg = "no such property '" + expr.member + "' on '" + qClass + "'";

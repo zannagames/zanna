@@ -78,9 +78,10 @@ void Lowerer::emitCBr(Value cond, BasicBlock *t, BasicBlock *f) {
 ///
 /// @details Handles short-circuit expressions by splitting them into auxiliary
 ///          blocks when necessary; simple expressions fall back to evaluating
-///          the expression and emitting a standard conditional branch.  The
-///          routine preserves the active block on entry and restores it for the
-///          caller once branch emission completes.
+///          the expression, releasing its deferred temporaries, and emitting a
+///          standard conditional branch.  The routine preserves the active block
+///          on entry and restores it for the caller once branch emission
+///          completes.
 /// @param expr AST expression whose truthiness drives control flow.
 /// @param trueBlk Block entered when the expression evaluates to true.
 /// @param falseBlk Block entered when the expression evaluates to false.
@@ -155,6 +156,10 @@ void Lowerer::lowerCondBranch(const Expr &expr,
 
     RVal cond = lowerExpr(expr);
     cond = coerceToBool(std::move(cond), loc);
+    // The branch decision is computed, so the condition's temporaries die here. Left queued, a
+    // statement nested under either target would release them: once per iteration inside a
+    // loop, and on only one of the two paths.
+    releaseDeferredTemps();
 
     // Refresh pointers after potential reallocation
     func = ctx.function();

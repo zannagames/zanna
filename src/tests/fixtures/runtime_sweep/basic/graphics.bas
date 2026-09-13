@@ -65,27 +65,27 @@ pixels = NEW Zanna.Graphics.Pixels(4, 3)
 Zanna.Core.Diagnostics.AssertEq(pixels.Width, 4, "pixels.width")
 Zanna.Core.Diagnostics.AssertEq(pixels.Height, 3, "pixels.height")
 
-pixels.Fill(red)
-Zanna.Core.Diagnostics.AssertEq(pixels.Get(0, 0), red, "pixels.fill")
+pixels.FillColor(red)
+Zanna.Core.Diagnostics.AssertEq(pixels.GetColor(0, 0), Zanna.Graphics.Color.Rgba(255, 0, 0, 255), "pixels.fill")
 
-pixels.Set(1, 1, blue)
-Zanna.Core.Diagnostics.AssertEq(pixels.Get(1, 1), blue, "pixels.set")
+pixels.SetColor(1, 1, blue)
+Zanna.Core.Diagnostics.AssertEq(pixels.GetColor(1, 1), blue, "pixels.set")
 
 DIM src AS Zanna.Graphics.Pixels
 src = NEW Zanna.Graphics.Pixels(2, 2)
-src.Fill(green)
+src.FillColor(green)
 
 pixels.Copy(2, 0, src, 0, 0, 2, 2)
-Zanna.Core.Diagnostics.AssertEq(pixels.Get(2, 0), green, "pixels.copy")
+Zanna.Core.Diagnostics.AssertEq(pixels.GetColor(2, 0), Zanna.Graphics.Color.Rgba(0, 255, 0, 255), "pixels.copy")
 
 DIM clone AS Zanna.Graphics.Pixels
 clone = pixels.Clone()
-Zanna.Core.Diagnostics.AssertEq(clone.Get(1, 1), blue, "pixels.clone")
+Zanna.Core.Diagnostics.AssertEq(clone.GetColor(1, 1), blue, "pixels.clone")
 
 pixels.Clear()
 Zanna.Core.Diagnostics.AssertEq(pixels.Get(0, 0), 0, "pixels.clear")
 
-DIM buf AS Zanna.IO.BinaryBuffer
+DIM buf AS Zanna.Collections.Bytes
 buf = clone.ToBytes()
 Zanna.Core.Diagnostics.AssertEq(buf.Length, 4 * 3 * 4, "pixels.tobytes")
 

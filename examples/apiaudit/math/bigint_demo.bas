@@ -91,10 +91,10 @@ PRINT "Mod(42, 7) ToString: "; Zanna.Math.BigInt.ToString(rem2)
 ' --- Neg ---
 PRINT "--- Neg ---"
 DIM neg1 AS OBJECT
-neg1 = Zanna.Math.BigInt.Neg(a)
+neg1 = Zanna.Math.BigInt.Negate(a)
 PRINT "Neg(42) ToString: "; Zanna.Math.BigInt.ToString(neg1)
 DIM neg2 AS OBJECT
-neg2 = Zanna.Math.BigInt.Neg(b)
+neg2 = Zanna.Math.BigInt.Negate(b)
 PRINT "Neg(-100) ToString: "; Zanna.Math.BigInt.ToString(neg2)
 
 ' --- Abs ---
@@ -108,14 +108,14 @@ PRINT "Abs(42) ToString: "; Zanna.Math.BigInt.ToString(abs2)
 
 ' --- Cmp ---
 PRINT "--- Cmp ---"
-PRINT "Cmp(42, -100): "; Zanna.Math.BigInt.Cmp(a, b)
-PRINT "Cmp(-100, 42): "; Zanna.Math.BigInt.Cmp(b, a)
-PRINT "Cmp(42, 42): "; Zanna.Math.BigInt.Cmp(a, a)
+PRINT "Cmp(42, -100): "; Zanna.Math.BigInt.Compare(a, b)
+PRINT "Cmp(-100, 42): "; Zanna.Math.BigInt.Compare(b, a)
+PRINT "Cmp(42, 42): "; Zanna.Math.BigInt.Compare(a, a)
 
 ' --- Eq ---
 PRINT "--- Eq ---"
-PRINT "Eq(42, 42): "; Zanna.Math.BigInt.Eq(a, a)
-PRINT "Eq(42, -100): "; Zanna.Math.BigInt.Eq(a, b)
+PRINT "Eq(42, 42): "; Zanna.Math.BigInt.Equals(a, a)
+PRINT "Eq(42, -100): "; Zanna.Math.BigInt.Equals(a, b)
 
 ' --- IsZero ---
 PRINT "--- IsZero ---"

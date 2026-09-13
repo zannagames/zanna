@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-09-01
+last-verified: 2026-09-13
 ---
 
 # ADR 0314: Declared result ownership for runtime functions
@@ -138,3 +138,63 @@ caller-owned reference on every path:
   `Result` is gone, sequence elements outlive a temporary sequence.
 - `test_rt_gui_runtime` releases the extra wrapper reference; the Zanna Studio
   probes and the full suite are green.
+
+## Amendment (2026-09-13): the BASIC lowerer is a consumer too
+
+The decision above only changed the Zia lowerer. The BASIC lowerer kept its own
+rules: a runtime method call or runtime property scheduled a release for every
+string and object result, and a qualified call such as `Zanna.Result.OkI64(42)`
+scheduled none. Borrowed results were therefore released twice. A statement
+like `PRINT pattern.Find(text).UnwrapStr()` freed the Option's string and then
+released it again, and trapped with `invalid runtime string handle`. Owned
+results from qualified calls leaked: `mesh = Zanna.Graphics3D.Mesh3D.Box(...)`
+retained a reference the caller already owned.
+
+BASIC now applies the declared ownership through one helper,
+`Lowerer::deferReleaseRuntimeResult`, and uses the same rule as Zia. A string
+result is released unless its row says `borrowed`. An object result is released
+only when its row says `owned`. The helper covers qualified calls, calls used as
+statements (whose result is thrown away), runtime method calls on instances and
+classes, `Zanna.Core.Object` fallback calls, and runtime property reads.
+
+Tests: `basic_runtime_test_basic_runtime_result_ownership` and
+`native_run_basic_runtime_result_ownership` run
+`src/tests/fixtures/runtime/test_basic_runtime_result_ownership.bas` on the VM
+and natively. Owned results from qualified, method and nested calls die with
+their owner. Borrowed mesh reads leave the entity's mesh alive. Borrowed
+strings read from a temporary Option or from a dead Result keep their text.
+
+## Amendment (2026-09-13): BASIC FUNCTION and method results
+
+User procedures now follow the rule runtime rows declare as `owned`. A BASIC
+FUNCTION or class method hands its STRING or object result to the caller with
+one reference, and every call site schedules one release at the end of the
+statement. Before this, the two sides disagreed. Implicit `ME` method calls and
+`obj.Method()` calls released results, but `RETURN name` returned the field
+without a reference, so each call freed a string or object the class still
+owned. Module FUNCTION calls released nothing, so every returned string or
+object leaked.
+
+`RETURN value` leaves through the same cleanup as the procedure's exit block.
+It retains the value, or takes over an owned temporary queued for release (a
+call or concatenation result), or keeps the creation reference of a `NEW`
+object. Then it releases the statement's other temporaries and the procedure's
+object and array locals, and returns. Assigning to the function name and
+falling off the end already produced one reference, because the result slot
+is excluded from that cleanup.
+
+Two lowering rules keep the statement-boundary release exactly once on every
+path. A condition (IF, ELSEIF, WHILE, DO) releases its temporaries after the
+branch value is computed and before it branches, and a FOR releases the
+temporaries of its bounds before the body. A SELECT CASE sets its selector's
+temporaries aside while the arms are lowered and releases them where the arms
+rejoin. Otherwise a statement nested under the header would release a header
+value, once per iteration inside a loop.
+
+Tests: `basic_runtime_test_basic_class_lifetimes` and
+`native_run_basic_class_lifetimes` run
+`src/tests/fixtures/runtime/test_basic_class_lifetimes.bas` on the VM and
+natively. Returning a field, a parameter, a local, a `NEW` object and a string
+parameter across repeated calls never frees what the callee still owns, and each
+result dies once its last caller-side owner drops it. The `calls_lowering` IL
+golden pins the retain on `RETURN S$` and the caller's release.

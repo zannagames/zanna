@@ -92,14 +92,14 @@ func start() {
     }
 
     // Receive and verify by checking Seq length
-    var r1 = Zanna.Threads.Channel.Recv(ch);
+    var r1 = Zanna.Threads.Channel.Recv(ch) as Zanna.Collections.Seq;
     var r1len = Zanna.Collections.Seq.get_Count(r1);
     if (r1len != 1) {
         Say("FAIL: first recv Seq should have len 1");
         return;
     }
 
-    var r2 = Zanna.Threads.Channel.Recv(ch);
+    var r2 = Zanna.Threads.Channel.Recv(ch) as Zanna.Collections.Seq;
     var r2len = Zanna.Collections.Seq.get_Count(r2);
     if (r2len != 2) {
         Say("FAIL: second recv Seq should have len 2");

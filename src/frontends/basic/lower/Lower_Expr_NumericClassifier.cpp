@@ -180,10 +180,24 @@ class NumericTypeClassifier final : public ExprVisitor {
         result_ = (astTy == AstType::F64) ? NumericType::Double : NumericType::Long;
     }
 
-    /// @brief Assigns the pointer-like array-expression fallback category.
-    /// The visited node is borrowed and otherwise ignored.
-    void visit(const ArrayExpr &) override {
-        result_ = NumericType::Long;
+    /// @brief Classifies an array element by the element kind its read produces.
+    /// @details Mirrors element-read lowering: an array symbol or implicit field
+    ///          array with float elements is SINGLE for a `!` name and DOUBLE
+    ///          otherwise; every other element kind is integral.
+    /// @param arr Array element expression to classify.
+    void visit(const ArrayExpr &arr) override {
+        const auto *info = lowerer_.findSymbol(arr.name);
+        bool isFloat = info && info->type == AstType::F64;
+        if (!isFloat) {
+            const MemberArrayInfo fieldInfo = lowerer_.resolveMemberArrayField(arr.name);
+            isFloat = fieldInfo.isField && fieldInfo.elementAstType == AstType::F64;
+        }
+        if (!isFloat) {
+            result_ = NumericType::Long;
+            return;
+        }
+        result_ = (!arr.name.empty() && arr.name.back() == '!') ? NumericType::Single
+                                                                : NumericType::Double;
     }
 
     /// @brief Propagates a unary expression's operand category.

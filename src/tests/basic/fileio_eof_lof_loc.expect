@@ -1,0 +1,5 @@
+EOF start:0
+AFTER READ:"X"
+EOF end:-1
+LOF positive:-1
+LOC not negative:-1

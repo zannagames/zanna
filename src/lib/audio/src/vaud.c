@@ -220,6 +220,12 @@ typedef struct {
 /// @return Owned reader handle, or NULL when the file cannot be opened or initialized.
 ogg_reader_t *ogg_reader_open_file(const char *path);
 
+/// @brief Open a forward-only OGG packet reader over borrowed memory.
+/// @param data Container bytes that must outlive the reader.
+/// @param len Positive buffer length in bytes.
+/// @return Owned reader handle, or NULL for invalid input or allocation failure.
+ogg_reader_t *ogg_reader_open_mem(const uint8_t *data, size_t len);
+
 /// @brief Close an OGG reader and release its packet and stream state.
 /// @param r Reader returned by ogg_reader_open_file().
 void ogg_reader_free(ogg_reader_t *r);
@@ -281,6 +287,12 @@ int vorbis_get_channels(const vorbis_decoder_t *dec);
 /// @param filepath Path of the MP3 file.
 /// @return Owned stream handle, or NULL on open, parse, or allocation failure.
 mp3_stream_t *mp3_stream_open(const char *filepath);
+
+/// @brief Open an in-memory MP3 image for incremental frame decoding.
+/// @param data Borrowed encoded bytes; the stream keeps its own copy.
+/// @param len Length of @p data in bytes.
+/// @return Owned stream handle, or NULL on parse or allocation failure.
+mp3_stream_t *mp3_stream_open_mem(const uint8_t *data, size_t len);
 
 /// @brief Decode the next MP3 frame to stream-owned signed-16 PCM.
 /// @param stream Streaming decoder to advance.
@@ -1450,6 +1462,8 @@ static int vaud_music_reset_source(struct vaud_music *music) {
         return 1;
     }
 
+    if (music->source_data)
+        return 1;
     if (!music->file)
         return 0;
     return vaud_wav_seek_stream(music->file, music->data_offset, SEEK_SET);
@@ -1685,6 +1699,51 @@ static int32_t vaud_music_clamp_wav_read_frames(struct vaud_music *music, int32_
     return remaining < requested ? (int32_t)remaining : requested;
 }
 
+/// @brief Report whether a WAV stream has a readable source.
+/// @param music WAV stream.
+/// @return Non-zero when the stream reads from a file or an owned memory image.
+static int vaud_music_wav_source_ready(const struct vaud_music *music) {
+    return music && (music->file || music->source_data);
+}
+
+/// @brief Decode clamped WAV source frames from the stream's file or memory image.
+/// @details Memory-loaded streams address the frame at the current source
+///          cursor directly; file streams read sequentially through the
+///          preallocated scratch buffer. Neither path allocates.
+/// @param music WAV stream whose request was bounded by
+///        vaud_music_clamp_wav_read_frames().
+/// @param output Interleaved-stereo signed-16 destination.
+/// @param frames Source frames to decode.
+/// @return Number of frames decoded.
+static int32_t vaud_music_read_wav_source(struct vaud_music *music,
+                                          int16_t *output,
+                                          int32_t frames) {
+    if (music->source_data) {
+        int32_t bytes_per_frame = vaud_music_wav_bytes_per_frame(music);
+        if (bytes_per_frame <= 0 || music->data_offset < 0 || music->source_position < 0)
+            return 0;
+        uint64_t offset = (uint64_t)music->data_offset +
+                          (uint64_t)music->source_position * (uint64_t)bytes_per_frame;
+        uint64_t end = offset + (uint64_t)frames * (uint64_t)bytes_per_frame;
+        if (end > (uint64_t)music->source_size)
+            return 0;
+        return vaud_wav_decode_frames_mem(music->source_data + offset,
+                                          output,
+                                          frames,
+                                          music->channels,
+                                          music->bits_per_sample,
+                                          music->audio_format);
+    }
+    return vaud_wav_read_frames_buffered(music->file,
+                                         output,
+                                         frames,
+                                         music->channels,
+                                         music->bits_per_sample,
+                                         music->audio_format,
+                                         music->wav_read_buf,
+                                         music->wav_read_cap);
+}
+
 /// @brief Advance a WAV source cursor with saturation.
 /// @param music WAV stream to update.
 /// @param frames_read Positive number of source frames consumed.
@@ -1755,7 +1814,7 @@ static int vaud_music_stash_leftover(struct vaud_music *music,
 static int32_t wav_stream_read_frames_with_leftover(struct vaud_music *music,
                                                     int16_t *output,
                                                     int32_t max_frames) {
-    if (!music || !output || max_frames <= 0 || !music->file)
+    if (!music || !output || max_frames <= 0 || !vaud_music_wav_source_ready(music))
         return 0;
 
     int32_t written = 0;
@@ -1775,14 +1834,7 @@ static int32_t wav_stream_read_frames_with_leftover(struct vaud_music *music,
     if (to_read <= 0)
         return written;
 
-    int32_t read = vaud_wav_read_frames_buffered(music->file,
-                                                 output + written * 2,
-                                                 to_read,
-                                                 music->channels,
-                                                 music->bits_per_sample,
-                                                 music->audio_format,
-                                                 music->wav_read_buf,
-                                                 music->wav_read_cap);
+    int32_t read = vaud_music_read_wav_source(music, output + written * 2, to_read);
     vaud_music_advance_wav_source(music, read);
     return written + read;
 }
@@ -1975,21 +2027,14 @@ int32_t vaud_music_fill_buffer(struct vaud_music *music, int32_t buf_idx) {
     }
 
     // WAV path (format == 0)
-    if (!music->file)
+    if (!vaud_music_wav_source_ready(music))
         return 0;
 
     if (source_rate == VAUD_SAMPLE_RATE) {
         int32_t to_read = vaud_music_clamp_wav_read_frames(music, VAUD_MUSIC_BUFFER_FRAMES);
         if (to_read <= 0)
             return 0;
-        int32_t read = vaud_wav_read_frames_buffered(music->file,
-                                                     out,
-                                                     to_read,
-                                                     music->channels,
-                                                     music->bits_per_sample,
-                                                     music->audio_format,
-                                                     music->wav_read_buf,
-                                                     music->wav_read_cap);
+        int32_t read = vaud_music_read_wav_source(music, out, to_read);
         vaud_music_advance_wav_source(music, read);
         return vaud_music_commit_output_frames(music, read);
     }
@@ -2288,43 +2333,46 @@ static int music_register(vaud_context_t ctx, vaud_music_t music);
 /// @return Owned unregistered stream, or NULL on allocation/event failure.
 static vaud_music_t music_alloc_unregistered(vaud_context_t ctx);
 
-/// @copydoc vaud_load_music
-vaud_music_t vaud_load_music(vaud_context_t ctx, const char *path) {
-    if (vaud_context_is_destroying(ctx) || !path) {
-        vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL context or path");
-        return NULL;
-    }
-
-    void *file = NULL;
-    int64_t data_offset = 0;
-    int64_t data_size = 0;
-    int64_t frames = 0;
-    int32_t sample_rate = 0;
-    int32_t channels = 0;
-    int32_t bits = 0;
-    int32_t audio_format = 0;
-
-    if (!vaud_wav_open_stream(path,
-                              &file,
-                              &data_offset,
-                              &data_size,
-                              &frames,
-                              &sample_rate,
-                              &channels,
-                              &bits,
-                              &audio_format)) {
-        return NULL;
-    }
-
+/// @brief Complete a WAV music stream around an opened file or owned memory image.
+/// @details Exactly one of @p file and @p source_data is non-NULL. Ownership of
+///          both transfers unconditionally: on failure the file is closed and
+///          the image freed.
+/// @param ctx Audio context that owns and services the stream.
+/// @param file Open FILE positioned at the PCM payload, or NULL.
+/// @param source_data malloc-owned WAV image, or NULL.
+/// @param source_size Size of @p source_data in bytes.
+/// @param data_offset Byte offset of the PCM payload.
+/// @param data_size Size of the PCM payload in bytes.
+/// @param frames Source frame count.
+/// @param sample_rate Source sample rate.
+/// @param channels Source channel count.
+/// @param bits Source bits per sample.
+/// @param audio_format Source WAV encoding identifier.
+/// @return Registered music handle, or NULL on failure.
+static vaud_music_t music_open_wav(vaud_context_t ctx,
+                                   void *file,
+                                   uint8_t *source_data,
+                                   size_t source_size,
+                                   int64_t data_offset,
+                                   int64_t data_size,
+                                   int64_t frames,
+                                   int32_t sample_rate,
+                                   int32_t channels,
+                                   int32_t bits,
+                                   int32_t audio_format) {
     vaud_music_t music = music_alloc_unregistered(ctx);
     if (!music) {
-        fclose((FILE *)file);
+        if (file)
+            fclose((FILE *)file);
+        free(source_data);
         vaud_set_error(VAUD_ERR_ALLOC, "Failed to allocate music structure");
         return NULL;
     }
 
     music->ctx = ctx;
     music->file = file;
+    music->source_data = source_data;
+    music->source_size = source_size;
     music->data_offset = data_offset;
     music->data_size = data_size;
     if (!vaud_checked_resampled_frames(
@@ -2367,6 +2415,107 @@ vaud_music_t vaud_load_music(vaud_context_t ctx, const char *path) {
     }
 
     return music;
+}
+
+/// @brief Copy a borrowed encoded image into malloc-owned storage.
+/// @param data Borrowed bytes.
+/// @param size Number of bytes; must be positive.
+/// @return Owned copy, or NULL after publishing an error.
+static uint8_t *music_copy_source(const void *data, size_t size) {
+    if (!data || size == 0) {
+        vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL or empty music data");
+        return NULL;
+    }
+    uint8_t *copy = (uint8_t *)malloc(size);
+    if (!copy) {
+        vaud_set_error(VAUD_ERR_ALLOC, "Failed to copy music data");
+        return NULL;
+    }
+    memcpy(copy, data, size);
+    return copy;
+}
+
+/// @copydoc vaud_load_music
+vaud_music_t vaud_load_music(vaud_context_t ctx, const char *path) {
+    if (vaud_context_is_destroying(ctx) || !path) {
+        vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL context or path");
+        return NULL;
+    }
+
+    void *file = NULL;
+    int64_t data_offset = 0;
+    int64_t data_size = 0;
+    int64_t frames = 0;
+    int32_t sample_rate = 0;
+    int32_t channels = 0;
+    int32_t bits = 0;
+    int32_t audio_format = 0;
+
+    if (!vaud_wav_open_stream(path,
+                              &file,
+                              &data_offset,
+                              &data_size,
+                              &frames,
+                              &sample_rate,
+                              &channels,
+                              &bits,
+                              &audio_format)) {
+        return NULL;
+    }
+
+    return music_open_wav(ctx,
+                          file,
+                          NULL,
+                          0,
+                          data_offset,
+                          data_size,
+                          frames,
+                          sample_rate,
+                          channels,
+                          bits,
+                          audio_format);
+}
+
+/// @copydoc vaud_load_music_mem
+vaud_music_t vaud_load_music_mem(vaud_context_t ctx, const void *data, size_t size) {
+    if (vaud_context_is_destroying(ctx) || !data || size == 0) {
+        vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL context or data");
+        return NULL;
+    }
+
+    int64_t data_offset = 0;
+    int64_t data_size = 0;
+    int64_t frames = 0;
+    int32_t sample_rate = 0;
+    int32_t channels = 0;
+    int32_t bits = 0;
+    int32_t audio_format = 0;
+    if (!vaud_wav_open_stream_mem(data,
+                                  size,
+                                  &data_offset,
+                                  &data_size,
+                                  &frames,
+                                  &sample_rate,
+                                  &channels,
+                                  &bits,
+                                  &audio_format)) {
+        return NULL;
+    }
+
+    uint8_t *copy = music_copy_source(data, size);
+    if (!copy)
+        return NULL;
+    return music_open_wav(ctx,
+                          NULL,
+                          copy,
+                          size,
+                          data_offset,
+                          data_size,
+                          frames,
+                          sample_rate,
+                          channels,
+                          bits,
+                          audio_format);
 }
 
 /// @copydoc music_register
@@ -2416,18 +2565,26 @@ static vaud_music_t music_alloc_unregistered(vaud_context_t ctx) {
     return music;
 }
 
-/// @copydoc vaud_load_music_ogg
-vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
-    if (vaud_context_is_destroying(ctx) || !path)
-        return NULL;
-
-    ogg_reader_t *reader = ogg_reader_open_file(path);
-    if (!reader)
-        return NULL;
-
+/// @brief Complete an OGG Vorbis music stream around an opened packet reader.
+/// @details Scans the container for the first Vorbis logical stream, its
+///          headers, and the final granule position. Ownership of @p reader and
+///          @p source_data transfers unconditionally; the reader is released
+///          before the image it borrows.
+/// @param ctx Audio context that owns and services the stream.
+/// @param reader Open packet reader.
+/// @param source_data malloc-owned image @p reader borrows, or NULL for a file reader.
+/// @param source_size Size of @p source_data in bytes.
+/// @param path Source path retained for diagnostics, or NULL.
+/// @return Registered music handle, or NULL on decode, format, or allocation failure.
+static vaud_music_t music_open_ogg(vaud_context_t ctx,
+                                   ogg_reader_t *reader,
+                                   uint8_t *source_data,
+                                   size_t source_size,
+                                   const char *path) {
     vorbis_decoder_t *dec = vorbis_decoder_new();
     if (!dec) {
         ogg_reader_free(reader);
+        free(source_data);
         return NULL;
     }
 
@@ -2449,6 +2606,7 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
             if (vorbis_decode_header(dec, pkt, pkt_len, header_num) != 0) {
                 vorbis_decoder_free(dec);
                 ogg_reader_free(reader);
+                free(source_data);
                 return NULL;
             }
             header_num++;
@@ -2461,6 +2619,7 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
     if (vorbis_serial == 0 || header_num < 3) {
         vorbis_decoder_free(dec);
         ogg_reader_free(reader);
+        free(source_data);
         return NULL;
     }
 
@@ -2468,11 +2627,14 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
     if (!music) {
         vorbis_decoder_free(dec);
         ogg_reader_free(reader);
+        free(source_data);
         return NULL;
     }
 
     music->format = 1;
     music->ogg_reader = reader;
+    music->source_data = source_data;
+    music->source_size = source_size;
     music->vorbis_dec = NULL;
     music->ogg_serial = vorbis_serial;
     music->source_sample_rate = vorbis_get_sample_rate(dec);
@@ -2484,12 +2646,14 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
         vaud_free_music(music);
         return NULL;
     }
-    music->filepath = vaud_strdup(path);
-    if (!music->filepath) {
-        vorbis_decoder_free(dec);
-        vaud_free_music(music);
-        vaud_set_error(VAUD_ERR_ALLOC, "Failed to copy music path");
-        return NULL;
+    if (path) {
+        music->filepath = vaud_strdup(path);
+        if (!music->filepath) {
+            vorbis_decoder_free(dec);
+            vaud_free_music(music);
+            vaud_set_error(VAUD_ERR_ALLOC, "Failed to copy music path");
+            return NULL;
+        }
     }
     if (last_granule >= 0) {
         if (!vaud_checked_resampled_frames(
@@ -2515,15 +2679,40 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
     return music;
 }
 
-/// @copydoc vaud_load_music_mp3
-vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path) {
+/// @copydoc vaud_load_music_ogg
+vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
     if (vaud_context_is_destroying(ctx) || !path)
         return NULL;
 
-    mp3_stream_t *stream = mp3_stream_open(path);
-    if (!stream)
+    ogg_reader_t *reader = ogg_reader_open_file(path);
+    if (!reader)
+        return NULL;
+    return music_open_ogg(ctx, reader, NULL, 0, path);
+}
+
+/// @copydoc vaud_load_music_ogg_mem
+vaud_music_t vaud_load_music_ogg_mem(vaud_context_t ctx, const void *data, size_t size) {
+    if (vaud_context_is_destroying(ctx) || !data || size == 0)
         return NULL;
 
+    uint8_t *copy = music_copy_source(data, size);
+    if (!copy)
+        return NULL;
+    ogg_reader_t *reader = ogg_reader_open_mem(copy, size);
+    if (!reader) {
+        free(copy);
+        return NULL;
+    }
+    return music_open_ogg(ctx, reader, copy, size, NULL);
+}
+
+/// @brief Complete an MP3 music stream around an opened frame stream.
+/// @details Ownership of @p stream transfers unconditionally.
+/// @param ctx Audio context that owns and services the stream.
+/// @param stream Open MP3 frame stream.
+/// @param path Source path retained for diagnostics, or NULL.
+/// @return Registered music handle, or NULL on format or allocation failure.
+static vaud_music_t music_open_mp3(vaud_context_t ctx, mp3_stream_t *stream, const char *path) {
     vaud_music_t music = music_alloc_unregistered(ctx);
     if (!music) {
         mp3_stream_free(stream);
@@ -2540,11 +2729,13 @@ vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path) {
         vaud_free_music(music);
         return NULL;
     }
-    music->filepath = vaud_strdup(path);
-    if (!music->filepath) {
-        vaud_free_music(music);
-        vaud_set_error(VAUD_ERR_ALLOC, "Failed to copy music path");
-        return NULL;
+    if (path) {
+        music->filepath = vaud_strdup(path);
+        if (!music->filepath) {
+            vaud_free_music(music);
+            vaud_set_error(VAUD_ERR_ALLOC, "Failed to copy music path");
+            return NULL;
+        }
     }
     int total_samples = mp3_stream_total_samples(stream);
     if (total_samples > 0) {
@@ -2567,6 +2758,28 @@ vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path) {
         return NULL;
     }
     return music;
+}
+
+/// @copydoc vaud_load_music_mp3
+vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path) {
+    if (vaud_context_is_destroying(ctx) || !path)
+        return NULL;
+
+    mp3_stream_t *stream = mp3_stream_open(path);
+    if (!stream)
+        return NULL;
+    return music_open_mp3(ctx, stream, path);
+}
+
+/// @copydoc vaud_load_music_mp3_mem
+vaud_music_t vaud_load_music_mp3_mem(vaud_context_t ctx, const void *data, size_t size) {
+    if (vaud_context_is_destroying(ctx) || !data || size == 0)
+        return NULL;
+
+    mp3_stream_t *stream = mp3_stream_open_mem((const uint8_t *)data, size);
+    if (!stream)
+        return NULL;
+    return music_open_mp3(ctx, stream, NULL);
 }
 
 /// @brief Service pending music refills for one bounded pump pass.
@@ -2702,6 +2915,7 @@ void vaud_free_music(vaud_music_t music) {
     if (music->mp3_stream)
         mp3_stream_free((mp3_stream_t *)music->mp3_stream);
     free(music->filepath);
+    free(music->source_data);
     free(music->leftover_buf);
 
     /* Free buffers */

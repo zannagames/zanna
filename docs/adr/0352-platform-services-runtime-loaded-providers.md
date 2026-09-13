@@ -1,7 +1,7 @@
 ---
 status: accepted
 audience: contributors
-last-verified: 2026-09-12
+last-verified: 2026-09-13
 ---
 
 # ADR 0352: Platform Services with Runtime-Loaded Provider Redistributables (Steamworks First)
@@ -11,6 +11,10 @@ last-verified: 2026-09-12
 Accepted. Phase 1 (neutral services layer, Steam provider core, tests, documentation) is
 implemented by this change; achievements, stats, leaderboards, cloud storage, rich presence,
 overlay control, and packaging support are later phases that extend the same contracts.
+Achievements, stats, leaderboards, rich presence, overlay control, text input, and cloud storage
+are specified by [ADR 0353](0353-platform-services-player-features.md), which also extends the
+provider interface described below. Packaging games with the redistributable (Steam depot
+targets for `zanna package`) is specified by [ADR 0354](0354-store-depot-packaging.md).
 
 ## Context
 

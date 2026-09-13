@@ -55,8 +55,8 @@ func start() {
 
     // --- Left / Right / Center ---
     Say("--- Left / Right / Center ---");
-    Say("[" + TW.Left("hello", 20) + "]");
-    Say("[" + TW.Right("hello", 20) + "]");
+    Say("[" + TW.AlignLeft("hello", 20) + "]");
+    Say("[" + TW.AlignRight("hello", 20) + "]");
     Say("[" + TW.Center("hello", 20) + "]");
 
     // --- LineCount ---

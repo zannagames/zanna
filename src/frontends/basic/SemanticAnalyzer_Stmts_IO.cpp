@@ -260,15 +260,37 @@ void SemanticAnalyzer::analyzeInputCh(InputChStmt &inp) {
 }
 
 /// @brief Analyze a LINE INPUT# statement.
-/// @details Visits the optional channel expression and destination expression to
-///          ensure nested semantics are validated. It imposes no channel,
-///          destination, or string-specific type requirement here.
+/// @details Visits the optional channel expression. A plain variable destination
+///          is an input definition, exactly as for INPUT#, so `LINE INPUT #1, A$`
+///          declares `A$` and reports assignment to an active FOR variable; a
+///          variable that is not a STRING is `B2001`. Other destinations (array
+///          elements, members) are visited as expressions.
 /// @param inp Mutable line-input statement.
 void SemanticAnalyzer::analyzeLineInputCh(LineInputChStmt &inp) {
     if (inp.channelExpr)
         visitExpr(*inp.channelExpr);
-    if (inp.targetVar)
-        visitExpr(*inp.targetVar);
+    if (!inp.targetVar)
+        return;
+    if (auto *var = as<VarExpr>(*inp.targetVar)) {
+        IOStmtContext ctx(*this);
+        resolveAndTrackSymbol(var->name, SymbolKind::InputTarget);
+        if (ctx.isLoopVariable(var->name))
+            ctx.reportLoopVariableMutation(
+                var->name, inp.loc, static_cast<uint32_t>(var->name.size()));
+        if (auto itType = varTypes_.find(var->name);
+            itType != varTypes_.end() && itType->second != Type::String) {
+            std::string msg = "LINE INPUT # destination must be a STRING variable, got ";
+            msg += semanticTypeName(itType->second);
+            msg += '.';
+            de.emit(il::support::Severity::Error,
+                    "B2001",
+                    inp.targetVar->loc,
+                    static_cast<uint32_t>(var->name.size()),
+                    std::move(msg));
+        }
+        return;
+    }
+    visitExpr(*inp.targetVar);
 }
 
 } // namespace il::frontends::basic

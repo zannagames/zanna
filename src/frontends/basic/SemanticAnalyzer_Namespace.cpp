@@ -29,6 +29,9 @@
 #include "frontends/basic/Options.hpp"
 #include "frontends/basic/SemanticAnalyzer_Internal.hpp"
 #include "frontends/basic/StringUtils.hpp"
+#include "frontends/basic/sem/TypeResolver.hpp"
+#include "il/runtime/RuntimeClassNames.hpp"
+#include "il/runtime/classes/RuntimeClasses.hpp"
 #include <algorithm>
 #include <cctype>
 
@@ -127,6 +130,9 @@ void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
     if (const ClassInfo *info = oopIndex_.findClass(classQName))
         classQName = info->qualifiedName;
 
+    for (const auto &field : decl.fields)
+        checkClassTypeName(field.objectClassName, decl.loc);
+
     /// Analyzes one class-member body with procedure-local rollback.
     /// The helper saves/restores the active class/receiver state, registers
     /// parameters and body line labels, visits statements, and brackets an
@@ -210,6 +216,7 @@ void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
             }
             case Stmt::Kind::MethodDecl: {
                 auto &method = static_cast<MethodDecl &>(*member);
+                checkClassTypeName(JoinDots(method.explicitClassRetQname), method.loc);
                 analyzeMemberBody(method.params,
                                   method.body,
                                   !method.isStatic,
@@ -351,6 +358,38 @@ void SemanticAnalyzer::analyzeUsingDecl(UsingDecl &decl) {
                 cur.imports.insert(nsPath);
         }
     }
+}
+
+/// @brief Reports an `AS` clause naming a class that does not exist.
+/// @details `OBJECT`, the runtime object and string classes, user classes and
+///          interfaces, and runtime classes are valid, whether named in full or
+///          through the enclosing namespaces and USING imports. An ambiguous name
+///          is left to the diagnostics of its uses. Any other name is `B2111`,
+///          because an unknown class would otherwise be accepted silently and
+///          later misbehave as an untyped object.
+/// @param typeName Class name as written, simple or dotted.
+/// @param loc Location of the declaration.
+/// @return True when the name refers to a known type.
+bool SemanticAnalyzer::checkClassTypeName(const std::string &typeName, il::support::SourceLoc loc) {
+    if (typeName.empty() || string_utils::iequals(typeName, "OBJECT") ||
+        string_utils::iequals(typeName, il::runtime::RTCLASS_OBJECT) ||
+        string_utils::iequals(typeName, il::runtime::RTCLASS_STRING) ||
+        string_utils::iequals(typeName, "Zanna.System.String"))
+        return true;
+    if (oopIndex_.findClass(typeName) || oopIndex_.findInterface(typeName) ||
+        il::runtime::findRuntimeClassByQName(typeName))
+        return true;
+    if (resolver_) {
+        const auto result = resolver_->resolve(typeName, nsStack_);
+        if (result.found || !result.contenders.empty())
+            return true;
+    }
+    de.emit(il::support::Severity::Error,
+            "B2111",
+            loc,
+            static_cast<uint32_t>(typeName.size()),
+            "unknown type '" + typeName + "'");
+    return false;
 }
 
 /// @brief Resolves a type reference and translates failures to diagnostics.

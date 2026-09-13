@@ -279,22 +279,19 @@ BasicType Parser::parseBasicType() {
     if (tok.kind != TokenKind::Identifier)
         return BasicType::Unknown;
 
-    std::string upper = string_utils::to_upper(tok.lexeme);
-    if (upper == "INTEGER" || upper == "LONG" || upper == "INT") {
-        consume();
-        return BasicType::Int;
-    }
-    if (upper == "DOUBLE" || upper == "FLOAT" || upper == "SINGLE") {
-        consume();
-        return BasicType::Float;
-    }
-    if (upper == "STRING") {
-        consume();
-        return BasicType::String;
-    }
-    if (upper == "BOOLEAN" || upper == "BOOL") {
-        consume();
-        return BasicType::Bool;
+    auto primitive = primitiveTypeFromName(tok.lexeme);
+    if (!primitive)
+        return BasicType::Unknown;
+    consume();
+    switch (*primitive) {
+        case Type::I64:
+            return BasicType::Int;
+        case Type::F64:
+            return BasicType::Float;
+        case Type::Str:
+            return BasicType::String;
+        case Type::Bool:
+            return BasicType::Bool;
     }
     return BasicType::Unknown;
 }

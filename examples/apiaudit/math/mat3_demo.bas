@@ -136,8 +136,8 @@ PRINT "Transpose(Shear) [1,0]: "; Zanna.Math.Mat3.Get(tt, 1, 0)
 
 ' --- Det ---
 PRINT "--- Det ---"
-PRINT "Det(Identity): "; Zanna.Math.Mat3.Det(id)
-PRINT "Det(Scale(2,3)): "; Zanna.Math.Mat3.Det(sc)
+PRINT "Det(Identity): "; Zanna.Math.Mat3.Determinant(id)
+PRINT "Det(Scale(2,3)): "; Zanna.Math.Mat3.Determinant(sc)
 
 ' --- Inverse ---
 PRINT "--- Inverse ---"
@@ -152,14 +152,14 @@ PRINT "Inverse(Identity) [0,0]: "; Zanna.Math.Mat3.Get(invId, 0, 0)
 ' --- Neg ---
 PRINT "--- Neg ---"
 DIM ng AS OBJECT
-ng = Zanna.Math.Mat3.Neg(id)
+ng = Zanna.Math.Mat3.Negate(id)
 PRINT "Neg(Identity) [0,0]: "; Zanna.Math.Mat3.Get(ng, 0, 0)
 PRINT "Neg(Identity) [1,1]: "; Zanna.Math.Mat3.Get(ng, 1, 1)
 
 ' --- Eq ---
 PRINT "--- Eq ---"
-PRINT "Eq(Identity, Identity, 0.001): "; Zanna.Math.Mat3.Eq(id, id, 0.001)
-PRINT "Eq(Identity, Zero, 0.001): "; Zanna.Math.Mat3.Eq(id, zr, 0.001)
+PRINT "Eq(Identity, Identity, 0.001): "; Zanna.Math.Mat3.ApproxEquals(id, id, 0.001)
+PRINT "Eq(Identity, Zero, 0.001): "; Zanna.Math.Mat3.ApproxEquals(id, zr, 0.001)
 
 PRINT "=== Mat3 Audit Complete ==="
 END

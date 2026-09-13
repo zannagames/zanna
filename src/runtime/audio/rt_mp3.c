@@ -1768,10 +1768,55 @@ struct mp3_stream {
     int channels;
 };
 
+/// @brief Largest encoded MP3 image a stream accepts, from a file or memory.
+#define MP3_STREAM_MAX_BYTES ((size_t)256 * 1024 * 1024)
+
+/// @brief Build a stream around an encoded image the stream takes ownership of.
+/// @details Pre-scans frame headers for the first-frame offset, stable
+///          channel/rate metadata, and total per-channel sample count. On any
+///          failure @p data is freed, so the caller never frees it after the call.
+/// @param data malloc-owned encoded bytes; ownership transfers unconditionally.
+/// @param len Length of @p data in bytes.
+/// @return Caller-owned stream, or NULL on metadata or allocation failure.
+static mp3_stream_t *mp3_stream_adopt(uint8_t *data, size_t len) {
+    mp3_stream_t *s = (mp3_stream_t *)calloc(1, sizeof(mp3_stream_t));
+    if (!s) {
+        free(data);
+        return NULL;
+    }
+
+    s->dec = mp3_decoder_new();
+    if (!s->dec) {
+        free(data);
+        free(s);
+        return NULL;
+    }
+
+    if (mp3_scan_stream_metadata(data,
+                                 len,
+                                 &s->first_frame_pos,
+                                 &s->effective_len,
+                                 &s->channels,
+                                 &s->sample_rate,
+                                 &s->total_samples) != 0 ||
+        s->channels < 1 || s->channels > 2 || s->sample_rate <= 0 || s->total_samples <= 0) {
+        mp3_decoder_free(s->dec);
+        free(data);
+        free(s);
+        return NULL;
+    }
+
+    s->data = data;
+    s->data_len = len;
+    s->pos = s->first_frame_pos;
+    mp3_decoder_reset(s->dec);
+
+    return s;
+}
+
 /// @brief Open an MP3 file for frame-sliced playback.
-/// @details Reads the bounded file into memory and pre-scans frame headers for
-///          the first-frame offset, stable channel/rate metadata, and total
-///          per-channel sample count. Audio frames remain encoded until
+/// @details Reads the bounded file into memory, then scans it exactly like
+///          @ref mp3_stream_open_mem. Audio frames remain encoded until
 ///          @ref mp3_stream_decode_frame advances through them.
 /// @param filepath NUL-terminated MP3 file path; files above 256 MiB are rejected.
 /// @return Caller-owned stream, or NULL on file, metadata, or allocation failure.
@@ -1787,7 +1832,7 @@ mp3_stream_t *mp3_stream_open(const char *filepath) {
         return NULL;
     }
     long flen = ftell(f);
-    if (flen <= 0 || flen > 256 * 1024 * 1024 || fseek(f, 0, SEEK_SET) != 0) {
+    if (flen <= 0 || (unsigned long)flen > MP3_STREAM_MAX_BYTES || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }
@@ -1804,39 +1849,24 @@ mp3_stream_t *mp3_stream_open(const char *filepath) {
     }
     fclose(f);
 
-    mp3_stream_t *s = (mp3_stream_t *)calloc(1, sizeof(mp3_stream_t));
-    if (!s) {
-        free(data);
+    return mp3_stream_adopt(data, (size_t)flen);
+}
+
+/// @brief Open an in-memory MP3 image for frame-sliced playback.
+/// @details Copies @p data, so the caller's buffer may be released as soon as
+///          the call returns; the stream then behaves exactly like a file-opened one.
+/// @param data Borrowed encoded MP3 bytes, optionally including ID3 metadata.
+/// @param len Length of @p data; images above 256 MiB are rejected.
+/// @return Caller-owned stream, or NULL on invalid input, metadata, or allocation failure.
+mp3_stream_t *mp3_stream_open_mem(const uint8_t *data, size_t len) {
+    if (!data || len == 0 || len > MP3_STREAM_MAX_BYTES)
         return NULL;
-    }
 
-    s->dec = mp3_decoder_new();
-    if (!s->dec) {
-        free(data);
-        free(s);
+    uint8_t *copy = (uint8_t *)malloc(len);
+    if (!copy)
         return NULL;
-    }
-
-    if (mp3_scan_stream_metadata(data,
-                                 (size_t)flen,
-                                 &s->first_frame_pos,
-                                 &s->effective_len,
-                                 &s->channels,
-                                 &s->sample_rate,
-                                 &s->total_samples) != 0 ||
-        s->channels < 1 || s->channels > 2 || s->sample_rate <= 0 || s->total_samples <= 0) {
-        mp3_decoder_free(s->dec);
-        free(data);
-        free(s);
-        return NULL;
-    }
-
-    s->data = data;
-    s->data_len = (size_t)flen;
-    s->pos = s->first_frame_pos;
-    mp3_decoder_reset(s->dec);
-
-    return s;
+    memcpy(copy, data, len);
+    return mp3_stream_adopt(copy, len);
 }
 
 /// @brief Decode the next valid MP3 frame into stream-owned PCM storage.

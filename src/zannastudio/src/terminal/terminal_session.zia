@@ -276,7 +276,7 @@ class TerminalSession {
             if lastError == "" { lastError = "PTY session could not be created"; }
             return false;
         }
-        session = opened.Unwrap();
+        session = opened.Unwrap() as Pty.PtySession;
         if session.IsValid() == false {
             lastError = "PTY session handle was invalid";
             session = null;

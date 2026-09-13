@@ -834,6 +834,19 @@ template <typename Derived> class BasicAstWalker : public ExprVisitor, public St
         callAfter(stmt);
     }
 
+    /// @brief Visit the declarations inside a NAMESPACE block in source order.
+    /// @details Without this override the base visitor ignores the block, and every
+    ///          pass built on the walker (class layouts, runtime needs, variable
+    ///          collection) would skip the classes declared inside it.
+    /// @param stmt Namespace declaration bracketed by node hooks.
+    void visit(const NamespaceDecl &stmt) override {
+        callBefore(stmt);
+        if (callShouldVisit(stmt)) {
+            walker::detail::visitChildRange(*this, stmt, stmt.body);
+        }
+        callAfter(stmt);
+    }
+
     /// @brief Visit a USING declaration, whose namespace path is metadata.
     /// @param stmt Namespace-import declaration bracketed by node hooks.
     void visit(const UsingDecl &stmt) override {

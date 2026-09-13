@@ -264,6 +264,8 @@ Type inferVariableTypeForLowering(const Lowerer &lowerer, std::string_view name)
                     return Type::Bool;
                 case SemaType::ArrayInt:
                     return Type::I64;
+                case SemaType::ArrayFloat:
+                    return Type::F64;
                 case SemaType::ArrayString:
                     return Type::Str;
                 case SemaType::ArrayObject:
@@ -401,8 +403,9 @@ Lowerer::SlotType Lowerer::getSlotType(std::string_view name) const {
 /// @brief Resolve storage location for a variable by name.
 /// @details Checks STATIC runtime storage first. A materialized local is used
 ///          unless cross-procedure/module rules route it to runtime-backed
-///          module storage; an implicit active-class field is the final
-///          fallback. Empty and unresolved names return no descriptor.
+///          module storage. Inside a class member an implicit field of the
+///          receiver comes next, ahead of module-level variables; empty and
+///          unresolved names return no descriptor.
 /// @param name Variable identifier to resolve.
 /// @param loc Source location for error reporting.
 /// @return Storage descriptor or nullopt if unresolved.
@@ -424,6 +427,11 @@ std::optional<Lowerer::VariableStorage> Lowerer::resolveVariableStorage(
     if (const auto *info = findSymbol(name)) {
         if (info->slotId) {
             bool isMain = (context().function() && context().function()->name == "main");
+            // A parameter names its own slot even when a module-level variable shares the
+            // name; that module variable is marked cross-procedure only because the name
+            // appears inside this procedure.
+            if (!isMain && isProcParam(name))
+                return VariableStorage{slotInfo, Value::temp(*info->slotId), false};
             bool isCrossProc = isCrossProcGlobal(std::string(name));
 
             // In SUB/FUNCTION, local variables always shadow module-level symbols
@@ -440,15 +448,8 @@ std::optional<Lowerer::VariableStorage> Lowerer::resolveVariableStorage(
         }
     }
 
-    // Module-level globals use runtime-managed storage for cross-procedure sharing
-    if (semanticAnalyzer_ && semanticAnalyzer_->isModuleLevelSymbol(std::string(name))) {
-        bool isMain = (context().function() && context().function()->name == "main");
-        if (!isMain || isCrossProcGlobal(std::string(name))) {
-            return resolveModuleLevelStorage(name, slotInfo);
-        }
-    }
-
-    // Try implicit class field access
+    // Inside a class member, a field of the receiver hides a module-level variable of the
+    // same name, as it does in semantic analysis; locals and parameters were handled above.
     if (auto field = resolveImplicitField(name, loc)) {
         VariableStorage storage;
         storage.slotInfo = slotInfo;
@@ -460,6 +461,14 @@ std::optional<Lowerer::VariableStorage> Lowerer::resolveVariableStorage(
         storage.pointer = field->ptr;
         storage.isField = true;
         return storage;
+    }
+
+    // Module-level globals use runtime-managed storage for cross-procedure sharing
+    if (semanticAnalyzer_ && semanticAnalyzer_->isModuleLevelSymbol(std::string(name))) {
+        bool isMain = (context().function() && context().function()->name == "main");
+        if (!isMain || isCrossProcGlobal(std::string(name))) {
+            return resolveModuleLevelStorage(name, slotInfo);
+        }
     }
 
     return std::nullopt;

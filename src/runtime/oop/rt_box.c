@@ -17,6 +17,9 @@
 //     identify the contained type.
 //   - Strict unboxing traps on null, invalid boxes, or tag mismatches.
 //   - Try-unboxing reports null/invalid/type mismatches without trapping.
+//   - The string accessors (unbox, try-unbox, string equality) accept a raw
+//     string handle as well as a String box: both represent a string value
+//     in an object slot.
 //   - The boxed string retains a reference to the rt_string and releases it
 //     when the box is freed.
 //   - Equality comparison for boxes compares type tags AND values.
@@ -571,10 +574,15 @@ int8_t rt_unbox_i1(void *box) {
 
 /// @brief Extract the rt_string contents, **retaining a fresh reference** for the caller (the box
 /// retains its own; the returned ref must be released independently). Traps on tag mismatch.
-/// @param[in] box Managed String box.
+/// @details A raw string handle stored directly in an object slot (a `seq<str>` element, a map
+///          value, a string passed as `obj`) is already the string, so it is returned retained,
+///          exactly as `Seq.GetStr` and the collection comparator treat raw and boxed strings.
+/// @param[in] box Managed String box or raw string handle.
 /// @return Caller-owned retained String handle, NULL stored value, or NULL after
 ///         a returning trap hook.
 rt_string rt_unbox_str(void *box) {
+    if (box && rt_string_is_handle(box))
+        return rt_string_ref((rt_string)box);
     rt_box_t *b = box_require(box, "rt_unbox_str", RT_BOX_STR);
     if (!b)
         return NULL;
@@ -655,6 +663,13 @@ int8_t rt_box_try_to_str(void *box, rt_string *out) {
         *out = NULL;
     if (!out)
         return 0;
+    if (box && rt_string_is_handle(box)) {
+        rt_string raw = rt_string_ref((rt_string)box);
+        if (!raw)
+            return 0;
+        *out = raw;
+        return 1;
+    }
     rt_box_t *b = box_maybe(box);
     if (!b || b->tag != RT_BOX_STR)
         return 0;
@@ -772,6 +787,8 @@ int64_t rt_box_eq_str(void *box, rt_string val) {
         rt_trap("rt_box_eq_str: invalid string handle");
         return 0;
     }
+    if (box && rt_string_is_handle(box))
+        return val && rt_str_eq((rt_string)box, val) ? 1 : 0;
     rt_box_t *b = box_maybe(box);
     if (!b)
         return 0;

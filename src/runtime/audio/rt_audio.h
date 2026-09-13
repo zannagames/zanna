@@ -269,6 +269,14 @@ int64_t rt_sound_is_playable(void *sound);
 /// @return Caller-owned opaque music handle, or NULL on failure.
 void *rt_music_load(rt_string path);
 
+/// @brief Load music through the runtime asset manager for streaming playback.
+/// @details Resolves embedded, mounted-pack, and loose assets like
+///          rt_sound_load_asset. The stream retains its own copy of the encoded
+///          bytes and decodes them incrementally.
+/// @param name Mounted/embedded asset name, asset:// URI, or dev filesystem path.
+/// @return Caller-owned opaque music handle, or NULL on failure.
+void *rt_music_load_asset(rt_string name);
+
 /// @brief Release a loaded music stream handle.
 /// @details NULL and invalid handles are ignored. The final reference releases
 ///          the backend stream.

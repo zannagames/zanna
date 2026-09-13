@@ -158,11 +158,11 @@ Constructor: `Zanna.Time.DateRange.New`
 | <a id="zanna-time-daterange-days"></a>`Days` | `i64()` | `Zanna.Time.DateRange.Days` |
 | <a id="zanna-time-daterange-duration"></a>`Duration` | `i64()` | `Zanna.Time.DateRange.Duration` |
 | <a id="zanna-time-daterange-hours"></a>`Hours` | `i64()` | `Zanna.Time.DateRange.Hours` |
-| <a id="zanna-time-daterange-intersection"></a>`Intersection` | `obj(obj)` | `Zanna.Time.DateRange.Intersection` |
+| <a id="zanna-time-daterange-intersection"></a>`Intersection` | `obj<Zanna.Time.DateRange>(obj)` | `Zanna.Time.DateRange.Intersection` |
 | <a id="zanna-time-daterange-overlaps"></a>`Overlaps` | `i1(obj)` | `Zanna.Time.DateRange.Overlaps` |
 | <a id="zanna-time-daterange-tostring"></a>`ToString` | `str()` | `Zanna.Time.DateRange.ToString` |
-| <a id="zanna-time-daterange-union"></a>`Union` | `obj(obj)` | `Zanna.Time.DateRange.Union` |
-| <a id="zanna-time-daterange-new"></a>`New` | `obj(i64,i64)` | `Zanna.Time.DateRange.New` |
+| <a id="zanna-time-daterange-union"></a>`Union` | `obj<Zanna.Time.DateRange>(obj)` | `Zanna.Time.DateRange.Union` |
+| <a id="zanna-time-daterange-new"></a>`New` | `obj<Zanna.Time.DateRange>(i64,i64)` | `Zanna.Time.DateRange.New` |
 
 <a id="zanna-time-stopwatch"></a>
 ### `Zanna.Time.Stopwatch`
@@ -192,8 +192,8 @@ Constructor: `Zanna.Time.Stopwatch.New`
 | <a id="zanna-time-stopwatch-restart"></a>`Restart` | `void()` | `Zanna.Time.Stopwatch.Restart` |
 | <a id="zanna-time-stopwatch-start"></a>`Start` | `void()` | `Zanna.Time.Stopwatch.Start` |
 | <a id="zanna-time-stopwatch-stop"></a>`Stop` | `void()` | `Zanna.Time.Stopwatch.Stop` |
-| <a id="zanna-time-stopwatch-new"></a>`New` | `obj()` | `Zanna.Time.Stopwatch.New` |
-| <a id="zanna-time-stopwatch-startnew"></a>`StartNew` | `obj()` | `Zanna.Time.Stopwatch.StartNew` |
+| <a id="zanna-time-stopwatch-new"></a>`New` | `obj<Zanna.Time.Stopwatch>()` | `Zanna.Time.Stopwatch.New` |
+| <a id="zanna-time-stopwatch-startnew"></a>`StartNew` | `obj<Zanna.Time.Stopwatch>()` | `Zanna.Time.Stopwatch.StartNew` |
 
 <a id="zanna-time-clock"></a>
 ### `Zanna.Time.Clock`
@@ -241,7 +241,7 @@ Constructor: `Zanna.Time.Countdown.New`
 | <a id="zanna-time-countdown-stop"></a>`Stop` | `void()` | `Zanna.Time.Countdown.Stop` |
 | <a id="zanna-time-countdown-reset"></a>`Reset` | `void()` | `Zanna.Time.Countdown.Reset` |
 | <a id="zanna-time-countdown-wait"></a>`Wait` | `void()` | `Zanna.Time.Countdown.Wait` |
-| <a id="zanna-time-countdown-new"></a>`New` | `obj(i64)` | `Zanna.Time.Countdown.New` |
+| <a id="zanna-time-countdown-new"></a>`New` | `obj<Zanna.Time.Countdown>(i64)` | `Zanna.Time.Countdown.New` |
 
 <a id="zanna-time-dateonly"></a>
 ### `Zanna.Time.DateOnly`
@@ -268,19 +268,19 @@ new objects and clamps month/year shifts to a valid day. Day-count conversion is
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-time-dateonly-fromparts"></a>`FromParts` | `obj(i64,i64,i64)` | `Zanna.Time.DateOnly.FromParts` |
-| <a id="zanna-time-dateonly-today"></a>`Today` | `obj()` | `Zanna.Time.DateOnly.Today` |
-| <a id="zanna-time-dateonly-parse"></a>`Parse` | `obj(str)` | `Zanna.Time.DateOnly.Parse` |
-| <a id="zanna-time-dateonly-fromdays"></a>`FromDays` | `obj(i64)` | `Zanna.Time.DateOnly.FromDays` |
+| <a id="zanna-time-dateonly-fromparts"></a>`FromParts` | `obj<Zanna.Time.DateOnly>(i64,i64,i64)` | `Zanna.Time.DateOnly.FromParts` |
+| <a id="zanna-time-dateonly-today"></a>`Today` | `obj<Zanna.Time.DateOnly>()` | `Zanna.Time.DateOnly.Today` |
+| <a id="zanna-time-dateonly-parse"></a>`Parse` | `obj<Zanna.Time.DateOnly>(str)` | `Zanna.Time.DateOnly.Parse` |
+| <a id="zanna-time-dateonly-fromdays"></a>`FromDays` | `obj<Zanna.Time.DateOnly>(i64)` | `Zanna.Time.DateOnly.FromDays` |
 | <a id="zanna-time-dateonly-todays"></a>`ToDays` | `i64()` | `Zanna.Time.DateOnly.ToDays` |
-| <a id="zanna-time-dateonly-adddays"></a>`AddDays` | `obj(i64)` | `Zanna.Time.DateOnly.AddDays` |
-| <a id="zanna-time-dateonly-addmonths"></a>`AddMonths` | `obj(i64)` | `Zanna.Time.DateOnly.AddMonths` |
-| <a id="zanna-time-dateonly-addyears"></a>`AddYears` | `obj(i64)` | `Zanna.Time.DateOnly.AddYears` |
+| <a id="zanna-time-dateonly-adddays"></a>`AddDays` | `obj<Zanna.Time.DateOnly>(i64)` | `Zanna.Time.DateOnly.AddDays` |
+| <a id="zanna-time-dateonly-addmonths"></a>`AddMonths` | `obj<Zanna.Time.DateOnly>(i64)` | `Zanna.Time.DateOnly.AddMonths` |
+| <a id="zanna-time-dateonly-addyears"></a>`AddYears` | `obj<Zanna.Time.DateOnly>(i64)` | `Zanna.Time.DateOnly.AddYears` |
 | <a id="zanna-time-dateonly-diffdays"></a>`DiffDays` | `i64(obj)` | `Zanna.Time.DateOnly.DiffDays` |
-| <a id="zanna-time-dateonly-startofmonth"></a>`StartOfMonth` | `obj()` | `Zanna.Time.DateOnly.StartOfMonth` |
-| <a id="zanna-time-dateonly-endofmonth"></a>`EndOfMonth` | `obj()` | `Zanna.Time.DateOnly.EndOfMonth` |
-| <a id="zanna-time-dateonly-startofyear"></a>`StartOfYear` | `obj()` | `Zanna.Time.DateOnly.StartOfYear` |
-| <a id="zanna-time-dateonly-endofyear"></a>`EndOfYear` | `obj()` | `Zanna.Time.DateOnly.EndOfYear` |
+| <a id="zanna-time-dateonly-startofmonth"></a>`StartOfMonth` | `obj<Zanna.Time.DateOnly>()` | `Zanna.Time.DateOnly.StartOfMonth` |
+| <a id="zanna-time-dateonly-endofmonth"></a>`EndOfMonth` | `obj<Zanna.Time.DateOnly>()` | `Zanna.Time.DateOnly.EndOfMonth` |
+| <a id="zanna-time-dateonly-startofyear"></a>`StartOfYear` | `obj<Zanna.Time.DateOnly>()` | `Zanna.Time.DateOnly.StartOfYear` |
+| <a id="zanna-time-dateonly-endofyear"></a>`EndOfYear` | `obj<Zanna.Time.DateOnly>()` | `Zanna.Time.DateOnly.EndOfYear` |
 | <a id="zanna-time-dateonly-compare"></a>`Compare` | `i64(obj)` | `Zanna.Time.DateOnly.Compare` |
 | <a id="zanna-time-dateonly-equals"></a>`Equals` | `i1(obj)` | `Zanna.Time.DateOnly.Equals` |
 | <a id="zanna-time-dateonly-tostring"></a>`ToString` | `str()` | `Zanna.Time.DateOnly.ToString` |
@@ -348,37 +348,37 @@ new objects and clamps month/year shifts to a valid day. Day-count conversion is
 | `Zanna.Time.RelativeTime.FormatFrom` | `str(i64,i64)` | `rt_reltime_format_from` |
 | `Zanna.Time.RelativeTime.FormatDuration` | `str(i64)` | `rt_reltime_format_duration` |
 | `Zanna.Time.RelativeTime.FormatShort` | `str(i64)` | `rt_reltime_format_short` |
-| `Zanna.Time.DateRange.New` | `obj(i64,i64)` | `rt_daterange_new` |
+| `Zanna.Time.DateRange.New` | `obj<Zanna.Time.DateRange>(i64,i64)` | `rt_daterange_new` |
 | <a id="zanna-time-daterange-get-start"></a>`Zanna.Time.DateRange.get_Start` | `i64(obj)` | `rt_daterange_start` |
 | <a id="zanna-time-daterange-get-end"></a>`Zanna.Time.DateRange.get_End` | `i64(obj)` | `rt_daterange_end` |
 | `Zanna.Time.DateRange.Contains` | `i1(obj,i64)` | `rt_daterange_contains` |
 | `Zanna.Time.DateRange.Overlaps` | `i1(obj,obj)` | `rt_daterange_overlaps` |
-| `Zanna.Time.DateRange.Intersection` | `obj(obj,obj)` | `rt_daterange_intersection` |
-| `Zanna.Time.DateRange.Union` | `obj(obj,obj)` | `rt_daterange_union_range` |
+| `Zanna.Time.DateRange.Intersection` | `obj<Zanna.Time.DateRange>(obj,obj)` | `rt_daterange_intersection` |
+| `Zanna.Time.DateRange.Union` | `obj<Zanna.Time.DateRange>(obj,obj)` | `rt_daterange_union_range` |
 | `Zanna.Time.DateRange.Days` | `i64(obj)` | `rt_daterange_days` |
 | `Zanna.Time.DateRange.Hours` | `i64(obj)` | `rt_daterange_hours` |
 | `Zanna.Time.DateRange.Duration` | `i64(obj)` | `rt_daterange_duration` |
 | `Zanna.Time.DateRange.ToString` | `str(obj)` | `rt_daterange_to_string` |
-| `Zanna.Time.DateOnly.Today` | `obj()` | `rt_dateonly_today` |
-| `Zanna.Time.DateOnly.FromParts` | `obj(i64,i64,i64)` | `rt_dateonly_create` |
-| `Zanna.Time.DateOnly.Parse` | `obj(str)` | `rt_dateonly_parse` |
-| `Zanna.Time.DateOnly.FromDays` | `obj(i64)` | `rt_dateonly_from_days` |
+| `Zanna.Time.DateOnly.Today` | `obj<Zanna.Time.DateOnly>()` | `rt_dateonly_today` |
+| `Zanna.Time.DateOnly.FromParts` | `obj<Zanna.Time.DateOnly>(i64,i64,i64)` | `rt_dateonly_create` |
+| `Zanna.Time.DateOnly.Parse` | `obj<Zanna.Time.DateOnly>(str)` | `rt_dateonly_parse` |
+| `Zanna.Time.DateOnly.FromDays` | `obj<Zanna.Time.DateOnly>(i64)` | `rt_dateonly_from_days` |
 | <a id="zanna-time-dateonly-get-year"></a>`Zanna.Time.DateOnly.get_Year` | `i64(obj)` | `rt_dateonly_year` |
 | <a id="zanna-time-dateonly-get-month"></a>`Zanna.Time.DateOnly.get_Month` | `i64(obj)` | `rt_dateonly_month` |
 | <a id="zanna-time-dateonly-get-day"></a>`Zanna.Time.DateOnly.get_Day` | `i64(obj)` | `rt_dateonly_day` |
 | <a id="zanna-time-dateonly-get-dayofweek"></a>`Zanna.Time.DateOnly.get_DayOfWeek` | `i64(obj)` | `rt_dateonly_day_of_week` |
 | <a id="zanna-time-dateonly-get-dayofyear"></a>`Zanna.Time.DateOnly.get_DayOfYear` | `i64(obj)` | `rt_dateonly_day_of_year` |
 | `Zanna.Time.DateOnly.ToDays` | `i64(obj)` | `rt_dateonly_to_days` |
-| `Zanna.Time.DateOnly.AddDays` | `obj(obj,i64)` | `rt_dateonly_add_days` |
-| `Zanna.Time.DateOnly.AddMonths` | `obj(obj,i64)` | `rt_dateonly_add_months` |
-| `Zanna.Time.DateOnly.AddYears` | `obj(obj,i64)` | `rt_dateonly_add_years` |
+| `Zanna.Time.DateOnly.AddDays` | `obj<Zanna.Time.DateOnly>(obj,i64)` | `rt_dateonly_add_days` |
+| `Zanna.Time.DateOnly.AddMonths` | `obj<Zanna.Time.DateOnly>(obj,i64)` | `rt_dateonly_add_months` |
+| `Zanna.Time.DateOnly.AddYears` | `obj<Zanna.Time.DateOnly>(obj,i64)` | `rt_dateonly_add_years` |
 | `Zanna.Time.DateOnly.DiffDays` | `i64(obj,obj)` | `rt_dateonly_diff_days` |
 | <a id="zanna-time-dateonly-get-isleapyear"></a>`Zanna.Time.DateOnly.get_IsLeapYear` | `i1(obj)` | `rt_dateonly_is_leap_year` |
 | <a id="zanna-time-dateonly-get-daysinmonth"></a>`Zanna.Time.DateOnly.get_DaysInMonth` | `i64(obj)` | `rt_dateonly_days_in_month` |
-| `Zanna.Time.DateOnly.StartOfMonth` | `obj(obj)` | `rt_dateonly_start_of_month` |
-| `Zanna.Time.DateOnly.EndOfMonth` | `obj(obj)` | `rt_dateonly_end_of_month` |
-| `Zanna.Time.DateOnly.StartOfYear` | `obj(obj)` | `rt_dateonly_start_of_year` |
-| `Zanna.Time.DateOnly.EndOfYear` | `obj(obj)` | `rt_dateonly_end_of_year` |
+| `Zanna.Time.DateOnly.StartOfMonth` | `obj<Zanna.Time.DateOnly>(obj)` | `rt_dateonly_start_of_month` |
+| `Zanna.Time.DateOnly.EndOfMonth` | `obj<Zanna.Time.DateOnly>(obj)` | `rt_dateonly_end_of_month` |
+| `Zanna.Time.DateOnly.StartOfYear` | `obj<Zanna.Time.DateOnly>(obj)` | `rt_dateonly_start_of_year` |
+| `Zanna.Time.DateOnly.EndOfYear` | `obj<Zanna.Time.DateOnly>(obj)` | `rt_dateonly_end_of_year` |
 | `Zanna.Time.DateOnly.Compare` | `i64(obj,obj)` | `rt_dateonly_cmp` |
 | `Zanna.Time.DateOnly.Equals` | `i1(obj,obj)` | `rt_dateonly_equals` |
 | `Zanna.Time.DateOnly.ToString` | `str(obj)` | `rt_dateonly_to_string` |
@@ -387,16 +387,16 @@ new objects and clamps month/year shifts to a valid day. Day-count conversion is
 | <a id="zanna-time-stopwatch-get-elapsedns"></a>`Zanna.Time.Stopwatch.get_ElapsedNs` | `i64(obj)` | `rt_stopwatch_elapsed_ns` |
 | <a id="zanna-time-stopwatch-get-elapsedus"></a>`Zanna.Time.Stopwatch.get_ElapsedUs` | `i64(obj)` | `rt_stopwatch_elapsed_us` |
 | <a id="zanna-time-stopwatch-get-isrunning"></a>`Zanna.Time.Stopwatch.get_IsRunning` | `i1(obj)` | `rt_stopwatch_is_running` |
-| `Zanna.Time.Stopwatch.New` | `obj()` | `rt_stopwatch_new` |
+| `Zanna.Time.Stopwatch.New` | `obj<Zanna.Time.Stopwatch>()` | `rt_stopwatch_new` |
 | `Zanna.Time.Stopwatch.Reset` | `void(obj)` | `rt_stopwatch_reset` |
 | `Zanna.Time.Stopwatch.Restart` | `void(obj)` | `rt_stopwatch_restart` |
 | `Zanna.Time.Stopwatch.Start` | `void(obj)` | `rt_stopwatch_start` |
-| `Zanna.Time.Stopwatch.StartNew` | `obj()` | `rt_stopwatch_start_new` |
+| `Zanna.Time.Stopwatch.StartNew` | `obj<Zanna.Time.Stopwatch>()` | `rt_stopwatch_start_new` |
 | `Zanna.Time.Stopwatch.Stop` | `void(obj)` | `rt_stopwatch_stop` |
 | `Zanna.Time.Clock.Sleep` | `void(i64)` | `rt_clock_sleep` |
 | `Zanna.Time.Clock.NowMs` | `i64()` | `rt_clock_ticks` |
 | `Zanna.Time.Clock.NowMicros` | `i64()` | `rt_clock_ticks_us` |
-| `Zanna.Time.Countdown.New` | `obj(i64)` | `rt_countdown_new` |
+| `Zanna.Time.Countdown.New` | `obj<Zanna.Time.Countdown>(i64)` | `rt_countdown_new` |
 | `Zanna.Time.Countdown.Start` | `void(obj)` | `rt_countdown_start` |
 | `Zanna.Time.Countdown.Stop` | `void(obj)` | `rt_countdown_stop` |
 | `Zanna.Time.Countdown.Reset` | `void(obj)` | `rt_countdown_reset` |

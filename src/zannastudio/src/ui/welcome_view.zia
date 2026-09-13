@@ -142,7 +142,7 @@ class WelcomeView {
 
         var fontResult = GUI.Font.LoadSystemUiBold(28.0);
         if fontResult.IsOk {
-            headingFont = fontResult.Unwrap();
+            headingFont = fontResult.Unwrap() as GUI.Font;
             titleLabel.SetFont(headingFont, 28.0);
         }
 

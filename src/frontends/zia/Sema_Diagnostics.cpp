@@ -342,6 +342,53 @@ SourceLoc Sema::scopeEndForStmt(const Stmt *stmt) {
 /// @details Adds a nearest-name suggestion and replacement fix-it when a sufficiently close
 ///          visible symbol exists.
 void Sema::errorUndefined(SourceLoc loc, const std::string &name) {
+    // A name exported by two or more modules this file binds is ambiguous rather than undefined:
+    // neither declaration wins, so the use must name its module.
+    if (loc.file_id != 0 && name.find('.') == std::string::npos) {
+        // One entry per bound file: a file is visible under its module name and its file stem.
+        std::map<uint32_t, std::string> ownerByFile;
+        if (auto fileIt = fileModuleExports_.find(loc.file_id);
+            fileIt != fileModuleExports_.end()) {
+            const auto idsIt = fileBoundModuleIds_.find(loc.file_id);
+            for (const auto &[moduleName, exports] : fileIt->second) {
+                if (exports.count(name) == 0)
+                    continue;
+                uint32_t moduleFileId = 0;
+                if (idsIt != fileBoundModuleIds_.end()) {
+                    if (auto idIt = idsIt->second.find(moduleName); idIt != idsIt->second.end())
+                        moduleFileId = idIt->second;
+                }
+                auto [ownerIt, inserted] = ownerByFile.emplace(moduleFileId, moduleName);
+                if (!inserted && moduleName < ownerIt->second)
+                    ownerIt->second = moduleName;
+            }
+        }
+        std::vector<std::string> owners;
+        for (const auto &[fileId, moduleName] : ownerByFile)
+            owners.push_back(moduleName);
+        if (owners.size() > 1) {
+            std::sort(owners.begin(), owners.end());
+            std::string message = "Ambiguous identifier '" + name + "': exported by ";
+            for (size_t i = 0; i < owners.size(); ++i) {
+                if (i != 0)
+                    message += i + 1 == owners.size() ? " and " : ", ";
+                message += "'" + owners[i] + "'";
+            }
+            message += "; qualify it, for example '" + owners.front() + "." + name + "'";
+            hasError_ = true;
+            il::support::Diagnostic diag{
+                il::support::Severity::Error,
+                std::move(message),
+                loc,
+                "V-ZIA-UNDEFINED",
+            };
+            diag.stage = "sema";
+            diag.help = "Qualify the name with the bound module that should provide it.";
+            diag_.report(std::move(diag));
+            return;
+        }
+    }
+
     std::string message = "Undefined identifier: " + name;
     std::vector<il::support::DiagnosticNote> notes;
     std::vector<il::support::DiagnosticFixIt> fixits;
@@ -382,7 +429,8 @@ void Sema::errorUndefined(SourceLoc loc, const std::string &name) {
 /// @param candidates Runtime method candidates encoded with arity suffixes.
 /// @details Offers an `()` fix-it only when a zero-argument overload exists; otherwise the
 ///          diagnostic uses `(...)` guidance without a misleading automatic edit.
-void Sema::errorRuntimeMethodNeedsCall(FieldExpr *expr, const std::string &className,
+void Sema::errorRuntimeMethodNeedsCall(FieldExpr *expr,
+                                       const std::string &className,
                                        const std::vector<std::string> &candidates) {
     // A zero-arg overload means `()` fully fixes the access, so we offer a fix-it.
     // With only arg-taking overloads we guide but omit the fix-it — a fix that
@@ -407,7 +455,8 @@ void Sema::errorRuntimeMethodNeedsCall(FieldExpr *expr, const std::string &class
         const uint32_t fieldColumn = expr->loc.column + 1;
         range = il::support::SourceRange{
             il::support::SourceLoc{expr->loc.file_id, expr->loc.line, fieldColumn},
-            il::support::SourceLoc{expr->loc.file_id, expr->loc.line,
+            il::support::SourceLoc{expr->loc.file_id,
+                                   expr->loc.line,
                                    fieldColumn + static_cast<uint32_t>(expr->field.size())},
         };
         if (hasZeroArg) {
@@ -424,8 +473,7 @@ void Sema::errorRuntimeMethodNeedsCall(FieldExpr *expr, const std::string &class
     };
     diag.range = range;
     diag.stage = "sema";
-    diag.help =
-        "Runtime methods are invoked with parentheses; write '" + expr->field + call + "'.";
+    diag.help = "Runtime methods are invoked with parentheses; write '" + expr->field + call + "'.";
     diag.fixits = std::move(fixits);
     diag_.report(std::move(diag));
 }

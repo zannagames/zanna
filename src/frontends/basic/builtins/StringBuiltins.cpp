@@ -141,11 +141,11 @@ Value lowerRight(LowerCtx &ctx, ArrayRef<Value> args) {
 
 /// @brief Lower the STR$ builtin that formats numeric values to strings.
 ///
-/// @details STR$ inspects the argument's numeric classification to choose the
-///          appropriate runtime helper.  Integers may require narrowing, while
-///          floating-point operands are coerced to F64.  The runtime feature
-///          tracker records which allocator is required so the final binary can
-///          import the correct helper.
+/// @details The lowered argument's IL type selects the formatter: every BASIC
+///          integer is 64-bit, so integer and boolean values format at full
+///          width, while floating-point values format as DOUBLE unless the
+///          argument classifies as SINGLE. The runtime feature tracker records
+///          which helper is required so the final binary imports it.
 ///
 /// @param ctx Context supplying argument coercions and helper tracking.
 /// @param args Unused placeholder that satisfies the callback signature.
@@ -157,39 +157,20 @@ Value lowerStr(LowerCtx &ctx, ArrayRef<Value> args) {
         return Value::constInt(0);
 
     const il::support::SourceLoc argLoc = ctx.argLoc(0);
-    TypeRules::NumericType numericType = TypeRules::NumericType::Double;
-    if (ctx.call().args[0])
-        numericType = ctx.classifyNumericType(*ctx.call().args[0]);
-
     const char *runtime = nullptr;
-    RuntimeFeature feature = RuntimeFeature::StrFromDouble;
+    RuntimeFeature feature = RuntimeFeature::F64ToStr;
 
-    /// @brief Narrows the first argument to a selected BASIC integer kind.
-    /// @param target Destination integer kind.
-    auto narrowInteger = [&](Type::Kind target) { ctx.narrowInt(0, Type(target), argLoc); };
-
-    switch (numericType) {
-        case TypeRules::NumericType::Integer:
-            runtime = "rt_str_i16_alloc";
-            feature = RuntimeFeature::StrFromI16;
-            narrowInteger(Type::Kind::I16);
-            break;
-        case TypeRules::NumericType::Long:
-            runtime = "rt_str_i32_alloc";
-            feature = RuntimeFeature::StrFromI32;
-            narrowInteger(Type::Kind::I32);
-            break;
-        case TypeRules::NumericType::Single:
-            runtime = "rt_str_f_alloc";
-            feature = RuntimeFeature::StrFromSingle;
-            ctx.ensureF64(0, argLoc);
-            break;
-        case TypeRules::NumericType::Double:
-        default:
-            runtime = "rt_f64_to_str";
-            feature = RuntimeFeature::F64ToStr;
-            ctx.ensureF64(0, argLoc);
-            break;
+    if (ctx.arg(0).type.kind != Type::Kind::F64) {
+        runtime = "rt_int_to_str";
+        feature = RuntimeFeature::IntToStr;
+        ctx.ensureI64(0, argLoc);
+    } else if (ctx.call().args[0] &&
+               ctx.classifyNumericType(*ctx.call().args[0]) == TypeRules::NumericType::Single) {
+        runtime = "rt_str_f_alloc";
+        feature = RuntimeFeature::StrFromSingle;
+    } else {
+        runtime = "rt_f64_to_str";
+        feature = RuntimeFeature::F64ToStr;
     }
 
     ctx.requestHelper(feature);

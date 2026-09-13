@@ -82,10 +82,10 @@ PRINT "Bits.Flip(255): "; Zanna.Math.Bits.Flip(255)
 
 ' --- Count ---
 PRINT "--- Count ---"
-PRINT "Bits.Count(0): "; Zanna.Math.Bits.Count(0)
-PRINT "Bits.Count(1): "; Zanna.Math.Bits.Count(1)
-PRINT "Bits.Count(7): "; Zanna.Math.Bits.Count(7)
-PRINT "Bits.Count(255): "; Zanna.Math.Bits.Count(255)
+PRINT "Bits.CountOnes(0): "; Zanna.Math.Bits.CountOnes(0)
+PRINT "Bits.CountOnes(1): "; Zanna.Math.Bits.CountOnes(1)
+PRINT "Bits.CountOnes(7): "; Zanna.Math.Bits.CountOnes(7)
+PRINT "Bits.CountOnes(255): "; Zanna.Math.Bits.CountOnes(255)
 
 ' --- CountLeadingZeros ---
 PRINT "--- CountLeadingZeros ---"

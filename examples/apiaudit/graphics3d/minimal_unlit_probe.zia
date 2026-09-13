@@ -20,7 +20,7 @@ func start() {
     Material3D.SetShadingModel(mat, 3);
     var xform = Mat4.Identity();
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (not Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         if (Keyboard.WasPressed(Key.Escape)) { break; }
 

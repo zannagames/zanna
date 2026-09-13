@@ -79,13 +79,12 @@ func start() {
     JS.Next(s7);
     SayBool(JS.HasNext(s7));
 
-    // --- NextResult / Error compatibility ---
-    Say("--- NextResult / Error compatibility ---");
+    // --- NextResult ---
+    Say("--- NextResult ---");
     var s8 = JS.New("not json");
     var bad = JS.NextResult(s8);
     SayBool(bad.IsErr);
     Say(bad.UnwrapErrStr());
-    Say(JS.Error(s8));
 
     Say("=== JsonStream Demo Complete ===");
 }

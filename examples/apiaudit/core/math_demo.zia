@@ -7,7 +7,7 @@ func start() {
 
     Say("--- Constants ---");
     SayNum(Pi);
-    SayNum(E);
+    SayNum(Euler);
     SayNum(Tau);
 
     Say("--- Abs/Sign ---");

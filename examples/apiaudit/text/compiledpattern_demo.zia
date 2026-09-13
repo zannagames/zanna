@@ -29,23 +29,21 @@ func start() {
 
     // --- Find ---
     Say("--- Find ---");
-    Say(pat.Find("abc123def"));
-    var found = pat.FindOption("abc123def");
+    var found = pat.Find("abc123def");
     SayBool(found.IsSome);
     Say(found.UnwrapStr());
-    SayBool(pat.FindOption("abcdef").IsNone);
+    SayBool(pat.Find("abcdef").IsNone);
 
     // --- FindFrom ---
     Say("--- FindFrom ---");
-    Say(pat.FindFrom("abc123def456", 6));
     var foundFrom = pat.FindFrom("abc123def456", 6);
     SayBool(foundFrom.IsSome);
     Say(foundFrom.UnwrapStr());
 
     // --- FindPos ---
     Say("--- FindPos ---");
-    SayInt(pat.FindPos("abc123def"));
-    SayInt(pat.FindPos("abcdef"));
+    SayInt(pat.FindPos("abc123def").UnwrapOrI64(-1));
+    SayInt(pat.FindPos("abcdef").UnwrapOrI64(-1));
     var foundPos = pat.FindPos("abc123def");
     SayBool(foundPos.IsSome);
     SayInt(foundPos.UnwrapI64());
@@ -103,8 +101,7 @@ func start() {
     Say("--- Second pattern ---");
     var wordPat = CP.New("[A-Z][a-z]+");
     Say(wordPat.get_Pattern());
-    Say(wordPat.Find("hello World foo Bar"));
-    Say(wordPat.FindOption("hello World foo Bar").UnwrapStr());
+    Say(wordPat.Find("hello World foo Bar").UnwrapStr());
     SayBool(wordPat.IsMatch("hello"));
     SayBool(wordPat.IsMatch("Hello"));
 

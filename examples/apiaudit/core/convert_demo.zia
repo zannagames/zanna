@@ -1,7 +1,7 @@
 // =============================================================================
 // API Audit: Zanna.Core.Convert + Zanna.Core.Parse
 // =============================================================================
-// Tests Convert: ToDouble, ToInt, ToInt64, ToStringInt, ToStringDouble, NumToInt
+// Tests Convert: ToDouble, ToInt64, ToStringInt, ToStringDouble, NumToInt
 // Tests Parse: IntOr, DoubleOr, BoolOr, IsInt, IsNum, IntRadix
 // =============================================================================
 
@@ -21,17 +21,14 @@ func start() {
     Say("ToDouble('-2.5'):");
     SayNum(Conv.ToDouble("-2.5"));
 
-    // --- Convert.ToInt ---
-    Say("--- Convert.ToInt ---");
-    Say("ToInt('42'):");
-    SayInt(Conv.ToInt("42"));
-    Say("ToInt('0'):");
-    SayInt(Conv.ToInt("0"));
-    Say("ToInt('-100'):");
-    SayInt(Conv.ToInt("-100"));
-
     // --- Convert.ToInt64 ---
     Say("--- Convert.ToInt64 ---");
+    Say("ToInt64('42'):");
+    SayInt(Conv.ToInt64("42"));
+    Say("ToInt64('0'):");
+    SayInt(Conv.ToInt64("0"));
+    Say("ToInt64('-100'):");
+    SayInt(Conv.ToInt64("-100"));
     Say("ToInt64('1000000'):");
     SayInt(Conv.ToInt64("1000000"));
     Say("ToInt64('-999'):");

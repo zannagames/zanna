@@ -175,7 +175,7 @@ func start() {
     var tiny = Pixels.New(2, 2);
     tiny.Fill(Color.RGB(255, 0, 0));
     var bytes = tiny.ToBytes();
-    Say("ToBytes returned object: " + Fmt.Bool(bytes != 0));
+    Say("ToBytes length: " + Fmt.Int(bytes.Length));
 
     // --- FromBytes ---
     Say("--- FromBytes ---");

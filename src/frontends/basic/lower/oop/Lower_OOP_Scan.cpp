@@ -124,9 +124,9 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
         // BUG-OOP-001 fix: Include inherited fields from base class hierarchy.
         // Walk the inheritance chain and collect all base fields first.
         std::vector<ClassInfo::FieldInfo> inheritedFields;
-        // Note: decl.qualifiedName is often empty; use decl.name directly to look up in OopIndex
-        // The OopIndex key is built the same way: just the class name when there's no namespace.
-        if (const ClassInfo *cinfo = oopIndex_.findClass(decl.name)) {
+        // The OopIndex keys a class by its namespace-qualified name, so a class declared
+        // inside a NAMESPACE is looked up with the enclosing path.
+        if (const ClassInfo *cinfo = oopIndex_.findClass(qualifiedInCurrentNamespace(decl.name))) {
             // Walk base class chain and collect fields in reverse order (so we add them correctly)
             std::vector<const ClassInfo *> bases;
             const ClassInfo *cur = cinfo;
@@ -186,6 +186,18 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
         layouts.emplace_back(decl.name, std::move(layout));
     }
 
+    /// @brief Enter a NAMESPACE block so the classes inside it resolve by qualified name.
+    /// @param decl Namespace declaration being entered.
+    void before(const NamespaceDecl &decl) {
+        namespacePath_.insert(namespacePath_.end(), decl.path.begin(), decl.path.end());
+    }
+
+    /// @brief Leave a NAMESPACE block entered by @ref before.
+    /// @param decl Namespace declaration being left.
+    void after(const NamespaceDecl &decl) {
+        namespacePath_.resize(namespacePath_.size() - decl.path.size());
+    }
+
     /// @brief Capture metadata after visiting a type alias that behaves like a class.
     /// @details Treats @ref TypeDecl uniformly with @ref ClassDecl so user-defined
     ///          type declarations participate in object layout computation.
@@ -236,8 +248,23 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
     std::vector<std::pair<std::string, Lowerer::ClassLayout>> layouts;
 
   private:
+    /// @brief Qualify @p name with the NAMESPACE blocks currently being walked.
+    /// @param name Unqualified declaration name.
+    /// @return `A.B.Name` inside `NAMESPACE A.B`, or @p name at the top level.
+    [[nodiscard]] std::string qualifiedInCurrentNamespace(const std::string &name) const {
+        std::string qualified;
+        for (const auto &segment : namespacePath_) {
+            qualified += segment;
+            qualified += '.';
+        }
+        qualified += name;
+        return qualified;
+    }
+
     /// Borrowed lowerer receiving runtime feature requests.
     Lowerer &lowerer_;
+    /// Namespace segments of the NAMESPACE blocks enclosing the current declaration.
+    std::vector<std::string> namespacePath_;
     /// Borrowed semantic OOP index used for inherited-field discovery.
     const OopIndex &oopIndex_;
     /// Monotonic positive class ID assigned to discovered layouts.

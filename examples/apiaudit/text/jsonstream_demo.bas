@@ -84,15 +84,14 @@ PRINT "HasNext before: "; Zanna.Data.JsonStream.HasNext(s7)
 Zanna.Data.JsonStream.Next(s7)
 PRINT "HasNext after: "; Zanna.Data.JsonStream.HasNext(s7)
 
-' --- NextResult / Error compatibility ---
-PRINT "--- NextResult / Error compatibility ---"
+' --- NextResult ---
+PRINT "--- NextResult ---"
 DIM s8 AS OBJECT
 s8 = Zanna.Data.JsonStream.New("not json")
 DIM bad AS OBJECT
 bad = Zanna.Data.JsonStream.NextResult(s8)
 PRINT "Bad NextResult IsErr: "; bad.IsErr
 PRINT "Bad NextResult Err: "; bad.UnwrapErrStr()
-PRINT "Error: "; Zanna.Data.JsonStream.Error(s8)
 
 PRINT "=== JsonStream Demo Complete ==="
 END

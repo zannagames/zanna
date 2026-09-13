@@ -1,5 +1,5 @@
 // bitset_demo.zia - Comprehensive API audit for Zanna.Collections.BitSet
-// Tests: New, Set, Get, Clear, Toggle, ClearAll, SetAll, Count, Len,
+// Tests: New, SetBit, GetBit, ClearBit, ToggleBit, Clear, SetAll, Count, Len,
 //        IsEmpty, Not, And, Or, Xor, ToString
 
 module BitSetDemo;
@@ -35,7 +35,7 @@ func start() {
 
     // --- Clear (single bit) ---
     Say("--- Clear ---");
-    bs.Clear(2);
+    bs.ClearBit(2);
     SayBool(bs.GetBit(2));    // 0
     SayInt(bs.Count);      // 3
 

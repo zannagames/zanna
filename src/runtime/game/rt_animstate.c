@@ -643,14 +643,14 @@ void rt_animstate_play(void *asm_, void *name_str) {
 /// @brief Copy the active clip's stored short name to a runtime string.
 /// @param asm_ Borrowed machine.
 /// @return Owned copied name or shared empty string when no active clip exists.
-void *rt_animstate_current_name(void *asm_) {
+rt_string rt_animstate_current_name(void *asm_) {
     animstate_impl *a =
         checked_animstate(asm_, "AnimStateMachine.StateName: expected Zanna.Game.AnimStateMachine");
     if (!a)
-        return (void *)rt_const_cstr("");
+        return rt_const_cstr("");
     if (a->active_clip_idx >= 0 && a->active_clip_idx < a->clip_count)
-        return (void *)rt_const_cstr(a->clips[a->active_clip_idx].name);
-    return (void *)rt_const_cstr("");
+        return rt_const_cstr(a->clips[a->active_clip_idx].name);
+    return rt_const_cstr("");
 }
 
 /// @brief Configure the legacy single event frame.

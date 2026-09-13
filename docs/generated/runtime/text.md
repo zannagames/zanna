@@ -136,7 +136,7 @@ operations including `FromBytes`, `IsValid`, `Generate`, `ToBytes`.
 | <a id="zanna-text-uuid-frombytes"></a>`FromBytes` | `str(obj)` | `Zanna.Text.Uuid.FromBytes` |
 | <a id="zanna-text-uuid-isvalid"></a>`IsValid` | `i1(str)` | `Zanna.Text.Uuid.IsValid` |
 | <a id="zanna-text-uuid-generate"></a>`Generate` | `str()` | `Zanna.Text.Uuid.Generate` |
-| <a id="zanna-text-uuid-tobytes"></a>`ToBytes` | `obj(str)` | `Zanna.Text.Uuid.ToBytes` |
+| <a id="zanna-text-uuid-tobytes"></a>`ToBytes` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Text.Uuid.ToBytes` |
 
 <a id="zanna-text-pluralize"></a>
 ### `Zanna.Text.Pluralize`
@@ -185,7 +185,7 @@ construct the class directly. Its public surface exposes properties such as `Bui
 | <a id="zanna-text-version-isvalid"></a>`IsValid` | `i1(str)` | `Zanna.Text.Version.IsValid` |
 | <a id="zanna-text-version-satisfies"></a>`Satisfies` | `i1(str)` | `Zanna.Text.Version.Satisfies` |
 | <a id="zanna-text-version-tostring"></a>`ToString` | `str()` | `Zanna.Text.Version.ToString` |
-| <a id="zanna-text-version-parse"></a>`Parse` | `obj(str)` | `Zanna.Text.Version.Parse` |
+| <a id="zanna-text-version-parse"></a>`Parse` | `obj<Zanna.Text.Version>(str)` | `Zanna.Text.Version.Parse` |
 | <a id="zanna-text-version-compare"></a>`Compare` | `i64(str,str)` | `Zanna.Text.Version.Compare` |
 | <a id="zanna-text-version-parsemajor"></a>`ParseMajor` | `i64(str)` | `Zanna.Text.Version.ParseMajor` |
 | <a id="zanna-text-version-parseminor"></a>`ParseMinor` | `i64(str)` | `Zanna.Text.Version.ParseMinor` |
@@ -246,7 +246,7 @@ Constructor: `Zanna.Text.Table.New`
 | <a id="zanna-text-table-renderrule"></a>`RenderRule` | `str(str)` | `Zanna.Text.Table.RenderRule` |
 | <a id="zanna-text-table-renderrow"></a>`RenderRow` | `str(i64)` | `Zanna.Text.Table.RenderRow` |
 | <a id="zanna-text-table-render"></a>`Render` | `str(i1,i1)` | `Zanna.Text.Table.Render` |
-| <a id="zanna-text-table-new"></a>`New` | `obj()` | `Zanna.Text.Table.New` |
+| <a id="zanna-text-table-new"></a>`New` | `obj<Zanna.Text.Table>()` | `Zanna.Text.Table.New` |
 
 <a id="zanna-text-markdown"></a>
 ### `Zanna.Text.Markdown`
@@ -288,11 +288,11 @@ Constructor: `Zanna.Text.StringBuilder.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-text-stringbuilder-append"></a>`Append` | `obj(str)` | `Zanna.Text.StringBuilder.Append` |
-| <a id="zanna-text-stringbuilder-appendline"></a>`AppendLine` | `obj(str)` | `Zanna.Text.StringBuilder.AppendLine` |
+| <a id="zanna-text-stringbuilder-append"></a>`Append` | `obj<Zanna.Text.StringBuilder>(str)` | `Zanna.Text.StringBuilder.Append` |
+| <a id="zanna-text-stringbuilder-appendline"></a>`AppendLine` | `obj<Zanna.Text.StringBuilder>(str)` | `Zanna.Text.StringBuilder.AppendLine` |
 | <a id="zanna-text-stringbuilder-clear"></a>`Clear` | `void()` | `Zanna.Text.StringBuilder.Clear` |
 | <a id="zanna-text-stringbuilder-tostring"></a>`ToString` | `str()` | `Zanna.Text.StringBuilder.ToString` |
-| <a id="zanna-text-stringbuilder-new"></a>`New` | `obj()` | `Zanna.Text.StringBuilder.New` |
+| <a id="zanna-text-stringbuilder-new"></a>`New` | `obj<Zanna.Text.StringBuilder>()` | `Zanna.Text.StringBuilder.New` |
 
 <a id="zanna-text-pattern"></a>
 ### `Zanna.Text.Pattern`
@@ -353,7 +353,7 @@ Constructor: `Zanna.Text.CompiledPattern.New`
 | <a id="zanna-text-compiledpattern-expandreplacementat"></a>`ExpandReplacementAt` | `obj<Zanna.Result>(str,i64,str)` | `Zanna.Text.CompiledPattern.ExpandReplacementAt` |
 | <a id="zanna-text-compiledpattern-split"></a>`Split` | `seq<str>(str)` | `Zanna.Text.CompiledPattern.Split` |
 | `Split` | `seq<str>(str,i64)` | `Zanna.Text.CompiledPattern.SplitLimited` |
-| <a id="zanna-text-compiledpattern-new"></a>`New` | `obj(str)` | `Zanna.Text.CompiledPattern.New` |
+| <a id="zanna-text-compiledpattern-new"></a>`New` | `obj<Zanna.Text.CompiledPattern>(str)` | `Zanna.Text.CompiledPattern.New` |
 
 <a id="zanna-text-template"></a>
 ### `Zanna.Text.Template`
@@ -420,7 +420,7 @@ Constructor: `Zanna.Text.Scanner.New`
 | <a id="zanna-text-scanner-readnumbertoken"></a>`ReadNumberToken` | `str()` | `Zanna.Text.Scanner.ReadNumberToken` |
 | <a id="zanna-text-scanner-readquoted"></a>`ReadQuoted` | `str(i64)` | `Zanna.Text.Scanner.ReadQuoted` |
 | <a id="zanna-text-scanner-readline"></a>`ReadLine` | `str()` | `Zanna.Text.Scanner.ReadLine` |
-| <a id="zanna-text-scanner-new"></a>`New` | `obj(str)` | `Zanna.Text.Scanner.New` |
+| <a id="zanna-text-scanner-new"></a>`New` | `obj<Zanna.Text.Scanner>(str)` | `Zanna.Text.Scanner.New` |
 
 <a id="zanna-text-textwrapper"></a>
 ### `Zanna.Text.TextWrapper`
@@ -485,7 +485,7 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.InvariantNumberFormat.Pad` | `str(i64,i64)` | `rt_numfmt_pad` |
 | `Zanna.Text.Diff.Lines` | `seq<str>(str,str)` | `rt_diff_lines` |
 | `Zanna.Text.Diff.Unified` | `str(str,str,i64)` | `rt_diff_unified` |
-| `Zanna.Text.Table.New` | `obj()` | `rt_table_new` |
+| `Zanna.Text.Table.New` | `obj<Zanna.Text.Table>()` | `rt_table_new` |
 | `Zanna.Text.Table.AddColumn` | `i64(obj,str,i64,i64)` | `rt_table_add_column` |
 | `Zanna.Text.Table.AddColumnAuto` | `i64(obj,str,i64)` | `rt_table_add_column_auto` |
 | `Zanna.Text.Table.SetTruncate` | `void(obj,i64,i1)` | `rt_table_set_truncate` |
@@ -512,7 +512,7 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.Pluralize.Plural` | `str(str)` | `rt_pluralize` |
 | `Zanna.Text.Pluralize.Singular` | `str(str)` | `rt_singularize` |
 | `Zanna.Text.Pluralize.Count` | `str(i64,str)` | `rt_pluralize_count` |
-| `Zanna.Text.Version.Parse` | `obj(str)` | `rt_version_parse` |
+| `Zanna.Text.Version.Parse` | `obj<Zanna.Text.Version>(str)` | `rt_version_parse` |
 | `Zanna.Text.Version.IsValid` | `i1(str)` | `rt_version_is_valid` |
 | <a id="zanna-text-version-get-major"></a>`Zanna.Text.Version.get_Major` | `i64(obj)` | `rt_version_major` |
 | <a id="zanna-text-version-get-minor"></a>`Zanna.Text.Version.get_Minor` | `i64(obj)` | `rt_version_minor` |
@@ -553,13 +553,13 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.Uuid.FromBytes` | `str(obj)` | `rt_guid_from_bytes` |
 | `Zanna.Text.Uuid.IsValid` | `i1(str)` | `rt_guid_is_valid` |
 | `Zanna.Text.Uuid.Generate` | `str()` | `rt_guid_new` |
-| `Zanna.Text.Uuid.ToBytes` | `obj(str)` | `rt_guid_to_bytes` |
-| `Zanna.Text.StringBuilder.Append` | `obj(obj,str)` | `rt_text_sb_append` |
-| `Zanna.Text.StringBuilder.AppendLine` | `obj(obj,str)` | `rt_text_sb_append_line` |
+| `Zanna.Text.Uuid.ToBytes` | `obj<Zanna.Collections.Bytes>(str)` | `rt_guid_to_bytes` |
+| `Zanna.Text.StringBuilder.Append` | `obj<Zanna.Text.StringBuilder>(obj,str)` | `rt_text_sb_append` |
+| `Zanna.Text.StringBuilder.AppendLine` | `obj<Zanna.Text.StringBuilder>(obj,str)` | `rt_text_sb_append_line` |
 | `Zanna.Text.StringBuilder.Clear` | `void(obj)` | `rt_text_sb_clear` |
 | <a id="zanna-text-stringbuilder-get-capacity"></a>`Zanna.Text.StringBuilder.get_Capacity` | `i64(obj)` | `rt_text_sb_get_capacity` |
 | <a id="zanna-text-stringbuilder-get-length"></a>`Zanna.Text.StringBuilder.get_Length` | `i64(obj)` | `rt_text_sb_get_length` |
-| `Zanna.Text.StringBuilder.New` | `obj()` | `rt_sb_new` |
+| `Zanna.Text.StringBuilder.New` | `obj<Zanna.Text.StringBuilder>()` | `rt_sb_new` |
 | `Zanna.Text.StringBuilder.ToString` | `str(obj)` | `rt_text_sb_to_string` |
 | `Zanna.Text.Pattern.IsMatch` | `i1(str,str)` | `rt_pattern_is_match` |
 | `Zanna.Text.Pattern.Find` | `obj<Zanna.Option>(str,str)` | `rt_pattern_find_option` |
@@ -570,7 +570,7 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.Pattern.ReplaceFirst` | `str(str,str,str)` | `rt_pattern_replace_first` |
 | `Zanna.Text.Pattern.Split` | `seq<str>(str,str)` | `rt_pattern_split` |
 | `Zanna.Text.Pattern.Escape` | `str(str)` | `rt_pattern_escape` |
-| `Zanna.Text.CompiledPattern.New` | `obj(str)` | `rt_compiled_pattern_new` |
+| `Zanna.Text.CompiledPattern.New` | `obj<Zanna.Text.CompiledPattern>(str)` | `rt_compiled_pattern_new` |
 | `Zanna.Text.CompiledPattern.TryNew` | `obj<Zanna.Result>(str,i1)` | `rt_compiled_pattern_try_new` |
 | <a id="zanna-text-compiledpattern-get-pattern"></a>`Zanna.Text.CompiledPattern.get_Pattern` | `str(obj)` | `rt_compiled_pattern_get_pattern` |
 | `Zanna.Text.CompiledPattern.IsMatch` | `i1(obj,str)` | `rt_compiled_pattern_is_match` |
@@ -586,7 +586,7 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.CompiledPattern.ExpandReplacementAt` | `obj<Zanna.Result>(obj,str,i64,str)` | `rt_compiled_pattern_expand_replacement_at` |
 | `Zanna.Text.CompiledPattern.Split` | `seq<str>(obj,str)` | `rt_compiled_pattern_split` |
 | <a id="zanna-text-compiledpattern-splitlimited"></a>`Zanna.Text.CompiledPattern.SplitLimited` | `seq<str>(obj,str,i64)` | `rt_compiled_pattern_split_n` |
-| `Zanna.Text.Scanner.New` | `obj(str)` | `rt_scanner_new` |
+| `Zanna.Text.Scanner.New` | `obj<Zanna.Text.Scanner>(str)` | `rt_scanner_new` |
 | <a id="zanna-text-scanner-get-position"></a>`Zanna.Text.Scanner.get_Position` | `i64(obj)` | `rt_scanner_pos` |
 | <a id="zanna-text-scanner-set-position"></a>`Zanna.Text.Scanner.set_Position` | `void(obj,i64)` | `rt_scanner_set_pos` |
 | <a id="zanna-text-scanner-get-isend"></a>`Zanna.Text.Scanner.get_IsEnd` | `i1(obj)` | `rt_scanner_is_end` |

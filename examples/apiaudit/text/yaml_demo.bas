@@ -1,7 +1,7 @@
 ' =============================================================================
 ' API Audit: Zanna.Data.Yaml - YAML Processing
 ' =============================================================================
-' Tests: ParseResult, Parse, Error, IsValid, Format, FormatIndent, TypeOf
+' Tests: ParseResult, Parse, IsValid, Format, FormatIndent, TypeOf
 ' =============================================================================
 
 PRINT "=== API Audit: Zanna.Data.Yaml ==="
@@ -31,14 +31,14 @@ badYaml = Zanna.Data.Yaml.ParseResult("name: [unterminated" + CHR$(10))
 PRINT "Bad ParseResult IsErr: "; badYaml.IsErr
 PRINT "Bad ParseResult Err: "; badYaml.UnwrapErrStr()
 
-' --- Parse / Error compatibility ---
-PRINT "--- Parse / Error compatibility ---"
+' --- Parse ---
+PRINT "--- Parse ---"
 DIM legacyDoc AS OBJECT
 legacyDoc = Zanna.Data.Yaml.Parse("name: Bob" + CHR$(10))
 PRINT "Legacy TypeOf: "; Zanna.Data.Yaml.TypeOf(legacyDoc)
 DIM legacyBad AS OBJECT
 legacyBad = Zanna.Data.Yaml.Parse("name: [unterminated" + CHR$(10))
-PRINT "Legacy Error: "; Zanna.Data.Yaml.Error()
+PRINT "Legacy Parse failure handled"
 
 ' --- TypeOf ---
 PRINT "--- TypeOf ---"

@@ -276,7 +276,7 @@ Constructor: `Zanna.GUI.Flex.New`
 | <a id="zanna-gui-flex-setjustify"></a>`SetJustify` | `void(i64)` | `Zanna.GUI.Flex.SetJustify` |
 | <a id="zanna-gui-flex-setgap"></a>`SetGap` | `void(f64)` | `Zanna.GUI.Flex.SetGap` |
 | <a id="zanna-gui-flex-setpadding"></a>`SetPadding` | `void(f64)` | `Zanna.GUI.Flex.SetPadding` |
-| <a id="zanna-gui-flex-new"></a>`New` | `obj()` | `Zanna.GUI.Flex.New` |
+| <a id="zanna-gui-flex-new"></a>`New` | `obj<Zanna.GUI.Flex>()` | `Zanna.GUI.Flex.New` |
 
 <a id="zanna-gui-layoutgrid"></a>
 ### `Zanna.GUI.LayoutGrid`
@@ -300,7 +300,7 @@ Constructor: `Zanna.GUI.LayoutGrid.New`
 | <a id="zanna-gui-layoutgrid-setgap"></a>`SetGap` | `void(f64,f64)` | `Zanna.GUI.LayoutGrid.SetGap` |
 | <a id="zanna-gui-layoutgrid-setpadding"></a>`SetPadding` | `void(f64)` | `Zanna.GUI.LayoutGrid.SetPadding` |
 | <a id="zanna-gui-layoutgrid-place"></a>`Place` | `i1(obj,i64,i64,i64,i64)` | `Zanna.GUI.LayoutGrid.Place` |
-| <a id="zanna-gui-layoutgrid-new"></a>`New` | `obj()` | `Zanna.GUI.LayoutGrid.New` |
+| <a id="zanna-gui-layoutgrid-new"></a>`New` | `obj<Zanna.GUI.LayoutGrid>()` | `Zanna.GUI.LayoutGrid.New` |
 
 <a id="zanna-gui-dockpanel"></a>
 ### `Zanna.GUI.DockPanel`
@@ -319,7 +319,7 @@ Constructor: `Zanna.GUI.DockPanel.New`
 | <a id="zanna-gui-dockpanel-setpadding"></a>`SetPadding` | `void(f64)` | `Zanna.GUI.DockPanel.SetPadding` |
 | <a id="zanna-gui-dockpanel-setgap"></a>`SetGap` | `void(f64)` | `Zanna.GUI.DockPanel.SetGap` |
 | <a id="zanna-gui-dockpanel-dockchild"></a>`DockChild` | `i1(obj,i64)` | `Zanna.GUI.DockPanel.DockChild` |
-| <a id="zanna-gui-dockpanel-new"></a>`New` | `obj()` | `Zanna.GUI.DockPanel.New` |
+| <a id="zanna-gui-dockpanel-new"></a>`New` | `obj<Zanna.GUI.DockPanel>()` | `Zanna.GUI.DockPanel.New` |
 
 <a id="zanna-gui-clipboardtext"></a>
 ### `Zanna.GUI.ClipboardText`
@@ -399,11 +399,11 @@ Constructor: `Zanna.GUI.MessageBox.New`
 | <a id="zanna-gui-messagebox-confirm"></a>`Confirm` | `i64(str,str)` | `Zanna.GUI.MessageBox.Confirm` |
 | <a id="zanna-gui-messagebox-prompt"></a>`Prompt` | `str(str,str)` | `Zanna.GUI.MessageBox.Prompt` |
 | <a id="zanna-gui-messagebox-promptoption"></a>`PromptOption` | `obj<Zanna.Option>(str,str)` | `Zanna.GUI.MessageBox.PromptOption` |
-| <a id="zanna-gui-messagebox-new"></a>`New` | `obj(str,str,i64)` | `Zanna.GUI.MessageBox.New` |
-| <a id="zanna-gui-messagebox-newinfo"></a>`NewInfo` | `obj(str,str)` | `Zanna.GUI.MessageBox.NewInfo` |
-| <a id="zanna-gui-messagebox-newwarning"></a>`NewWarning` | `obj(str,str)` | `Zanna.GUI.MessageBox.NewWarning` |
-| <a id="zanna-gui-messagebox-newerror"></a>`NewError` | `obj(str,str)` | `Zanna.GUI.MessageBox.NewError` |
-| <a id="zanna-gui-messagebox-newquestion"></a>`NewQuestion` | `obj(str,str)` | `Zanna.GUI.MessageBox.NewQuestion` |
+| <a id="zanna-gui-messagebox-new"></a>`New` | `obj<Zanna.GUI.MessageBox>(str,str,i64)` | `Zanna.GUI.MessageBox.New` |
+| <a id="zanna-gui-messagebox-newinfo"></a>`NewInfo` | `obj<Zanna.GUI.MessageBox>(str,str)` | `Zanna.GUI.MessageBox.NewInfo` |
+| <a id="zanna-gui-messagebox-newwarning"></a>`NewWarning` | `obj<Zanna.GUI.MessageBox>(str,str)` | `Zanna.GUI.MessageBox.NewWarning` |
+| <a id="zanna-gui-messagebox-newerror"></a>`NewError` | `obj<Zanna.GUI.MessageBox>(str,str)` | `Zanna.GUI.MessageBox.NewError` |
+| <a id="zanna-gui-messagebox-newquestion"></a>`NewQuestion` | `obj<Zanna.GUI.MessageBox>(str,str)` | `Zanna.GUI.MessageBox.NewQuestion` |
 | <a id="zanna-gui-messagebox-addbutton"></a>`AddButton` | `void(str,i64)` | `Zanna.GUI.MessageBox.AddButton` |
 | <a id="zanna-gui-messagebox-addbuttonwithrole"></a>`AddButtonWithRole` | `void(str,i64,i64)` | `Zanna.GUI.MessageBox.AddButtonWithRole` |
 | <a id="zanna-gui-messagebox-setbuttonrole"></a>`SetButtonRole` | `i1(i64,i64)` | `Zanna.GUI.MessageBox.SetButtonRole` |
@@ -449,10 +449,10 @@ Constructor: `Zanna.GUI.FileDialog.New`
 | <a id="zanna-gui-filedialog-saveoption"></a>`SaveOption` | `obj<Zanna.Option>(str,str,str,str)` | `Zanna.GUI.FileDialog.SaveOption` |
 | <a id="zanna-gui-filedialog-selectfolder"></a>`SelectFolder` | `str(str,str)` | `Zanna.GUI.FileDialog.SelectFolder` |
 | <a id="zanna-gui-filedialog-selectfolderoption"></a>`SelectFolderOption` | `obj<Zanna.Option>(str,str)` | `Zanna.GUI.FileDialog.SelectFolderOption` |
-| <a id="zanna-gui-filedialog-new"></a>`New` | `obj(i64)` | `Zanna.GUI.FileDialog.New` |
-| <a id="zanna-gui-filedialog-newopen"></a>`NewOpen` | `obj()` | `Zanna.GUI.FileDialog.NewOpen` |
-| <a id="zanna-gui-filedialog-newsave"></a>`NewSave` | `obj()` | `Zanna.GUI.FileDialog.NewSave` |
-| <a id="zanna-gui-filedialog-newfolder"></a>`NewFolder` | `obj()` | `Zanna.GUI.FileDialog.NewFolder` |
+| <a id="zanna-gui-filedialog-new"></a>`New` | `obj<Zanna.GUI.FileDialog>(i64)` | `Zanna.GUI.FileDialog.New` |
+| <a id="zanna-gui-filedialog-newopen"></a>`NewOpen` | `obj<Zanna.GUI.FileDialog>()` | `Zanna.GUI.FileDialog.NewOpen` |
+| <a id="zanna-gui-filedialog-newsave"></a>`NewSave` | `obj<Zanna.GUI.FileDialog>()` | `Zanna.GUI.FileDialog.NewSave` |
+| <a id="zanna-gui-filedialog-newfolder"></a>`NewFolder` | `obj<Zanna.GUI.FileDialog>()` | `Zanna.GUI.FileDialog.NewFolder` |
 | <a id="zanna-gui-filedialog-settitle"></a>`SetTitle` | `void(str)` | `Zanna.GUI.FileDialog.SetTitle` |
 | <a id="zanna-gui-filedialog-setpath"></a>`SetPath` | `void(str)` | `Zanna.GUI.FileDialog.SetPath` |
 | <a id="zanna-gui-filedialog-setfilter"></a>`SetFilter` | `void(str,str)` | `Zanna.GUI.FileDialog.SetFilter` |
@@ -505,7 +505,7 @@ Constructor: `Zanna.GUI.CommandPalette.New`
 | <a id="zanna-gui-commandpalette-setquery"></a>`SetQuery` | `void(str)` | `Zanna.GUI.CommandPalette.SetQuery` |
 | <a id="zanna-gui-commandpalette-setclientfiltered"></a>`SetClientFiltered` | `void(i1)` | `Zanna.GUI.CommandPalette.SetClientFiltered` |
 | <a id="zanna-gui-commandpalette-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.CommandPalette.Destroy` |
-| <a id="zanna-gui-commandpalette-new"></a>`New` | `obj(obj)` | `Zanna.GUI.CommandPalette.New` |
+| <a id="zanna-gui-commandpalette-new"></a>`New` | `obj<Zanna.GUI.CommandPalette>(obj)` | `Zanna.GUI.CommandPalette.New` |
 
 <a id="zanna-gui-testharness"></a>
 ### `Zanna.GUI.TestHarness`
@@ -748,7 +748,7 @@ Constructor: `Zanna.GUI.Toast.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-toast-new"></a>`New` | `obj(str,i64,i64)` | `Zanna.GUI.Toast.New` |
+| <a id="zanna-gui-toast-new"></a>`New` | `obj<Zanna.GUI.Toast>(str,i64,i64)` | `Zanna.GUI.Toast.New` |
 | <a id="zanna-gui-toast-info"></a>`Info` | `void(str)` | `Zanna.GUI.Toast.Info` |
 | <a id="zanna-gui-toast-success"></a>`Success` | `void(str)` | `Zanna.GUI.Toast.Success` |
 | <a id="zanna-gui-toast-warning"></a>`Warning` | `void(str)` | `Zanna.GUI.Toast.Warning` |
@@ -788,7 +788,7 @@ Constructor: `Zanna.GUI.Breadcrumb.New`
 | <a id="zanna-gui-breadcrumb-setvisible"></a>`SetVisible` | `void(i1)` | `Zanna.GUI.Breadcrumb.SetVisible` |
 | <a id="zanna-gui-breadcrumb-isvisible"></a>`IsVisible` | `i1()` | `Zanna.GUI.Breadcrumb.IsVisible` |
 | <a id="zanna-gui-breadcrumb-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.Breadcrumb.Destroy` |
-| <a id="zanna-gui-breadcrumb-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Breadcrumb.New` |
+| <a id="zanna-gui-breadcrumb-new"></a>`New` | `obj<Zanna.GUI.Breadcrumb>(obj)` | `Zanna.GUI.Breadcrumb.New` |
 
 <a id="zanna-gui-minimap"></a>
 ### `Zanna.GUI.Minimap`
@@ -821,7 +821,7 @@ Constructor: `Zanna.GUI.Minimap.New`
 | <a id="zanna-gui-minimap-removemarkers"></a>`RemoveMarkers` | `void(i64)` | `Zanna.GUI.Minimap.RemoveMarkers` |
 | <a id="zanna-gui-minimap-clearmarkers"></a>`ClearMarkers` | `void()` | `Zanna.GUI.Minimap.ClearMarkers` |
 | <a id="zanna-gui-minimap-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.Minimap.Destroy` |
-| <a id="zanna-gui-minimap-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Minimap.New` |
+| <a id="zanna-gui-minimap-new"></a>`New` | `obj<Zanna.GUI.Minimap>(obj)` | `Zanna.GUI.Minimap.New` |
 
 <a id="zanna-gui-system"></a>
 ### `Zanna.GUI.System`
@@ -919,7 +919,7 @@ Constructor: `Zanna.GUI.App.New`
 | <a id="zanna-gui-app-wasfiledropped"></a>`WasFileDropped` | `i1()` | `Zanna.GUI.App.WasFileDropped` |
 | <a id="zanna-gui-app-getdroppedfilecount"></a>`GetDroppedFileCount` | `i64()` | `Zanna.GUI.App.GetDroppedFileCount` |
 | <a id="zanna-gui-app-getdroppedfile"></a>`GetDroppedFile` | `str(i64)` | `Zanna.GUI.App.GetDroppedFile` |
-| <a id="zanna-gui-app-new"></a>`New` | `obj(str,i64,i64)` | `Zanna.GUI.App.New` |
+| <a id="zanna-gui-app-new"></a>`New` | `obj<Zanna.GUI.App>(str,i64,i64)` | `Zanna.GUI.App.New` |
 
 <a id="zanna-gui-font"></a>
 ### `Zanna.GUI.Font`
@@ -936,7 +936,7 @@ surfaces still reference the backing face. Legacy path loading remains available
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-font-load"></a>`Load` | `obj(str)` | `Zanna.GUI.Font.Load` |
+| <a id="zanna-gui-font-load"></a>`Load` | `obj<Zanna.GUI.Font>(str)` | `Zanna.GUI.Font.Load` |
 | <a id="zanna-gui-font-loadsystemui"></a>`LoadSystemUi` | `obj<Zanna.Result>(f64)` | `Zanna.GUI.Font.LoadSystemUi` |
 | <a id="zanna-gui-font-loadsystemuibold"></a>`LoadSystemUiBold` | `obj<Zanna.Result>(f64)` | `Zanna.GUI.Font.LoadSystemUiBold` |
 | <a id="zanna-gui-font-getlogicalsize"></a>`GetLogicalSize` | `f64(obj)` | `Zanna.GUI.Font.GetLogicalSize` |
@@ -1064,7 +1064,7 @@ Constructor: `Zanna.GUI.Label.New`
 | <a id="zanna-gui-label-setmaxlines"></a>`SetMaxLines` | `void(i64)` | `Zanna.GUI.Label.SetMaxLines` |
 | <a id="zanna-gui-label-setselectable"></a>`SetSelectable` | `void(i1)` | `Zanna.GUI.Label.SetSelectable` |
 | <a id="zanna-gui-label-getselectedtext"></a>`GetSelectedText` | `str()` | `Zanna.GUI.Label.GetSelectedText` |
-| <a id="zanna-gui-label-new"></a>`New` | `obj(obj,str)` | `Zanna.GUI.Label.New` |
+| <a id="zanna-gui-label-new"></a>`New` | `obj<Zanna.GUI.Label>(obj,str)` | `Zanna.GUI.Label.New` |
 
 <a id="zanna-gui-button"></a>
 ### `Zanna.GUI.Button`
@@ -1087,7 +1087,7 @@ Constructor: `Zanna.GUI.Button.New`
 | <a id="zanna-gui-button-seticon"></a>`SetIcon` | `void(str)` | `Zanna.GUI.Button.SetIcon` |
 | <a id="zanna-gui-button-seticonposition"></a>`SetIconPosition` | `void(i64)` | `Zanna.GUI.Button.SetIconPosition` |
 | <a id="zanna-gui-button-seticonname"></a>`SetIconName` | `void(str)` | `Zanna.GUI.Button.SetIconName` |
-| <a id="zanna-gui-button-new"></a>`New` | `obj(obj,str)` | `Zanna.GUI.Button.New` |
+| <a id="zanna-gui-button-new"></a>`New` | `obj<Zanna.GUI.Button>(obj,str)` | `Zanna.GUI.Button.New` |
 
 <a id="zanna-gui-textinput"></a>
 ### `Zanna.GUI.TextInput`
@@ -1143,7 +1143,7 @@ Constructor: `Zanna.GUI.TextInput.New`
 | <a id="zanna-gui-textinput-getcompositiontext"></a>`GetCompositionText` | `str()` | `Zanna.GUI.TextInput.GetCompositionText` |
 | <a id="zanna-gui-textinput-getcompositionstart"></a>`GetCompositionStart` | `i64()` | `Zanna.GUI.TextInput.GetCompositionStart` |
 | <a id="zanna-gui-textinput-getcompositionlength"></a>`GetCompositionLength` | `i64()` | `Zanna.GUI.TextInput.GetCompositionLength` |
-| <a id="zanna-gui-textinput-new"></a>`New` | `obj(obj)` | `Zanna.GUI.TextInput.New` |
+| <a id="zanna-gui-textinput-new"></a>`New` | `obj<Zanna.GUI.TextInput>(obj)` | `Zanna.GUI.TextInput.New` |
 
 <a id="zanna-gui-checkbox"></a>
 ### `Zanna.GUI.Checkbox`
@@ -1167,7 +1167,7 @@ Constructor: `Zanna.GUI.Checkbox.New`
 | <a id="zanna-gui-checkbox-settext"></a>`SetText` | `void(str)` | `Zanna.GUI.Checkbox.SetText` |
 | <a id="zanna-gui-checkbox-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.Checkbox.WasChanged` |
 | <a id="zanna-gui-checkbox-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.Checkbox.GetRevision` |
-| <a id="zanna-gui-checkbox-new"></a>`New` | `obj(obj,str)` | `Zanna.GUI.Checkbox.New` |
+| <a id="zanna-gui-checkbox-new"></a>`New` | `obj<Zanna.GUI.Checkbox>(obj,str)` | `Zanna.GUI.Checkbox.New` |
 
 <a id="zanna-gui-scrollview"></a>
 ### `Zanna.GUI.ScrollView`
@@ -1191,7 +1191,7 @@ Constructor: `Zanna.GUI.ScrollView.New`
 | <a id="zanna-gui-scrollview-scrollto"></a>`ScrollTo` | `void(obj)` | `Zanna.GUI.ScrollView.ScrollTo` |
 | <a id="zanna-gui-scrollview-getscrollx"></a>`GetScrollX` | `f64()` | `Zanna.GUI.ScrollView.GetScrollX` |
 | <a id="zanna-gui-scrollview-getscrolly"></a>`GetScrollY` | `f64()` | `Zanna.GUI.ScrollView.GetScrollY` |
-| <a id="zanna-gui-scrollview-new"></a>`New` | `obj(obj)` | `Zanna.GUI.ScrollView.New` |
+| <a id="zanna-gui-scrollview-new"></a>`New` | `obj<Zanna.GUI.ScrollView>(obj)` | `Zanna.GUI.ScrollView.New` |
 
 <a id="zanna-gui-treeview"></a>
 ### `Zanna.GUI.TreeView`
@@ -1213,7 +1213,7 @@ Constructor: `Zanna.GUI.TreeView.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-treeview-addnode"></a>`AddNode` | `obj(obj,str)` | `Zanna.GUI.TreeView.AddNode` |
+| <a id="zanna-gui-treeview-addnode"></a>`AddNode` | `obj<Zanna.GUI.TreeView.Node>(obj,str)` | `Zanna.GUI.TreeView.AddNode` |
 | <a id="zanna-gui-treeview-removenode"></a>`RemoveNode` | `void(obj)` | `Zanna.GUI.TreeView.RemoveNode` |
 | <a id="zanna-gui-treeview-clear"></a>`Clear` | `void()` | `Zanna.GUI.TreeView.Clear` |
 | <a id="zanna-gui-treeview-pruneretirednodes"></a>`PruneRetiredNodes` | `void()` | `Zanna.GUI.TreeView.PruneRetiredNodes` |
@@ -1224,9 +1224,9 @@ Constructor: `Zanna.GUI.TreeView.New`
 | <a id="zanna-gui-treeview-setmultiselect"></a>`SetMultiSelect` | `void(i1)` | `Zanna.GUI.TreeView.SetMultiSelect` |
 | <a id="zanna-gui-treeview-scrollto"></a>`ScrollTo` | `void(obj)` | `Zanna.GUI.TreeView.ScrollTo` |
 | <a id="zanna-gui-treeview-setfont"></a>`SetFont` | `void(obj,f64)` | `Zanna.GUI.TreeView.SetFont` |
-| <a id="zanna-gui-treeview-getselected"></a>`GetSelected` | `obj()` | `Zanna.GUI.TreeView.GetSelected` |
+| <a id="zanna-gui-treeview-getselected"></a>`GetSelected` | `obj<Zanna.GUI.TreeView.Node>()` | `Zanna.GUI.TreeView.GetSelected` |
 | <a id="zanna-gui-treeview-getselecteddata"></a>`GetSelectedData` | `seq<str>()` | `Zanna.GUI.TreeView.GetSelectedData` |
-| <a id="zanna-gui-treeview-getnodeat"></a>`GetNodeAt` | `obj(i64,i64)` | `Zanna.GUI.TreeView.GetNodeAt` |
+| <a id="zanna-gui-treeview-getnodeat"></a>`GetNodeAt` | `obj<Zanna.GUI.TreeView.Node>(i64,i64)` | `Zanna.GUI.TreeView.GetNodeAt` |
 | <a id="zanna-gui-treeview-wasselectionchanged"></a>`WasSelectionChanged` | `i1()` | `Zanna.GUI.TreeView.WasSelectionChanged` |
 | <a id="zanna-gui-treeview-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.TreeView.WasChanged` |
 | <a id="zanna-gui-treeview-wasactivated"></a>`WasActivated` | `i1()` | `Zanna.GUI.TreeView.WasActivated` |
@@ -1249,7 +1249,7 @@ Constructor: `Zanna.GUI.TreeView.New`
 | <a id="zanna-gui-treeview-canceledit"></a>`CancelEdit` | `void()` | `Zanna.GUI.TreeView.CancelEdit` |
 | <a id="zanna-gui-treeview-setvirtualmodel"></a>`SetVirtualModel` | `i1(obj)` | `Zanna.GUI.TreeView.SetVirtualModel` |
 | <a id="zanna-gui-treeview-clearvirtualmodel"></a>`ClearVirtualModel` | `void()` | `Zanna.GUI.TreeView.ClearVirtualModel` |
-| <a id="zanna-gui-treeview-new"></a>`New` | `obj(obj)` | `Zanna.GUI.TreeView.New` |
+| <a id="zanna-gui-treeview-new"></a>`New` | `obj<Zanna.GUI.TreeView>(obj)` | `Zanna.GUI.TreeView.New` |
 
 <a id="zanna-gui-treeview-node"></a>
 ### `Zanna.GUI.TreeView.Node`
@@ -1302,11 +1302,11 @@ Constructor: `Zanna.GUI.TabBar.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-tabbar-addtab"></a>`AddTab` | `obj(str,i64)` | `Zanna.GUI.TabBar.AddTab` |
+| <a id="zanna-gui-tabbar-addtab"></a>`AddTab` | `obj<Zanna.GUI.Tab>(str,i64)` | `Zanna.GUI.TabBar.AddTab` |
 | <a id="zanna-gui-tabbar-removetab"></a>`RemoveTab` | `void(obj)` | `Zanna.GUI.TabBar.RemoveTab` |
 | <a id="zanna-gui-tabbar-pruneretiredtabs"></a>`PruneRetiredTabs` | `void()` | `Zanna.GUI.TabBar.PruneRetiredTabs` |
 | <a id="zanna-gui-tabbar-setactive"></a>`SetActive` | `void(obj)` | `Zanna.GUI.TabBar.SetActive` |
-| <a id="zanna-gui-tabbar-getactive"></a>`GetActive` | `obj()` | `Zanna.GUI.TabBar.GetActive` |
+| <a id="zanna-gui-tabbar-getactive"></a>`GetActive` | `obj<Zanna.GUI.Tab>()` | `Zanna.GUI.TabBar.GetActive` |
 | <a id="zanna-gui-tabbar-getactiveindex"></a>`GetActiveIndex` | `i64()` | `Zanna.GUI.TabBar.GetActiveIndex` |
 | <a id="zanna-gui-tabbar-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.TabBar.WasChanged` |
 | <a id="zanna-gui-tabbar-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.TabBar.GetRevision` |
@@ -1320,7 +1320,7 @@ Constructor: `Zanna.GUI.TabBar.New`
 | <a id="zanna-gui-tabbar-getreorderedfrom"></a>`GetReorderedFrom` | `i64()` | `Zanna.GUI.TabBar.GetReorderedFrom` |
 | <a id="zanna-gui-tabbar-getreorderedto"></a>`GetReorderedTo` | `i64()` | `Zanna.GUI.TabBar.GetReorderedTo` |
 | <a id="zanna-gui-tabbar-movetab"></a>`MoveTab` | `i1(i64,i64)` | `Zanna.GUI.TabBar.MoveTab` |
-| <a id="zanna-gui-tabbar-new"></a>`New` | `obj(obj)` | `Zanna.GUI.TabBar.New` |
+| <a id="zanna-gui-tabbar-new"></a>`New` | `obj<Zanna.GUI.TabBar>(obj)` | `Zanna.GUI.TabBar.New` |
 
 <a id="zanna-gui-tab"></a>
 ### `Zanna.GUI.Tab`
@@ -1381,7 +1381,7 @@ Constructor: `Zanna.GUI.SplitPane.New`
 | <a id="zanna-gui-splitpane-collapsesecond"></a>`CollapseSecond` | `void()` | `Zanna.GUI.SplitPane.CollapseSecond` |
 | <a id="zanna-gui-splitpane-restore"></a>`Restore` | `void()` | `Zanna.GUI.SplitPane.Restore` |
 | <a id="zanna-gui-splitpane-getcollapsedside"></a>`GetCollapsedSide` | `i64()` | `Zanna.GUI.SplitPane.GetCollapsedSide` |
-| <a id="zanna-gui-splitpane-new"></a>`New` | `obj(obj,i64)` | `Zanna.GUI.SplitPane.New` |
+| <a id="zanna-gui-splitpane-new"></a>`New` | `obj<Zanna.GUI.SplitPane>(obj,i64)` | `Zanna.GUI.SplitPane.New` |
 
 <a id="zanna-gui-editorbuffer"></a>
 ### `Zanna.GUI.EditorBuffer`
@@ -1408,7 +1408,7 @@ Constructor: `Zanna.GUI.EditorBuffer.New`
 | <a id="zanna-gui-editorbuffer-ismodified"></a>`IsModified` | `i1()` | `Zanna.GUI.EditorBuffer.IsModified` |
 | <a id="zanna-gui-editorbuffer-clearmodified"></a>`ClearModified` | `void()` | `Zanna.GUI.EditorBuffer.ClearModified` |
 | <a id="zanna-gui-editorbuffer-replacealltext"></a>`ReplaceAllText` | `i1(str)` | `Zanna.GUI.EditorBuffer.ReplaceAllText` |
-| <a id="zanna-gui-editorbuffer-new"></a>`New` | `obj(str)` | `Zanna.GUI.EditorBuffer.New` |
+| <a id="zanna-gui-editorbuffer-new"></a>`New` | `obj<Zanna.GUI.EditorBuffer>(str)` | `Zanna.GUI.EditorBuffer.New` |
 
 <a id="zanna-gui-codeeditor"></a>
 ### `Zanna.GUI.CodeEditor`
@@ -1536,7 +1536,7 @@ Constructor: `Zanna.GUI.CodeEditor.New`
 | <a id="zanna-gui-codeeditor-gethighlightspancheckcount"></a>`GetHighlightSpanCheckCount` | `i64()` | `Zanna.GUI.CodeEditor.GetHighlightSpanCheckCount` |
 | <a id="zanna-gui-codeeditor-getfulltextcopybytecount"></a>`GetFullTextCopyByteCount` | `i64()` | `Zanna.GUI.CodeEditor.GetFullTextCopyByteCount` |
 | <a id="zanna-gui-codeeditor-getselectedtext"></a>`GetSelectedText` | `str()` | `Zanna.GUI.CodeEditor.GetSelectedText` |
-| <a id="zanna-gui-codeeditor-new"></a>`New` | `obj(obj)` | `Zanna.GUI.CodeEditor.New` |
+| <a id="zanna-gui-codeeditor-new"></a>`New` | `obj<Zanna.GUI.CodeEditor>(obj)` | `Zanna.GUI.CodeEditor.New` |
 
 <a id="zanna-gui-dropdown"></a>
 ### `Zanna.GUI.Dropdown`
@@ -1568,7 +1568,7 @@ Constructor: `Zanna.GUI.Dropdown.New`
 | <a id="zanna-gui-dropdown-setplaceholder"></a>`SetPlaceholder` | `void(str)` | `Zanna.GUI.Dropdown.SetPlaceholder` |
 | <a id="zanna-gui-dropdown-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.Dropdown.WasChanged` |
 | <a id="zanna-gui-dropdown-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.Dropdown.GetRevision` |
-| <a id="zanna-gui-dropdown-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Dropdown.New` |
+| <a id="zanna-gui-dropdown-new"></a>`New` | `obj<Zanna.GUI.Dropdown>(obj)` | `Zanna.GUI.Dropdown.New` |
 
 <a id="zanna-gui-slider"></a>
 ### `Zanna.GUI.Slider`
@@ -1596,7 +1596,7 @@ Constructor: `Zanna.GUI.Slider.New`
 | <a id="zanna-gui-slider-setstep"></a>`SetStep` | `void(f64)` | `Zanna.GUI.Slider.SetStep` |
 | <a id="zanna-gui-slider-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.Slider.WasChanged` |
 | <a id="zanna-gui-slider-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.Slider.GetRevision` |
-| <a id="zanna-gui-slider-new"></a>`New` | `obj(obj,i64)` | `Zanna.GUI.Slider.New` |
+| <a id="zanna-gui-slider-new"></a>`New` | `obj<Zanna.GUI.Slider>(obj,i64)` | `Zanna.GUI.Slider.New` |
 
 <a id="zanna-gui-progressbar"></a>
 ### `Zanna.GUI.ProgressBar`
@@ -1622,7 +1622,7 @@ Constructor: `Zanna.GUI.ProgressBar.New`
 | <a id="zanna-gui-progressbar-setvalue"></a>`SetValue` | `void(f64)` | `Zanna.GUI.ProgressBar.SetValue` |
 | <a id="zanna-gui-progressbar-setstyle"></a>`SetStyle` | `void(i64)` | `Zanna.GUI.ProgressBar.SetStyle` |
 | <a id="zanna-gui-progressbar-showpercentage"></a>`ShowPercentage` | `void(i64)` | `Zanna.GUI.ProgressBar.ShowPercentage` |
-| <a id="zanna-gui-progressbar-new"></a>`New` | `obj(obj)` | `Zanna.GUI.ProgressBar.New` |
+| <a id="zanna-gui-progressbar-new"></a>`New` | `obj<Zanna.GUI.ProgressBar>(obj)` | `Zanna.GUI.ProgressBar.New` |
 
 <a id="zanna-gui-listbox"></a>
 ### `Zanna.GUI.ListBox`
@@ -1639,7 +1639,7 @@ Constructor: `Zanna.GUI.ListBox.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-gui-listbox-selected"></a>`Selected` | `obj` | read-only |
+| <a id="zanna-gui-listbox-selected"></a>`Selected` | `obj<Zanna.Core.Object>` | read-only |
 | <a id="zanna-gui-listbox-count"></a>`Count` | `i64` | read-only |
 | <a id="zanna-gui-listbox-selectedindex"></a>`SelectedIndex` | `i64` | read-only |
 
@@ -1647,7 +1647,7 @@ Constructor: `Zanna.GUI.ListBox.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-listbox-additem"></a>`AddItem` | `obj(str)` | `Zanna.GUI.ListBox.AddItem` |
+| <a id="zanna-gui-listbox-additem"></a>`AddItem` | `obj<Zanna.Core.Object>(str)` | `Zanna.GUI.ListBox.AddItem` |
 | <a id="zanna-gui-listbox-removeitem"></a>`RemoveItem` | `void(obj)` | `Zanna.GUI.ListBox.RemoveItem` |
 | <a id="zanna-gui-listbox-clear"></a>`Clear` | `void()` | `Zanna.GUI.ListBox.Clear` |
 | <a id="zanna-gui-listbox-select"></a>`Select` | `void(obj)` | `Zanna.GUI.ListBox.Select` |
@@ -1676,7 +1676,7 @@ Constructor: `Zanna.GUI.ListBox.New`
 | <a id="zanna-gui-listbox-clearvirtualmodel"></a>`ClearVirtualModel` | `void()` | `Zanna.GUI.ListBox.ClearVirtualModel` |
 | <a id="zanna-gui-listbox-getvisiblefirst"></a>`GetVisibleFirst` | `i64()` | `Zanna.GUI.ListBox.GetVisibleFirst` |
 | <a id="zanna-gui-listbox-getvisiblecount"></a>`GetVisibleCount` | `i64()` | `Zanna.GUI.ListBox.GetVisibleCount` |
-| <a id="zanna-gui-listbox-new"></a>`New` | `obj(obj)` | `Zanna.GUI.ListBox.New` |
+| <a id="zanna-gui-listbox-new"></a>`New` | `obj<Zanna.GUI.ListBox>(obj)` | `Zanna.GUI.ListBox.New` |
 
 <a id="zanna-gui-outputpane"></a>
 ### `Zanna.GUI.OutputPane`
@@ -1717,7 +1717,7 @@ Constructor: `Zanna.GUI.OutputPane.New`
 | <a id="zanna-gui-outputpane-measuretext"></a>`MeasureText` | `i64(str)` | `Zanna.GUI.OutputPane.MeasureText` |
 | <a id="zanna-gui-outputpane-columnsforwidth"></a>`ColumnsForWidth` | `i64()` | `Zanna.GUI.OutputPane.ColumnsForWidth` |
 | <a id="zanna-gui-outputpane-rowsforheight"></a>`RowsForHeight` | `i64()` | `Zanna.GUI.OutputPane.RowsForHeight` |
-| <a id="zanna-gui-outputpane-new"></a>`New` | `obj(obj)` | `Zanna.GUI.OutputPane.New` |
+| <a id="zanna-gui-outputpane-new"></a>`New` | `obj<Zanna.GUI.OutputPane>(obj)` | `Zanna.GUI.OutputPane.New` |
 
 <a id="zanna-gui-grid"></a>
 ### `Zanna.GUI.Grid`
@@ -1778,7 +1778,7 @@ Constructor: `Zanna.GUI.Grid.New`
 | <a id="zanna-gui-grid-getscrollrow"></a>`GetScrollRow` | `i64()` | `Zanna.GUI.Grid.GetScrollRow` |
 | <a id="zanna-gui-grid-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.Grid.WasChanged` |
 | <a id="zanna-gui-grid-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.Grid.GetRevision` |
-| <a id="zanna-gui-grid-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Grid.New` |
+| <a id="zanna-gui-grid-new"></a>`New` | `obj<Zanna.GUI.Grid>(obj)` | `Zanna.GUI.Grid.New` |
 
 <a id="zanna-gui-popuplist"></a>
 ### `Zanna.GUI.PopupList`
@@ -1817,7 +1817,7 @@ Constructor: `Zanna.GUI.PopupList.New`
 | <a id="zanna-gui-popuplist-setfont"></a>`SetFont` | `void(obj,f64)` | `Zanna.GUI.PopupList.SetFont` |
 | <a id="zanna-gui-popuplist-setvisible"></a>`SetVisible` | `void(i1)` | `Zanna.GUI.PopupList.SetVisible` |
 | <a id="zanna-gui-popuplist-isvisible"></a>`IsVisible` | `i1()` | `Zanna.GUI.PopupList.IsVisible` |
-| <a id="zanna-gui-popuplist-new"></a>`New` | `obj(obj)` | `Zanna.GUI.PopupList.New` |
+| <a id="zanna-gui-popuplist-new"></a>`New` | `obj<Zanna.GUI.PopupList>(obj)` | `Zanna.GUI.PopupList.New` |
 
 <a id="zanna-gui-radiogroup"></a>
 ### `Zanna.GUI.RadioGroup`
@@ -1840,7 +1840,7 @@ Constructor: `Zanna.GUI.RadioGroup.New`
 | <a id="zanna-gui-radiogroup-getcount"></a>`GetCount` | `i64()` | `Zanna.GUI.RadioGroup.GetCount` |
 | <a id="zanna-gui-radiogroup-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.RadioGroup.WasChanged` |
 | <a id="zanna-gui-radiogroup-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.RadioGroup.GetRevision` |
-| <a id="zanna-gui-radiogroup-new"></a>`New` | `obj()` | `Zanna.GUI.RadioGroup.New` |
+| <a id="zanna-gui-radiogroup-new"></a>`New` | `obj<Zanna.GUI.RadioGroup>()` | `Zanna.GUI.RadioGroup.New` |
 
 <a id="zanna-gui-radiobutton"></a>
 ### `Zanna.GUI.RadioButton`
@@ -1865,7 +1865,7 @@ Constructor: `Zanna.GUI.RadioButton.New`
 | <a id="zanna-gui-radiobutton-getdata"></a>`GetData` | `str()` | `Zanna.GUI.RadioButton.GetData` |
 | <a id="zanna-gui-radiobutton-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.RadioButton.WasChanged` |
 | <a id="zanna-gui-radiobutton-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.RadioButton.GetRevision` |
-| <a id="zanna-gui-radiobutton-new"></a>`New` | `obj(obj,str,obj)` | `Zanna.GUI.RadioButton.New` |
+| <a id="zanna-gui-radiobutton-new"></a>`New` | `obj<Zanna.GUI.RadioButton>(obj,str,obj)` | `Zanna.GUI.RadioButton.New` |
 
 <a id="zanna-gui-spinner"></a>
 ### `Zanna.GUI.Spinner`
@@ -1899,7 +1899,7 @@ Constructor: `Zanna.GUI.Spinner.New`
 | <a id="zanna-gui-spinner-wassubmitted"></a>`WasSubmitted` | `i1()` | `Zanna.GUI.Spinner.WasSubmitted` |
 | <a id="zanna-gui-spinner-wasscrubfinished"></a>`WasScrubFinished` | `i1()` | `Zanna.GUI.Spinner.WasScrubFinished` |
 | <a id="zanna-gui-spinner-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.Spinner.GetRevision` |
-| <a id="zanna-gui-spinner-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Spinner.New` |
+| <a id="zanna-gui-spinner-new"></a>`New` | `obj<Zanna.GUI.Spinner>(obj)` | `Zanna.GUI.Spinner.New` |
 
 <a id="zanna-gui-colorswatch"></a>
 ### `Zanna.GUI.ColorSwatch`
@@ -1923,7 +1923,7 @@ Constructor: `Zanna.GUI.ColorSwatch.New`
 | <a id="zanna-gui-colorswatch-isselected"></a>`IsSelected` | `i1()` | `Zanna.GUI.ColorSwatch.IsSelected` |
 | <a id="zanna-gui-colorswatch-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.ColorSwatch.WasChanged` |
 | <a id="zanna-gui-colorswatch-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.ColorSwatch.GetRevision` |
-| <a id="zanna-gui-colorswatch-new"></a>`New` | `obj(obj,i64)` | `Zanna.GUI.ColorSwatch.New` |
+| <a id="zanna-gui-colorswatch-new"></a>`New` | `obj<Zanna.GUI.ColorSwatch>(obj,i64)` | `Zanna.GUI.ColorSwatch.New` |
 
 <a id="zanna-gui-colorpalette"></a>
 ### `Zanna.GUI.ColorPalette`
@@ -1950,7 +1950,7 @@ Constructor: `Zanna.GUI.ColorPalette.New`
 | <a id="zanna-gui-colorpalette-getselectedindex"></a>`GetSelectedIndex` | `i64()` | `Zanna.GUI.ColorPalette.GetSelectedIndex` |
 | <a id="zanna-gui-colorpalette-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.ColorPalette.WasChanged` |
 | <a id="zanna-gui-colorpalette-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.ColorPalette.GetRevision` |
-| <a id="zanna-gui-colorpalette-new"></a>`New` | `obj(obj)` | `Zanna.GUI.ColorPalette.New` |
+| <a id="zanna-gui-colorpalette-new"></a>`New` | `obj<Zanna.GUI.ColorPalette>(obj)` | `Zanna.GUI.ColorPalette.New` |
 
 <a id="zanna-gui-colorpicker"></a>
 ### `Zanna.GUI.ColorPicker`
@@ -1978,7 +1978,7 @@ Constructor: `Zanna.GUI.ColorPicker.New`
 | <a id="zanna-gui-colorpicker-getalpha"></a>`GetAlpha` | `i64()` | `Zanna.GUI.ColorPicker.GetAlpha` |
 | <a id="zanna-gui-colorpicker-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.ColorPicker.WasChanged` |
 | <a id="zanna-gui-colorpicker-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.ColorPicker.GetRevision` |
-| <a id="zanna-gui-colorpicker-new"></a>`New` | `obj(obj)` | `Zanna.GUI.ColorPicker.New` |
+| <a id="zanna-gui-colorpicker-new"></a>`New` | `obj<Zanna.GUI.ColorPicker>(obj)` | `Zanna.GUI.ColorPicker.New` |
 
 <a id="zanna-gui-image"></a>
 ### `Zanna.GUI.Image`
@@ -2002,7 +2002,7 @@ Constructor: `Zanna.GUI.Image.New`
 | <a id="zanna-gui-image-setopacity"></a>`SetOpacity` | `void(f64)` | `Zanna.GUI.Image.SetOpacity` |
 | <a id="zanna-gui-image-setfocusable"></a>`SetFocusable` | `void(i1)` | `Zanna.GUI.Image.SetFocusable` |
 | <a id="zanna-gui-image-loadfile"></a>`LoadFile` | `i64(str)` | `Zanna.GUI.Image.LoadFile` |
-| <a id="zanna-gui-image-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Image.New` |
+| <a id="zanna-gui-image-new"></a>`New` | `obj<Zanna.GUI.Image>(obj)` | `Zanna.GUI.Image.New` |
 | <a id="zanna-gui-image-trysetpixels"></a>`TrySetPixels` | `i1(obj,obj,i64,i64)` | `Zanna.GUI.Image.TrySetPixels` |
 | <a id="zanna-gui-image-updateregion"></a>`UpdateRegion` | `i1(obj,obj,i64,i64,i64,i64,i64,i64)` | `Zanna.GUI.Image.UpdateRegion` |
 | <a id="zanna-gui-image-setfilter"></a>`SetFilter` | `void(obj,i64)` | `Zanna.GUI.Image.SetFilter` |
@@ -2028,7 +2028,7 @@ themes are DPI-scaled per app, accessibility-adjusted, revisioned, and invalidat
 | <a id="zanna-gui-theme-getmode"></a>`GetMode` | `i64()` | `Zanna.GUI.Theme.GetMode` |
 | <a id="zanna-gui-theme-followsystem"></a>`FollowSystem` | `void()` | `Zanna.GUI.Theme.FollowSystem` |
 | <a id="zanna-gui-theme-setpalette"></a>`SetPalette` | `i1(obj)` | `Zanna.GUI.Theme.SetPalette` |
-| <a id="zanna-gui-theme-getpalette"></a>`GetPalette` | `obj()` | `Zanna.GUI.Theme.GetPalette` |
+| <a id="zanna-gui-theme-getpalette"></a>`GetPalette` | `obj<Zanna.GUI.ThemePalette>()` | `Zanna.GUI.Theme.GetPalette` |
 | <a id="zanna-gui-theme-resetcustom"></a>`ResetCustom` | `void()` | `Zanna.GUI.Theme.ResetCustom` |
 | <a id="zanna-gui-theme-waschanged"></a>`WasChanged` | `i1()` | `Zanna.GUI.Theme.WasChanged` |
 | <a id="zanna-gui-theme-getrevision"></a>`GetRevision` | `i64()` | `Zanna.GUI.Theme.GetRevision` |
@@ -2049,9 +2049,9 @@ Constructor: `Zanna.GUI.ThemePalette.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-themepalette-fromdark"></a>`FromDark` | `obj()` | `Zanna.GUI.ThemePalette.FromDark` |
-| <a id="zanna-gui-themepalette-fromlight"></a>`FromLight` | `obj()` | `Zanna.GUI.ThemePalette.FromLight` |
-| <a id="zanna-gui-themepalette-clone"></a>`Clone` | `obj()` | `Zanna.GUI.ThemePalette.Clone` |
+| <a id="zanna-gui-themepalette-fromdark"></a>`FromDark` | `obj<Zanna.GUI.ThemePalette>()` | `Zanna.GUI.ThemePalette.FromDark` |
+| <a id="zanna-gui-themepalette-fromlight"></a>`FromLight` | `obj<Zanna.GUI.ThemePalette>()` | `Zanna.GUI.ThemePalette.FromLight` |
+| <a id="zanna-gui-themepalette-clone"></a>`Clone` | `obj<Zanna.GUI.ThemePalette>()` | `Zanna.GUI.ThemePalette.Clone` |
 | <a id="zanna-gui-themepalette-setcolor"></a>`SetColor` | `i1(str,i64)` | `Zanna.GUI.ThemePalette.SetColor` |
 | <a id="zanna-gui-themepalette-getcolor"></a>`GetColor` | `i64(str)` | `Zanna.GUI.ThemePalette.GetColor` |
 | <a id="zanna-gui-themepalette-setmetric"></a>`SetMetric` | `i1(str,f64)` | `Zanna.GUI.ThemePalette.SetMetric` |
@@ -2059,7 +2059,7 @@ Constructor: `Zanna.GUI.ThemePalette.New`
 | <a id="zanna-gui-themepalette-setmotionenabled"></a>`SetMotionEnabled` | `void(i1)` | `Zanna.GUI.ThemePalette.SetMotionEnabled` |
 | <a id="zanna-gui-themepalette-setfontroles"></a>`SetFontRoles` | `void(obj,obj,obj)` | `Zanna.GUI.ThemePalette.SetFontRoles` |
 | <a id="zanna-gui-themepalette-validate"></a>`Validate` | `obj<Zanna.Result>()` | `Zanna.GUI.ThemePalette.Validate` |
-| <a id="zanna-gui-themepalette-new"></a>`New` | `obj()` | `Zanna.GUI.ThemePalette.New` |
+| <a id="zanna-gui-themepalette-new"></a>`New` | `obj<Zanna.GUI.ThemePalette>()` | `Zanna.GUI.ThemePalette.New` |
 
 <a id="zanna-gui-vbox"></a>
 ### `Zanna.GUI.VBox`
@@ -2082,7 +2082,7 @@ Constructor: `Zanna.GUI.VBox.New`
 | <a id="zanna-gui-vbox-getalign"></a>`GetAlign` | `i64()` | `Zanna.GUI.VBox.GetAlign` |
 | <a id="zanna-gui-vbox-setjustify"></a>`SetJustify` | `void(i64)` | `Zanna.GUI.VBox.SetJustify` |
 | <a id="zanna-gui-vbox-getjustify"></a>`GetJustify` | `i64()` | `Zanna.GUI.VBox.GetJustify` |
-| <a id="zanna-gui-vbox-new"></a>`New` | `obj()` | `Zanna.GUI.VBox.New` |
+| <a id="zanna-gui-vbox-new"></a>`New` | `obj<Zanna.GUI.VBox>()` | `Zanna.GUI.VBox.New` |
 
 <a id="zanna-gui-hbox"></a>
 ### `Zanna.GUI.HBox`
@@ -2105,7 +2105,7 @@ Constructor: `Zanna.GUI.HBox.New`
 | <a id="zanna-gui-hbox-getalign"></a>`GetAlign` | `i64()` | `Zanna.GUI.HBox.GetAlign` |
 | <a id="zanna-gui-hbox-setjustify"></a>`SetJustify` | `void(i64)` | `Zanna.GUI.HBox.SetJustify` |
 | <a id="zanna-gui-hbox-getjustify"></a>`GetJustify` | `i64()` | `Zanna.GUI.HBox.GetJustify` |
-| <a id="zanna-gui-hbox-new"></a>`New` | `obj()` | `Zanna.GUI.HBox.New` |
+| <a id="zanna-gui-hbox-new"></a>`New` | `obj<Zanna.GUI.HBox>()` | `Zanna.GUI.HBox.New` |
 
 <a id="zanna-gui-menubar"></a>
 ### `Zanna.GUI.MenuBar`
@@ -2122,13 +2122,13 @@ Constructor: `Zanna.GUI.MenuBar.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-menubar-addmenu"></a>`AddMenu` | `obj(str)` | `Zanna.GUI.MenuBar.AddMenu` |
+| <a id="zanna-gui-menubar-addmenu"></a>`AddMenu` | `obj<Zanna.GUI.Menu>(str)` | `Zanna.GUI.MenuBar.AddMenu` |
 | <a id="zanna-gui-menubar-removemenu"></a>`RemoveMenu` | `void(obj)` | `Zanna.GUI.MenuBar.RemoveMenu` |
 | <a id="zanna-gui-menubar-getmenucount"></a>`GetMenuCount` | `i64()` | `Zanna.GUI.MenuBar.GetMenuCount` |
-| <a id="zanna-gui-menubar-getmenu"></a>`GetMenu` | `obj(i64)` | `Zanna.GUI.MenuBar.GetMenu` |
+| <a id="zanna-gui-menubar-getmenu"></a>`GetMenu` | `obj<Zanna.GUI.Menu>(i64)` | `Zanna.GUI.MenuBar.GetMenu` |
 | <a id="zanna-gui-menubar-isvisible"></a>`IsVisible` | `i1()` | `Zanna.GUI.MenuBar.IsVisible` |
 | <a id="zanna-gui-menubar-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.MenuBar.Destroy` |
-| <a id="zanna-gui-menubar-new"></a>`New` | `obj(obj)` | `Zanna.GUI.MenuBar.New` |
+| <a id="zanna-gui-menubar-new"></a>`New` | `obj<Zanna.GUI.MenuBar>(obj)` | `Zanna.GUI.MenuBar.New` |
 
 <a id="zanna-gui-menu"></a>
 ### `Zanna.GUI.Menu`
@@ -2143,16 +2143,16 @@ construct the class directly. Its public surface exposes operations including `A
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-menu-additem"></a>`AddItem` | `obj(str)` | `Zanna.GUI.Menu.AddItem` |
-| <a id="zanna-gui-menu-additemwithshortcut"></a>`AddItemWithShortcut` | `obj(str,str)` | `Zanna.GUI.Menu.AddItemWithShortcut` |
-| <a id="zanna-gui-menu-addseparator"></a>`AddSeparator` | `obj()` | `Zanna.GUI.Menu.AddSeparator` |
-| <a id="zanna-gui-menu-addsubmenu"></a>`AddSubmenu` | `obj(str)` | `Zanna.GUI.Menu.AddSubmenu` |
+| <a id="zanna-gui-menu-additem"></a>`AddItem` | `obj<Zanna.GUI.MenuItem>(str)` | `Zanna.GUI.Menu.AddItem` |
+| <a id="zanna-gui-menu-additemwithshortcut"></a>`AddItemWithShortcut` | `obj<Zanna.GUI.MenuItem>(str,str)` | `Zanna.GUI.Menu.AddItemWithShortcut` |
+| <a id="zanna-gui-menu-addseparator"></a>`AddSeparator` | `obj<Zanna.GUI.MenuItem>()` | `Zanna.GUI.Menu.AddSeparator` |
+| <a id="zanna-gui-menu-addsubmenu"></a>`AddSubmenu` | `obj<Zanna.GUI.Menu>(str)` | `Zanna.GUI.Menu.AddSubmenu` |
 | <a id="zanna-gui-menu-removeitem"></a>`RemoveItem` | `void(obj)` | `Zanna.GUI.Menu.RemoveItem` |
 | <a id="zanna-gui-menu-clear"></a>`Clear` | `void()` | `Zanna.GUI.Menu.Clear` |
 | <a id="zanna-gui-menu-settitle"></a>`SetTitle` | `void(str)` | `Zanna.GUI.Menu.SetTitle` |
 | <a id="zanna-gui-menu-gettitle"></a>`GetTitle` | `str()` | `Zanna.GUI.Menu.GetTitle` |
 | <a id="zanna-gui-menu-getitemcount"></a>`GetItemCount` | `i64()` | `Zanna.GUI.Menu.GetItemCount` |
-| <a id="zanna-gui-menu-getitem"></a>`GetItem` | `obj(i64)` | `Zanna.GUI.Menu.GetItem` |
+| <a id="zanna-gui-menu-getitem"></a>`GetItem` | `obj<Zanna.GUI.MenuItem>(i64)` | `Zanna.GUI.Menu.GetItem` |
 | <a id="zanna-gui-menu-setenabled"></a>`SetEnabled` | `void(i1)` | `Zanna.GUI.Menu.SetEnabled` |
 | <a id="zanna-gui-menu-isenabled"></a>`IsEnabled` | `i1()` | `Zanna.GUI.Menu.IsEnabled` |
 
@@ -2202,26 +2202,26 @@ Constructor: `Zanna.GUI.Toolbar.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-toolbar-newvertical"></a>`NewVertical` | `obj(obj)` | `Zanna.GUI.Toolbar.NewVertical` |
-| <a id="zanna-gui-toolbar-addbutton"></a>`AddButton` | `obj(str,str)` | `Zanna.GUI.Toolbar.AddButton` |
-| <a id="zanna-gui-toolbar-addbuttonwithtext"></a>`AddButtonWithText` | `obj(str,str,str)` | `Zanna.GUI.Toolbar.AddButtonWithText` |
-| <a id="zanna-gui-toolbar-addnamedbutton"></a>`AddNamedButton` | `obj(str,str)` | `Zanna.GUI.Toolbar.AddNamedButton` |
-| <a id="zanna-gui-toolbar-addnamedbuttonwithtext"></a>`AddNamedButtonWithText` | `obj(str,str,str)` | `Zanna.GUI.Toolbar.AddNamedButtonWithText` |
-| <a id="zanna-gui-toolbar-addtoggle"></a>`AddToggle` | `obj(str,str)` | `Zanna.GUI.Toolbar.AddToggle` |
-| <a id="zanna-gui-toolbar-addnamedtoggle"></a>`AddNamedToggle` | `obj(str,str)` | `Zanna.GUI.Toolbar.AddNamedToggle` |
-| <a id="zanna-gui-toolbar-addseparator"></a>`AddSeparator` | `obj()` | `Zanna.GUI.Toolbar.AddSeparator` |
-| <a id="zanna-gui-toolbar-addspacer"></a>`AddSpacer` | `obj()` | `Zanna.GUI.Toolbar.AddSpacer` |
-| <a id="zanna-gui-toolbar-adddropdown"></a>`AddDropdown` | `obj(str)` | `Zanna.GUI.Toolbar.AddDropdown` |
+| <a id="zanna-gui-toolbar-newvertical"></a>`NewVertical` | `obj<Zanna.GUI.Toolbar>(obj)` | `Zanna.GUI.Toolbar.NewVertical` |
+| <a id="zanna-gui-toolbar-addbutton"></a>`AddButton` | `obj<Zanna.GUI.ToolbarItem>(str,str)` | `Zanna.GUI.Toolbar.AddButton` |
+| <a id="zanna-gui-toolbar-addbuttonwithtext"></a>`AddButtonWithText` | `obj<Zanna.GUI.ToolbarItem>(str,str,str)` | `Zanna.GUI.Toolbar.AddButtonWithText` |
+| <a id="zanna-gui-toolbar-addnamedbutton"></a>`AddNamedButton` | `obj<Zanna.GUI.ToolbarItem>(str,str)` | `Zanna.GUI.Toolbar.AddNamedButton` |
+| <a id="zanna-gui-toolbar-addnamedbuttonwithtext"></a>`AddNamedButtonWithText` | `obj<Zanna.GUI.ToolbarItem>(str,str,str)` | `Zanna.GUI.Toolbar.AddNamedButtonWithText` |
+| <a id="zanna-gui-toolbar-addtoggle"></a>`AddToggle` | `obj<Zanna.GUI.ToolbarItem>(str,str)` | `Zanna.GUI.Toolbar.AddToggle` |
+| <a id="zanna-gui-toolbar-addnamedtoggle"></a>`AddNamedToggle` | `obj<Zanna.GUI.ToolbarItem>(str,str)` | `Zanna.GUI.Toolbar.AddNamedToggle` |
+| <a id="zanna-gui-toolbar-addseparator"></a>`AddSeparator` | `obj<Zanna.GUI.ToolbarItem>()` | `Zanna.GUI.Toolbar.AddSeparator` |
+| <a id="zanna-gui-toolbar-addspacer"></a>`AddSpacer` | `obj<Zanna.GUI.ToolbarItem>()` | `Zanna.GUI.Toolbar.AddSpacer` |
+| <a id="zanna-gui-toolbar-adddropdown"></a>`AddDropdown` | `obj<Zanna.GUI.ToolbarItem>(str)` | `Zanna.GUI.Toolbar.AddDropdown` |
 | <a id="zanna-gui-toolbar-removeitem"></a>`RemoveItem` | `void(obj)` | `Zanna.GUI.Toolbar.RemoveItem` |
 | <a id="zanna-gui-toolbar-seticonsize"></a>`SetIconSize` | `void(i64)` | `Zanna.GUI.Toolbar.SetIconSize` |
 | <a id="zanna-gui-toolbar-geticonsize"></a>`GetIconSize` | `i64()` | `Zanna.GUI.Toolbar.GetIconSize` |
 | <a id="zanna-gui-toolbar-setstyle"></a>`SetStyle` | `void(i64)` | `Zanna.GUI.Toolbar.SetStyle` |
 | <a id="zanna-gui-toolbar-getitemcount"></a>`GetItemCount` | `i64()` | `Zanna.GUI.Toolbar.GetItemCount` |
-| <a id="zanna-gui-toolbar-getitem"></a>`GetItem` | `obj(i64)` | `Zanna.GUI.Toolbar.GetItem` |
+| <a id="zanna-gui-toolbar-getitem"></a>`GetItem` | `obj<Zanna.GUI.ToolbarItem>(i64)` | `Zanna.GUI.Toolbar.GetItem` |
 | <a id="zanna-gui-toolbar-setvisible"></a>`SetVisible` | `void(i1)` | `Zanna.GUI.Toolbar.SetVisible` |
 | <a id="zanna-gui-toolbar-isvisible"></a>`IsVisible` | `i1()` | `Zanna.GUI.Toolbar.IsVisible` |
 | <a id="zanna-gui-toolbar-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.Toolbar.Destroy` |
-| <a id="zanna-gui-toolbar-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Toolbar.New` |
+| <a id="zanna-gui-toolbar-new"></a>`New` | `obj<Zanna.GUI.Toolbar>(obj)` | `Zanna.GUI.Toolbar.New` |
 
 <a id="zanna-gui-toolbaritem"></a>
 ### `Zanna.GUI.ToolbarItem`
@@ -2274,17 +2274,17 @@ Constructor: `Zanna.GUI.StatusBar.New`
 | <a id="zanna-gui-statusbar-getcentertext"></a>`GetCenterText` | `str()` | `Zanna.GUI.StatusBar.GetCenterText` |
 | <a id="zanna-gui-statusbar-setrighttext"></a>`SetRightText` | `void(str)` | `Zanna.GUI.StatusBar.SetRightText` |
 | <a id="zanna-gui-statusbar-getrighttext"></a>`GetRightText` | `str()` | `Zanna.GUI.StatusBar.GetRightText` |
-| <a id="zanna-gui-statusbar-addtext"></a>`AddText` | `obj(str,i64)` | `Zanna.GUI.StatusBar.AddText` |
-| <a id="zanna-gui-statusbar-addbutton"></a>`AddButton` | `obj(str,i64)` | `Zanna.GUI.StatusBar.AddButton` |
-| <a id="zanna-gui-statusbar-addprogress"></a>`AddProgress` | `obj(i64)` | `Zanna.GUI.StatusBar.AddProgress` |
-| <a id="zanna-gui-statusbar-addseparator"></a>`AddSeparator` | `obj(i64)` | `Zanna.GUI.StatusBar.AddSeparator` |
-| <a id="zanna-gui-statusbar-addspacer"></a>`AddSpacer` | `obj(i64)` | `Zanna.GUI.StatusBar.AddSpacer` |
+| <a id="zanna-gui-statusbar-addtext"></a>`AddText` | `obj<Zanna.GUI.StatusBarItem>(str,i64)` | `Zanna.GUI.StatusBar.AddText` |
+| <a id="zanna-gui-statusbar-addbutton"></a>`AddButton` | `obj<Zanna.GUI.StatusBarItem>(str,i64)` | `Zanna.GUI.StatusBar.AddButton` |
+| <a id="zanna-gui-statusbar-addprogress"></a>`AddProgress` | `obj<Zanna.GUI.StatusBarItem>(i64)` | `Zanna.GUI.StatusBar.AddProgress` |
+| <a id="zanna-gui-statusbar-addseparator"></a>`AddSeparator` | `obj<Zanna.GUI.StatusBarItem>(i64)` | `Zanna.GUI.StatusBar.AddSeparator` |
+| <a id="zanna-gui-statusbar-addspacer"></a>`AddSpacer` | `obj<Zanna.GUI.StatusBarItem>(i64)` | `Zanna.GUI.StatusBar.AddSpacer` |
 | <a id="zanna-gui-statusbar-removeitem"></a>`RemoveItem` | `void(obj)` | `Zanna.GUI.StatusBar.RemoveItem` |
 | <a id="zanna-gui-statusbar-clear"></a>`Clear` | `void()` | `Zanna.GUI.StatusBar.Clear` |
 | <a id="zanna-gui-statusbar-setvisible"></a>`SetVisible` | `void(i1)` | `Zanna.GUI.StatusBar.SetVisible` |
 | <a id="zanna-gui-statusbar-isvisible"></a>`IsVisible` | `i1()` | `Zanna.GUI.StatusBar.IsVisible` |
 | <a id="zanna-gui-statusbar-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.StatusBar.Destroy` |
-| <a id="zanna-gui-statusbar-new"></a>`New` | `obj(obj)` | `Zanna.GUI.StatusBar.New` |
+| <a id="zanna-gui-statusbar-new"></a>`New` | `obj<Zanna.GUI.StatusBar>(obj)` | `Zanna.GUI.StatusBar.New` |
 
 <a id="zanna-gui-statusbaritem"></a>
 ### `Zanna.GUI.StatusBarItem`
@@ -2348,7 +2348,7 @@ Constructor: `Zanna.GUI.FindBar.New`
 | <a id="zanna-gui-findbar-bindeditor"></a>`BindEditor` | `void(obj)` | `Zanna.GUI.FindBar.BindEditor` |
 | <a id="zanna-gui-findbar-unbindeditor"></a>`UnbindEditor` | `void()` | `Zanna.GUI.FindBar.UnbindEditor` |
 | <a id="zanna-gui-findbar-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.FindBar.Destroy` |
-| <a id="zanna-gui-findbar-new"></a>`New` | `obj(obj)` | `Zanna.GUI.FindBar.New` |
+| <a id="zanna-gui-findbar-new"></a>`New` | `obj<Zanna.GUI.FindBar>(obj)` | `Zanna.GUI.FindBar.New` |
 
 <a id="zanna-gui-contextmenu"></a>
 ### `Zanna.GUI.ContextMenu`
@@ -2365,17 +2365,17 @@ Constructor: `Zanna.GUI.ContextMenu.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-gui-contextmenu-additem"></a>`AddItem` | `obj(str)` | `Zanna.GUI.ContextMenu.AddItem` |
-| <a id="zanna-gui-contextmenu-additemwithshortcut"></a>`AddItemWithShortcut` | `obj(str,str)` | `Zanna.GUI.ContextMenu.AddItemWithShortcut` |
-| <a id="zanna-gui-contextmenu-addseparator"></a>`AddSeparator` | `obj()` | `Zanna.GUI.ContextMenu.AddSeparator` |
-| <a id="zanna-gui-contextmenu-addsubmenu"></a>`AddSubmenu` | `obj(str)` | `Zanna.GUI.ContextMenu.AddSubmenu` |
+| <a id="zanna-gui-contextmenu-additem"></a>`AddItem` | `obj<Zanna.GUI.MenuItem>(str)` | `Zanna.GUI.ContextMenu.AddItem` |
+| <a id="zanna-gui-contextmenu-additemwithshortcut"></a>`AddItemWithShortcut` | `obj<Zanna.GUI.MenuItem>(str,str)` | `Zanna.GUI.ContextMenu.AddItemWithShortcut` |
+| <a id="zanna-gui-contextmenu-addseparator"></a>`AddSeparator` | `obj<Zanna.GUI.MenuItem>()` | `Zanna.GUI.ContextMenu.AddSeparator` |
+| <a id="zanna-gui-contextmenu-addsubmenu"></a>`AddSubmenu` | `obj<Zanna.GUI.ContextMenu>(str)` | `Zanna.GUI.ContextMenu.AddSubmenu` |
 | <a id="zanna-gui-contextmenu-show"></a>`Show` | `void(i64,i64)` | `Zanna.GUI.ContextMenu.Show` |
 | <a id="zanna-gui-contextmenu-hide"></a>`Hide` | `void()` | `Zanna.GUI.ContextMenu.Hide` |
 | <a id="zanna-gui-contextmenu-isvisible"></a>`IsVisible` | `i1()` | `Zanna.GUI.ContextMenu.IsVisible` |
 | <a id="zanna-gui-contextmenu-clear"></a>`Clear` | `void()` | `Zanna.GUI.ContextMenu.Clear` |
-| <a id="zanna-gui-contextmenu-getclickeditem"></a>`GetClickedItem` | `obj()` | `Zanna.GUI.ContextMenu.GetClickedItem` |
+| <a id="zanna-gui-contextmenu-getclickeditem"></a>`GetClickedItem` | `obj<Zanna.GUI.MenuItem>()` | `Zanna.GUI.ContextMenu.GetClickedItem` |
 | <a id="zanna-gui-contextmenu-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.ContextMenu.Destroy` |
-| <a id="zanna-gui-contextmenu-new"></a>`New` | `obj()` | `Zanna.GUI.ContextMenu.New` |
+| <a id="zanna-gui-contextmenu-new"></a>`New` | `obj<Zanna.GUI.ContextMenu>()` | `Zanna.GUI.ContextMenu.New` |
 
 <a id="zanna-gui-groupbox"></a>
 ### `Zanna.GUI.GroupBox`
@@ -2395,7 +2395,7 @@ Constructor: `Zanna.GUI.GroupBox.New`
 | <a id="zanna-gui-groupbox-destroy"></a>`Destroy` | `void()` | `Zanna.GUI.GroupBox.Destroy` |
 | <a id="zanna-gui-groupbox-settitle"></a>`SetTitle` | `void(str)` | `Zanna.GUI.GroupBox.SetTitle` |
 | <a id="zanna-gui-groupbox-addchild"></a>`AddChild` | `void(obj)` | `Zanna.GUI.GroupBox.AddChild` |
-| <a id="zanna-gui-groupbox-new"></a>`New` | `obj(obj,str)` | `Zanna.GUI.GroupBox.New` |
+| <a id="zanna-gui-groupbox-new"></a>`New` | `obj<Zanna.GUI.GroupBox>(obj,str)` | `Zanna.GUI.GroupBox.New` |
 
 <a id="zanna-gui-floatingpanel"></a>
 ### `Zanna.GUI.FloatingPanel`
@@ -2418,7 +2418,7 @@ Constructor: `Zanna.GUI.FloatingPanel.New`
 | <a id="zanna-gui-floatingpanel-setsize"></a>`SetSize` | `void(f64,f64)` | `Zanna.GUI.FloatingPanel.SetSize` |
 | <a id="zanna-gui-floatingpanel-setvisible"></a>`SetVisible` | `void(i1)` | `Zanna.GUI.FloatingPanel.SetVisible` |
 | <a id="zanna-gui-floatingpanel-addchild"></a>`AddChild` | `void(obj)` | `Zanna.GUI.FloatingPanel.AddChild` |
-| <a id="zanna-gui-floatingpanel-new"></a>`New` | `obj(obj)` | `Zanna.GUI.FloatingPanel.New` |
+| <a id="zanna-gui-floatingpanel-new"></a>`New` | `obj<Zanna.GUI.FloatingPanel>(obj)` | `Zanna.GUI.FloatingPanel.New` |
 
 <a id="zanna-gui-videowidget"></a>
 ### `Zanna.GUI.VideoWidget`
@@ -2474,7 +2474,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-videowidget-setmargin"></a>`SetMargin` | `void(i64)` | `Zanna.GUI.VideoWidget.SetMargin` |
 | <a id="zanna-gui-videowidget-setposition"></a>`SetPosition` | `void(i64,i64)` | `Zanna.GUI.VideoWidget.SetPosition` |
 | <a id="zanna-gui-videowidget-addchild"></a>`AddChild` | `void(obj)` | `Zanna.GUI.VideoWidget.AddChild` |
-| <a id="zanna-gui-videowidget-new"></a>`New` | `obj(obj,str)` | `Zanna.GUI.VideoWidget.New` |
+| <a id="zanna-gui-videowidget-new"></a>`New` | `obj<Zanna.GUI.VideoWidget>(obj,str)` | `Zanna.GUI.VideoWidget.New` |
 
 ## Functions
 
@@ -2482,7 +2482,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 |---|---|---|
 | `Zanna.GUI.System.IsAvailable` | `i1()` | `rt_gui_system_is_available` |
 | `Zanna.GUI.System.GetUnavailableReason` | `str()` | `rt_gui_system_get_unavailable_reason` |
-| `Zanna.GUI.App.New` | `obj(str,i64,i64)` | `rt_gui_app_new` |
+| `Zanna.GUI.App.New` | `obj<Zanna.GUI.App>(str,i64,i64)` | `rt_gui_app_new` |
 | `Zanna.GUI.App.TryNew` | `obj<Zanna.Result>(str,i64,i64)` | `rt_gui_app_try_new` |
 | `Zanna.GUI.App.Destroy` | `void(obj)` | `rt_gui_app_destroy` |
 | <a id="zanna-gui-app-get-shouldclose"></a>`Zanna.GUI.App.get_ShouldClose` | `i1(obj)` | `rt_gui_app_should_close` |
@@ -2539,7 +2539,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.App.GetPaintFramesFull` | `i64(obj)` | `rt_app_get_paint_frames_full` |
 | `Zanna.GUI.App.GetPaintFramesPartial` | `i64(obj)` | `rt_app_get_paint_frames_partial` |
 | `Zanna.GUI.App.SetPartialPaint` | `void(obj,i1)` | `rt_app_set_partial_paint` |
-| `Zanna.GUI.Font.Load` | `obj(str)` | `rt_font_load` |
+| `Zanna.GUI.Font.Load` | `obj<Zanna.GUI.Font>(str)` | `rt_font_load` |
 | `Zanna.GUI.Font.LoadSystemUi` | `obj<Zanna.Result>(f64)` | `rt_font_load_system_ui` |
 | `Zanna.GUI.Font.LoadSystemUiBold` | `obj<Zanna.Result>(f64)` | `rt_font_load_system_ui_bold` |
 | `Zanna.GUI.Font.GetLogicalSize` | `f64(obj)` | `rt_font_get_logical_size` |
@@ -2609,7 +2609,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Widget.SetLiveRegion` | `void(obj,i64)` | `rt_widget_set_live_region` |
 | `Zanna.GUI.Widget.GetLiveRegion` | `i64(obj)` | `rt_widget_get_live_region` |
 | `Zanna.GUI.Widget.GetRevision` | `i64(obj)` | `rt_widget_get_revision` |
-| `Zanna.GUI.Label.New` | `obj(obj,str)` | `rt_label_new` |
+| `Zanna.GUI.Label.New` | `obj<Zanna.GUI.Label>(obj,str)` | `rt_label_new` |
 | `Zanna.GUI.Label.SetText` | `void(obj,str)` | `rt_label_set_text` |
 | `Zanna.GUI.Label.SetFont` | `void(obj,obj,f64)` | `rt_label_set_font` |
 | `Zanna.GUI.Label.SetColor` | `void(obj,i64)` | `rt_label_set_color` |
@@ -2621,14 +2621,14 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Label.SetMaxLines` | `void(obj,i64)` | `rt_label_set_max_lines` |
 | `Zanna.GUI.Label.SetSelectable` | `void(obj,i1)` | `rt_label_set_selectable` |
 | `Zanna.GUI.Label.GetSelectedText` | `str(obj)` | `rt_label_get_selected_text` |
-| `Zanna.GUI.Button.New` | `obj(obj,str)` | `rt_button_new` |
+| `Zanna.GUI.Button.New` | `obj<Zanna.GUI.Button>(obj,str)` | `rt_button_new` |
 | `Zanna.GUI.Button.SetText` | `void(obj,str)` | `rt_button_set_text` |
 | `Zanna.GUI.Button.SetFont` | `void(obj,obj,f64)` | `rt_button_set_font` |
 | `Zanna.GUI.Button.SetStyle` | `void(obj,i64)` | `rt_button_set_style` |
 | `Zanna.GUI.Button.SetIcon` | `void(obj,str)` | `rt_button_set_icon` |
 | `Zanna.GUI.Button.SetIconPosition` | `void(obj,i64)` | `rt_button_set_icon_pos` |
 | `Zanna.GUI.Button.SetIconName` | `void(obj,str)` | `rt_button_set_icon_name` |
-| `Zanna.GUI.TextInput.New` | `obj(obj)` | `rt_textinput_new` |
+| `Zanna.GUI.TextInput.New` | `obj<Zanna.GUI.TextInput>(obj)` | `rt_textinput_new` |
 | `Zanna.GUI.TextInput.SetText` | `void(obj,str)` | `rt_textinput_set_text` |
 | <a id="zanna-gui-textinput-get-text"></a>`Zanna.GUI.TextInput.get_Text` | `str(obj)` | `rt_textinput_get_text` |
 | `Zanna.GUI.TextInput.SetPlaceholder` | `void(obj,str)` | `rt_textinput_set_placeholder` |
@@ -2661,7 +2661,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.TextInput.GetCompositionText` | `str(obj)` | `rt_textinput_get_composition_text` |
 | `Zanna.GUI.TextInput.GetCompositionStart` | `i64(obj)` | `rt_textinput_get_composition_start` |
 | `Zanna.GUI.TextInput.GetCompositionLength` | `i64(obj)` | `rt_textinput_get_composition_length` |
-| `Zanna.GUI.Checkbox.New` | `obj(obj,str)` | `rt_checkbox_new` |
+| `Zanna.GUI.Checkbox.New` | `obj<Zanna.GUI.Checkbox>(obj,str)` | `rt_checkbox_new` |
 | `Zanna.GUI.Checkbox.SetChecked` | `void(obj,i1)` | `rt_checkbox_set_checked` |
 | `Zanna.GUI.Checkbox.IsChecked` | `i1(obj)` | `rt_checkbox_is_checked` |
 | `Zanna.GUI.Checkbox.SetText` | `void(obj,str)` | `rt_checkbox_set_text` |
@@ -2669,14 +2669,14 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Checkbox.IsIndeterminate` | `i1(obj)` | `rt_checkbox_is_indeterminate` |
 | `Zanna.GUI.Checkbox.WasChanged` | `i1(obj)` | `rt_checkbox_was_changed` |
 | `Zanna.GUI.Checkbox.GetRevision` | `i64(obj)` | `rt_checkbox_get_revision` |
-| `Zanna.GUI.ScrollView.New` | `obj(obj)` | `rt_scrollview_new` |
+| `Zanna.GUI.ScrollView.New` | `obj<Zanna.GUI.ScrollView>(obj)` | `rt_scrollview_new` |
 | `Zanna.GUI.ScrollView.SetScroll` | `void(obj,f64,f64)` | `rt_scrollview_set_scroll` |
 | `Zanna.GUI.ScrollView.SetContentSize` | `void(obj,f64,f64)` | `rt_scrollview_set_content_size` |
 | `Zanna.GUI.ScrollView.ScrollTo` | `void(obj,obj)` | `rt_scrollview_scroll_to` |
 | `Zanna.GUI.ScrollView.GetScrollX` | `f64(obj)` | `rt_scrollview_get_scroll_x` |
 | `Zanna.GUI.ScrollView.GetScrollY` | `f64(obj)` | `rt_scrollview_get_scroll_y` |
-| `Zanna.GUI.TreeView.New` | `obj(obj)` | `rt_treeview_new` |
-| `Zanna.GUI.TreeView.AddNode` | `obj(obj,obj,str)` | `rt_treeview_add_node` |
+| `Zanna.GUI.TreeView.New` | `obj<Zanna.GUI.TreeView>(obj)` | `rt_treeview_new` |
+| `Zanna.GUI.TreeView.AddNode` | `obj<Zanna.GUI.TreeView.Node>(obj,obj,str)` | `rt_treeview_add_node` |
 | `Zanna.GUI.TreeView.RemoveNode` | `void(obj,obj)` | `rt_treeview_remove_node` |
 | `Zanna.GUI.TreeView.Clear` | `void(obj)` | `rt_treeview_clear` |
 | `Zanna.GUI.TreeView.PruneRetiredNodes` | `void(obj)` | `rt_treeview_prune_retired_nodes` |
@@ -2687,9 +2687,9 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.TreeView.SetMultiSelect` | `void(obj,i1)` | `rt_treeview_set_multi_select` |
 | `Zanna.GUI.TreeView.ScrollTo` | `void(obj,obj)` | `rt_treeview_scroll_to` |
 | `Zanna.GUI.TreeView.SetFont` | `void(obj,obj,f64)` | `rt_treeview_set_font` |
-| `Zanna.GUI.TreeView.GetSelected` | `obj(obj)` | `rt_treeview_get_selected` |
+| `Zanna.GUI.TreeView.GetSelected` | `obj<Zanna.GUI.TreeView.Node>(obj)` | `rt_treeview_get_selected` |
 | `Zanna.GUI.TreeView.GetSelectedData` | `seq<str>(obj)` | `rt_treeview_get_selected_data` |
-| `Zanna.GUI.TreeView.GetNodeAt` | `obj(obj,i64,i64)` | `rt_treeview_get_node_at` |
+| `Zanna.GUI.TreeView.GetNodeAt` | `obj<Zanna.GUI.TreeView.Node>(obj,i64,i64)` | `rt_treeview_get_node_at` |
 | `Zanna.GUI.TreeView.WasSelectionChanged` | `i1(obj)` | `rt_treeview_was_selection_changed` |
 | `Zanna.GUI.TreeView.WasChanged` | `i1(obj)` | `rt_treeview_was_changed` |
 | `Zanna.GUI.TreeView.WasActivated` | `i1(obj)` | `rt_treeview_was_activated` |
@@ -2723,12 +2723,12 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.TreeView.Node.SetData` | `void(obj,str)` | `rt_treeview_node_set_data` |
 | `Zanna.GUI.TreeView.Node.GetData` | `str(obj)` | `rt_treeview_node_get_data` |
 | `Zanna.GUI.TreeView.Node.IsExpanded` | `i1(obj)` | `rt_treeview_node_is_expanded` |
-| `Zanna.GUI.TabBar.New` | `obj(obj)` | `rt_tabbar_new` |
-| `Zanna.GUI.TabBar.AddTab` | `obj(obj,str,i64)` | `rt_tabbar_add_tab` |
+| `Zanna.GUI.TabBar.New` | `obj<Zanna.GUI.TabBar>(obj)` | `rt_tabbar_new` |
+| `Zanna.GUI.TabBar.AddTab` | `obj<Zanna.GUI.Tab>(obj,str,i64)` | `rt_tabbar_add_tab` |
 | `Zanna.GUI.TabBar.RemoveTab` | `void(obj,obj)` | `rt_tabbar_remove_tab` |
 | `Zanna.GUI.TabBar.PruneRetiredTabs` | `void(obj)` | `rt_tabbar_prune_retired_tabs` |
 | `Zanna.GUI.TabBar.SetActive` | `void(obj,obj)` | `rt_tabbar_set_active` |
-| `Zanna.GUI.TabBar.GetActive` | `obj(obj)` | `rt_tabbar_get_active` |
+| `Zanna.GUI.TabBar.GetActive` | `obj<Zanna.GUI.Tab>(obj)` | `rt_tabbar_get_active` |
 | `Zanna.GUI.TabBar.GetActiveIndex` | `i64(obj)` | `rt_tabbar_get_active_index` |
 | `Zanna.GUI.TabBar.WasChanged` | `i1(obj)` | `rt_tabbar_was_changed` |
 | `Zanna.GUI.TabBar.GetRevision` | `i64(obj)` | `rt_tabbar_get_revision` |
@@ -2754,7 +2754,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Tab.SetTooltip` | `void(obj,str)` | `rt_tab_set_tooltip` |
 | `Zanna.GUI.Tab.SetModified` | `void(obj,i1)` | `rt_tab_set_modified` |
 | `Zanna.GUI.Tab.SetNamedIcon` | `void(obj,str)` | `rt_tab_set_named_icon` |
-| `Zanna.GUI.SplitPane.New` | `obj(obj,i64)` | `rt_splitpane_new` |
+| `Zanna.GUI.SplitPane.New` | `obj<Zanna.GUI.SplitPane>(obj,i64)` | `rt_splitpane_new` |
 | `Zanna.GUI.SplitPane.SetPosition` | `void(obj,f64)` | `rt_splitpane_set_position` |
 | `Zanna.GUI.SplitPane.GetPosition` | `f64(obj)` | `rt_splitpane_get_position` |
 | `Zanna.GUI.SplitPane.SetMinFirst` | `void(obj,f64)` | `rt_splitpane_set_min_first` |
@@ -2768,7 +2768,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.SplitPane.GetCollapsedSide` | `i64(obj)` | `rt_splitpane_get_collapsed_side` |
 | <a id="zanna-gui-splitpane-get-first"></a>`Zanna.GUI.SplitPane.get_First` | `obj<Zanna.GUI.Widget>(obj)` | `rt_splitpane_get_first` |
 | <a id="zanna-gui-splitpane-get-second"></a>`Zanna.GUI.SplitPane.get_Second` | `obj<Zanna.GUI.Widget>(obj)` | `rt_splitpane_get_second` |
-| `Zanna.GUI.CodeEditor.New` | `obj(obj)` | `rt_codeeditor_new` |
+| `Zanna.GUI.CodeEditor.New` | `obj<Zanna.GUI.CodeEditor>(obj)` | `rt_codeeditor_new` |
 | `Zanna.GUI.CodeEditor.SetText` | `void(obj,str)` | `rt_codeeditor_set_text` |
 | `Zanna.GUI.CodeEditor.ReplaceAllText` | `i1(obj,str)` | `rt_codeeditor_replace_all_text` |
 | <a id="zanna-gui-codeeditor-get-text"></a>`Zanna.GUI.CodeEditor.get_Text` | `str(obj)` | `rt_codeeditor_get_text` |
@@ -2789,7 +2789,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-codeeditor-get-cursorcol"></a>`Zanna.GUI.CodeEditor.get_CursorCol` | `i64(obj)` | `rt_codeeditor_get_cursor_col` |
 | `Zanna.GUI.CodeEditor.GetFontSize` | `f64(obj)` | `rt_codeeditor_get_font_size` |
 | `Zanna.GUI.CodeEditor.SetFontSize` | `void(obj,f64)` | `rt_codeeditor_set_font_size` |
-| `Zanna.GUI.Dropdown.New` | `obj(obj)` | `rt_dropdown_new` |
+| `Zanna.GUI.Dropdown.New` | `obj<Zanna.GUI.Dropdown>(obj)` | `rt_dropdown_new` |
 | `Zanna.GUI.Dropdown.AddItem` | `i64(obj,str)` | `rt_dropdown_add_item` |
 | `Zanna.GUI.Dropdown.RemoveItem` | `void(obj,i64)` | `rt_dropdown_remove_item` |
 | `Zanna.GUI.Dropdown.Clear` | `void(obj)` | `rt_dropdown_clear` |
@@ -2799,24 +2799,24 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Dropdown.SetPlaceholder` | `void(obj,str)` | `rt_dropdown_set_placeholder` |
 | `Zanna.GUI.Dropdown.WasChanged` | `i1(obj)` | `rt_dropdown_was_changed` |
 | `Zanna.GUI.Dropdown.GetRevision` | `i64(obj)` | `rt_dropdown_get_revision` |
-| `Zanna.GUI.Slider.New` | `obj(obj,i64)` | `rt_slider_new` |
+| `Zanna.GUI.Slider.New` | `obj<Zanna.GUI.Slider>(obj,i64)` | `rt_slider_new` |
 | `Zanna.GUI.Slider.SetValue` | `void(obj,f64)` | `rt_slider_set_value` |
 | <a id="zanna-gui-slider-get-value"></a>`Zanna.GUI.Slider.get_Value` | `f64(obj)` | `rt_slider_get_value` |
 | `Zanna.GUI.Slider.SetRange` | `void(obj,f64,f64)` | `rt_slider_set_range` |
 | `Zanna.GUI.Slider.SetStep` | `void(obj,f64)` | `rt_slider_set_step` |
 | `Zanna.GUI.Slider.WasChanged` | `i1(obj)` | `rt_slider_was_changed` |
 | `Zanna.GUI.Slider.GetRevision` | `i64(obj)` | `rt_slider_get_revision` |
-| `Zanna.GUI.ProgressBar.New` | `obj(obj)` | `rt_progressbar_new` |
+| `Zanna.GUI.ProgressBar.New` | `obj<Zanna.GUI.ProgressBar>(obj)` | `rt_progressbar_new` |
 | `Zanna.GUI.ProgressBar.SetValue` | `void(obj,f64)` | `rt_progressbar_set_value` |
 | <a id="zanna-gui-progressbar-get-value"></a>`Zanna.GUI.ProgressBar.get_Value` | `f64(obj)` | `rt_progressbar_get_value` |
 | `Zanna.GUI.ProgressBar.SetStyle` | `void(obj,i64)` | `rt_progressbar_set_style` |
 | `Zanna.GUI.ProgressBar.ShowPercentage` | `void(obj,i64)` | `rt_progressbar_show_percentage` |
-| `Zanna.GUI.ListBox.New` | `obj(obj)` | `rt_listbox_new` |
-| `Zanna.GUI.ListBox.AddItem` | `obj(obj,str)` | `rt_listbox_add_item` |
+| `Zanna.GUI.ListBox.New` | `obj<Zanna.GUI.ListBox>(obj)` | `rt_listbox_new` |
+| `Zanna.GUI.ListBox.AddItem` | `obj<Zanna.Core.Object>(obj,str)` | `rt_listbox_add_item` |
 | `Zanna.GUI.ListBox.RemoveItem` | `void(obj,obj)` | `rt_listbox_remove_item` |
 | `Zanna.GUI.ListBox.Clear` | `void(obj)` | `rt_listbox_clear` |
 | `Zanna.GUI.ListBox.Select` | `void(obj,obj)` | `rt_listbox_select` |
-| <a id="zanna-gui-listbox-get-selected"></a>`Zanna.GUI.ListBox.get_Selected` | `obj(obj)` | `rt_listbox_get_selected` |
+| <a id="zanna-gui-listbox-get-selected"></a>`Zanna.GUI.ListBox.get_Selected` | `obj<Zanna.Core.Object>(obj)` | `rt_listbox_get_selected` |
 | <a id="zanna-gui-listbox-get-count"></a>`Zanna.GUI.ListBox.get_Count` | `i64(obj)` | `rt_listbox_get_count` |
 | <a id="zanna-gui-listbox-get-selectedindex"></a>`Zanna.GUI.ListBox.get_SelectedIndex` | `i64(obj)` | `rt_listbox_get_selected_index` |
 | `Zanna.GUI.ListBox.SelectIndex` | `void(obj,i64)` | `rt_listbox_select_index` |
@@ -2840,7 +2840,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.ListBox.ItemSetTextColor` | `void(obj,i64)` | `rt_listbox_item_set_text_color` |
 | `Zanna.GUI.ListBox.ItemSetNamedIcon` | `void(obj,str)` | `rt_listbox_item_set_named_icon` |
 | `Zanna.GUI.ListBox.SetFont` | `void(obj,obj,f64)` | `rt_listbox_set_font` |
-| `Zanna.GUI.OutputPane.New` | `obj(obj)` | `rt_outputpane_new` |
+| `Zanna.GUI.OutputPane.New` | `obj<Zanna.GUI.OutputPane>(obj)` | `rt_outputpane_new` |
 | `Zanna.GUI.OutputPane.Append` | `void(obj,str)` | `rt_outputpane_append` |
 | `Zanna.GUI.OutputPane.AppendLine` | `void(obj,str)` | `rt_outputpane_append_line` |
 | `Zanna.GUI.OutputPane.AppendStyled` | `void(obj,str,i64,i64,i64)` | `rt_outputpane_append_styled` |
@@ -2860,7 +2860,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.OutputPane.MeasureText` | `i64(obj,str)` | `rt_outputpane_measure_text` |
 | `Zanna.GUI.OutputPane.ColumnsForWidth` | `i64(obj)` | `rt_outputpane_columns_for_width` |
 | `Zanna.GUI.OutputPane.RowsForHeight` | `i64(obj)` | `rt_outputpane_rows_for_height` |
-| `Zanna.GUI.Grid.New` | `obj(obj)` | `rt_datagrid_new` |
+| `Zanna.GUI.Grid.New` | `obj<Zanna.GUI.Grid>(obj)` | `rt_datagrid_new` |
 | `Zanna.GUI.Grid.SetColumns` | `void(obj,i64)` | `rt_datagrid_set_columns` |
 | `Zanna.GUI.Grid.SetHeader` | `void(obj,i64,str)` | `rt_datagrid_set_header` |
 | `Zanna.GUI.Grid.SetCell` | `void(obj,i64,i64,str)` | `rt_datagrid_set_cell` |
@@ -2899,7 +2899,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Grid.GetScrollRow` | `i64(obj)` | `rt_datagrid_get_scroll_row` |
 | `Zanna.GUI.Grid.WasChanged` | `i1(obj)` | `rt_datagrid_was_changed` |
 | `Zanna.GUI.Grid.GetRevision` | `i64(obj)` | `rt_datagrid_get_revision` |
-| `Zanna.GUI.PopupList.New` | `obj(obj)` | `rt_popuplist_new` |
+| `Zanna.GUI.PopupList.New` | `obj<Zanna.GUI.PopupList>(obj)` | `rt_popuplist_new` |
 | `Zanna.GUI.PopupList.AddItem` | `void(obj,str)` | `rt_popuplist_add_item` |
 | `Zanna.GUI.PopupList.Clear` | `void(obj)` | `rt_popuplist_clear` |
 | `Zanna.GUI.PopupList.SetFilter` | `void(obj,str)` | `rt_popuplist_set_filter` |
@@ -2917,14 +2917,14 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.PopupList.SetFont` | `void(obj,obj,f64)` | `rt_popuplist_set_font` |
 | `Zanna.GUI.PopupList.SetVisible` | `void(obj,i1)` | `rt_popuplist_set_visible` |
 | `Zanna.GUI.PopupList.IsVisible` | `i1(obj)` | `rt_popuplist_is_visible` |
-| `Zanna.GUI.RadioGroup.New` | `obj()` | `rt_radiogroup_new` |
+| `Zanna.GUI.RadioGroup.New` | `obj<Zanna.GUI.RadioGroup>()` | `rt_radiogroup_new` |
 | `Zanna.GUI.RadioGroup.Destroy` | `void(obj)` | `rt_radiogroup_destroy` |
 | `Zanna.GUI.RadioGroup.GetSelectedIndex` | `i64(obj)` | `rt_radiogroup_get_selected_index` |
 | `Zanna.GUI.RadioGroup.SetSelectedIndex` | `i1(obj,i64)` | `rt_radiogroup_set_selected_index` |
 | `Zanna.GUI.RadioGroup.GetCount` | `i64(obj)` | `rt_radiogroup_get_count` |
 | `Zanna.GUI.RadioGroup.WasChanged` | `i1(obj)` | `rt_radiogroup_was_changed` |
 | `Zanna.GUI.RadioGroup.GetRevision` | `i64(obj)` | `rt_radiogroup_get_revision` |
-| `Zanna.GUI.RadioButton.New` | `obj(obj,str,obj)` | `rt_radiobutton_new` |
+| `Zanna.GUI.RadioButton.New` | `obj<Zanna.GUI.RadioButton>(obj,str,obj)` | `rt_radiobutton_new` |
 | `Zanna.GUI.RadioButton.IsSelected` | `i1(obj)` | `rt_radiobutton_is_selected` |
 | `Zanna.GUI.RadioButton.SetSelected` | `void(obj,i1)` | `rt_radiobutton_set_selected` |
 | `Zanna.GUI.RadioButton.SetText` | `void(obj,str)` | `rt_radiobutton_set_text` |
@@ -2933,7 +2933,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.RadioButton.GetData` | `str(obj)` | `rt_radiobutton_get_data` |
 | `Zanna.GUI.RadioButton.WasChanged` | `i1(obj)` | `rt_radiobutton_was_changed` |
 | `Zanna.GUI.RadioButton.GetRevision` | `i64(obj)` | `rt_radiobutton_get_revision` |
-| `Zanna.GUI.Spinner.New` | `obj(obj)` | `rt_spinner_new` |
+| `Zanna.GUI.Spinner.New` | `obj<Zanna.GUI.Spinner>(obj)` | `rt_spinner_new` |
 | `Zanna.GUI.Spinner.SetValue` | `void(obj,f64)` | `rt_spinner_set_value` |
 | <a id="zanna-gui-spinner-get-value"></a>`Zanna.GUI.Spinner.get_Value` | `f64(obj)` | `rt_spinner_get_value` |
 | `Zanna.GUI.Spinner.SetIndeterminate` | `void(obj,i1)` | `rt_spinner_set_indeterminate` |
@@ -2945,14 +2945,14 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Spinner.WasSubmitted` | `i1(obj)` | `rt_spinner_was_submitted` |
 | `Zanna.GUI.Spinner.WasScrubFinished` | `i1(obj)` | `rt_spinner_was_scrub_finished` |
 | `Zanna.GUI.Spinner.GetRevision` | `i64(obj)` | `rt_spinner_get_revision` |
-| `Zanna.GUI.ColorSwatch.New` | `obj(obj,i64)` | `rt_colorswatch_new` |
+| `Zanna.GUI.ColorSwatch.New` | `obj<Zanna.GUI.ColorSwatch>(obj,i64)` | `rt_colorswatch_new` |
 | `Zanna.GUI.ColorSwatch.SetColor` | `void(obj,i64)` | `rt_colorswatch_set_color` |
 | `Zanna.GUI.ColorSwatch.GetColor` | `i64(obj)` | `rt_colorswatch_get_color` |
 | `Zanna.GUI.ColorSwatch.SetSelected` | `void(obj,i1)` | `rt_colorswatch_set_selected` |
 | `Zanna.GUI.ColorSwatch.IsSelected` | `i1(obj)` | `rt_colorswatch_is_selected` |
 | `Zanna.GUI.ColorSwatch.WasChanged` | `i1(obj)` | `rt_colorswatch_was_changed` |
 | `Zanna.GUI.ColorSwatch.GetRevision` | `i64(obj)` | `rt_colorswatch_get_revision` |
-| `Zanna.GUI.ColorPalette.New` | `obj(obj)` | `rt_colorpalette_new` |
+| `Zanna.GUI.ColorPalette.New` | `obj<Zanna.GUI.ColorPalette>(obj)` | `rt_colorpalette_new` |
 | `Zanna.GUI.ColorPalette.AddColor` | `void(obj,i64)` | `rt_colorpalette_add_color` |
 | `Zanna.GUI.ColorPalette.RemoveColor` | `i1(obj,i64)` | `rt_colorpalette_remove_color` |
 | `Zanna.GUI.ColorPalette.Clear` | `void(obj)` | `rt_colorpalette_clear` |
@@ -2962,7 +2962,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.ColorPalette.GetSelectedIndex` | `i64(obj)` | `rt_colorpalette_get_selected_index` |
 | `Zanna.GUI.ColorPalette.WasChanged` | `i1(obj)` | `rt_colorpalette_was_changed` |
 | `Zanna.GUI.ColorPalette.GetRevision` | `i64(obj)` | `rt_colorpalette_get_revision` |
-| `Zanna.GUI.ColorPicker.New` | `obj(obj)` | `rt_colorpicker_new` |
+| `Zanna.GUI.ColorPicker.New` | `obj<Zanna.GUI.ColorPicker>(obj)` | `rt_colorpicker_new` |
 | `Zanna.GUI.ColorPicker.SetColor` | `void(obj,i64)` | `rt_colorpicker_set_color` |
 | `Zanna.GUI.ColorPicker.GetColor` | `i64(obj)` | `rt_colorpicker_get_color` |
 | `Zanna.GUI.ColorPicker.SetAlphaEnabled` | `void(obj,i1)` | `rt_colorpicker_set_alpha_enabled` |
@@ -2973,7 +2973,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.ColorPicker.GetAlpha` | `i64(obj)` | `rt_colorpicker_get_alpha` |
 | `Zanna.GUI.ColorPicker.WasChanged` | `i1(obj)` | `rt_colorpicker_was_changed` |
 | `Zanna.GUI.ColorPicker.GetRevision` | `i64(obj)` | `rt_colorpicker_get_revision` |
-| `Zanna.GUI.Image.New` | `obj(obj)` | `rt_image_new` |
+| `Zanna.GUI.Image.New` | `obj<Zanna.GUI.Image>(obj)` | `rt_image_new` |
 | `Zanna.GUI.Image.SetPixels` | `void(obj,obj,i64,i64)` | `rt_image_set_pixels` |
 | `Zanna.GUI.Image.TrySetPixels` | `i1(obj,obj,i64,i64)` | `rt_image_try_set_pixels` |
 | `Zanna.GUI.Image.TrySetFromRenderTarget` | `i1(obj,obj)` | `rt_image_try_set_from_render_target` |
@@ -2993,14 +2993,14 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Theme.GetMode` | `i64()` | `rt_theme_get_mode` |
 | `Zanna.GUI.Theme.FollowSystem` | `void()` | `rt_theme_follow_system` |
 | `Zanna.GUI.Theme.SetPalette` | `i1(obj)` | `rt_theme_set_palette` |
-| `Zanna.GUI.Theme.GetPalette` | `obj()` | `rt_theme_get_palette` |
+| `Zanna.GUI.Theme.GetPalette` | `obj<Zanna.GUI.ThemePalette>()` | `rt_theme_get_palette` |
 | `Zanna.GUI.Theme.ResetCustom` | `void()` | `rt_theme_reset_custom` |
 | `Zanna.GUI.Theme.WasChanged` | `i1()` | `rt_theme_was_changed` |
 | `Zanna.GUI.Theme.GetRevision` | `i64()` | `rt_theme_get_revision` |
-| `Zanna.GUI.ThemePalette.New` | `obj()` | `rt_theme_palette_new` |
-| `Zanna.GUI.ThemePalette.FromDark` | `obj()` | `rt_theme_palette_from_dark` |
-| `Zanna.GUI.ThemePalette.FromLight` | `obj()` | `rt_theme_palette_from_light` |
-| `Zanna.GUI.ThemePalette.Clone` | `obj(obj)` | `rt_theme_palette_clone` |
+| `Zanna.GUI.ThemePalette.New` | `obj<Zanna.GUI.ThemePalette>()` | `rt_theme_palette_new` |
+| `Zanna.GUI.ThemePalette.FromDark` | `obj<Zanna.GUI.ThemePalette>()` | `rt_theme_palette_from_dark` |
+| `Zanna.GUI.ThemePalette.FromLight` | `obj<Zanna.GUI.ThemePalette>()` | `rt_theme_palette_from_light` |
+| `Zanna.GUI.ThemePalette.Clone` | `obj<Zanna.GUI.ThemePalette>(obj)` | `rt_theme_palette_clone` |
 | `Zanna.GUI.ThemePalette.SetColor` | `i1(obj,str,i64)` | `rt_theme_palette_set_color` |
 | `Zanna.GUI.ThemePalette.GetColor` | `i64(obj,str)` | `rt_theme_palette_get_color` |
 | `Zanna.GUI.ThemePalette.SetMetric` | `i1(obj,str,f64)` | `rt_theme_palette_set_metric` |
@@ -3085,8 +3085,8 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-sortdirection-get-none"></a>`Zanna.GUI.SortDirection.get_None` | `i64()` | `rt_gui_sort_direction_none` |
 | <a id="zanna-gui-sortdirection-get-ascending"></a>`Zanna.GUI.SortDirection.get_Ascending` | `i64()` | `rt_gui_sort_direction_ascending` |
 | <a id="zanna-gui-sortdirection-get-descending"></a>`Zanna.GUI.SortDirection.get_Descending` | `i64()` | `rt_gui_sort_direction_descending` |
-| `Zanna.GUI.VBox.New` | `obj()` | `rt_vbox_new` |
-| `Zanna.GUI.HBox.New` | `obj()` | `rt_hbox_new` |
+| `Zanna.GUI.VBox.New` | `obj<Zanna.GUI.VBox>()` | `rt_vbox_new` |
+| `Zanna.GUI.HBox.New` | `obj<Zanna.GUI.HBox>()` | `rt_hbox_new` |
 | `Zanna.GUI.Container.SetSpacing` | `void(obj,f64)` | `rt_container_set_spacing` |
 | `Zanna.GUI.Container.SetPadding` | `void(obj,f64)` | `rt_container_set_padding` |
 | `Zanna.GUI.VBox.SetAlign` | `void(obj,i64)` | `rt_vbox_set_align` |
@@ -3097,14 +3097,14 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.HBox.GetAlign` | `i64(obj)` | `rt_hbox_get_align` |
 | `Zanna.GUI.HBox.SetJustify` | `void(obj,i64)` | `rt_hbox_set_justify` |
 | `Zanna.GUI.HBox.GetJustify` | `i64(obj)` | `rt_hbox_get_justify` |
-| `Zanna.GUI.Flex.New` | `obj()` | `rt_flex_new` |
+| `Zanna.GUI.Flex.New` | `obj<Zanna.GUI.Flex>()` | `rt_flex_new` |
 | `Zanna.GUI.Flex.SetDirection` | `void(obj,i64)` | `rt_flex_set_direction` |
 | `Zanna.GUI.Flex.SetWrap` | `void(obj,i64)` | `rt_flex_set_wrap` |
 | `Zanna.GUI.Flex.SetAlign` | `void(obj,i64)` | `rt_flex_set_align` |
 | `Zanna.GUI.Flex.SetJustify` | `void(obj,i64)` | `rt_flex_set_justify` |
 | `Zanna.GUI.Flex.SetGap` | `void(obj,f64)` | `rt_flex_set_gap` |
 | `Zanna.GUI.Flex.SetPadding` | `void(obj,f64)` | `rt_flex_set_padding` |
-| `Zanna.GUI.LayoutGrid.New` | `obj()` | `rt_layoutgrid_new` |
+| `Zanna.GUI.LayoutGrid.New` | `obj<Zanna.GUI.LayoutGrid>()` | `rt_layoutgrid_new` |
 | `Zanna.GUI.LayoutGrid.SetRows` | `void(obj,i64)` | `rt_layoutgrid_set_rows` |
 | `Zanna.GUI.LayoutGrid.SetColumns` | `void(obj,i64)` | `rt_layoutgrid_set_columns` |
 | `Zanna.GUI.LayoutGrid.SetRowSize` | `void(obj,i64,f64)` | `rt_layoutgrid_set_row_size` |
@@ -3112,7 +3112,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.LayoutGrid.SetGap` | `void(obj,f64,f64)` | `rt_layoutgrid_set_gap` |
 | `Zanna.GUI.LayoutGrid.SetPadding` | `void(obj,f64)` | `rt_layoutgrid_set_padding` |
 | `Zanna.GUI.LayoutGrid.Place` | `i1(obj,obj,i64,i64,i64,i64)` | `rt_layoutgrid_place` |
-| `Zanna.GUI.DockPanel.New` | `obj()` | `rt_dockpanel_new` |
+| `Zanna.GUI.DockPanel.New` | `obj<Zanna.GUI.DockPanel>()` | `rt_dockpanel_new` |
 | `Zanna.GUI.DockPanel.SetPadding` | `void(obj,f64)` | `rt_dockpanel_set_padding` |
 | `Zanna.GUI.DockPanel.SetGap` | `void(obj,f64)` | `rt_dockpanel_set_gap` |
 | `Zanna.GUI.DockPanel.DockChild` | `i1(obj,obj,i64)` | `rt_dockpanel_dock_child` |
@@ -3132,23 +3132,23 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Cursor.Set` | `void(i64)` | `rt_cursor_set` |
 | `Zanna.GUI.Cursor.Reset` | `void()` | `rt_cursor_reset` |
 | `Zanna.GUI.Cursor.SetVisible` | `void(i1)` | `rt_cursor_set_visible` |
-| `Zanna.GUI.MenuBar.New` | `obj(obj)` | `rt_menubar_new` |
+| `Zanna.GUI.MenuBar.New` | `obj<Zanna.GUI.MenuBar>(obj)` | `rt_menubar_new` |
 | `Zanna.GUI.MenuBar.Destroy` | `void(obj)` | `rt_menubar_destroy` |
-| `Zanna.GUI.MenuBar.AddMenu` | `obj(obj,str)` | `rt_menubar_add_menu` |
+| `Zanna.GUI.MenuBar.AddMenu` | `obj<Zanna.GUI.Menu>(obj,str)` | `rt_menubar_add_menu` |
 | `Zanna.GUI.MenuBar.RemoveMenu` | `void(obj,obj)` | `rt_menubar_remove_menu` |
 | `Zanna.GUI.MenuBar.GetMenuCount` | `i64(obj)` | `rt_menubar_get_menu_count` |
-| `Zanna.GUI.MenuBar.GetMenu` | `obj(obj,i64)` | `rt_menubar_get_menu` |
+| `Zanna.GUI.MenuBar.GetMenu` | `obj<Zanna.GUI.Menu>(obj,i64)` | `rt_menubar_get_menu` |
 | `Zanna.GUI.MenuBar.IsVisible` | `i1(obj)` | `rt_menubar_is_visible` |
-| `Zanna.GUI.Menu.AddItem` | `obj(obj,str)` | `rt_menu_add_item` |
-| `Zanna.GUI.Menu.AddItemWithShortcut` | `obj(obj,str,str)` | `rt_menu_add_item_with_shortcut` |
-| `Zanna.GUI.Menu.AddSeparator` | `obj(obj)` | `rt_menu_add_separator` |
-| `Zanna.GUI.Menu.AddSubmenu` | `obj(obj,str)` | `rt_menu_add_submenu` |
+| `Zanna.GUI.Menu.AddItem` | `obj<Zanna.GUI.MenuItem>(obj,str)` | `rt_menu_add_item` |
+| `Zanna.GUI.Menu.AddItemWithShortcut` | `obj<Zanna.GUI.MenuItem>(obj,str,str)` | `rt_menu_add_item_with_shortcut` |
+| `Zanna.GUI.Menu.AddSeparator` | `obj<Zanna.GUI.MenuItem>(obj)` | `rt_menu_add_separator` |
+| `Zanna.GUI.Menu.AddSubmenu` | `obj<Zanna.GUI.Menu>(obj,str)` | `rt_menu_add_submenu` |
 | `Zanna.GUI.Menu.RemoveItem` | `void(obj,obj)` | `rt_menu_remove_item` |
 | `Zanna.GUI.Menu.Clear` | `void(obj)` | `rt_menu_clear` |
 | `Zanna.GUI.Menu.SetTitle` | `void(obj,str)` | `rt_menu_set_title` |
 | `Zanna.GUI.Menu.GetTitle` | `str(obj)` | `rt_menu_get_title` |
 | `Zanna.GUI.Menu.GetItemCount` | `i64(obj)` | `rt_menu_get_item_count` |
-| `Zanna.GUI.Menu.GetItem` | `obj(obj,i64)` | `rt_menu_get_item` |
+| `Zanna.GUI.Menu.GetItem` | `obj<Zanna.GUI.MenuItem>(obj,i64)` | `rt_menu_get_item` |
 | `Zanna.GUI.Menu.SetEnabled` | `void(obj,i1)` | `rt_menu_set_enabled` |
 | `Zanna.GUI.Menu.IsEnabled` | `i1(obj)` | `rt_menu_is_enabled` |
 | `Zanna.GUI.MenuItem.SetText` | `void(obj,str)` | `rt_menuitem_set_text` |
@@ -3168,32 +3168,32 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.MenuItem.GetScreenY` | `f64(obj)` | `rt_menuitem_get_screen_y` |
 | `Zanna.GUI.MenuItem.GetScreenWidth` | `f64(obj)` | `rt_menuitem_get_screen_width` |
 | `Zanna.GUI.MenuItem.GetScreenHeight` | `f64(obj)` | `rt_menuitem_get_screen_height` |
-| `Zanna.GUI.ContextMenu.New` | `obj()` | `rt_contextmenu_new` |
+| `Zanna.GUI.ContextMenu.New` | `obj<Zanna.GUI.ContextMenu>()` | `rt_contextmenu_new` |
 | `Zanna.GUI.ContextMenu.Destroy` | `void(obj)` | `rt_contextmenu_destroy` |
-| `Zanna.GUI.ContextMenu.AddItem` | `obj(obj,str)` | `rt_contextmenu_add_item` |
-| `Zanna.GUI.ContextMenu.AddItemWithShortcut` | `obj(obj,str,str)` | `rt_contextmenu_add_item_with_shortcut` |
-| `Zanna.GUI.ContextMenu.AddSeparator` | `obj(obj)` | `rt_contextmenu_add_separator` |
+| `Zanna.GUI.ContextMenu.AddItem` | `obj<Zanna.GUI.MenuItem>(obj,str)` | `rt_contextmenu_add_item` |
+| `Zanna.GUI.ContextMenu.AddItemWithShortcut` | `obj<Zanna.GUI.MenuItem>(obj,str,str)` | `rt_contextmenu_add_item_with_shortcut` |
+| `Zanna.GUI.ContextMenu.AddSeparator` | `obj<Zanna.GUI.MenuItem>(obj)` | `rt_contextmenu_add_separator` |
 | `Zanna.GUI.ContextMenu.Show` | `void(obj,i64,i64)` | `rt_contextmenu_show` |
 | `Zanna.GUI.ContextMenu.Hide` | `void(obj)` | `rt_contextmenu_hide` |
 | `Zanna.GUI.ContextMenu.IsVisible` | `i1(obj)` | `rt_contextmenu_is_visible` |
 | `Zanna.GUI.ContextMenu.Clear` | `void(obj)` | `rt_contextmenu_clear` |
-| `Zanna.GUI.ContextMenu.AddSubmenu` | `obj(obj,str)` | `rt_contextmenu_add_submenu` |
-| `Zanna.GUI.ContextMenu.GetClickedItem` | `obj(obj)` | `rt_contextmenu_get_clicked_item` |
-| `Zanna.GUI.StatusBar.New` | `obj(obj)` | `rt_statusbar_new` |
+| `Zanna.GUI.ContextMenu.AddSubmenu` | `obj<Zanna.GUI.ContextMenu>(obj,str)` | `rt_contextmenu_add_submenu` |
+| `Zanna.GUI.ContextMenu.GetClickedItem` | `obj<Zanna.GUI.MenuItem>(obj)` | `rt_contextmenu_get_clicked_item` |
+| `Zanna.GUI.StatusBar.New` | `obj<Zanna.GUI.StatusBar>(obj)` | `rt_statusbar_new` |
 | `Zanna.GUI.StatusBar.Destroy` | `void(obj)` | `rt_statusbar_destroy` |
 | `Zanna.GUI.StatusBar.SetLeftText` | `void(obj,str)` | `rt_statusbar_set_left_text` |
 | `Zanna.GUI.StatusBar.SetCenterText` | `void(obj,str)` | `rt_statusbar_set_center_text` |
 | `Zanna.GUI.StatusBar.SetRightText` | `void(obj,str)` | `rt_statusbar_set_right_text` |
 | `Zanna.GUI.StatusBar.SetVisible` | `void(obj,i1)` | `rt_statusbar_set_visible` |
 | `Zanna.GUI.StatusBar.IsVisible` | `i1(obj)` | `rt_statusbar_is_visible` |
-| `Zanna.GUI.StatusBar.AddText` | `obj(obj,str,i64)` | `rt_statusbar_add_text` |
+| `Zanna.GUI.StatusBar.AddText` | `obj<Zanna.GUI.StatusBarItem>(obj,str,i64)` | `rt_statusbar_add_text` |
 | `Zanna.GUI.StatusBar.GetLeftText` | `str(obj)` | `rt_statusbar_get_left_text` |
 | `Zanna.GUI.StatusBar.GetCenterText` | `str(obj)` | `rt_statusbar_get_center_text` |
 | `Zanna.GUI.StatusBar.GetRightText` | `str(obj)` | `rt_statusbar_get_right_text` |
-| `Zanna.GUI.StatusBar.AddButton` | `obj(obj,str,i64)` | `rt_statusbar_add_button` |
-| `Zanna.GUI.StatusBar.AddProgress` | `obj(obj,i64)` | `rt_statusbar_add_progress` |
-| `Zanna.GUI.StatusBar.AddSeparator` | `obj(obj,i64)` | `rt_statusbar_add_separator` |
-| `Zanna.GUI.StatusBar.AddSpacer` | `obj(obj,i64)` | `rt_statusbar_add_spacer` |
+| `Zanna.GUI.StatusBar.AddButton` | `obj<Zanna.GUI.StatusBarItem>(obj,str,i64)` | `rt_statusbar_add_button` |
+| `Zanna.GUI.StatusBar.AddProgress` | `obj<Zanna.GUI.StatusBarItem>(obj,i64)` | `rt_statusbar_add_progress` |
+| `Zanna.GUI.StatusBar.AddSeparator` | `obj<Zanna.GUI.StatusBarItem>(obj,i64)` | `rt_statusbar_add_separator` |
+| `Zanna.GUI.StatusBar.AddSpacer` | `obj<Zanna.GUI.StatusBarItem>(obj,i64)` | `rt_statusbar_add_spacer` |
 | `Zanna.GUI.StatusBar.RemoveItem` | `void(obj,obj)` | `rt_statusbar_remove_item` |
 | `Zanna.GUI.StatusBar.Clear` | `void(obj)` | `rt_statusbar_clear` |
 | `Zanna.GUI.StatusBarItem.SetText` | `void(obj,str)` | `rt_statusbaritem_set_text` |
@@ -3205,24 +3205,24 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.StatusBarItem.WasClicked` | `i1(obj)` | `rt_statusbaritem_was_clicked` |
 | `Zanna.GUI.StatusBarItem.SetProgress` | `void(obj,f64)` | `rt_statusbaritem_set_progress` |
 | `Zanna.GUI.StatusBarItem.GetProgress` | `f64(obj)` | `rt_statusbaritem_get_progress` |
-| `Zanna.GUI.Toolbar.New` | `obj(obj)` | `rt_toolbar_new` |
-| `Zanna.GUI.Toolbar.NewVertical` | `obj(obj)` | `rt_toolbar_new_vertical` |
+| `Zanna.GUI.Toolbar.New` | `obj<Zanna.GUI.Toolbar>(obj)` | `rt_toolbar_new` |
+| `Zanna.GUI.Toolbar.NewVertical` | `obj<Zanna.GUI.Toolbar>(obj)` | `rt_toolbar_new_vertical` |
 | `Zanna.GUI.Toolbar.Destroy` | `void(obj)` | `rt_toolbar_destroy` |
-| `Zanna.GUI.Toolbar.AddButton` | `obj(obj,str,str)` | `rt_toolbar_add_button` |
-| `Zanna.GUI.Toolbar.AddButtonWithText` | `obj(obj,str,str,str)` | `rt_toolbar_add_button_with_text` |
-| `Zanna.GUI.Toolbar.AddNamedButton` | `obj(obj,str,str)` | `rt_toolbar_add_named_button` |
-| `Zanna.GUI.Toolbar.AddNamedButtonWithText` | `obj(obj,str,str,str)` | `rt_toolbar_add_named_button_with_text` |
-| `Zanna.GUI.Toolbar.AddToggle` | `obj(obj,str,str)` | `rt_toolbar_add_toggle` |
-| `Zanna.GUI.Toolbar.AddNamedToggle` | `obj(obj,str,str)` | `rt_toolbar_add_named_toggle` |
-| `Zanna.GUI.Toolbar.AddSeparator` | `obj(obj)` | `rt_toolbar_add_separator` |
-| `Zanna.GUI.Toolbar.AddSpacer` | `obj(obj)` | `rt_toolbar_add_spacer` |
-| `Zanna.GUI.Toolbar.AddDropdown` | `obj(obj,str)` | `rt_toolbar_add_dropdown` |
+| `Zanna.GUI.Toolbar.AddButton` | `obj<Zanna.GUI.ToolbarItem>(obj,str,str)` | `rt_toolbar_add_button` |
+| `Zanna.GUI.Toolbar.AddButtonWithText` | `obj<Zanna.GUI.ToolbarItem>(obj,str,str,str)` | `rt_toolbar_add_button_with_text` |
+| `Zanna.GUI.Toolbar.AddNamedButton` | `obj<Zanna.GUI.ToolbarItem>(obj,str,str)` | `rt_toolbar_add_named_button` |
+| `Zanna.GUI.Toolbar.AddNamedButtonWithText` | `obj<Zanna.GUI.ToolbarItem>(obj,str,str,str)` | `rt_toolbar_add_named_button_with_text` |
+| `Zanna.GUI.Toolbar.AddToggle` | `obj<Zanna.GUI.ToolbarItem>(obj,str,str)` | `rt_toolbar_add_toggle` |
+| `Zanna.GUI.Toolbar.AddNamedToggle` | `obj<Zanna.GUI.ToolbarItem>(obj,str,str)` | `rt_toolbar_add_named_toggle` |
+| `Zanna.GUI.Toolbar.AddSeparator` | `obj<Zanna.GUI.ToolbarItem>(obj)` | `rt_toolbar_add_separator` |
+| `Zanna.GUI.Toolbar.AddSpacer` | `obj<Zanna.GUI.ToolbarItem>(obj)` | `rt_toolbar_add_spacer` |
+| `Zanna.GUI.Toolbar.AddDropdown` | `obj<Zanna.GUI.ToolbarItem>(obj,str)` | `rt_toolbar_add_dropdown` |
 | `Zanna.GUI.Toolbar.RemoveItem` | `void(obj,obj)` | `rt_toolbar_remove_item` |
 | `Zanna.GUI.Toolbar.SetIconSize` | `void(obj,i64)` | `rt_toolbar_set_icon_size` |
 | `Zanna.GUI.Toolbar.GetIconSize` | `i64(obj)` | `rt_toolbar_get_icon_size` |
 | `Zanna.GUI.Toolbar.SetStyle` | `void(obj,i64)` | `rt_toolbar_set_style` |
 | `Zanna.GUI.Toolbar.GetItemCount` | `i64(obj)` | `rt_toolbar_get_item_count` |
-| `Zanna.GUI.Toolbar.GetItem` | `obj(obj,i64)` | `rt_toolbar_get_item` |
+| `Zanna.GUI.Toolbar.GetItem` | `obj<Zanna.GUI.ToolbarItem>(obj,i64)` | `rt_toolbar_get_item` |
 | `Zanna.GUI.Toolbar.SetVisible` | `void(obj,i1)` | `rt_toolbar_set_visible` |
 | `Zanna.GUI.Toolbar.IsVisible` | `i1(obj)` | `rt_toolbar_is_visible` |
 | `Zanna.GUI.ToolbarItem.SetEnabled` | `void(obj,i1)` | `rt_toolbaritem_set_enabled` |
@@ -3289,7 +3289,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.CodeEditor.SetWhitespaceMode` | `void(obj,i64)` | `rt_codeeditor_set_whitespace_mode` |
 | `Zanna.GUI.CodeEditor.GetWhitespaceMode` | `i64(obj)` | `rt_codeeditor_get_whitespace_mode` |
 | `Zanna.GUI.CodeEditor.AttachBuffer` | `obj<Zanna.GUI.EditorBuffer>(obj,obj)` | `rt_codeeditor_attach_buffer` |
-| `Zanna.GUI.EditorBuffer.New` | `obj(str)` | `rt_editorbuffer_new` |
+| `Zanna.GUI.EditorBuffer.New` | `obj<Zanna.GUI.EditorBuffer>(str)` | `rt_editorbuffer_new` |
 | <a id="zanna-gui-editorbuffer-get-text"></a>`Zanna.GUI.EditorBuffer.get_Text` | `str(obj)` | `rt_editorbuffer_get_text` |
 | <a id="zanna-gui-editorbuffer-get-revision"></a>`Zanna.GUI.EditorBuffer.get_Revision` | `i64(obj)` | `rt_editorbuffer_get_revision` |
 | `Zanna.GUI.EditorBuffer.IsModified` | `i1(obj)` | `rt_editorbuffer_is_modified` |
@@ -3333,13 +3333,13 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.CodeEditor.GetSyntaxStateLineScanCount` | `i64(obj)` | `rt_codeeditor_get_syntax_state_line_scan_count` |
 | `Zanna.GUI.CodeEditor.GetHighlightSpanCheckCount` | `i64(obj)` | `rt_codeeditor_get_highlight_span_check_count` |
 | `Zanna.GUI.CodeEditor.GetFullTextCopyByteCount` | `i64(obj)` | `rt_codeeditor_get_full_text_copy_byte_count` |
-| `Zanna.GUI.FloatingPanel.New` | `obj(obj)` | `rt_floatingpanel_new` |
+| `Zanna.GUI.FloatingPanel.New` | `obj<Zanna.GUI.FloatingPanel>(obj)` | `rt_floatingpanel_new` |
 | `Zanna.GUI.FloatingPanel.SetPosition` | `void(obj,f64,f64)` | `rt_floatingpanel_set_position` |
 | `Zanna.GUI.FloatingPanel.CenterInParent` | `void(obj)` | `rt_floatingpanel_center_in_parent` |
 | `Zanna.GUI.FloatingPanel.SetSize` | `void(obj,f64,f64)` | `rt_floatingpanel_set_size` |
 | `Zanna.GUI.FloatingPanel.SetVisible` | `void(obj,i1)` | `rt_floatingpanel_set_visible` |
 | `Zanna.GUI.FloatingPanel.AddChild` | `void(obj,obj)` | `rt_floatingpanel_add_child` |
-| `Zanna.GUI.GroupBox.New` | `obj(obj,str)` | `rt_groupbox_new` |
+| `Zanna.GUI.GroupBox.New` | `obj<Zanna.GUI.GroupBox>(obj,str)` | `rt_groupbox_new` |
 | `Zanna.GUI.GroupBox.Destroy` | `void(obj)` | `rt_groupbox_destroy` |
 | `Zanna.GUI.GroupBox.SetTitle` | `void(obj,str)` | `rt_groupbox_set_title` |
 | `Zanna.GUI.GroupBox.AddChild` | `void(obj,obj)` | `rt_groupbox_add_child` |
@@ -3350,11 +3350,11 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.MessageBox.Confirm` | `i64(str,str)` | `rt_messagebox_confirm` |
 | `Zanna.GUI.MessageBox.Prompt` | `str(str,str)` | `rt_messagebox_prompt` |
 | `Zanna.GUI.MessageBox.PromptOption` | `obj<Zanna.Option>(str,str)` | `rt_messagebox_prompt_option` |
-| `Zanna.GUI.MessageBox.New` | `obj(str,str,i64)` | `rt_messagebox_new` |
-| `Zanna.GUI.MessageBox.NewInfo` | `obj(str,str)` | `rt_messagebox_new_info` |
-| `Zanna.GUI.MessageBox.NewWarning` | `obj(str,str)` | `rt_messagebox_new_warning` |
-| `Zanna.GUI.MessageBox.NewError` | `obj(str,str)` | `rt_messagebox_new_error` |
-| `Zanna.GUI.MessageBox.NewQuestion` | `obj(str,str)` | `rt_messagebox_new_question` |
+| `Zanna.GUI.MessageBox.New` | `obj<Zanna.GUI.MessageBox>(str,str,i64)` | `rt_messagebox_new` |
+| `Zanna.GUI.MessageBox.NewInfo` | `obj<Zanna.GUI.MessageBox>(str,str)` | `rt_messagebox_new_info` |
+| `Zanna.GUI.MessageBox.NewWarning` | `obj<Zanna.GUI.MessageBox>(str,str)` | `rt_messagebox_new_warning` |
+| `Zanna.GUI.MessageBox.NewError` | `obj<Zanna.GUI.MessageBox>(str,str)` | `rt_messagebox_new_error` |
+| `Zanna.GUI.MessageBox.NewQuestion` | `obj<Zanna.GUI.MessageBox>(str,str)` | `rt_messagebox_new_question` |
 | `Zanna.GUI.MessageBox.AddButton` | `void(obj,str,i64)` | `rt_messagebox_add_button` |
 | `Zanna.GUI.MessageBox.AddButtonWithRole` | `void(obj,str,i64,i64)` | `rt_messagebox_add_button_with_role` |
 | `Zanna.GUI.MessageBox.SetButtonRole` | `i1(obj,i64,i64)` | `rt_messagebox_set_button_role` |
@@ -3378,10 +3378,10 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.FileDialog.SaveOption` | `obj<Zanna.Option>(str,str,str,str)` | `rt_filedialog_save_option` |
 | `Zanna.GUI.FileDialog.SelectFolder` | `str(str,str)` | `rt_filedialog_select_folder` |
 | `Zanna.GUI.FileDialog.SelectFolderOption` | `obj<Zanna.Option>(str,str)` | `rt_filedialog_select_folder_option` |
-| `Zanna.GUI.FileDialog.New` | `obj(i64)` | `rt_filedialog_new` |
-| `Zanna.GUI.FileDialog.NewOpen` | `obj()` | `rt_filedialog_new_open` |
-| `Zanna.GUI.FileDialog.NewSave` | `obj()` | `rt_filedialog_new_save` |
-| `Zanna.GUI.FileDialog.NewFolder` | `obj()` | `rt_filedialog_new_folder` |
+| `Zanna.GUI.FileDialog.New` | `obj<Zanna.GUI.FileDialog>(i64)` | `rt_filedialog_new` |
+| `Zanna.GUI.FileDialog.NewOpen` | `obj<Zanna.GUI.FileDialog>()` | `rt_filedialog_new_open` |
+| `Zanna.GUI.FileDialog.NewSave` | `obj<Zanna.GUI.FileDialog>()` | `rt_filedialog_new_save` |
+| `Zanna.GUI.FileDialog.NewFolder` | `obj<Zanna.GUI.FileDialog>()` | `rt_filedialog_new_folder` |
 | `Zanna.GUI.FileDialog.SetTitle` | `void(obj,str)` | `rt_filedialog_set_title` |
 | `Zanna.GUI.FileDialog.SetPath` | `void(obj,str)` | `rt_filedialog_set_path` |
 | `Zanna.GUI.FileDialog.SetFilter` | `void(obj,str,str)` | `rt_filedialog_set_filter` |
@@ -3404,7 +3404,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-filedialog-get-pathcount"></a>`Zanna.GUI.FileDialog.get_PathCount` | `i64(obj)` | `rt_filedialog_get_path_count` |
 | `Zanna.GUI.FileDialog.GetPathAt` | `str(obj,i64)` | `rt_filedialog_get_path_at` |
 | `Zanna.GUI.FileDialog.Destroy` | `void(obj)` | `rt_filedialog_destroy` |
-| `Zanna.GUI.FindBar.New` | `obj(obj)` | `rt_findbar_new` |
+| `Zanna.GUI.FindBar.New` | `obj<Zanna.GUI.FindBar>(obj)` | `rt_findbar_new` |
 | `Zanna.GUI.FindBar.Destroy` | `void(obj)` | `rt_findbar_destroy` |
 | `Zanna.GUI.FindBar.SetFindText` | `void(obj,str)` | `rt_findbar_set_find_text` |
 | `Zanna.GUI.FindBar.GetFindText` | `str(obj)` | `rt_findbar_get_find_text` |
@@ -3429,7 +3429,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.FindBar.Focus` | `void(obj)` | `rt_findbar_focus` |
 | `Zanna.GUI.FindBar.BindEditor` | `void(obj,obj)` | `rt_findbar_bind_editor` |
 | `Zanna.GUI.FindBar.UnbindEditor` | `void(obj)` | `rt_findbar_unbind_editor` |
-| `Zanna.GUI.CommandPalette.New` | `obj(obj)` | `rt_commandpalette_new` |
+| `Zanna.GUI.CommandPalette.New` | `obj<Zanna.GUI.CommandPalette>(obj)` | `rt_commandpalette_new` |
 | `Zanna.GUI.CommandPalette.Destroy` | `void(obj)` | `rt_commandpalette_destroy` |
 | `Zanna.GUI.CommandPalette.AddCommand` | `void(obj,str,str,str)` | `rt_commandpalette_add_command` |
 | `Zanna.GUI.CommandPalette.AddCommandWithShortcut` | `void(obj,str,str,str,str)` | `rt_commandpalette_add_command_with_shortcut` |
@@ -3561,7 +3561,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Toast.Success` | `void(str)` | `rt_toast_success` |
 | `Zanna.GUI.Toast.Warning` | `void(str)` | `rt_toast_warning` |
 | `Zanna.GUI.Toast.Error` | `void(str)` | `rt_toast_error` |
-| `Zanna.GUI.Toast.New` | `obj(str,i64,i64)` | `rt_toast_new` |
+| `Zanna.GUI.Toast.New` | `obj<Zanna.GUI.Toast>(str,i64,i64)` | `rt_toast_new` |
 | `Zanna.GUI.Toast.SetAction` | `void(obj,str)` | `rt_toast_set_action` |
 | `Zanna.GUI.Toast.WasActionClicked` | `i1(obj)` | `rt_toast_was_action_clicked` |
 | `Zanna.GUI.Toast.WasDismissed` | `i1(obj)` | `rt_toast_was_dismissed` |
@@ -3569,7 +3569,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Toast.SetPosition` | `void(i64)` | `rt_toast_set_position` |
 | `Zanna.GUI.Toast.SetMaxVisible` | `void(i64)` | `rt_toast_set_max_visible` |
 | `Zanna.GUI.Toast.DismissAll` | `void()` | `rt_toast_dismiss_all` |
-| `Zanna.GUI.Breadcrumb.New` | `obj(obj)` | `rt_breadcrumb_new` |
+| `Zanna.GUI.Breadcrumb.New` | `obj<Zanna.GUI.Breadcrumb>(obj)` | `rt_breadcrumb_new` |
 | `Zanna.GUI.Breadcrumb.Destroy` | `void(obj)` | `rt_breadcrumb_destroy` |
 | `Zanna.GUI.Breadcrumb.SetPath` | `void(obj,str,str)` | `rt_breadcrumb_set_path` |
 | `Zanna.GUI.Breadcrumb.SetItems` | `void(obj,str)` | `rt_breadcrumb_set_items` |
@@ -3582,7 +3582,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Breadcrumb.SetMaxItems` | `void(obj,i64)` | `rt_breadcrumb_set_max_items` |
 | `Zanna.GUI.Breadcrumb.SetVisible` | `void(obj,i1)` | `rt_breadcrumb_set_visible` |
 | `Zanna.GUI.Breadcrumb.IsVisible` | `i1(obj)` | `rt_breadcrumb_is_visible` |
-| `Zanna.GUI.Minimap.New` | `obj(obj)` | `rt_minimap_new` |
+| `Zanna.GUI.Minimap.New` | `obj<Zanna.GUI.Minimap>(obj)` | `rt_minimap_new` |
 | `Zanna.GUI.Minimap.Destroy` | `void(obj)` | `rt_minimap_destroy` |
 | `Zanna.GUI.Minimap.BindEditor` | `void(obj,obj)` | `rt_minimap_bind_editor` |
 | `Zanna.GUI.Minimap.UnbindEditor` | `void(obj)` | `rt_minimap_unbind_editor` |
@@ -3613,7 +3613,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.App.WasFileDropped` | `i1(obj)` | `rt_app_was_file_dropped` |
 | `Zanna.GUI.App.GetDroppedFileCount` | `i64(obj)` | `rt_app_get_dropped_file_count` |
 | `Zanna.GUI.App.GetDroppedFile` | `str(obj,i64)` | `rt_app_get_dropped_file` |
-| `Zanna.GUI.VideoWidget.New` | `obj(obj,str)` | `rt_videowidget_new` |
+| `Zanna.GUI.VideoWidget.New` | `obj<Zanna.GUI.VideoWidget>(obj,str)` | `rt_videowidget_new` |
 | `Zanna.GUI.VideoWidget.Destroy` | `void(obj)` | `rt_videowidget_destroy` |
 | `Zanna.GUI.VideoWidget.Play` | `void(obj)` | `rt_videowidget_play` |
 | `Zanna.GUI.VideoWidget.Pause` | `void(obj)` | `rt_videowidget_pause` |

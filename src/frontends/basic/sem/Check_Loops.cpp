@@ -79,6 +79,8 @@ std::optional<SemanticAnalyzer::Type> arrayElementType(SemanticAnalyzer::Type ar
     switch (arrayType) {
         case Type::ArrayInt:
             return Type::Int;
+        case Type::ArrayFloat:
+            return Type::Float;
         case Type::ArrayString:
             return Type::String;
         case Type::ArrayObject:

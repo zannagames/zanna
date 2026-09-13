@@ -11,10 +11,10 @@ DIM start1 AS INTEGER
 DIM end1 AS INTEGER
 DIM start2 AS INTEGER
 DIM end2 AS INTEGER
-start1 = Zanna.Time.DateTime.Create(2024, 1, 1, 0, 0, 0)
-end1 = Zanna.Time.DateTime.Create(2024, 1, 31, 23, 59, 59)
-start2 = Zanna.Time.DateTime.Create(2024, 1, 15, 0, 0, 0)
-end2 = Zanna.Time.DateTime.Create(2024, 2, 15, 23, 59, 59)
+start1 = Zanna.Time.DateTime.FromParts(2024, 1, 1, 0, 0, 0)
+end1 = Zanna.Time.DateTime.FromParts(2024, 1, 31, 23, 59, 59)
+start2 = Zanna.Time.DateTime.FromParts(2024, 1, 15, 0, 0, 0)
+end2 = Zanna.Time.DateTime.FromParts(2024, 2, 15, 23, 59, 59)
 
 ' --- New ---
 PRINT "--- New ---"
@@ -33,9 +33,9 @@ PRINT "r1 End ISO: "; Zanna.Time.DateTime.ToIso8601(Zanna.Time.DateRange.get_End
 ' --- Contains ---
 PRINT "--- Contains ---"
 DIM midJan AS INTEGER
-midJan = Zanna.Time.DateTime.Create(2024, 1, 15, 12, 0, 0)
+midJan = Zanna.Time.DateTime.FromParts(2024, 1, 15, 12, 0, 0)
 DIM midFeb AS INTEGER
-midFeb = Zanna.Time.DateTime.Create(2024, 2, 15, 12, 0, 0)
+midFeb = Zanna.Time.DateTime.FromParts(2024, 2, 15, 12, 0, 0)
 PRINT "r1 Contains(Jan 15): "; Zanna.Time.DateRange.Contains(r1, midJan)
 PRINT "r1 Contains(Feb 15): "; Zanna.Time.DateRange.Contains(r1, midFeb)
 

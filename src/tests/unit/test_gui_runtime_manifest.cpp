@@ -27,6 +27,7 @@
 //        docs/adr/0281-event-driven-process-pty-gui-wakes.md,
 //        docs/adr/0290-virtual-tree-bulk-updates.md,
 //        docs/adr/0318-non-consuming-editor-deltas-for-split-mirrors.md,
+//        docs/adr/0356-runtime-object-results-declare-their-class.md,
 //        src/tools/zanna/main.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -253,7 +254,7 @@ int main() {
 
     // Set after deliberate review of every registry row. Any future mismatch prints the new value
     // and requires an explicit count/signature/class-binding review before this constant changes.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xddec3db66a2d5089);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x9af72e67fdb3828b);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: GUI ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

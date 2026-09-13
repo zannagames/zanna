@@ -66,10 +66,10 @@ func start() {
 
     // --- Remove ---
     Say("--- Remove ---");
-    SayInt(om.Remove("second"));   // 1
+    SayBool(om.Remove("second"));  // 1
     SayBool(om.Has("second"));     // 0
     SayInt(om.Count);                // 2
-    SayInt(om.Remove("second"));   // 0
+    SayBool(om.Remove("second"));  // 0
 
     // --- Keys after remove (insertion order maintained) ---
     Say("--- Keys after remove ---");

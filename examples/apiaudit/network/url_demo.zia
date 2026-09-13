@@ -3,7 +3,7 @@
 // =============================================================================
 // Tests: Parse, New, Scheme, Host, Port, Path, Query, Fragment, User, Pass,
 //        Authority, HostPort, Full, SetQueryParam, GetQueryParam,
-//        HasQueryParam, DelQueryParam, Resolve, Clone, Encode, Decode,
+//        HasQueryParam, DelQueryParam, Resolve, Clone, EncodeQuery, DecodeQuery,
 //        IsValid
 // =============================================================================
 
@@ -107,13 +107,18 @@ func start() {
     var resolved = base.Resolve("/x/y/z");
     Say(resolved.get_Full());
 
-    // --- Encode ---
-    Say("--- Encode ---");
-    Say(Url.Encode("hello world&foo=bar"));
+    // --- EncodeQuery ---
+    Say("--- EncodeQuery ---");
+    var params = Zanna.Collections.Map.New();
+    params.SetStr("q", "hello world&foo=bar");
+    Say(Url.EncodeQuery(params));
 
-    // --- Decode ---
-    Say("--- Decode ---");
-    Say(Url.Decode("hello%20world%26foo%3Dbar"));
+    // --- DecodeQuery ---
+    Say("--- DecodeQuery ---");
+    var decoded = Url.DecodeQuery("q=hello%20world%26foo%3Dbar&page=2");
+    SayInt(decoded.Count);
+    Say(decoded.GetStr("q"));
+    Say(decoded.GetStr("page"));
 
     // --- IsValid ---
     Say("--- IsValid ---");

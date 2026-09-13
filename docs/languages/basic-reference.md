@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-09-01
+last-verified: 2026-09-13
 ---
 
 # Zanna BASIC — Reference
@@ -100,7 +100,10 @@ Notes:
 
 - When an array field includes dimensions in the class definition, the constructor allocates the array to the specified
   length.
-- String array fields are supported; element loads/stores retain/release strings automatically.
+- Array fields of every element type (INTEGER, DOUBLE, BOOLEAN, STRING and class) are supported; element loads/stores
+  retain/release strings and objects automatically, and destroying the object releases each array field.
+- Inside a class member an unqualified name that is a field of the object refers to that field, even when a
+  module-level variable has the same name. Locals and parameters of the member still take precedence over fields.
 
 ### BEEP
 
@@ -166,6 +169,17 @@ Declares a variable or array. Required for arrays; optional for scalars (to pin 
 DIM A(5)           ' array 0..5 (upper bound is inclusive)
 DIM Flag AS BOOLEAN
 ```
+
+The primitive type names are `INTEGER`, `INT`, `LONG` or `I64` for the 64-bit
+integer, `DOUBLE`, `FLOAT`, `SINGLE` or `F64` for the double, `STRING`, and
+`BOOLEAN` or `BOOL`. They are the same everywhere an `AS` clause appears (DIM,
+parameters, fields, FUNCTION results). Any other name refers to a class: `OBJECT`,
+a class or interface declared in the program (found through enclosing namespaces
+and `USING` imports), or a runtime class. A name that is none of these is an
+error (`B2111 unknown type`).
+
+An array keeps its element type: `DIM W(3) AS DOUBLE` (or `DIM W#(3)`) holds
+floats, so `W(1) = 2.5` stores 2.5 and `STR$(W(1))` is `"2.5"`.
 
 Object arrays use a class type in the `AS` clause. Element assignments must be
 object values, and `LBOUND`/`UBOUND` accept object arrays just like numeric and
@@ -278,6 +292,15 @@ instance) is passed as the first argument when lowering to the runtime.
 - Behavior and traps match the underlying runtime helpers.
 - BASIC `STRING` is an alias of `Zanna.String`.
 - Optional `NEW` is available when a constructor helper is defined.
+- An `OBJECT` variable takes the class of the runtime value assigned to it, such as
+  the class a constructor or method returns. A variable declared `AS` a class keeps
+  that class. When the class is unknown, for example a collection element or an
+  untyped runtime result, you can only call `Zanna.Core.Object` methods on the
+  value. Any other method call is `E_NO_SUCH_METHOD`. To call class methods,
+  assign the value to a variable declared `AS` its class first.
+- Runtime call results follow the ownership their runtime.def row declares
+  (ADR 0314). BASIC releases owned results at the end of the statement and never
+  releases borrowed ones.
 
 ### Example: `Zanna.String`
 
@@ -402,6 +425,9 @@ Reads an entire line into a string variable.
 LINE INPUT "Line? ", L$
 PRINT "You typed: "; L$
 ```
+
+`LINE INPUT #n, var` reads a line from an open file. Like `INPUT #`, it declares
+the variable if needed. The variable must be a STRING; any other type is `B2001`.
 
 ### LOCATE
 
@@ -631,6 +657,53 @@ HELLO("Ada")            ' statement call (parentheses required)
 LET X = SQUARE(9)       ' function in expression
 ```
 
+A FUNCTION's result type comes from its `AS` clause, or else from its name
+suffix (`$` STRING, `#` or `!` DOUBLE, `%` or `&` INTEGER). A FUNCTION with neither returns
+INTEGER. A value given with `RETURN` or by assigning to the function name
+converts to that type, just as an assignment to a variable does. A FLOAT
+returned from an INTEGER function rounds half to even. The name keeps the
+declared type and never takes the type of the value assigned to it.
+Returning a string from a numeric or BOOLEAN function is an error, and so is
+returning a number from a string function. `RETURN` reports `B4010`, and an
+assignment to the function name reports `B2001`.
+
+```basic
+FUNCTION HALF(N)          ' INTEGER result
+  RETURN N / 2.5          ' HALF(5) is 2
+END FUNCTION
+
+FUNCTION GREET$(N$)       ' STRING result
+  GREET$ = "Hi " + N$
+END FUNCTION
+```
+
+A FUNCTION declared `AS <Class>` (or `AS OBJECT`) returns an object. Only an
+object (or `NOTHING`) can be returned or assigned to its name; anything else is
+`B4010` or `B2001`, and so is returning an object from a numeric or string
+function. The call carries the class: `B = MAKEBOX(3)` gives an undeclared `B`
+the class `Box`, and `MAKEBOX(3).V` reads a field of the result.
+
+A STRING or object result belongs to the caller. `RETURN` of a local, a
+parameter, a field or a temporary hands the caller its own reference and
+releases the procedure's other object and array locals on the way out, so a
+result lives exactly as long as the caller keeps it. Methods follow the same
+rule.
+
+```basic
+CLASS Box
+  PUBLIC V AS INTEGER
+END CLASS
+
+FUNCTION MAKEBOX(N) AS Box
+  DIM B AS Box
+  B = NEW Box()
+  B.V = N
+  RETURN B
+END FUNCTION
+
+PRINT MAKEBOX(3).V        ' 3
+```
+
 ### WHILE ... WEND
 
 Loop while a condition is true.
@@ -772,6 +845,8 @@ PRINT CSNG(3.5)             ' 3.5
 PRINT CDBL(3.5)             ' 3.5
 PRINT VAL("42")             ' 42
 PRINT STR$(42)              ' "42" (no leading space)
+PRINT STR$(5000000000)      ' "5000000000" (integers keep all 64 bits)
+PRINT STR$(2.5)             ' "2.5"
 PRINT RND()                 ' 0 <= x < 1
 ```
 

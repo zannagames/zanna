@@ -62,6 +62,10 @@ static void trap_music_load() {
     (void)rt_music_load(rt_const_cstr("missing.ogg"));
 }
 
+static void trap_music_load_asset() {
+    (void)rt_music_load_asset(rt_const_cstr("asset://missing.mp3"));
+}
+
 static void trap_music_play() {
     rt_music_play(reinterpret_cast<void *>(1), 0);
 }
@@ -101,6 +105,7 @@ static void test_null_handle_apis_do_not_trap() {
     assert(rt_sound_play_loop_in_group(nullptr, 50, 0, RT_MIXGROUP_SFX) == -1);
 
     assert(rt_music_load(nullptr) == nullptr);
+    assert(rt_music_load_asset(nullptr) == nullptr);
     rt_music_play(nullptr, 0);
     rt_music_stop(nullptr);
     rt_music_pause(nullptr);
@@ -132,6 +137,7 @@ int main() {
     expect_invalid_operation(trap_sound_load_asset, "not compiled in");
     expect_invalid_operation(trap_sound_play, "not compiled in");
     expect_invalid_operation(trap_music_load, "not compiled in");
+    expect_invalid_operation(trap_music_load_asset, "not compiled in");
     expect_invalid_operation(trap_music_play, "not compiled in");
     test_builder_apis_return_null_without_trapping();
     test_soundbank_register_returns_failure_without_trapping();

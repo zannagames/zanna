@@ -47,9 +47,9 @@ Sgn(5): 1
 
 === Zanna.Random ===
 Seeded random (12345):
-  r1 in [0,1): -1
-  r2 in [0,1): -1
-  r3 in [0,1): -1
+  r1 in 0..1: -1
+  r2 in 0..1: -1
+  r3 in 0..1: -1
 Reproducible with same seed: PASS
 
 === Zanna.Terminal ===

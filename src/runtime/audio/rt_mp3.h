@@ -84,6 +84,14 @@ int mp3_huffman_self_check(void);
 /// @return Caller-owned stream handle, or NULL on failure.
 mp3_stream_t *mp3_stream_open(const char *filepath);
 
+/// @brief Open an in-memory MP3 image for streaming frame-by-frame decode.
+/// @details Copies @p data (the caller keeps ownership of its buffer), then
+///          pre-scans it exactly like @ref mp3_stream_open.
+/// @param data Borrowed encoded MP3 bytes.
+/// @param len Length of @p data in bytes; images larger than 256 MiB are rejected.
+/// @return Caller-owned stream handle, or NULL on failure.
+mp3_stream_t *mp3_stream_open_mem(const uint8_t *data, size_t len);
+
 /// @brief Decode the next MP3 frame (up to 1152 stereo samples).
 /// @details A valid @p out_pcm is reset to NULL before stream validation and
 ///          remains NULL at EOF or on error.

@@ -23,7 +23,7 @@ func start() {
 
     var floor_xform = Zanna.Math.Mat4.Translate(0.0, -1.0, 0.0);
 
-    while (Zanna.Graphics3D.(not canvas.ShouldClose) {
+    while (not Zanna.Graphics3D.Canvas3D.get_ShouldClose(canvas)) {
         Zanna.Graphics3D.Canvas3D.Poll(canvas);
 
         // Pass 1: render sphere (this will be overwritten by pass 2's clear)

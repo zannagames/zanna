@@ -192,9 +192,9 @@ func start() {
     // --- Eq ---
     Say("--- Eq ---");
     Say("Eq(Identity, Identity, 0.001):");
-    SayBool(Mat3.Equals(id, id, 0.001));
+    SayBool(Mat3.ApproxEquals(id, id, 0.001));
     Say("Eq(Identity, Zero, 0.001):");
-    SayBool(Mat3.Equals(id, zr, 0.001));
+    SayBool(Mat3.ApproxEquals(id, zr, 0.001));
 
     Say("=== Mat3 Audit Complete ===");
 }
