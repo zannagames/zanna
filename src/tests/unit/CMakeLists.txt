@@ -1572,6 +1572,43 @@ function(zanna_add_runtime_tests)
     target_link_libraries(test_rt_archive PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_archive test_rt_archive)
 
+    # Platform services (ADR 0352). Three from-scratch fake steam_api shared
+    # libraries built from one source exercise run-time loading without Steam:
+    # the SDK 1.65 accessor set, the SDK 1.61-1.64 set, and a library that lacks
+    # SteamAPI_InitFlat. They are test-only and never installed.
+    foreach (_fake_profile IN ITEMS default 164 noinit)
+        if (_fake_profile STREQUAL "default")
+            set(_fake_target zanna_fake_steam_api)
+        else ()
+            set(_fake_target zanna_fake_steam_api_${_fake_profile})
+        endif ()
+        if (NOT TARGET ${_fake_target})
+            add_library(${_fake_target} SHARED ${ZANNA_TESTS_DIR}/runtime/RTServicesFakeSteamApi.c)
+            set_target_properties(${_fake_target} PROPERTIES
+                    C_STANDARD 11
+                    C_STANDARD_REQUIRED ON
+                    C_VISIBILITY_PRESET default
+                    WINDOWS_EXPORT_ALL_SYMBOLS ON)
+            # getenv is intentional in the fake; keep MSVC's CRT deprecation warnings quiet.
+            target_compile_definitions(${_fake_target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+            if (_fake_profile STREQUAL "164")
+                target_compile_definitions(${_fake_target} PRIVATE ZANNA_FAKE_STEAM_PROFILE_164=1)
+            elseif (_fake_profile STREQUAL "noinit")
+                target_compile_definitions(${_fake_target} PRIVATE ZANNA_FAKE_STEAM_OMIT_INIT_FLAT=1)
+            endif ()
+        endif ()
+    endforeach ()
+
+    zanna_add_test(test_rt_services ${ZANNA_TESTS_DIR}/runtime/RTServicesTests.cpp)
+    target_link_libraries(test_rt_services PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    target_compile_definitions(test_rt_services PRIVATE
+            ZANNA_FAKE_STEAM_LIBRARY="$<TARGET_FILE:zanna_fake_steam_api>"
+            ZANNA_FAKE_STEAM_LIBRARY_164="$<TARGET_FILE:zanna_fake_steam_api_164>"
+            ZANNA_FAKE_STEAM_LIBRARY_NOINIT="$<TARGET_FILE:zanna_fake_steam_api_noinit>")
+    add_dependencies(test_rt_services
+            zanna_fake_steam_api zanna_fake_steam_api_164 zanna_fake_steam_api_noinit)
+    zanna_add_ctest(test_rt_services test_rt_services)
+
     zanna_add_test(test_rt_canvas_window ${ZANNA_TESTS_DIR}/runtime/RTCanvasWindowTests.cpp)
     target_link_libraries(test_rt_canvas_window PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_canvas_window test_rt_canvas_window)
@@ -1967,7 +2004,8 @@ function(zanna_add_runtime_tests)
 
     zanna_add_isolated_runtime_test(test_rt_canvas_state_contract
             ${ZANNA_TESTS_DIR}/runtime/RTCanvasStateContractTests.cpp
-            ${CMAKE_SOURCE_DIR}/src/runtime/graphics/2d/rt_canvas.c)
+            ${CMAKE_SOURCE_DIR}/src/runtime/graphics/2d/rt_canvas.c
+            ${CMAKE_SOURCE_DIR}/src/runtime/core/rt_service_hooks.c)
     target_compile_definitions(test_rt_canvas_state_contract PRIVATE ZANNA_ENABLE_GRAPHICS=1)
 
     # Canvas3D coordinate-space invariant (ADR 0242): mouse, Width/Height, and

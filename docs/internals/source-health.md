@@ -57,6 +57,20 @@ The manual-allocation hotspot baseline remains 28. Centralized destruction of
 HTTP-client recovery state reduced `rt_http_client.c` from 73 allocation/free
 markers to 65, returning it below the greater-than-70 hotspot threshold.
 
+### September 2026 reconciliation
+
+ADR 0352 adds the `Zanna.Services` platform services component. Its eleven
+runtime files are intentional contract surface: the public `rt_services.h` and
+`steam/rt_steam.h` ABIs with their implementations, the internal provider
+interface, the dynamic-library adapter header and its POSIX and Windows
+implementations, the authored Steamworks ABI header, and the Base frame-pump
+slot (`core/rt_service_hooks.c`/`.h`). The contract-file baseline therefore moves
+from 897 to 908.
+
+The same change classifies the four internal headers explicitly and pins twelve
+Platform, Request, and Steam members with expectations, raising the policy
+coverage baseline from 1229 to 1247 (the tree already stood at 1231).
+
 ## Current Metrics
 
 | Metric | Purpose |

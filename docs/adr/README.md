@@ -138,6 +138,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0276](0276-process-lifetime-file-leases-and-isolated-studio-recovery.md) — Add Process-Lifetime File Leases and Isolate Studio Recovery
 - [ADR 0281](0281-event-driven-process-pty-gui-wakes.md) — Wake GUI Event Loops for Process and PTY Activity
 - [ADR 0303](0303-complete-owned-workspace-index-cursors.md) — Let Owned Workspace Index Cursors Reach Completion
+- [ADR 0352](0352-platform-services-runtime-loaded-providers.md) — Platform Services with Runtime-Loaded Provider Redistributables (Steamworks First)
 
 ## GUI & IDE
 

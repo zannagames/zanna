@@ -35,6 +35,7 @@
 
 #include "rt_graphics_internal.h"
 #include "rt_platform.h"
+#include "rt_service_hooks.h"
 #include "rt_time.h"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -490,6 +491,10 @@ void rt_canvas_clear(void *canvas_ptr, int64_t color) {
 ///   is rarely used directly — most games check Action.Pressed()/Held() instead.
 ///   A close event or event-pump failure destroys the native window, sets
 ///   ShouldClose, and still updates the action cache before returning.
+///
+///   While a Zanna.Services provider is started, each poll also pumps it once
+///   (ADR 0352) so platform events and request completions arrive without an
+///   explicit Platform.Update() call.
 /// @param canvas_ptr Borrowed Canvas handle.
 /// @return Last event type processed, `VGFX_EVENT_CLOSE` for a queued close,
 ///         or `VGFX_EVENT_NONE` for no events, invalid input, or pump failure.
@@ -500,6 +505,8 @@ int64_t rt_canvas_poll(void *canvas_ptr) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
     if (!canvas || !canvas->gfx_win)
         return 0;
+
+    rt_service_hooks_run_frame_pump();
 
     rt_canvas_resync_window_state(canvas);
 

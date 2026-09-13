@@ -182,6 +182,14 @@ RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/text/rt_numfmt_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/threads/rt_monitor_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/threads/rt_threads_internal.h")
 
+// Platform services (ADR 0352): the Base frame-pump slot, the provider
+// interface, the dynamic-library adapter, and the authored Steamworks ABI are
+// implementation contracts behind the registered Zanna.Services classes.
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_service_hooks.h")
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/rt_services_provider.h")
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/rt_services_dynlib.h")
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/services/steam/rt_steam_abi.h")
+
 // Localization: Collator ships the C implementation + docs + tests, but the
 // frontend class is intentionally not registered in runtime.def for v1.
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/localization/rt_collator.h")
@@ -1286,6 +1294,25 @@ RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Stack", "ToSeq", "obj<Zanna.Col
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Collections.Deque", "ToSeq", "obj<Zanna.Collections.Seq>()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Time.Stopwatch", "New", "obj()")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Time.Stopwatch", "StartNew", "obj()")
+
+// Platform services (ADR 0352): pin the provider-neutral lifecycle, the
+// non-blocking request contract, and the Steam extension entry points.
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Services.Platform.Init", "rt_services_platform_init")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Services.Platform.Update", "rt_services_platform_update")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Services.Platform.Shutdown", "rt_services_platform_shutdown")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Services.Platform.PollEvent",
+                                "rt_services_platform_poll_event")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Services.Steam.RestartAppIfNecessary",
+                                "rt_services_steam_restart_app_if_necessary")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Platform", "Init", "obj<Zanna.Result>(str,str)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Platform",
+                              "RequestPlayerCount",
+                              "obj<Zanna.Services.Request>()")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Services.Platform", "Diagnostics", "seq<str>()")
+RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Platform", "Status", "i64")
+RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Platform", "IsAvailable", "i1")
+RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Request", "IsDone", "i1")
+RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Services.Steam", "HardwareType", "i64")
 
 // Retired public rows (2026-07-15 API consistency sweep): these C entry
 // points lost their public runtime.def rows when compatibility aliases,

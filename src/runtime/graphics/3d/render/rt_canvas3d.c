@@ -51,6 +51,7 @@
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
 #include "rt_platform.h"
+#include "rt_service_hooks.h"
 #include "rt_skeleton3d_internal.h"
 #include "rt_string.h"
 #include "rt_textureasset3d.h"
@@ -2174,6 +2175,10 @@ static void *canvas3d_new_impl(rt_string title,
     }
     if (c->gfx_win)
         vgfx_set_gpu_present(c->gfx_win, c->backend != &vgfx3d_software_backend);
+    /* Platform overlays (Steam) must hook the device before it is created; the
+     * services layer warns when a provider starts after this point (ADR 0352). */
+    if (c->gfx_win && c->backend != &vgfx3d_software_backend)
+        rt_service_hooks_note_gpu_presenter();
     if (c->backend && c->backend->set_vsync && c->backend_ctx)
         c->backend->set_vsync(c->backend_ctx, c->vsync_enabled);
     if (c->backend && c->backend->set_capture_after_present && c->backend_ctx)
@@ -2626,7 +2631,8 @@ static void rt_canvas3d_update_mouse_from_physical(vgfx_window_t gfx_win, int32_
 /// Called once per game-loop iteration. Drives keyboard/mouse/
 /// gamepad/action input subsystems, updates the wall-clock dt
 /// (capped at `dt_max` to prevent huge jumps after pauses), and
-/// dispatches resize / focus / close events.
+/// dispatches resize / focus / close events. While a Zanna.Services provider
+/// is started, each poll also pumps it once (ADR 0352).
 /// @param obj Canvas3D handle or approved stack fixture. A window is required unless the input
 /// source is synthetic-only.
 /// @return 1 if the window remains open, 0 if the user requested close.
@@ -2642,6 +2648,8 @@ int64_t rt_canvas3d_poll(void *obj) {
     int8_t captured = use_live ? rt_mouse_is_captured() : 0;
     int8_t relative_native = 0;
     c->last_event_type = VGFX_EVENT_NONE;
+
+    rt_service_hooks_run_frame_pump();
 
     /* Begin frame (resets per-frame state for keyboard/mouse/pad) */
     rt_keyboard_begin_frame();

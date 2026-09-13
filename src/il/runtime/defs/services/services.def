@@ -1,0 +1,266 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/il/runtime/defs/services/services.def
+// Purpose: Registry rows and class metadata for Zanna.Services, the
+//          provider-neutral platform services layer (Steam first).
+// Key invariants:
+//   - Every C symbol uses the rt_services_ prefix so native links select the
+//     zanna_rt_services component archive.
+//   - Reference-returning rows declare ownership (ADR 0314); every class has
+//     authored summary and details documentation (ADR 0101).
+//   - Constant ordinals match rt_services.h and rt_steam.h and never change.
+// Ownership/Lifetime: Declarative metadata consumed by rtgen.
+// Links: docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        src/runtime/services/rt_services.h,
+//        src/runtime/services/steam/rt_steam.h,
+//        docs/zannalib/services.md
+//
+//===----------------------------------------------------------------------===//
+
+//=============================================================================
+// SERVICES - PLATFORM (Zanna.Services.Platform)
+//=============================================================================
+
+RT_FUNC(ServicesPlatformInit,              rt_services_platform_init,                  "Zanna.Services.Platform.Init",                  "obj<Zanna.Result>(str,str)", owned)
+RT_FUNC(ServicesPlatformUpdate,            rt_services_platform_update,                "Zanna.Services.Platform.Update",                "void()")
+RT_FUNC(ServicesPlatformShutdown,          rt_services_platform_shutdown,              "Zanna.Services.Platform.Shutdown",              "void()")
+RT_FUNC(ServicesPlatformPollEvent,         rt_services_platform_poll_event,            "Zanna.Services.Platform.PollEvent",             "i64()")
+RT_FUNC(ServicesPlatformHasProvider,       rt_services_platform_has_provider,          "Zanna.Services.Platform.HasProvider",           "i1(str)")
+RT_FUNC(ServicesPlatformHasFeature,        rt_services_platform_has_feature,           "Zanna.Services.Platform.HasFeature",            "i1(i64)")
+RT_FUNC(ServicesPlatformIsDlcInstalled,    rt_services_platform_is_dlc_installed,      "Zanna.Services.Platform.IsDlcInstalled",        "i1(str)")
+RT_FUNC(ServicesPlatformRequestPlayerCount, rt_services_platform_request_player_count, "Zanna.Services.Platform.RequestPlayerCount",    "obj<Zanna.Services.Request>()", owned)
+RT_FUNC(ServicesPlatformDiagnostics,       rt_services_platform_diagnostics,           "Zanna.Services.Platform.Diagnostics",           "seq<str>()", owned)
+RT_FUNC(ServicesPlatformIsAvailable,       rt_services_platform_get_is_available,      "Zanna.Services.Platform.get_IsAvailable",       "i1()")
+RT_FUNC(ServicesPlatformStatus,            rt_services_platform_get_status,            "Zanna.Services.Platform.get_Status",            "i64()")
+RT_FUNC(ServicesPlatformProvider,          rt_services_platform_get_provider,          "Zanna.Services.Platform.get_Provider",          "str()", owned)
+RT_FUNC(ServicesPlatformAppId,             rt_services_platform_get_app_id,            "Zanna.Services.Platform.get_AppId",             "str()", owned)
+RT_FUNC(ServicesPlatformUserId,            rt_services_platform_get_user_id,           "Zanna.Services.Platform.get_UserId",            "str()", owned)
+RT_FUNC(ServicesPlatformUserName,          rt_services_platform_get_user_name,         "Zanna.Services.Platform.get_UserName",          "str()", owned)
+RT_FUNC(ServicesPlatformLanguage,          rt_services_platform_get_language,          "Zanna.Services.Platform.get_Language",          "str()", owned)
+RT_FUNC(ServicesPlatformIsLicensed,        rt_services_platform_get_is_licensed,       "Zanna.Services.Platform.get_IsLicensed",        "i1()")
+RT_FUNC(ServicesPlatformIsOnline,          rt_services_platform_get_is_online,         "Zanna.Services.Platform.get_IsOnline",          "i1()")
+RT_FUNC(ServicesPlatformEventResultCode,   rt_services_platform_get_event_result_code, "Zanna.Services.Platform.get_EventResultCode",   "i64()")
+RT_FUNC(ServicesPlatformEventText,         rt_services_platform_get_event_text,        "Zanna.Services.Platform.get_EventText",         "str()", owned)
+RT_FUNC(ServicesPlatformEventValue,        rt_services_platform_get_event_value,       "Zanna.Services.Platform.get_EventValue",        "i64()")
+RT_FUNC(ServicesPlatformEventFlag,         rt_services_platform_get_event_flag,        "Zanna.Services.Platform.get_EventFlag",         "i1()")
+RT_FUNC(ServicesPlatformDroppedEvents,     rt_services_platform_get_dropped_events,    "Zanna.Services.Platform.get_DroppedEvents",     "i64()")
+
+//=============================================================================
+// SERVICES - REQUEST (Zanna.Services.Request)
+//=============================================================================
+
+RT_FUNC(ServicesRequestKind,               rt_services_request_get_kind,               "Zanna.Services.Request.get_Kind",               "i64(obj)")
+RT_FUNC(ServicesRequestIsDone,             rt_services_request_get_is_done,            "Zanna.Services.Request.get_IsDone",             "i1(obj)")
+RT_FUNC(ServicesRequestSucceeded,          rt_services_request_get_succeeded,          "Zanna.Services.Request.get_Succeeded",          "i1(obj)")
+RT_FUNC(ServicesRequestResultCode,         rt_services_request_get_result_code,        "Zanna.Services.Request.get_ResultCode",         "i64(obj)")
+RT_FUNC(ServicesRequestValue,              rt_services_request_get_value,              "Zanna.Services.Request.get_Value",              "i64(obj)")
+RT_FUNC(ServicesRequestError,              rt_services_request_get_error,              "Zanna.Services.Request.get_Error",              "str(obj)", owned)
+
+//=============================================================================
+// SERVICES - STEAM EXTENSION (Zanna.Services.Steam)
+//=============================================================================
+
+RT_FUNC(ServicesSteamRestartAppIfNecessary, rt_services_steam_restart_app_if_necessary, "Zanna.Services.Steam.RestartAppIfNecessary", "i1(i64)")
+RT_FUNC(ServicesSteamIsActive,             rt_services_steam_get_is_active,            "Zanna.Services.Steam.get_IsActive",             "i1()")
+RT_FUNC(ServicesSteamSteamId,              rt_services_steam_get_steam_id,             "Zanna.Services.Steam.get_SteamId",              "i64()")
+RT_FUNC(ServicesSteamHardwareType,         rt_services_steam_get_hardware_type,        "Zanna.Services.Steam.get_HardwareType",         "i64()")
+RT_FUNC(ServicesSteamIsUnderProton,        rt_services_steam_get_is_under_proton,      "Zanna.Services.Steam.get_IsUnderProton",        "i1()")
+RT_FUNC(ServicesSteamIsBigPicture,         rt_services_steam_get_is_big_picture,       "Zanna.Services.Steam.get_IsBigPicture",         "i1()")
+RT_FUNC(ServicesSteamLibraryPath,          rt_services_steam_get_library_path,         "Zanna.Services.Steam.get_LibraryPath",          "str()", owned)
+
+//=============================================================================
+// SERVICES - CONSTANTS
+//=============================================================================
+
+RT_FUNC(ServicesStatusOk,                  rt_services_status_ok,                      "Zanna.Services.Status.get_Ok",                  "i64()")
+RT_FUNC(ServicesStatusNotStarted,          rt_services_status_not_started,             "Zanna.Services.Status.get_NotStarted",          "i64()")
+RT_FUNC(ServicesStatusUnknownProvider,     rt_services_status_unknown_provider,        "Zanna.Services.Status.get_UnknownProvider",     "i64()")
+RT_FUNC(ServicesStatusLibraryNotFound,     rt_services_status_library_not_found,       "Zanna.Services.Status.get_LibraryNotFound",     "i64()")
+RT_FUNC(ServicesStatusLibraryIncompatible, rt_services_status_library_incompatible,    "Zanna.Services.Status.get_LibraryIncompatible", "i64()")
+RT_FUNC(ServicesStatusUnsupportedPlatform, rt_services_status_unsupported_platform,    "Zanna.Services.Status.get_UnsupportedPlatform", "i64()")
+RT_FUNC(ServicesStatusClientNotRunning,    rt_services_status_client_not_running,      "Zanna.Services.Status.get_ClientNotRunning",    "i64()")
+RT_FUNC(ServicesStatusVersionMismatch,     rt_services_status_version_mismatch,        "Zanna.Services.Status.get_VersionMismatch",     "i64()")
+RT_FUNC(ServicesStatusInitFailed,          rt_services_status_init_failed,             "Zanna.Services.Status.get_InitFailed",          "i64()")
+
+RT_FUNC(ServicesEventKindNone,             rt_services_event_kind_none,                "Zanna.Services.EventKind.get_None",             "i64()")
+RT_FUNC(ServicesEventKindServiceConnected, rt_services_event_kind_service_connected,   "Zanna.Services.EventKind.get_ServiceConnected", "i64()")
+RT_FUNC(ServicesEventKindServiceDisconnected, rt_services_event_kind_service_disconnected, "Zanna.Services.EventKind.get_ServiceDisconnected", "i64()")
+RT_FUNC(ServicesEventKindConnectFailed,    rt_services_event_kind_connect_failed,      "Zanna.Services.EventKind.get_ConnectFailed",    "i64()")
+RT_FUNC(ServicesEventKindOverlayChanged,   rt_services_event_kind_overlay_changed,     "Zanna.Services.EventKind.get_OverlayChanged",   "i64()")
+RT_FUNC(ServicesEventKindDlcInstalled,     rt_services_event_kind_dlc_installed,       "Zanna.Services.EventKind.get_DlcInstalled",     "i64()")
+RT_FUNC(ServicesEventKindLaunchParametersChanged, rt_services_event_kind_launch_parameters_changed, "Zanna.Services.EventKind.get_LaunchParametersChanged", "i64()")
+RT_FUNC(ServicesEventKindServiceShutdown,  rt_services_event_kind_service_shutdown,    "Zanna.Services.EventKind.get_ServiceShutdown",  "i64()")
+
+RT_FUNC(ServicesFeatureIdentity,           rt_services_feature_identity,               "Zanna.Services.Feature.get_Identity",            "i64()")
+RT_FUNC(ServicesFeatureLicensing,          rt_services_feature_licensing,              "Zanna.Services.Feature.get_Licensing",          "i64()")
+RT_FUNC(ServicesFeatureLanguage,           rt_services_feature_language,               "Zanna.Services.Feature.get_Language",           "i64()")
+RT_FUNC(ServicesFeaturePlayerCount,        rt_services_feature_player_count,           "Zanna.Services.Feature.get_PlayerCount",        "i64()")
+
+RT_FUNC(ServicesRequestKindPlayerCount,    rt_services_request_kind_player_count,      "Zanna.Services.RequestKind.get_PlayerCount",    "i64()")
+
+RT_FUNC(ServicesSteamHardwareUnknown,      rt_services_steam_hardware_unknown,         "Zanna.Services.SteamHardware.get_Unknown",      "i64()")
+RT_FUNC(ServicesSteamHardwareNone,         rt_services_steam_hardware_none,            "Zanna.Services.SteamHardware.get_None",         "i64()")
+RT_FUNC(ServicesSteamHardwareSteamDeck,    rt_services_steam_hardware_steam_deck,      "Zanna.Services.SteamHardware.get_SteamDeck",    "i64()")
+RT_FUNC(ServicesSteamHardwareSteamMachine, rt_services_steam_hardware_steam_machine,   "Zanna.Services.SteamHardware.get_SteamMachine", "i64()")
+RT_FUNC(ServicesSteamHardwareSteamFrame,   rt_services_steam_hardware_steam_frame,     "Zanna.Services.SteamHardware.get_SteamFrame",   "i64()")
+
+//=============================================================================
+// SERVICES - CLASSES
+//=============================================================================
+
+/// @summary Starts a distribution platform's services and reads identity, licensing, and events.
+/// @details
+/// `Zanna.Services.Platform` is the provider-neutral entry point to store platforms such as Steam.
+/// Call `Init(provider, appId)` once at startup, before creating any window; it returns a
+/// `Zanna.Result` holding the provider id or an error message, and `Status` holds a
+/// `Zanna.Services.Status` code. While a provider is started, `Canvas.Poll` and `Canvas3D.Poll`
+/// pump it every frame (call `Update` in loops without a canvas). Drain events with `PollEvent`,
+/// which returns a `Zanna.Services.EventKind` and exposes the payload through `EventResultCode`,
+/// `EventText`, `EventValue`, and `EventFlag`.
+///
+/// When no provider is started (no Steam client, no redistributable, or a non-Steam build) every
+/// query returns an empty string, `0`, or `false` and never traps, so one build runs everywhere.
+/// Stateful members must be called on the main thread. Call `Shutdown` on the quit path.
+RT_CLASS_BEGIN("Zanna.Services.Platform", ServicesPlatform, "none", none)
+    RT_PROP("IsAvailable", "i1", ServicesPlatformIsAvailable, none)
+    RT_PROP("Status", "i64", ServicesPlatformStatus, none)
+    RT_PROP("Provider", "str", ServicesPlatformProvider, none)
+    RT_PROP("AppId", "str", ServicesPlatformAppId, none)
+    RT_PROP("UserId", "str", ServicesPlatformUserId, none)
+    RT_PROP("UserName", "str", ServicesPlatformUserName, none)
+    RT_PROP("Language", "str", ServicesPlatformLanguage, none)
+    RT_PROP("IsLicensed", "i1", ServicesPlatformIsLicensed, none)
+    RT_PROP("IsOnline", "i1", ServicesPlatformIsOnline, none)
+    RT_PROP("EventResultCode", "i64", ServicesPlatformEventResultCode, none)
+    RT_PROP("EventText", "str", ServicesPlatformEventText, none)
+    RT_PROP("EventValue", "i64", ServicesPlatformEventValue, none)
+    RT_PROP("EventFlag", "i1", ServicesPlatformEventFlag, none)
+    RT_PROP("DroppedEvents", "i64", ServicesPlatformDroppedEvents, none)
+    RT_METHOD("Init", "obj<Zanna.Result>(str,str)", ServicesPlatformInit)
+    RT_METHOD("Update", "void()", ServicesPlatformUpdate)
+    RT_METHOD("Shutdown", "void()", ServicesPlatformShutdown)
+    RT_METHOD("PollEvent", "i64()", ServicesPlatformPollEvent)
+    RT_METHOD("HasProvider", "i1(str)", ServicesPlatformHasProvider)
+    RT_METHOD("HasFeature", "i1(i64)", ServicesPlatformHasFeature)
+    RT_METHOD("IsDlcInstalled", "i1(str)", ServicesPlatformIsDlcInstalled)
+    RT_METHOD("RequestPlayerCount", "obj<Zanna.Services.Request>()", ServicesPlatformRequestPlayerCount)
+    RT_METHOD("Diagnostics", "seq<str>()", ServicesPlatformDiagnostics)
+RT_CLASS_END()
+
+/// @summary Tracks one non-blocking platform services request.
+/// @details
+/// `Zanna.Services.Request` objects are returned by request methods such as
+/// `Platform.RequestPlayerCount`. A request completes during a later provider pump; poll `IsDone`
+/// across frames rather than waiting. `Succeeded`, `ResultCode`, and `Value` describe the result,
+/// and `Error` holds the failure message. Requests that cannot start are returned already
+/// completed as failed, and `Platform.Shutdown` cancels outstanding requests.
+RT_CLASS_BEGIN("Zanna.Services.Request", ServicesRequest, "obj", none)
+    RT_PROP("Kind", "i64", ServicesRequestKind, none)
+    RT_PROP("IsDone", "i1", ServicesRequestIsDone, none)
+    RT_PROP("Succeeded", "i1", ServicesRequestSucceeded, none)
+    RT_PROP("ResultCode", "i64", ServicesRequestResultCode, none)
+    RT_PROP("Value", "i64", ServicesRequestValue, none)
+    RT_PROP("Error", "str", ServicesRequestError, none)
+RT_CLASS_END()
+
+/// @summary Exposes Steam-only capabilities of the platform services layer.
+/// @details
+/// `Zanna.Services.Steam` complements `Zanna.Services.Platform` when Steam is the active provider.
+/// `RestartAppIfNecessary(appId)` works before `Platform.Init`: when it returns `true`, Steam is
+/// relaunching the game and the process should exit immediately. `SteamId` is the signed-in
+/// user's SteamID64, `HardwareType` reports a `Zanna.Services.SteamHardware` value, and
+/// `IsUnderProton`, `IsBigPicture`, and `LibraryPath` describe the running environment. Every
+/// query returns a neutral value while Steam is not the active provider.
+///
+/// The provider loads the developer-shipped Steamworks redistributable (`steam_api64.dll`,
+/// `libsteam_api.dylib`, or `libsteam_api.so`) from the executable directory, or from the path in
+/// the `ZANNA_SERVICES_STEAM_LIBRARY` environment variable during development.
+RT_CLASS_BEGIN("Zanna.Services.Steam", ServicesSteam, "none", none)
+    RT_PROP("IsActive", "i1", ServicesSteamIsActive, none)
+    RT_PROP("SteamId", "i64", ServicesSteamSteamId, none)
+    RT_PROP("HardwareType", "i64", ServicesSteamHardwareType, none)
+    RT_PROP("IsUnderProton", "i1", ServicesSteamIsUnderProton, none)
+    RT_PROP("IsBigPicture", "i1", ServicesSteamIsBigPicture, none)
+    RT_PROP("LibraryPath", "str", ServicesSteamLibraryPath, none)
+    RT_METHOD("RestartAppIfNecessary", "i1(i64)", ServicesSteamRestartAppIfNecessary)
+RT_CLASS_END()
+
+/// @summary Defines platform services status codes.
+/// @details
+/// `Zanna.Services.Status` values are read from `Platform.Status`. `Ok` means a provider is started,
+/// `NotStarted` is the state before `Init` and after `Shutdown`, and the remaining values name why
+/// the last `Init` failed: an unknown provider, a missing or incompatible redistributable library,
+/// an unsupported platform, a platform client that is not running or is too old, or another
+/// initialization failure.
+RT_CLASS_BEGIN("Zanna.Services.Status", ServicesStatus, "none", none)
+    RT_PROP("Ok", "i64", ServicesStatusOk, none)
+    RT_PROP("NotStarted", "i64", ServicesStatusNotStarted, none)
+    RT_PROP("UnknownProvider", "i64", ServicesStatusUnknownProvider, none)
+    RT_PROP("LibraryNotFound", "i64", ServicesStatusLibraryNotFound, none)
+    RT_PROP("LibraryIncompatible", "i64", ServicesStatusLibraryIncompatible, none)
+    RT_PROP("UnsupportedPlatform", "i64", ServicesStatusUnsupportedPlatform, none)
+    RT_PROP("ClientNotRunning", "i64", ServicesStatusClientNotRunning, none)
+    RT_PROP("VersionMismatch", "i64", ServicesStatusVersionMismatch, none)
+    RT_PROP("InitFailed", "i64", ServicesStatusInitFailed, none)
+RT_CLASS_END()
+
+/// @summary Defines platform services event kinds returned by Platform.PollEvent.
+/// @details
+/// `Zanna.Services.EventKind` values identify queued platform events. `ServiceConnected`,
+/// `ServiceDisconnected` (EventResultCode holds the provider result), and `ConnectFailed`
+/// (EventFlag is true while retrying) track the online connection. `OverlayChanged` reports the
+/// platform overlay opening (EventFlag true) or closing; pause single-player games while it is
+/// open. `DlcInstalled` carries the DLC id in EventText and EventValue,
+/// `LaunchParametersChanged` reports a relaunch with new parameters, and `ServiceShutdown` asks
+/// the game to save and shut the provider down. `None` means the queue is empty.
+RT_CLASS_BEGIN("Zanna.Services.EventKind", ServicesEventKind, "none", none)
+    RT_PROP("None", "i64", ServicesEventKindNone, none)
+    RT_PROP("ServiceConnected", "i64", ServicesEventKindServiceConnected, none)
+    RT_PROP("ServiceDisconnected", "i64", ServicesEventKindServiceDisconnected, none)
+    RT_PROP("ConnectFailed", "i64", ServicesEventKindConnectFailed, none)
+    RT_PROP("OverlayChanged", "i64", ServicesEventKindOverlayChanged, none)
+    RT_PROP("DlcInstalled", "i64", ServicesEventKindDlcInstalled, none)
+    RT_PROP("LaunchParametersChanged", "i64", ServicesEventKindLaunchParametersChanged, none)
+    RT_PROP("ServiceShutdown", "i64", ServicesEventKindServiceShutdown, none)
+RT_CLASS_END()
+
+/// @summary Defines platform services feature identifiers for Platform.HasFeature.
+/// @details
+/// `Zanna.Services.Feature` values ask whether the active provider can serve a group of members
+/// right now: `Identity` (UserId, UserName, IsOnline), `Licensing` (IsLicensed, IsDlcInstalled),
+/// `Language`, and `PlayerCount` (RequestPlayerCount). A feature can be unavailable even while a
+/// provider is started, for example when an older redistributable lacks an interface;
+/// `Platform.Diagnostics` then explains why.
+RT_CLASS_BEGIN("Zanna.Services.Feature", ServicesFeature, "none", none)
+    RT_PROP("Identity", "i64", ServicesFeatureIdentity, none)
+    RT_PROP("Licensing", "i64", ServicesFeatureLicensing, none)
+    RT_PROP("Language", "i64", ServicesFeatureLanguage, none)
+    RT_PROP("PlayerCount", "i64", ServicesFeaturePlayerCount, none)
+RT_CLASS_END()
+
+/// @summary Defines platform services request kinds reported by Request.Kind.
+/// @details
+/// `Zanna.Services.RequestKind` identifies what a `Zanna.Services.Request` asked for. `PlayerCount`
+/// requests the number of players currently running the game; its `Value` holds the count.
+RT_CLASS_BEGIN("Zanna.Services.RequestKind", ServicesRequestKind, "none", none)
+    RT_PROP("PlayerCount", "i64", ServicesRequestKindPlayerCount, none)
+RT_CLASS_END()
+
+/// @summary Defines Steam hardware identifiers reported by Steam.HardwareType.
+/// @details
+/// `Zanna.Services.SteamHardware` values describe the device the game runs on: `None` for a regular
+/// PC, `SteamDeck`, `SteamMachine`, or `SteamFrame`. `Unknown` is reported while Steam is not the
+/// active provider. Redistributables older than Steamworks SDK 1.65 distinguish only `SteamDeck`
+/// from `None`. Use these values for analytics and default settings, not to gate features.
+RT_CLASS_BEGIN("Zanna.Services.SteamHardware", ServicesSteamHardware, "none", none)
+    RT_PROP("Unknown", "i64", ServicesSteamHardwareUnknown, none)
+    RT_PROP("None", "i64", ServicesSteamHardwareNone, none)
+    RT_PROP("SteamDeck", "i64", ServicesSteamHardwareSteamDeck, none)
+    RT_PROP("SteamMachine", "i64", ServicesSteamHardwareSteamMachine, none)
+    RT_PROP("SteamFrame", "i64", ServicesSteamHardwareSteamFrame, none)
+RT_CLASS_END()

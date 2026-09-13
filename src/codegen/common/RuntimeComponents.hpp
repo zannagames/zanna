@@ -58,6 +58,7 @@ enum class RtComponent {
     Audio,        ///< Audio (rt_audio_*, rt_playlist_*, ogg_reader_*)
     Network,      ///< Network (rt_network_*, rt_restclient_*, etc.)
     Localization, ///< Localization (rt_locale_*, locale manager, LocaleInfo)
+    Services,     ///< Platform services (rt_services_*: Zanna.Services, Steam provider)
     Count,
 };
 
@@ -79,6 +80,10 @@ inline std::optional<RtComponent> componentForRuntimeSymbol(std::string_view sym
     // Arrays component
     if (starts("rt_arr_"))
         return RtComponent::Arrays;
+
+    // Services component (platform services layer and its providers, ADR 0352)
+    if (starts("rt_services_"))
+        return RtComponent::Services;
 
     // OOP component
     if (starts("rt_obj_") || starts("rt_type_") || starts("rt_register_") || starts("rt_cast_") ||
@@ -252,6 +257,8 @@ inline std::optional<RtComponent> componentForRuntimeSymbol(std::string_view sym
         return RtComponent::Base;
     if (starts("Zanna.Localization."))
         return RtComponent::Localization;
+    if (starts("Zanna.Services."))
+        return RtComponent::Services;
 
     return std::nullopt;
 }
@@ -297,6 +304,12 @@ inline std::vector<RtComponent> resolveRequiredComponents(const SymbolRange &sym
     // Apply dependency rules (internal runtime calls between components).
     // Note: Base's calls to rt_audio_shutdown and rt_file_state_cleanup use
     // weak symbols, so Audio/IoFs are NOT unconditionally required.
+    // Services is first because the components it adds feed the rules below.
+    if (has(RtComponent::Services)) {
+        add(RtComponent::IoFs);        // Steam provider locates its library beside the executable
+        add(RtComponent::Collections); // Platform.Diagnostics builds a Seq
+        add(RtComponent::Oop);         // Request objects and Result values
+    }
     if (has(RtComponent::Text) || has(RtComponent::IoFs) || has(RtComponent::Exec) ||
         has(RtComponent::Network))
         add(RtComponent::Collections);
@@ -339,6 +352,7 @@ inline std::vector<RtComponent> resolveRequiredComponents(const SymbolRange &sym
         RtComponent::Audio,
         RtComponent::Network,
         RtComponent::Localization,
+        RtComponent::Services,
     };
     for (auto c : order) {
         if (has(c))

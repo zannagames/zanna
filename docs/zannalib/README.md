@@ -40,6 +40,7 @@ descriptions come from the modular `runtime.def` registry.
 | [Input/Output](io/README.md)           | `Archive`, `BinaryBuffer`, `BinFile`, `Compress`, `Dir`, `File`, `Glob`, `LineReader`, `LineWriter`, `MemStream`, `Path`, `Stream`, `TempFile`, `Watcher` |
 | [Mathematics](math.md)          | `BigInt`, `Bits`, `Easing`, `Mat3`, `Mat4`, `Math`, `PerlinNoise`, `Quat`, `Random`, `Spline`, `Vec2`, `Vec3` |
 | [Network](network.md)           | `Dns`, `Http`, `HttpReq`, `HttpRes`, `RateLimiter`, `RestClient`, `RetryPolicy`, `Tcp`, `TcpServer`, `Udp`, `Url`, `WebSocket` |
+| [Platform Services](services.md) | `Platform`, `Request`, `Steam`, `Status`, `EventKind`, `Feature`, `RequestKind`, `SteamHardware` — store identity, licensing, DLC, events, and requests (Steam first) |
 | [System](system.md)             | `Environment`, `Clipboard`, `Exec`, `Machine`, `Terminal`; `Zanna.Runtime.Unsafe`, `Zanna.Runtime.GC`, compatibility `Zanna.Memory`, and `Zanna.Memory.WeakRef` |
 | [Text & Data](text/README.md)          | `Codec`, `CompiledPattern`, `Csv`, `Diff`, `Html`, `Ini`, `Json`, `JsonPath`, `JsonStream`, `Markdown`, `InvariantNumberFormat`, `Pattern`, `Pluralize`, `Scanner`, `StringBuilder`, `Template`, `TextWrapper`, `Toml`, `Uuid`, `Version`; `Zanna.Data`: `Serialize`, `Xml`, `Yaml` |
 | [Threads](threads.md)           | `Async`, `Barrier`, `CancelToken`, `Channel`, `ConcurrentMap`, `Debouncer`, `Future`, `Gate`, `Monitor`, `Parallel`, `Pool`, `Promise`, `RwLock`, `SafeI64`, `Scheduler`, `Thread`, `Throttler` |
@@ -338,6 +339,19 @@ the conceptual guide does not provide a class-specific section.
 | [`Udp`](network.md#zannanetworkudp)               | Instance | UDP datagram socket                   |
 | [`Url`](network.md#zannanetworkurl)               | Instance | URL parsing and building              |
 | [`WebSocket`](network.md#zannanetworkwebsocket)   | Instance | WebSocket client (RFC 6455)           |
+
+### Zanna.Services
+
+| Class                                                   | Type     | Description                                        |
+|---------------------------------------------------------|----------|----------------------------------------------------|
+| [`Platform`](services.md#zannaservicesplatform)         | Static   | Provider-neutral lifecycle, identity, licensing, events |
+| [`Request`](services.md#zannaservicesrequest)           | Instance | Non-blocking platform request                      |
+| [`Steam`](services.md#zannaservicessteam)               | Static   | Steam-only extension (relaunch, SteamID, hardware) |
+| [`Status`](services.md#zannaservicesstatus)             | Static   | Platform services status codes                     |
+| [`EventKind`](services.md#zannaserviceseventkind)       | Static   | Platform event kinds                               |
+| [`Feature`](services.md#zannaservicesfeature)           | Static   | Feature identifiers for `Platform.HasFeature`      |
+| [`RequestKind`](services.md#zannaservicesrequestkind)   | Static   | Request kinds                                      |
+| [`SteamHardware`](services.md#zannaservicessteamhardware) | Static | Steam hardware identifiers                         |
 
 ### Zanna.Text
 

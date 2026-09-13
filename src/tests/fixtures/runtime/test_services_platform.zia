@@ -1,0 +1,149 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_services_platform.zia
+// Purpose: End-to-end check of Zanna.Services from Zia on the VM and in native
+//          binaries: the neutral Platform lifecycle, identity and licensing
+//          queries, event polling, a non-blocking request, the Steam extension
+//          class, and the unavailable path when no redistributable exists.
+// Key invariants:
+//   - ZANNA_SERVICES_TEST_EXPECT selects the scenario: "available" runs
+//     against the fake steam_api library named by ZANNA_SERVICES_STEAM_LIBRARY;
+//     "missing" points that variable at a file that does not exist.
+//   - Every query must return a neutral value when no provider is started.
+//   - Prints "RESULT: ok" only when every check passes.
+// Ownership/Lifetime:
+//   - Results and requests are owned by locals of start().
+// Links: docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        src/tests/runtime/RTServicesFakeSteamApi.c,
+//        src/tests/e2e/test_zia_services_run.cmake
+//
+//===----------------------------------------------------------------------===//
+module test_services_platform;
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.System.Environment as Env;
+bind Zanna.Services as Services;
+
+var fails: Integer = 0;
+
+func check(cond: Boolean, msg: String) {
+    if !cond { Terminal.Say("FAIL: " + msg); fails = fails + 1; }
+}
+
+func checkNeutral(label: String) {
+    check(!Services.Platform.IsAvailable, label + ": IsAvailable must be false");
+    check(Services.Platform.Provider == "", label + ": Provider must be empty");
+    check(Services.Platform.UserId == "", label + ": UserId must be empty");
+    check(Services.Platform.UserName == "", label + ": UserName must be empty");
+    check(Services.Platform.Language == "", label + ": Language must be empty");
+    check(!Services.Platform.IsLicensed, label + ": IsLicensed must be false");
+    check(!Services.Platform.HasFeature(Services.Feature.Identity), label + ": no Identity feature");
+    check(!Services.Platform.IsDlcInstalled("1234567"), label + ": no DLC");
+    check(Services.Platform.PollEvent() == Services.EventKind.None, label + ": no events");
+    check(!Services.Steam.IsActive, label + ": Steam must be inactive");
+    check(Services.Steam.HardwareType == Services.SteamHardware.Unknown, label + ": hardware unknown");
+}
+
+func runMissing() {
+    var result = Services.Platform.Init("steam", "480");
+    check(result.IsErr, "Init must fail without a redistributable");
+    check(Zanna.String.StartsWith(result.UnwrapErrStr(), "Steam: steam_api library not found: "),
+          "unexpected Init error: " + result.UnwrapErrStr());
+    check(Services.Platform.Status == Services.Status.LibraryNotFound,
+          "Status must be LibraryNotFound, got " + Fmt.Int(Services.Platform.Status));
+    check(Services.Platform.Diagnostics().Count > 0, "Init failure must be recorded in Diagnostics");
+    checkNeutral("missing");
+    Services.Platform.Update();
+
+    var request = Services.Platform.RequestPlayerCount();
+    check(request.IsDone && !request.Succeeded, "request must fail immediately without a provider");
+    check(request.Error == "Services: no platform services provider is started",
+          "unexpected request error: " + request.Error);
+
+    Services.Platform.Shutdown();
+    check(Services.Platform.Status == Services.Status.NotStarted, "Shutdown must reset Status");
+}
+
+func runAvailable() {
+    var result = Services.Platform.Init("steam", "480");
+    check(result.IsOk, "Init must succeed against the fake redistributable");
+    if result.IsErr {
+        Terminal.Say("Init error: " + result.UnwrapErrStr());
+        return;
+    }
+    check(result.UnwrapStr() == "steam", "Init must return the provider id");
+    check(Services.Platform.Status == Services.Status.Ok, "Status must be Ok");
+    check(Services.Platform.IsAvailable, "IsAvailable must be true");
+    check(Services.Platform.Provider == "steam", "Provider must be steam");
+    check(Services.Platform.AppId == "480", "AppId must be 480, got " + Services.Platform.AppId);
+    check(Services.Platform.UserId == "76561198000000001", "unexpected UserId " + Services.Platform.UserId);
+    check(Services.Platform.UserName == "Zanna Tester", "unexpected UserName " + Services.Platform.UserName);
+    check(Services.Platform.Language == "english", "unexpected Language " + Services.Platform.Language);
+    check(Services.Platform.IsLicensed, "IsLicensed must be true");
+    check(Services.Platform.IsOnline, "IsOnline must be true");
+    check(Services.Platform.HasFeature(Services.Feature.Identity), "Identity feature");
+    check(Services.Platform.HasFeature(Services.Feature.Licensing), "Licensing feature");
+    check(Services.Platform.HasFeature(Services.Feature.Language), "Language feature");
+    check(Services.Platform.HasFeature(Services.Feature.PlayerCount), "PlayerCount feature");
+    check(Services.Platform.IsDlcInstalled("1234567"), "DLC 1234567 must be installed");
+    check(!Services.Platform.IsDlcInstalled("7"), "DLC 7 must not be installed");
+
+    check(Services.Steam.IsActive, "Steam must be active");
+    check(Services.Steam.SteamId == 76561198000000001, "unexpected SteamId");
+    check(Services.Steam.HardwareType == Services.SteamHardware.SteamFrame, "hardware must be SteamFrame");
+    check(Services.Steam.IsUnderProton, "fake reports Proton");
+    check(!Services.Steam.IsBigPicture, "fake reports desktop mode");
+    check(Services.Steam.LibraryPath == Env.GetVariable("ZANNA_SERVICES_STEAM_LIBRARY"),
+          "LibraryPath must be the override path");
+
+    var request = Services.Platform.RequestPlayerCount();
+    check(request.Kind == Services.RequestKind.PlayerCount, "request kind");
+    check(!request.IsDone, "request must be pending before the pump");
+
+    Services.Platform.Update();
+
+    check(Services.Platform.PollEvent() == Services.EventKind.ServiceConnected, "first event");
+    check(Services.Platform.PollEvent() == Services.EventKind.OverlayChanged, "second event");
+    check(Services.Platform.EventFlag, "overlay must report open");
+    check(Services.Platform.PollEvent() == Services.EventKind.DlcInstalled, "third event");
+    check(Services.Platform.EventText == "1234567", "DLC event text");
+    check(Services.Platform.EventValue == 1234567, "DLC event value");
+    check(Services.Platform.PollEvent() == Services.EventKind.None, "queue must be empty");
+    check(Services.Platform.DroppedEvents == 0, "no dropped events");
+
+    check(request.IsDone, "request must complete after the pump");
+    check(request.Succeeded, "request must succeed");
+    check(request.Value == 42, "player count must be 42, got " + Fmt.Int(request.Value));
+    check(request.ResultCode == 1, "result code must be 1");
+
+    Services.Platform.Shutdown();
+    check(Services.Platform.Status == Services.Status.NotStarted, "Shutdown must reset Status");
+    checkNeutral("after shutdown");
+}
+
+func start() {
+    check(Services.Platform.Status == Services.Status.NotStarted, "Status must start as NotStarted");
+    check(Services.Platform.HasProvider("steam"), "steam provider must be compiled in");
+    check(!Services.Platform.HasProvider("unknown"), "unknown provider must be rejected");
+    checkNeutral("before init");
+
+    var expect = Env.GetVariable("ZANNA_SERVICES_TEST_EXPECT");
+    if expect == "missing" {
+        runMissing();
+    } else if expect == "available" {
+        runAvailable();
+    } else {
+        check(false, "ZANNA_SERVICES_TEST_EXPECT must be 'missing' or 'available'");
+    }
+
+    if fails == 0 {
+        Terminal.Say("RESULT: ok");
+    } else {
+        Terminal.Say("RESULT: " + Fmt.Int(fails) + " failure(s)");
+    }
+}

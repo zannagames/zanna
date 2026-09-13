@@ -36,6 +36,44 @@ TEST(RuntimeManifest, ArchiveNamesRemainStableForKnownComponents) {
     EXPECT_EQ("zanna_rt_network", archiveNameForComponent(RtComponent::Network));
 }
 
+TEST(RuntimeManifest, PlatformServicesSymbolsSelectServicesArchive) {
+    EXPECT_EQ("zanna_rt_services", archiveNameForComponent(RtComponent::Services));
+
+    constexpr std::string_view symbols[] = {
+        "rt_services_platform_init",
+        "rt_services_request_get_is_done",
+        "rt_services_steam_get_steam_id",
+        "Zanna.Services.Platform.Init",
+        "Zanna.Services.Steam.get_SteamId",
+    };
+    for (const auto symbol : symbols) {
+        const auto component = componentForRuntimeSymbol(symbol);
+        ASSERT_TRUE(component.has_value());
+        EXPECT_TRUE(*component == RtComponent::Services);
+    }
+}
+
+TEST(RuntimeManifest, PlatformServicesClosureIncludesItsDependencies) {
+    const std::vector<std::string_view> symbols = {"rt_services_platform_init"};
+    const auto components = resolveRequiredComponents(symbols);
+    auto contains = [&](RtComponent wanted) {
+        for (const auto component : components) {
+            if (component == wanted)
+                return true;
+        }
+        return false;
+    };
+    EXPECT_TRUE(contains(RtComponent::Base));
+    EXPECT_TRUE(contains(RtComponent::Services));
+    EXPECT_TRUE(contains(RtComponent::IoFs));
+    EXPECT_TRUE(contains(RtComponent::Collections));
+    EXPECT_TRUE(contains(RtComponent::Oop));
+    EXPECT_TRUE(contains(RtComponent::Threads));
+    EXPECT_TRUE(contains(RtComponent::Text));
+    EXPECT_TRUE(contains(RtComponent::Network));
+    EXPECT_TRUE(contains(RtComponent::Arrays));
+}
+
 TEST(RuntimeManifest, PrivateOggReaderSymbolsSelectAudioArchive) {
     constexpr std::string_view symbols[] = {
         "ogg_reader_free",

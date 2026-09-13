@@ -11,7 +11,7 @@ graphics, audio, input, networking, system, diagnostics, crypto, time, and threa
 
 ## Overview
 
-- **Total source files**: 897 (.c/.h/.cpp/.hpp/.m)
+- **Total source files**: 936 (.c/.h/.cpp/.hpp/.m)
 
 ## Memory Management
 
@@ -482,6 +482,23 @@ Backend correctness, ownership, and validation invariants are tracked in the
 | `rt_wss_server.h`  | TLS WebSocket server ABI   |
 | `rt_ws_shared.inc` | Shared strict upgrade, authority, UTF-8, and frame helpers |
 | `rt_socket_platform*.c` | POSIX/WinSock socket policy adapters |
+
+## Platform Services
+
+Provider-neutral `Zanna.Services` layer and its built-in providers (`src/runtime/services/`,
+component archive `zanna_rt_services`, ADR 0352).
+
+| File                              | Purpose                                                                 |
+|-----------------------------------|-------------------------------------------------------------------------|
+| `rt_services.c` / `rt_services.h` | Neutral core: provider registry, status, event queue, requests, diagnostics, constants |
+| `rt_services_provider.h`          | Internal provider interface (`rt_services_provider` table) and core callbacks for providers |
+| `rt_services_dynlib.h`            | Internal explicit-path shared-library loading contract                  |
+| `rt_services_dynlib_posix.c`      | `dlopen`/`dlsym` adapter (macOS, Linux)                                 |
+| `rt_services_dynlib_win.c`        | `LoadLibraryW`/`GetProcAddress` adapter (Windows)                       |
+| `steam/rt_steam_provider.c`       | Steam provider: redistributable resolution, flat-API binding, manual dispatch, `Zanna.Services.Steam` |
+| `steam/rt_steam.h`                | `Zanna.Services.Steam` and `SteamHardware` C ABI                        |
+| `steam/rt_steam_abi.h`            | Authored Steamworks flat-API subset and pack-4/pack-8 callback layouts  |
+| `core/rt_service_hooks.c` / `.h`  | Base frame-pump slot (called by `Canvas.Poll`/`Canvas3D.Poll`) and GPU-presenter flag |
 
 ## Cryptography
 

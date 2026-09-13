@@ -44,6 +44,7 @@ set(RT_BASE_SOURCES
         core/rt_args.c
         core/rt_log.c
         core/rt_msgbus.c
+        core/rt_service_hooks.c
         core/rt_gc.c
         core/rt_zia_completion_stub.c
         core/rt_zia_highlight_stub.c
@@ -690,6 +691,20 @@ else ()
     list(APPEND RT_NETWORK_SOURCES network/rt_tls_verify_posix.c)
 endif ()
 
+# Platform services (ADR 0352): the provider-neutral core plus built-in
+# providers. Provider redistributables are loaded at run time by explicit path,
+# so the component has no build-time dependency beyond the platform loader.
+set(RT_SERVICES_SOURCES
+        services/rt_services.c
+        services/steam/rt_steam_provider.c
+)
+
+if (WIN32)
+    list(APPEND RT_SERVICES_SOURCES services/rt_services_dynlib_win.c)
+else ()
+    list(APPEND RT_SERVICES_SOURCES services/rt_services_dynlib_posix.c)
+endif ()
+
 set(RT_PUBLIC_HEADERS
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/2d/rt_action.h
         ${CMAKE_CURRENT_SOURCE_DIR}/core/rt_context.h
@@ -786,6 +801,8 @@ set(RT_PUBLIC_HEADERS
         ${CMAKE_CURRENT_SOURCE_DIR}/audio/rt_synth.h
         ${CMAKE_CURRENT_SOURCE_DIR}/threads/rt_threads.h
         ${CMAKE_CURRENT_SOURCE_DIR}/network/rt_network.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/steam/rt_steam.h
 )
 
 find_package(Threads REQUIRED)
@@ -803,6 +820,7 @@ add_library(zanna_rt_audio_obj OBJECT ${RT_AUDIO_SOURCES})
 add_library(zanna_rt_threads_obj OBJECT ${RT_THREADS_SOURCES})
 add_library(zanna_rt_network_obj OBJECT ${RT_NETWORK_SOURCES})
 add_library(zanna_rt_localization_obj OBJECT ${RT_LOCALIZATION_SOURCES})
+add_library(zanna_rt_services_obj OBJECT ${RT_SERVICES_SOURCES})
 
 add_library(zanna_rt_base STATIC $<TARGET_OBJECTS:zanna_rt_base_obj>)
 add_library(zanna_rt_arrays STATIC $<TARGET_OBJECTS:zanna_rt_arrays_obj>)
@@ -817,6 +835,7 @@ add_library(zanna_rt_audio STATIC $<TARGET_OBJECTS:zanna_rt_audio_obj>)
 add_library(zanna_rt_threads STATIC $<TARGET_OBJECTS:zanna_rt_threads_obj>)
 add_library(zanna_rt_network STATIC $<TARGET_OBJECTS:zanna_rt_network_obj>)
 add_library(zanna_rt_localization STATIC $<TARGET_OBJECTS:zanna_rt_localization_obj>)
+add_library(zanna_rt_services STATIC $<TARGET_OBJECTS:zanna_rt_services_obj>)
 
 add_library(zanna_runtime STATIC
         $<TARGET_OBJECTS:zanna_rt_base_obj>
@@ -832,6 +851,7 @@ add_library(zanna_runtime STATIC
         $<TARGET_OBJECTS:zanna_rt_threads_obj>
         $<TARGET_OBJECTS:zanna_rt_network_obj>
         $<TARGET_OBJECTS:zanna_rt_localization_obj>
+        $<TARGET_OBJECTS:zanna_rt_services_obj>
 )
 
 set(ZANNA_RUNTIME_COMPONENT_OBJECT_LIBS
@@ -848,6 +868,7 @@ set(ZANNA_RUNTIME_COMPONENT_OBJECT_LIBS
         zanna_rt_threads_obj
         zanna_rt_network_obj
         zanna_rt_localization_obj
+        zanna_rt_services_obj
 )
 
 set(ZANNA_RUNTIME_COMPONENT_LIBS
@@ -864,6 +885,7 @@ set(ZANNA_RUNTIME_COMPONENT_LIBS
         zanna_rt_threads
         zanna_rt_network
         zanna_rt_localization
+        zanna_rt_services
         zanna_runtime
 )
 
@@ -900,6 +922,8 @@ set(_RT_SUBDIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/threads
         ${CMAKE_CURRENT_SOURCE_DIR}/network
         ${CMAKE_CURRENT_SOURCE_DIR}/localization
+        ${CMAKE_CURRENT_SOURCE_DIR}/services
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/steam
 )
 
 foreach (_rtobj IN LISTS ZANNA_RUNTIME_COMPONENT_OBJECT_LIBS)
@@ -979,6 +1003,8 @@ foreach (_rtlib IN LISTS ZANNA_RUNTIME_COMPONENT_LIBS)
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/threads>
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/network>
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/localization>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/services>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/services/steam>
             $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/zanna_runtime>
             $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/zanna/runtime>
@@ -997,6 +1023,10 @@ target_link_libraries(zanna_rt_graphics PUBLIC zanna_rt_oop zanna_rt_base)
 target_link_libraries(zanna_rt_threads PUBLIC zanna_rt_oop zanna_rt_base)
 target_link_libraries(zanna_rt_network PUBLIC zanna_rt_collections zanna_rt_base)
 target_link_libraries(zanna_rt_localization PUBLIC zanna_rt_collections zanna_rt_oop zanna_rt_threads zanna_rt_base)
+target_link_libraries(zanna_rt_services PUBLIC zanna_rt_io_fs zanna_rt_collections zanna_rt_oop zanna_rt_base)
+# Provider redistributables are opened with dlopen on macOS/Linux (libdl on older glibc).
+target_link_libraries(zanna_rt_services PUBLIC ${CMAKE_DL_LIBS})
+target_link_libraries(zanna_runtime PUBLIC ${CMAKE_DL_LIBS})
 
 # Windows requires ws2_32 for sockets
 if (WIN32)
@@ -1071,6 +1101,7 @@ set(ZANNA_RUNTIME_COMPONENT_ARCHIVES
         zanna_rt_audio
         zanna_rt_network
         zanna_rt_localization
+        zanna_rt_services
         PARENT_SCOPE)
 
 if (NOT DEFINED ZANNA_GRAPHICS_MODE)

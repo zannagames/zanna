@@ -567,6 +567,8 @@ std::vector<std::string> inferRuntimeCapabilities(std::string_view name) {
         caps.push_back("threads");
     if (startsWith(name, "Zanna.Localization."))
         caps.push_back("localization");
+    if (startsWith(name, "Zanna.Services."))
+        caps.push_back("services");
     if (startsWith(name, "Zanna.Zia.") || startsWith(name, "Zanna.Basic.") ||
         startsWith(name, "Zanna.Project.") || startsWith(name, "Zanna.Workspace."))
         caps.push_back("tooling");
@@ -609,7 +611,8 @@ std::string inferRuntimeStability(std::string_view name) {
     if (startsWith(name, "Zanna.Zia.") || startsWith(name, "Zanna.Basic.") ||
         startsWith(name, "Zanna.Project.") || startsWith(name, "Zanna.Workspace.") ||
         startsWith(name, "Zanna.Assets.") || startsWith(name, "Zanna.GUI.") ||
-        startsWith(name, "Zanna.Game3D.") || startsWith(name, "Zanna.Graphics3D."))
+        startsWith(name, "Zanna.Game3D.") || startsWith(name, "Zanna.Graphics3D.") ||
+        startsWith(name, "Zanna.Services."))
         return "preview";
     return "stable";
 }

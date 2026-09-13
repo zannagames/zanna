@@ -693,6 +693,15 @@ enum class RuntimeTypeId : std::size_t {
     RTCLS_FileLease,
     RTCLS_WorkspaceFileIndexCursor,
     RTCLS_WorkspacePreparedEdit,
+    // Zanna.Services platform services layer (ADR 0352); appended so existing values never shift.
+    RTCLS_ServicesPlatform,
+    RTCLS_ServicesRequest,
+    RTCLS_ServicesSteam,
+    RTCLS_ServicesStatus,
+    RTCLS_ServicesEventKind,
+    RTCLS_ServicesFeature,
+    RTCLS_ServicesRequestKind,
+    RTCLS_ServicesSteamHardware,
 };
 
 /// @brief Describes a property on a runtime class.
