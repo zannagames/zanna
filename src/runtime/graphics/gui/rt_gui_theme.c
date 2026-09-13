@@ -1143,7 +1143,7 @@ void rt_theme_palette_set_font_roles(void *palette_handle, void *regular, void *
 /// @return Caller-owned Result.ErrStr describing unavailable GUI support.
 void *rt_theme_palette_validate(void *palette_handle) {
     (void)palette_handle;
-    return rt_result_err_str(rt_const_cstr("GUI support is not available in this build"));
+    return rt_result_err_str(RT_STR_LIT("GUI support is not available in this build"));
 }
 
 /// @brief Graphics-disabled theme mode setter stub.

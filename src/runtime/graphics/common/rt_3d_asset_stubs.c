@@ -2548,7 +2548,7 @@ void *rt_model3d_load(rt_string p) {
 /// @return `Err("SceneAsset.Load: graphics support not compiled in")`.
 void *rt_model3d_load_result(rt_string p) {
     (void)p;
-    return rt_result_err_str(rt_const_cstr("SceneAsset.Load: graphics support not compiled in"));
+    return rt_result_err_str(RT_STR_LIT("SceneAsset.Load: graphics support not compiled in"));
 }
 
 /// @brief Trap because SceneAsset URI loading requires unavailable Graphics3D support.
@@ -2565,8 +2565,7 @@ void *rt_model3d_load_asset(rt_string p) {
 /// @return `Err("SceneAsset.LoadAsset: graphics support not compiled in")`.
 void *rt_model3d_load_asset_result(rt_string p) {
     (void)p;
-    return rt_result_err_str(
-        rt_const_cstr("SceneAsset.LoadAsset: graphics support not compiled in"));
+    return rt_result_err_str(RT_STR_LIT("SceneAsset.LoadAsset: graphics support not compiled in"));
 }
 
 /// @brief Stub for `SceneAsset.Save` in graphics-disabled builds.
@@ -2773,7 +2772,7 @@ void *rt_model3d_load_animation_result(rt_string path, int64_t index) {
     (void)path;
     (void)index;
     return rt_result_err_str(
-        rt_const_cstr("SceneAsset.LoadAnimation: graphics support not compiled in"));
+        RT_STR_LIT("SceneAsset.LoadAnimation: graphics support not compiled in"));
 }
 
 /// @brief Stub for `Model3D.LoadAnimationAsset`.
@@ -2795,7 +2794,7 @@ void *rt_model3d_load_animation_asset_result(rt_string path, int64_t index) {
     (void)path;
     (void)index;
     return rt_result_err_str(
-        rt_const_cstr("SceneAsset.LoadAnimationAsset: graphics support not compiled in"));
+        RT_STR_LIT("SceneAsset.LoadAnimationAsset: graphics support not compiled in"));
 }
 
 /// @brief Stub for `Model3D.LoadNodeAnimation`.
@@ -2817,7 +2816,7 @@ void *rt_model3d_load_node_animation_result(rt_string path, int64_t index) {
     (void)path;
     (void)index;
     return rt_result_err_str(
-        rt_const_cstr("SceneAsset.LoadNodeAnimation: graphics support not compiled in"));
+        RT_STR_LIT("SceneAsset.LoadNodeAnimation: graphics support not compiled in"));
 }
 
 /// @brief Stub for `Model3D.LoadNodeAnimationAsset`.
@@ -2839,7 +2838,7 @@ void *rt_model3d_load_node_animation_asset_result(rt_string path, int64_t index)
     (void)path;
     (void)index;
     return rt_result_err_str(
-        rt_const_cstr("SceneAsset.LoadNodeAnimationAsset: graphics support not compiled in"));
+        RT_STR_LIT("SceneAsset.LoadNodeAnimationAsset: graphics support not compiled in"));
 }
 
 /// @brief Stub for `Model3D.FindNode(name)` — recursive name lookup

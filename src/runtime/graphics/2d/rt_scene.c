@@ -581,7 +581,7 @@ void *rt_scene_node_new(void) {
     node->name = NULL;
 
     rt_obj_set_finalizer(node, scene_node_finalize);
-    rt_scene_node_set_name(node, rt_const_cstr(""));
+    rt_scene_node_set_name(node, RT_STR_LIT(""));
 
     return node;
 }

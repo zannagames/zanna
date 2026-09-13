@@ -1422,7 +1422,7 @@ void *rt_xml_parse_result(rt_string text) {
         rt_string err = rt_xml_error();
         if (!err || rt_str_len(err) == 0) {
             rt_str_release_maybe(err);
-            return rt_result_err_str(rt_const_cstr("XML parse error"));
+            return rt_result_err_str(RT_STR_LIT("XML parse error"));
         }
         void *result = rt_result_err_str(err);
         rt_str_release_maybe(err);

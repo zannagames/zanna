@@ -104,12 +104,15 @@ static void async_release_owned_arg(void **slot, int8_t *owned) {
     *owned = 0;
 }
 
-/// @brief Resolve a promise as Err using a C string literal (uses `rt_const_cstr` — no allocation).
-/// Falls back to "Unknown error" if `msg` is NULL.
+/// @brief Resolve a promise as Err with a C string message.
+/// @details The promise stores its own copy of the diagnostic, so the temporary runtime string
+///          is released before returning. Falls back to "Unknown error" if `msg` is NULL.
 /// @param promise Destination Promise.
 /// @param msg Borrowed error text, or null for the fallback.
 static void async_promise_error_cstr(void *promise, const char *msg) {
-    rt_promise_set_error(promise, rt_const_cstr(msg ? msg : "Unknown error"));
+    rt_string message = rt_const_cstr(msg ? msg : "Unknown error");
+    rt_promise_set_error(promise, message);
+    rt_string_unref(message);
 }
 
 /// @brief Resolve a promise as Err with a heap-allocated copy of `msg` (or `fallback` if NULL).

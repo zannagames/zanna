@@ -247,6 +247,8 @@ The `RT_FUNC` describes the actual C ABI. The `RT_METHOD` describes the user-fac
 
 Every `RT_FUNC` row that returns a managed reference (`obj`, `obj<…>`, `seq<…>`, or `str`) must end with an ownership token: `owned` when the function hands the caller a new reference (constructors, loaders, copied strings), or `borrowed` when it returns a view the caller must not release (a stored field, the receiver itself). `rtgen` rejects a reference-returning row without the token and a token on a row that returns no reference ([ADR 0314](../adr/0314-declared-runtime-result-ownership.md)). Decide the token from what the C code actually returns, not from the name. `src/il/runtime/RuntimeOwnership.hpp` is still updated by hand, but only for argument consumption and retention masks and other optimizer facts; the row's token alone decides result ownership.
 
+Inside the implementation, pass string literals to runtime APIs as `RT_STR_LIT("key")`, which returns an immortal cached string, never as an inline `rt_const_cstr("key")`. `rt_const_cstr` returns an owned copy, so an inline call passed to a borrowing or retaining API (map keys, `rt_result_err_str`, promise errors) leaks it. For non-literal C strings, keep the `rt_const_cstr` handle and `rt_string_unref` it after the call.
+
 ### Complete Header Example
 
 ```c

@@ -55,7 +55,7 @@ int64_t rt_game3d_surfaces_register(rt_string name) {
 rt_string rt_game3d_surfaces_name_of(int64_t id) {
     (void)id;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Surfaces.NameOf: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }
 
 /// @brief Silent fallback stub for `Surfaces.IdOf` (graphics-disabled build).
@@ -199,7 +199,7 @@ void *rt_game3d_interactable_with_prompt(void *item, rt_string prompt) {
 rt_string rt_game3d_interactable_get_prompt(void *item) {
     (void)item;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Interactable3D.get_Prompt: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }
 
 /// @brief Silent no-op stub for `Interactable3D.WithKind` (graphics-disabled build).
@@ -735,7 +735,7 @@ void *rt_game3d_entity_set_persistent(void *entity, rt_string key) {
 rt_string rt_game3d_entity_get_persistent_key(void *entity) {
     (void)entity;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Entity3D.get_PersistentKey: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }
 
 /// @brief Silent no-op stub for `Entity3D.set_StateTag` (graphics-disabled build).
@@ -804,7 +804,7 @@ rt_string rt_game3d_world_stream_loaded_event(void *stream, int64_t index) {
     (void)stream;
     (void)index;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("WorldStream3D.LoadedCellEvent: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }
 
 /// @brief Silent no-op stub for `WorldStream3D.ClearLoadedCellEvents` (graphics-disabled build).

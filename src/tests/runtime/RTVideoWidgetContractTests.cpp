@@ -352,10 +352,11 @@ extern "C" rt_string rt_string_from_bytes(const char *data, size_t len) {
     return reinterpret_cast<rt_string>(str);
 }
 
-/// @brief Isolated borrowed-string double used only by VideoWidget's static control labels.
-/// @details The button-construction double never inspects or retains this value, so no runtime
-///          string allocation is needed and the production no-allocation contract is preserved.
-extern "C" rt_string rt_const_cstr(const char *text) {
+/// @brief Isolated literal-string double used only by VideoWidget's static control labels.
+/// @details Production `RT_STR_LIT` resolves to an immortal cached string, so labels need no
+///          release. The button-construction double never inspects or retains this value, so the
+///          double can hand back the literal bytes without allocating.
+extern "C" rt_string rt_str_from_lit(const char *text, size_t) {
     return reinterpret_cast<rt_string>(const_cast<char *>(text));
 }
 

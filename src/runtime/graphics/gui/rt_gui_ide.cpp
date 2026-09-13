@@ -144,7 +144,9 @@ void mapSetStr(void *map, const char *key, const std::string &value) {
     rt_string s = makeString(value);
     if (!s)
         return;
-    rt_map_set_str(map, rt_const_cstr(key), s);
+    rt_string k = rt_const_cstr(key);
+    rt_map_set_str(map, k, s);
+    rt_string_unref(k);
     rt_string_unref(s);
 }
 
@@ -533,17 +535,17 @@ void *widgetToMap(const WidgetRecord *w) {
     if (!map)
         return nullptr;
     if (!w) {
-        rt_map_set_bool(map, rt_const_cstr("found"), 0);
+        rt_map_set_bool(map, RT_STR_LIT("found"), 0);
         return map;
     }
-    rt_map_set_bool(map, rt_const_cstr("found"), 1);
+    rt_map_set_bool(map, RT_STR_LIT("found"), 1);
     mapSetStr(map, "id", w->id);
     mapSetStr(map, "type", w->type);
     mapSetStr(map, "name", w->name);
-    rt_map_set_int(map, rt_const_cstr("x"), w->x);
-    rt_map_set_int(map, rt_const_cstr("y"), w->y);
-    rt_map_set_int(map, rt_const_cstr("width"), w->w);
-    rt_map_set_int(map, rt_const_cstr("height"), w->h);
+    rt_map_set_int(map, RT_STR_LIT("x"), w->x);
+    rt_map_set_int(map, RT_STR_LIT("y"), w->y);
+    rt_map_set_int(map, RT_STR_LIT("width"), w->w);
+    rt_map_set_int(map, RT_STR_LIT("height"), w->h);
     return map;
 }
 
@@ -557,17 +559,17 @@ void *eventToMap(const EventRecord *event) {
     if (!map)
         return nullptr;
     if (!event) {
-        rt_map_set_bool(map, rt_const_cstr("found"), 0);
+        rt_map_set_bool(map, RT_STR_LIT("found"), 0);
         return map;
     }
-    rt_map_set_bool(map, rt_const_cstr("found"), 1);
+    rt_map_set_bool(map, RT_STR_LIT("found"), 1);
     mapSetStr(map, "type", event->type);
     mapSetStr(map, "value", event->value);
-    rt_map_set_int(map, rt_const_cstr("x"), event->x);
-    rt_map_set_int(map, rt_const_cstr("y"), event->y);
-    rt_map_set_int(map, rt_const_cstr("button"), event->button);
-    rt_map_set_int(map, rt_const_cstr("modifiers"), event->modifiers);
-    rt_map_set_int(map, rt_const_cstr("frame"), event->frame);
+    rt_map_set_int(map, RT_STR_LIT("x"), event->x);
+    rt_map_set_int(map, RT_STR_LIT("y"), event->y);
+    rt_map_set_int(map, RT_STR_LIT("button"), event->button);
+    rt_map_set_int(map, RT_STR_LIT("modifiers"), event->modifiers);
+    rt_map_set_int(map, RT_STR_LIT("frame"), event->frame);
     return map;
 }
 
@@ -915,12 +917,12 @@ static void *visibleTreeRowToMap(VirtualTreeState &state, const VisibleTreeRow &
     mapSetStr(map, "text", node.text);
     mapSetStr(map, "parentId", node.parent);
     rt_map_set_int(map,
-                   rt_const_cstr("depth"),
+                   RT_STR_LIT("depth"),
                    row.depth > static_cast<size_t>(INT64_MAX) ? INT64_MAX
                                                               : static_cast<int64_t>(row.depth));
-    rt_map_set_bool(map, rt_const_cstr("expanded"), node.expanded ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("expanded"), node.expanded ? 1 : 0);
     rt_map_set_bool(
-        map, rt_const_cstr("needsPopulate"), (!node.loaded && node.children.empty()) ? 1 : 0);
+        map, RT_STR_LIT("needsPopulate"), (!node.loaded && node.children.empty()) ? 1 : 0);
     if (!node.iconVector.empty()) {
         try {
             mapSetStr(map, "icon", "vector:" + node.iconVector);
@@ -1609,15 +1611,15 @@ void *rt_gui_test_harness_compare_region(
     void *comparison = rt_map_new();
     if (!comparison)
         return nullptr;
-    rt_map_set_int(comparison, rt_const_cstr("schemaVersion"), 1);
-    rt_map_set_bool(comparison, rt_const_cstr("matches"), 0);
-    rt_map_set_int(comparison, rt_const_cstr("width"), 0);
-    rt_map_set_int(comparison, rt_const_cstr("height"), 0);
-    rt_map_set_int(comparison, rt_const_cstr("tolerance"), 0);
-    rt_map_set_int(comparison, rt_const_cstr("comparedPixels"), 0);
-    rt_map_set_int(comparison, rt_const_cstr("differentPixels"), 0);
-    rt_map_set_int(comparison, rt_const_cstr("maxChannelDelta"), 0);
-    rt_map_set_float(comparison, rt_const_cstr("meanAbsoluteError"), 0.0);
+    rt_map_set_int(comparison, RT_STR_LIT("schemaVersion"), 1);
+    rt_map_set_bool(comparison, RT_STR_LIT("matches"), 0);
+    rt_map_set_int(comparison, RT_STR_LIT("width"), 0);
+    rt_map_set_int(comparison, RT_STR_LIT("height"), 0);
+    rt_map_set_int(comparison, RT_STR_LIT("tolerance"), 0);
+    rt_map_set_int(comparison, RT_STR_LIT("comparedPixels"), 0);
+    rt_map_set_int(comparison, RT_STR_LIT("differentPixels"), 0);
+    rt_map_set_int(comparison, RT_STR_LIT("maxChannelDelta"), 0);
+    rt_map_set_float(comparison, RT_STR_LIT("meanAbsoluteError"), 0.0);
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_gui_automation_app_view_t app{};
     rt_pixels_impl *reference = rt_pixels_checked_impl_or_null(expected);
@@ -1627,9 +1629,9 @@ void *rt_gui_test_harness_compare_region(
         tolerance = 0;
     if (tolerance > 255)
         tolerance = 255;
-    rt_map_set_int(comparison, rt_const_cstr("width"), reference->width);
-    rt_map_set_int(comparison, rt_const_cstr("height"), reference->height);
-    rt_map_set_int(comparison, rt_const_cstr("tolerance"), tolerance);
+    rt_map_set_int(comparison, RT_STR_LIT("width"), reference->width);
+    rt_map_set_int(comparison, RT_STR_LIT("height"), reference->height);
+    rt_map_set_int(comparison, RT_STR_LIT("tolerance"), tolerance);
     vgfx_framebuffer_t framebuffer{};
     if (!vgfx_get_framebuffer(static_cast<vgfx_window_t>(app.window), &framebuffer))
         return comparison;
@@ -1669,11 +1671,11 @@ void *rt_gui_test_harness_compare_region(
         compared == 0u
             ? 0.0
             : static_cast<double>(absolute_error / (static_cast<long double>(compared) * 4.0L));
-    rt_map_set_bool(comparison, rt_const_cstr("matches"), different == 0u ? 1 : 0);
-    rt_map_set_int(comparison, rt_const_cstr("comparedPixels"), compared_i64);
-    rt_map_set_int(comparison, rt_const_cstr("differentPixels"), different_i64);
-    rt_map_set_int(comparison, rt_const_cstr("maxChannelDelta"), max_delta);
-    rt_map_set_float(comparison, rt_const_cstr("meanAbsoluteError"), mean_error);
+    rt_map_set_bool(comparison, RT_STR_LIT("matches"), different == 0u ? 1 : 0);
+    rt_map_set_int(comparison, RT_STR_LIT("comparedPixels"), compared_i64);
+    rt_map_set_int(comparison, RT_STR_LIT("differentPixels"), different_i64);
+    rt_map_set_int(comparison, RT_STR_LIT("maxChannelDelta"), max_delta);
+    rt_map_set_float(comparison, RT_STR_LIT("meanAbsoluteError"), mean_error);
 #else
     (void)expected;
     (void)x;
@@ -1770,7 +1772,7 @@ void *rt_gui_test_harness_find_by_id(void *harness, rt_string id) {
 /// @param map Map returned by a legacy TestHarness lookup.
 /// @return Zanna.Option.Some(Map) for found records, otherwise Zanna.Option.None().
 static void *testHarnessLookupOption(void *map) {
-    if (!map || rt_map_get_bool(map, rt_const_cstr("found")) == 0) {
+    if (!map || rt_map_get_bool(map, RT_STR_LIT("found")) == 0) {
         releaseObject(map);
         return rt_option_none();
     }
@@ -1954,17 +1956,17 @@ void *rt_gui_test_harness_capture_region(
     void *snapshot = rt_map_new();
     if (!snapshot)
         return nullptr;
-    rt_map_set_int(snapshot, rt_const_cstr("x"), x);
-    rt_map_set_int(snapshot, rt_const_cstr("y"), y);
-    rt_map_set_int(snapshot, rt_const_cstr("width"), w);
-    rt_map_set_int(snapshot, rt_const_cstr("height"), hgt);
+    rt_map_set_int(snapshot, RT_STR_LIT("x"), x);
+    rt_map_set_int(snapshot, RT_STR_LIT("y"), y);
+    rt_map_set_int(snapshot, RT_STR_LIT("width"), w);
+    rt_map_set_int(snapshot, RT_STR_LIT("height"), hgt);
     int64_t hits = 0;
     for (const auto &widget : h->state->widgets) {
         if (intersects(widget, x, y, w, hgt))
             hits++;
     }
-    rt_map_set_int(snapshot, rt_const_cstr("nonBlankPixels"), hits > 0 ? safeAreaI64(w, hgt) : 0);
-    rt_map_set_bool(snapshot, rt_const_cstr("nonBlank"), hits > 0 ? 1 : 0);
+    rt_map_set_int(snapshot, RT_STR_LIT("nonBlankPixels"), hits > 0 ? safeAreaI64(w, hgt) : 0);
+    rt_map_set_bool(snapshot, RT_STR_LIT("nonBlank"), hits > 0 ? 1 : 0);
     return snapshot;
 }
 
@@ -1974,7 +1976,7 @@ void *rt_gui_test_harness_capture_region(
 int8_t rt_gui_test_harness_assert_nonblank(void *snapshot) {
     if (!snapshot || rt_obj_class_id(snapshot) != RT_MAP_CLASS_ID)
         return 0;
-    return rt_map_get_bool(snapshot, rt_const_cstr("nonBlank"));
+    return rt_map_get_bool(snapshot, RT_STR_LIT("nonBlank"));
 }
 
 /// @brief Create a managed virtual-list model with fixed row and viewport metrics.
@@ -2291,9 +2293,9 @@ void *rt_virtual_list_visible_range(void *list, int64_t scroll_y) {
     void *map = rt_map_new();
     if (!map)
         return nullptr;
-    rt_map_set_int(map, rt_const_cstr("start"), first);
-    rt_map_set_int(map, rt_const_cstr("end"), end);
-    rt_map_set_int(map, rt_const_cstr("count"), std::max<int64_t>(0, end - first));
+    rt_map_set_int(map, RT_STR_LIT("start"), first);
+    rt_map_set_int(map, RT_STR_LIT("end"), end);
+    rt_map_set_int(map, RT_STR_LIT("count"), std::max<int64_t>(0, end - first));
     return map;
 }
 
@@ -2578,8 +2580,8 @@ void *rt_virtual_tree_expand(void *tree, rt_string id_s) {
         std::string id = toStd(id_s);
         auto it = h->state->nodes.find(id);
         if (it == h->state->nodes.end()) {
-            rt_map_set_bool(map, rt_const_cstr("found"), 0);
-            rt_map_set_bool(map, rt_const_cstr("needsPopulate"), 1);
+            rt_map_set_bool(map, RT_STR_LIT("found"), 0);
+            rt_map_set_bool(map, RT_STR_LIT("needsPopulate"), 1);
             return map;
         }
         if (!it->second.expanded) {
@@ -2587,14 +2589,14 @@ void *rt_virtual_tree_expand(void *tree, rt_string id_s) {
             h->state->visibleDirty = true;
             syncBoundVirtualTree(*h->state);
         }
-        rt_map_set_bool(map, rt_const_cstr("found"), 1);
-        rt_map_set_bool(map, rt_const_cstr("expanded"), 1);
+        rt_map_set_bool(map, RT_STR_LIT("found"), 1);
+        rt_map_set_bool(map, RT_STR_LIT("expanded"), 1);
         rt_map_set_bool(map,
-                        rt_const_cstr("needsPopulate"),
+                        RT_STR_LIT("needsPopulate"),
                         (!it->second.loaded && it->second.children.empty()) ? 1 : 0);
     } catch (const std::bad_alloc &) {
-        rt_map_set_bool(map, rt_const_cstr("found"), 0);
-        rt_map_set_bool(map, rt_const_cstr("needsPopulate"), 1);
+        rt_map_set_bool(map, RT_STR_LIT("found"), 0);
+        rt_map_set_bool(map, RT_STR_LIT("needsPopulate"), 1);
     }
     return map;
 }
@@ -3139,8 +3141,8 @@ void *rt_command_state_snapshot(void *state) {
     mapSetStr(map, "label", s->label);
     mapSetStr(map, "accessibleLabel", s->accessibleLabel);
     mapSetStr(map, "accessibleDescription", s->accessibleDescription);
-    rt_map_set_bool(map, rt_const_cstr("enabled"), s->enabled ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("checked"), s->checked ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("enabled"), s->enabled ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("checked"), s->checked ? 1 : 0);
     return map;
 }
 
@@ -3173,11 +3175,11 @@ void *rt_accessibility_high_contrast_tokens(void) {
     void *map = rt_map_new();
     if (!map)
         return nullptr;
-    rt_map_set_int(map, rt_const_cstr("background"), 0x000000);
-    rt_map_set_int(map, rt_const_cstr("foreground"), 0xffffff);
-    rt_map_set_int(map, rt_const_cstr("accent"), 0x00d7ff);
-    rt_map_set_int(map, rt_const_cstr("warning"), 0xffd75f);
-    rt_map_set_int(map, rt_const_cstr("error"), 0xff5f5f);
+    rt_map_set_int(map, RT_STR_LIT("background"), 0x000000);
+    rt_map_set_int(map, RT_STR_LIT("foreground"), 0xffffff);
+    rt_map_set_int(map, RT_STR_LIT("accent"), 0x00d7ff);
+    rt_map_set_int(map, RT_STR_LIT("warning"), 0xffd75f);
+    rt_map_set_int(map, RT_STR_LIT("error"), 0xff5f5f);
     return map;
 }
 
@@ -3356,10 +3358,10 @@ void *rt_command_snapshot(void *command) {
     mapSetStr(map, "id", s->id);
     mapSetStr(map, "title", s->title);
     mapSetStr(map, "shortcut", s->shortcut);
-    rt_map_set_bool(map, rt_const_cstr("enabled"), s->enabled ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("checkable"), s->checkable ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("checked"), s->checked ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("invoked"), s->invoked ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("enabled"), s->enabled ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("checkable"), s->checkable ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("checked"), s->checked ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("invoked"), s->invoked ? 1 : 0);
     return map;
 }
 

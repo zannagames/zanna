@@ -281,7 +281,9 @@ static int process_validate_string_sequence(void *items,
 static void map_set_string_owned(void *map, const char *key, rt_string value) {
     if (!map || !key)
         return;
-    rt_map_set_str(map, rt_const_cstr(key), value ? value : rt_const_cstr(""));
+    rt_string map_key = rt_const_cstr(key);
+    rt_map_set_str(map, map_key, value ? value : rt_str_empty());
+    rt_string_unref(map_key);
 }
 
 /// @brief Locate one stream's retained-byte counter.
@@ -464,7 +466,7 @@ static void *stream_output_take_result(rt_process_impl *proc, int stream) {
         return NULL;
     }
     map_set_string_owned(result, "text", output);
-    rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
+    rt_map_set_bool(result, RT_STR_LIT("truncated"), truncated ? 1 : 0);
     rt_str_release_maybe(output);
     return result;
 }
@@ -549,11 +551,11 @@ static void *ordered_output_take_result_bounded(rt_process_impl *proc,
             process_release_object(result);
             return NULL;
         }
-        rt_map_set_int(entry, rt_const_cstr("sequence"), (int64_t)chunk->sequence);
-        map_set_string_owned(
-            entry,
-            "stream",
-            rt_const_cstr(chunk->stream == PROCESS_OUTPUT_STDERR ? "stderr" : "stdout"));
+        rt_map_set_int(entry, RT_STR_LIT("sequence"), (int64_t)chunk->sequence);
+        map_set_string_owned(entry,
+                             "stream",
+                             chunk->stream == PROCESS_OUTPUT_STDERR ? RT_STR_LIT("stderr")
+                                                                    : RT_STR_LIT("stdout"));
         map_set_string_owned(entry, "text", text);
         rt_str_release_maybe(text);
         rt_seq_push(chunks, entry);
@@ -565,14 +567,14 @@ static void *ordered_output_take_result_bounded(rt_process_impl *proc,
             break;
     }
 
-    rt_map_set(result, rt_const_cstr("chunks"), chunks);
-    rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
-    rt_map_set_int(result, rt_const_cstr("emittedBytes"), (int64_t)emitted_total);
+    rt_map_set(result, RT_STR_LIT("chunks"), chunks);
+    rt_map_set_bool(result, RT_STR_LIT("truncated"), truncated ? 1 : 0);
+    rt_map_set_int(result, RT_STR_LIT("emittedBytes"), (int64_t)emitted_total);
     const size_t retained = proc ? proc->output_bytes : 0;
     rt_map_set_int(result,
-                   rt_const_cstr("remainingBytes"),
+                   RT_STR_LIT("remainingBytes"),
                    (int64_t)(retained >= emitted_total ? retained - emitted_total : 0));
-    rt_map_set_bool(result, rt_const_cstr("hasMore"), proc && retained > emitted_total ? 1 : 0);
+    rt_map_set_bool(result, RT_STR_LIT("hasMore"), proc && retained > emitted_total ? 1 : 0);
     process_release_object(chunks);
     if (proc) {
         ordered_output_consume_prefix(proc, emitted_total);

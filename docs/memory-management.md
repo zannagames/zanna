@@ -483,7 +483,15 @@ without `malloc`/`free` overhead.
 ### Strings
 
 - Created via `rt_string_from_bytes(bytes, len)` — heap-backed, refcount=1
-- Created via `rt_const_cstr(literal)` — immortal wrapper, never freed
+- Created via `rt_const_cstr(text)` — an **owned copy** (refcount=1) the caller
+  must release, except that empty input returns the immortal empty singleton.
+  Passing `rt_const_cstr("key")` inline to a borrowing or retaining API (a map
+  key, `Result.ErrStr`, a promise error) leaks the copy; keep the handle and
+  `rt_string_unref` it after the call.
+- Created via `RT_STR_LIT("literal")` (`rt_str_from_lit`) — immortal and cached
+  per literal address, never freed and never needing release. Runtime C code
+  uses it whenever a string literal is passed straight to a runtime API; native
+  code uses the same cache for every string literal it evaluates.
 - Pool-allocated when total size (header + payload) ≤ 512 bytes
 - `rt_string_intern(s)` returns the canonical pointer; enables O(1) pointer
   equality. The intern table retains its own reference.

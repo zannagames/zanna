@@ -81,27 +81,26 @@ static void *rt_codeeditor_perf_stats_map(uint64_t total_height_scans,
     void *map = rt_map_new();
     if (!map)
         return NULL;
-    rt_map_set_int(map, rt_const_cstr("schemaVersion"), 1);
+    rt_map_set_int(map, RT_STR_LIT("schemaVersion"), 1);
     rt_map_set_int(
-        map, rt_const_cstr("totalHeightLinearScans"), rt_codeeditor_perf_i64(total_height_scans));
+        map, RT_STR_LIT("totalHeightLinearScans"), rt_codeeditor_perf_i64(total_height_scans));
     rt_map_set_int(map,
-                   rt_const_cstr("totalVisualRowLinearScans"),
+                   RT_STR_LIT("totalVisualRowLinearScans"),
                    rt_codeeditor_perf_i64(total_visual_row_scans));
     rt_map_set_int(
-        map, rt_const_cstr("visualRowLinearScans"), rt_codeeditor_perf_i64(visual_row_scans));
+        map, RT_STR_LIT("visualRowLinearScans"), rt_codeeditor_perf_i64(visual_row_scans));
     rt_map_set_int(map,
-                   rt_const_cstr("locateVisualRowLinearScans"),
+                   RT_STR_LIT("locateVisualRowLinearScans"),
                    rt_codeeditor_perf_i64(locate_visual_row_scans));
     rt_map_set_int(
-        map, rt_const_cstr("lineHighlightCalls"), rt_codeeditor_perf_i64(line_highlight_calls));
-    rt_map_set_int(map,
-                   rt_const_cstr("syntaxStateLineScans"),
-                   rt_codeeditor_perf_i64(syntax_state_line_scans));
+        map, RT_STR_LIT("lineHighlightCalls"), rt_codeeditor_perf_i64(line_highlight_calls));
     rt_map_set_int(
-        map, rt_const_cstr("highlightSpanChecks"), rt_codeeditor_perf_i64(highlight_span_checks));
-    rt_map_set_int(map, rt_const_cstr("fullTextCopies"), rt_codeeditor_perf_i64(full_text_copies));
+        map, RT_STR_LIT("syntaxStateLineScans"), rt_codeeditor_perf_i64(syntax_state_line_scans));
     rt_map_set_int(
-        map, rt_const_cstr("fullTextCopyBytes"), rt_codeeditor_perf_i64(full_text_copy_bytes));
+        map, RT_STR_LIT("highlightSpanChecks"), rt_codeeditor_perf_i64(highlight_span_checks));
+    rt_map_set_int(map, RT_STR_LIT("fullTextCopies"), rt_codeeditor_perf_i64(full_text_copies));
+    rt_map_set_int(
+        map, RT_STR_LIT("fullTextCopyBytes"), rt_codeeditor_perf_i64(full_text_copy_bytes));
     return map;
 }
 
@@ -438,9 +437,9 @@ void *rt_codeeditor_take_gutter_click(void *editor) {
     if (!result)
         return NULL;
     if (!ce || !ce->gutter_clicked) {
-        rt_map_set_bool(result, rt_const_cstr("clicked"), 0);
-        rt_map_set_int(result, rt_const_cstr("line"), -1);
-        rt_map_set_int(result, rt_const_cstr("slot"), -1);
+        rt_map_set_bool(result, RT_STR_LIT("clicked"), 0);
+        rt_map_set_int(result, RT_STR_LIT("line"), -1);
+        rt_map_set_int(result, RT_STR_LIT("slot"), -1);
         return result;
     }
     int line = ce->gutter_clicked_line;
@@ -449,9 +448,9 @@ void *rt_codeeditor_take_gutter_click(void *editor) {
     ce->gutter_click_read = true;
     ce->gutter_clicked_line = -1;
     ce->gutter_clicked_slot = -1;
-    rt_map_set_bool(result, rt_const_cstr("clicked"), 1);
-    rt_map_set_int(result, rt_const_cstr("line"), line);
-    rt_map_set_int(result, rt_const_cstr("slot"), slot);
+    rt_map_set_bool(result, RT_STR_LIT("clicked"), 1);
+    rt_map_set_int(result, RT_STR_LIT("line"), line);
+    rt_map_set_int(result, RT_STR_LIT("slot"), slot);
     return result;
 }
 
@@ -2370,9 +2369,9 @@ void *rt_codeeditor_take_gutter_click(void *editor) {
     void *result = rt_map_new();
     if (!result)
         return NULL;
-    rt_map_set_bool(result, rt_const_cstr("clicked"), 0);
-    rt_map_set_int(result, rt_const_cstr("line"), -1);
-    rt_map_set_int(result, rt_const_cstr("slot"), -1);
+    rt_map_set_bool(result, RT_STR_LIT("clicked"), 0);
+    rt_map_set_int(result, RT_STR_LIT("line"), -1);
+    rt_map_set_int(result, RT_STR_LIT("slot"), -1);
     return result;
 }
 

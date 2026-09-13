@@ -123,12 +123,24 @@ rt_string rt_str_empty(void);
 rt_string rt_string_from_bytes(const char *bytes, size_t len);
 
 /// @brief Create a runtime string from a string literal.
-/// @details Copies through @ref rt_string_from_bytes; the result is an ordinary
-///          mortal owned string rather than a borrowed or immortal literal view.
-/// @param bytes Pointer to the literal data.
+/// @details Returns the immortal string cached for the literal's address, creating it on first
+///          use. Every evaluation of the same literal yields the same handle, retain/release on
+///          it are no-ops, and no per-call allocation happens. Native code calls this for every
+///          string literal; runtime C code should use @ref RT_STR_LIT instead of calling it
+///          directly.
+/// @param bytes Literal data that stays mapped for the rest of the process.
 /// @param len Number of bytes in the literal.
-/// @return Owned copied runtime string.
+/// @return Immortal cached runtime string, or the empty singleton for an empty literal.
 rt_string rt_str_from_lit(const char *bytes, size_t len);
+
+/// @brief Borrow the immortal runtime string for a C string literal.
+/// @details Use this instead of `rt_const_cstr("...")` whenever a literal is passed straight to
+///          a runtime API (a map key, a Result or Option payload, a trap message): the result
+///          is cached per literal address and never needs releasing, while an inline
+///          `rt_const_cstr` temporary leaks its owned copy. The `"" literal` concatenation makes
+///          anything other than a string literal a compile error.
+/// @param literal A C string literal.
+#define RT_STR_LIT(literal) rt_str_from_lit("" literal, sizeof("" literal) - 1u)
 
 /// @brief Return the number of bytes stored in @p s (excluding the terminator).
 /// @param s String to measure; `NULL` is treated as empty.
@@ -394,7 +406,10 @@ const char *rt_string_cstr(rt_string s);
 
 /// @brief Copy a null-terminated C string into a runtime string.
 /// @details Copies through the first NUL. Empty input returns the immortal
-///          empty singleton; null input returns `NULL` without trapping.
+///          empty singleton; null input returns `NULL` without trapping. The
+///          caller owns the copy and must release it (or transfer it to a
+///          consuming API). Passing the call inline to a borrowing or retaining
+///          API leaks the copy; for string literals use @ref RT_STR_LIT.
 /// @param str Borrowed NUL-terminated source pointer.
 /// @return Owned copied handle, immortal empty singleton, or `NULL`.
 rt_string rt_const_cstr(const char *str);

@@ -340,7 +340,7 @@ extern "C" void rt_map_set_int(void *, rt_string, int64_t) {}
 
 extern "C" void rt_map_set_bool(void *, rt_string, int8_t) {}
 
-extern "C" rt_string rt_const_cstr(const char *) {
+extern "C" rt_string rt_str_from_lit(const char *, size_t) {
     return nullptr;
 }
 

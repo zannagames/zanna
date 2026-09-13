@@ -118,13 +118,15 @@ void releaseObject(void *object) {
         rt_obj_free(object);
 }
 
-/// @brief Store a copied C++ string value under an immortal map key.
+/// @brief Store a copied C++ string value under a map key.
 /// @param map Runtime Map receiving the value.
-/// @param key Static NUL-terminated key.
+/// @param key NUL-terminated key; the map copies it, so the temporary is released here.
 /// @param value Byte string copied into a fresh runtime string.
 void mapSetString(void *map, const char *key, const std::string &value) {
     rt_string managed = rt_string_from_bytes(value.data(), value.size());
-    rt_map_set_str(map, rt_const_cstr(key), managed);
+    rt_string managed_key = rt_const_cstr(key);
+    rt_map_set_str(map, managed_key, managed);
+    rt_string_unref(managed_key);
     rt_string_unref(managed);
 }
 
@@ -257,7 +259,7 @@ void emitEntry(void *entries,
     mapSetString(entry, "name", directoryEntry.path().filename().generic_string());
     mapSetString(entry, "path", absolutePath.generic_string());
     mapSetString(entry, "kind", isDirectory ? "directory" : (isFile ? "file" : "other"));
-    rt_map_set_bool(entry, rt_const_cstr("isDirectory"), isDirectory ? 1 : 0);
+    rt_map_set_bool(entry, RT_STR_LIT("isDirectory"), isDirectory ? 1 : 0);
     sequencePushOwned(entries, entry);
 }
 
@@ -319,22 +321,22 @@ void *rt_dir_page(rt_string pathString, int64_t offset, int64_t limit) {
     if (limit > kMaximumDirectoryPageSize)
         limit = kMaximumDirectoryPageSize;
 
-    rt_map_set_bool(result, rt_const_cstr("valid"), 1);
+    rt_map_set_bool(result, RT_STR_LIT("valid"), 1);
     mapSetString(result, "path", "");
-    rt_map_set_int(result, rt_const_cstr("offset"), offset);
-    rt_map_set_int(result, rt_const_cstr("limit"), limit);
-    rt_map_set_int(result, rt_const_cstr("emitted"), 0);
-    rt_map_set_int(result, rt_const_cstr("nextOffset"), offset);
-    rt_map_set_bool(result, rt_const_cstr("done"), 1);
-    rt_map_set(result, rt_const_cstr("entries"), entries);
-    rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+    rt_map_set_int(result, RT_STR_LIT("offset"), offset);
+    rt_map_set_int(result, RT_STR_LIT("limit"), limit);
+    rt_map_set_int(result, RT_STR_LIT("emitted"), 0);
+    rt_map_set_int(result, RT_STR_LIT("nextOffset"), offset);
+    rt_map_set_bool(result, RT_STR_LIT("done"), 1);
+    rt_map_set(result, RT_STR_LIT("entries"), entries);
+    rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
 
     try {
         const std::string input = toStdString(pathString);
         std::error_code error;
         fs::path root = fs::absolute(fs::path(input), error).lexically_normal();
         if (input.empty() || error || !fs::is_directory(root, error)) {
-            rt_map_set_bool(result, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
             pushDiagnostic(diagnostics, "directory page root is not a directory", input);
             releaseObject(entries);
             releaseObject(diagnostics);
@@ -353,7 +355,7 @@ void *rt_dir_page(rt_string pathString, int64_t offset, int64_t limit) {
         if (!cursor) {
             cursor = startCursor(key, root, diagnostics);
             if (!cursor) {
-                rt_map_set_bool(result, rt_const_cstr("valid"), 0);
+                rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
                 releaseObject(entries);
                 releaseObject(diagnostics);
                 return result;
@@ -386,11 +388,11 @@ void *rt_dir_page(rt_string pathString, int64_t offset, int64_t limit) {
             pushDiagnostic(
                 diagnostics, "directory traversal stopped early: " + traversalError.message(), key);
         }
-        rt_map_set_int(result, rt_const_cstr("emitted"), emitted);
-        rt_map_set_int(result, rt_const_cstr("nextOffset"), nextOffset);
-        rt_map_set_bool(result, rt_const_cstr("done"), done ? 1 : 0);
+        rt_map_set_int(result, RT_STR_LIT("emitted"), emitted);
+        rt_map_set_int(result, RT_STR_LIT("nextOffset"), nextOffset);
+        rt_map_set_bool(result, RT_STR_LIT("done"), done ? 1 : 0);
     } catch (...) {
-        rt_map_set_bool(result, rt_const_cstr("valid"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
         rt_seq_clear(entries);
         pushDiagnostic(diagnostics, "directory page failed", toStdString(pathString));
     }

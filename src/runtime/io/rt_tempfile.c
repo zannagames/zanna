@@ -416,7 +416,7 @@ rt_string rt_tempfile_dir(void) {
 /// @return Fresh runtime string containing the candidate path, or an empty
 ///         string after entropy, validation, or allocation failure.
 rt_string rt_tempfile_path(void) {
-    return rt_tempfile_path_with_prefix(rt_const_cstr("zanna_"));
+    return rt_tempfile_path_with_prefix(RT_STR_LIT("zanna_"));
 }
 
 /// @brief Generate an unreserved temporary path with a custom prefix.
@@ -426,7 +426,7 @@ rt_string rt_tempfile_path(void) {
 /// @return Fresh runtime string containing the candidate path, or an empty
 ///         string after failure.
 rt_string rt_tempfile_path_with_prefix(rt_string prefix) {
-    return rt_tempfile_path_with_ext(prefix, rt_const_cstr(".tmp"));
+    return rt_tempfile_path_with_ext(prefix, RT_STR_LIT(".tmp"));
 }
 
 /// @brief Path generator with custom prefix AND extension. Format:
@@ -485,7 +485,7 @@ rt_string rt_tempfile_path_with_ext(rt_string prefix, rt_string extension) {
 /// @return Runtime string reference naming the created file, or an empty
 ///         string after a trapped creation failure.
 rt_string rt_tempfile_create(void) {
-    return rt_tempfile_create_with_prefix(rt_const_cstr("zanna_"));
+    return rt_tempfile_create_with_prefix(RT_STR_LIT("zanna_"));
 }
 
 /// @brief Atomically create an empty temporary file with a custom prefix.
@@ -560,7 +560,7 @@ rt_string rt_tempfile_create_with_prefix(rt_string prefix) {
 /// @return Runtime string reference naming the created directory, or an empty
 ///         string after a trapped creation failure.
 rt_string rt_tempdir_create(void) {
-    return rt_tempdir_create_with_prefix(rt_const_cstr("zanna_"));
+    return rt_tempdir_create_with_prefix(RT_STR_LIT("zanna_"));
 }
 
 /// @brief Atomic temp-directory creation with custom prefix. Same retry pattern as `_create`
@@ -576,7 +576,7 @@ rt_string rt_tempdir_create_with_prefix(rt_string prefix) {
         return rt_const_cstr("");
     (void)prefix_cstr;
     for (int attempt = 0; attempt < 128; attempt++) {
-        rt_string result = rt_tempfile_path_with_ext(prefix, rt_const_cstr(""));
+        rt_string result = rt_tempfile_path_with_ext(prefix, RT_STR_LIT(""));
         const char *cpath = rt_string_cstr(result);
         int created = tempfile_try_create_dir(cpath);
         if (created > 0)

@@ -738,9 +738,9 @@ void *rt_videowidget_new(void *parent, rt_string path) {
     w->controls_widget = rt_hbox_new();
     if (w->controls_widget) {
         rt_container_set_spacing(w->controls_widget, 8.0);
-        w->play_button = rt_button_new(w->controls_widget, rt_const_cstr("Play"));
-        w->pause_button = rt_button_new(w->controls_widget, rt_const_cstr("Pause"));
-        w->stop_button = rt_button_new(w->controls_widget, rt_const_cstr("Stop"));
+        w->play_button = rt_button_new(w->controls_widget, RT_STR_LIT("Play"));
+        w->pause_button = rt_button_new(w->controls_widget, RT_STR_LIT("Pause"));
+        w->stop_button = rt_button_new(w->controls_widget, RT_STR_LIT("Stop"));
         w->position_slider = rt_slider_new(w->controls_widget, 1);
         if (w->position_slider) {
             rt_widget_set_flex(w->position_slider, 1.0);

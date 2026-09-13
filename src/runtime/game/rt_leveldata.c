@@ -20,12 +20,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "rt_leveldata.h"
-#include "rt_numeric.h"
 #include "rt_box.h"
 #include "rt_file_ext.h"
 #include "rt_json.h"
 #include "rt_jsonpath.h"
 #include "rt_map.h"
+#include "rt_numeric.h"
 #include "rt_object.h"
 #include "rt_seq.h"
 #include "rt_string.h"
@@ -185,10 +185,10 @@ void *rt_leveldata_load(void *path) {
         goto fail;
 
     // Read dimensions
-    int64_t w = rt_jsonpath_get_int(root, rt_const_cstr("width"));
-    int64_t h = rt_jsonpath_get_int(root, rt_const_cstr("height"));
-    int64_t tw = rt_jsonpath_get_int(root, rt_const_cstr("tileWidth"));
-    int64_t th = rt_jsonpath_get_int(root, rt_const_cstr("tileHeight"));
+    int64_t w = rt_jsonpath_get_int(root, RT_STR_LIT("width"));
+    int64_t h = rt_jsonpath_get_int(root, RT_STR_LIT("height"));
+    int64_t tw = rt_jsonpath_get_int(root, RT_STR_LIT("tileWidth"));
+    int64_t th = rt_jsonpath_get_int(root, RT_STR_LIT("tileHeight"));
     if (w <= 0 || h <= 0)
         goto fail;
     if (tw <= 0)
@@ -204,16 +204,16 @@ void *rt_leveldata_load(void *path) {
     rt_obj_set_finalizer(ld, leveldata_finalizer);
 
     // Read properties
-    void *props = rt_jsonpath_get(root, rt_const_cstr("properties"));
+    void *props = rt_jsonpath_get(root, RT_STR_LIT("properties"));
     if (props) {
-        rt_string theme = rt_jsonpath_get_str(props, rt_const_cstr("theme"));
+        rt_string theme = rt_jsonpath_get_str(props, RT_STR_LIT("theme"));
         if (theme) {
             const char *ct = rt_string_cstr(theme);
             if (ct)
                 level_copy_field_utf8(ld->theme, sizeof(ld->theme), ct);
         }
-        ld->player_start_x = rt_jsonpath_get_int(props, rt_const_cstr("playerStartX"));
-        ld->player_start_y = rt_jsonpath_get_int(props, rt_const_cstr("playerStartY"));
+        ld->player_start_x = rt_jsonpath_get_int(props, RT_STR_LIT("playerStartX"));
+        ld->player_start_y = rt_jsonpath_get_int(props, RT_STR_LIT("playerStartY"));
     }
 
     // Validate w*h before allocating the tilemap (validate-then-allocate).
@@ -227,21 +227,21 @@ void *rt_leveldata_load(void *path) {
         goto fail;
 
     // Read tile layers
-    void *layers = rt_jsonpath_get(root, rt_const_cstr("layers"));
+    void *layers = rt_jsonpath_get(root, RT_STR_LIT("layers"));
     if (level_is_array(layers)) {
         int64_t layerCount = rt_seq_len(layers);
         for (int64_t li = 0; li < layerCount; li++) {
             void *layer = rt_seq_get(layers, li);
             if (!layer)
                 continue;
-            rt_string layerType = rt_jsonpath_get_str(layer, rt_const_cstr("type"));
+            rt_string layerType = rt_jsonpath_get_str(layer, RT_STR_LIT("type"));
             if (!layerType)
                 continue;
             const char *typeStr = rt_string_cstr(layerType);
             if (!typeStr || strcmp(typeStr, "tiles") != 0)
                 continue;
 
-            void *data = rt_jsonpath_get(layer, rt_const_cstr("data"));
+            void *data = rt_jsonpath_get(layer, RT_STR_LIT("data"));
             if (!level_is_array(data))
                 continue;
             int64_t dataLen = rt_seq_len(data);
@@ -256,7 +256,7 @@ void *rt_leveldata_load(void *path) {
     }
 
     // Read objects
-    void *objects = rt_jsonpath_get(root, rt_const_cstr("objects"));
+    void *objects = rt_jsonpath_get(root, RT_STR_LIT("objects"));
     if (level_is_array(objects)) {
         int64_t objCount = rt_seq_len(objects);
         for (int64_t i = 0; i < objCount && ld->object_count < LEVEL_MAX_OBJECTS; i++) {
@@ -267,8 +267,8 @@ void *rt_leveldata_load(void *path) {
             level_object_t *lo = &ld->objects[ld->object_count];
             memset(lo, 0, sizeof(level_object_t));
 
-            rt_string otype = rt_jsonpath_get_str(obj, rt_const_cstr("type"));
-            rt_string oid = rt_jsonpath_get_str(obj, rt_const_cstr("id"));
+            rt_string otype = rt_jsonpath_get_str(obj, RT_STR_LIT("type"));
+            rt_string oid = rt_jsonpath_get_str(obj, RT_STR_LIT("id"));
             if (otype) {
                 const char *s = rt_string_cstr(otype);
                 if (s)
@@ -280,8 +280,8 @@ void *rt_leveldata_load(void *path) {
                     level_copy_field_utf8(lo->id, sizeof(lo->id), s);
                 }
             }
-            lo->x = rt_jsonpath_get_int(obj, rt_const_cstr("x"));
-            lo->y = rt_jsonpath_get_int(obj, rt_const_cstr("y"));
+            lo->x = rt_jsonpath_get_int(obj, RT_STR_LIT("x"));
+            lo->y = rt_jsonpath_get_int(obj, RT_STR_LIT("y"));
             ld->object_count++;
         }
     }

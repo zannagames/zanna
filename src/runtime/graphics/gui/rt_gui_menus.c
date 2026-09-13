@@ -249,7 +249,9 @@ vg_icon_t rt_gui_icon_from_path_cstr(const char *path) {
     if (!path || path[0] == '\0')
         return icon;
 
-    void *pixels = rt_pixels_load(rt_const_cstr(path));
+    rt_string path_string = rt_const_cstr(path);
+    void *pixels = rt_pixels_load(path_string);
+    rt_string_unref(path_string);
     if (!pixels)
         return icon;
 

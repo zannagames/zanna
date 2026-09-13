@@ -51,6 +51,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "fonts/embedded_font.h"
+#include "rt_activity_wake.h"
 #include "rt_gui_accessibility_platform.h"
 #include "rt_gui_app_internal.h"
 #include "rt_gui_automation_bridge.h"
@@ -58,7 +59,6 @@
 #include "rt_gui_internal.h"
 #include "rt_input.h"
 #include "rt_platform.h"
-#include "rt_activity_wake.h"
 #include "rt_process.h"
 #include "rt_pty.h"
 #include "rt_result.h"
@@ -1665,8 +1665,12 @@ void *rt_gui_app_new(rt_string title, int64_t width, int64_t height) {
 void *rt_gui_app_try_new(rt_string title, int64_t width, int64_t height) {
     rt_gui_app_create_error_t error = RT_GUI_APP_CREATE_OK;
     void *app = rt_gui_app_create(title, width, height, &error);
-    if (!app)
-        return rt_result_err_str(rt_const_cstr(rt_gui_app_create_error_message(error)));
+    if (!app) {
+        rt_string message = rt_const_cstr(rt_gui_app_create_error_message(error));
+        void *failure = rt_result_err_str(message);
+        rt_string_unref(message);
+        return failure;
+    }
 
     void *result = rt_result_ok(app);
     if (rt_obj_release_check0(app))
@@ -3344,7 +3348,7 @@ void *rt_gui_app_try_new(rt_string title, int64_t width, int64_t height) {
     (void)title;
     (void)width;
     (void)height;
-    return rt_result_err_str(rt_const_cstr("GUI support is not available in this build"));
+    return rt_result_err_str(RT_STR_LIT("GUI support is not available in this build"));
 }
 
 /// @brief No-op stub: default font loading (graphics disabled).

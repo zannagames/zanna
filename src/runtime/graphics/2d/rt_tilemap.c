@@ -2473,11 +2473,11 @@ void *rt_tilemap_hit_test_scaled(void *tilemap_ptr,
         if (in_bounds)
             tile = rt_tilemap_get_tile(tilemap_ptr, tx, ty);
     }
-    rt_map_set_int(result, rt_const_cstr("tileX"), tx);
-    rt_map_set_int(result, rt_const_cstr("tileY"), ty);
-    rt_map_set_int(result, rt_const_cstr("tile"), tile);
-    rt_map_set_int(result, rt_const_cstr("scalePercent"), scale_percent);
-    rt_map_set_bool(result, rt_const_cstr("inBounds"), in_bounds);
+    rt_map_set_int(result, RT_STR_LIT("tileX"), tx);
+    rt_map_set_int(result, RT_STR_LIT("tileY"), ty);
+    rt_map_set_int(result, RT_STR_LIT("tile"), tile);
+    rt_map_set_int(result, RT_STR_LIT("scalePercent"), scale_percent);
+    rt_map_set_bool(result, RT_STR_LIT("inBounds"), in_bounds);
     return result;
 }
 

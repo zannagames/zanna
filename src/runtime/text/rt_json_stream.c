@@ -72,25 +72,25 @@ typedef enum {
 
 /// Mutable state retained by one in-memory pull parser.
 typedef struct {
-    rt_string input_owner;               ///< Retained source string.
-    const char *input;                   ///< Borrowed bytes from @c input_owner.
-    size_t len;                          ///< Source length in bytes.
-    size_t pos;                          ///< Current source byte offset.
-    rt_json_tok_type_t current_type;     ///< Most recently emitted token.
-    char *str_buf;                       ///< Decoded key/string scratch bytes.
-    size_t str_buf_len;                  ///< Decoded content length.
-    size_t str_buf_cap;                  ///< Scratch allocation capacity.
-    double num_value;                    ///< Most recently parsed numeric value.
-    size_t num_start;                    ///< Source offset of latest number.
-    size_t num_len;                      ///< Raw byte length of latest number.
-    int8_t bool_value;                   ///< Most recently parsed Boolean value.
-    int64_t depth;                       ///< Number of currently open containers.
-    char *error_msg;                     ///< Heap-owned parse diagnostic.
-    int8_t expect_key;                   ///< Whether the current object expects a key.
-    int8_t in_object[MAX_DEPTH];         ///< Container-kind flags by depth.
-    int8_t first_value[MAX_DEPTH];       ///< First-value markers by depth.
-    uint8_t state[MAX_DEPTH];            ///< @ref json_stream_ctx_state_t by depth.
-    int8_t top_value_seen;               ///< Whether the single root value began.
+    rt_string input_owner;           ///< Retained source string.
+    const char *input;               ///< Borrowed bytes from @c input_owner.
+    size_t len;                      ///< Source length in bytes.
+    size_t pos;                      ///< Current source byte offset.
+    rt_json_tok_type_t current_type; ///< Most recently emitted token.
+    char *str_buf;                   ///< Decoded key/string scratch bytes.
+    size_t str_buf_len;              ///< Decoded content length.
+    size_t str_buf_cap;              ///< Scratch allocation capacity.
+    double num_value;                ///< Most recently parsed numeric value.
+    size_t num_start;                ///< Source offset of latest number.
+    size_t num_len;                  ///< Raw byte length of latest number.
+    int8_t bool_value;               ///< Most recently parsed Boolean value.
+    int64_t depth;                   ///< Number of currently open containers.
+    char *error_msg;                 ///< Heap-owned parse diagnostic.
+    int8_t expect_key;               ///< Whether the current object expects a key.
+    int8_t in_object[MAX_DEPTH];     ///< Container-kind flags by depth.
+    int8_t first_value[MAX_DEPTH];   ///< First-value markers by depth.
+    uint8_t state[MAX_DEPTH];        ///< @ref json_stream_ctx_state_t by depth.
+    int8_t top_value_seen;           ///< Whether the single root value began.
 } rt_json_stream_impl;
 
 /// @brief GC finalizer — release the input ref, scratch string buffer, and error string.
@@ -457,7 +457,8 @@ static int match_literal(rt_json_stream_impl *s, const char *lit, size_t len) {
 //=============================================================================
 
 /// @brief Construct a streaming JSON parser positioned at the start of `json`. Returns a
-/// reference-counted handle; advance through tokens via `_next` and read values via the type-specific
+/// reference-counted handle; advance through tokens via `_next` and read values via the
+/// type-specific
 /// `_string_value` / `_number_value` / `_bool_value` accessors.
 /// @details Retains the complete source string because this parser is pull-based
 ///          but not incrementally fed. Null input constructs an empty stream
@@ -757,7 +758,7 @@ void *rt_json_stream_next_result(void *parser) {
 
     rt_string err = rt_json_stream_error(parser);
     if (!err || rt_str_len(err) == 0)
-        return rt_result_err_str(rt_const_cstr("JsonStream.NextResult: parse error"));
+        return rt_result_err_str(RT_STR_LIT("JsonStream.NextResult: parse error"));
     return rt_result_err_str(err);
 }
 

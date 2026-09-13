@@ -68,7 +68,9 @@ static void rt_gui_accessibility_map_set_string(void *map, const char *key, cons
     if (!map || !key)
         return;
     rt_string text = rt_gui_accessibility_string(value);
-    rt_map_set_str(map, rt_const_cstr(key), text);
+    rt_string map_key = rt_const_cstr(key);
+    rt_map_set_str(map, map_key, text);
+    rt_string_unref(map_key);
     rt_string_unref(text);
 }
 
@@ -213,10 +215,10 @@ static void *rt_gui_accessibility_make_node(vg_widget_t *widget, float scale, vo
     char value_buffer[64] = {0};
     vg_widget_t *label_target = vg_widget_get_accessible_label_for(widget);
 
-    rt_map_set_int(map, rt_const_cstr("schemaVersion"), 1);
-    rt_map_set_int(map, rt_const_cstr("id"), rt_gui_saturating_u64_to_i64(widget->id));
-    rt_map_set_int(map, rt_const_cstr("type"), (int64_t)widget->type);
-    rt_map_set_int(map, rt_const_cstr("role"), (int64_t)vg_widget_get_accessible_role(widget));
+    rt_map_set_int(map, RT_STR_LIT("schemaVersion"), 1);
+    rt_map_set_int(map, RT_STR_LIT("id"), rt_gui_saturating_u64_to_i64(widget->id));
+    rt_map_set_int(map, RT_STR_LIT("type"), (int64_t)widget->type);
+    rt_map_set_int(map, RT_STR_LIT("role"), (int64_t)vg_widget_get_accessible_role(widget));
     rt_gui_accessibility_map_set_string(map, "name", rt_gui_accessibility_inferred_name(widget));
     rt_gui_accessibility_map_set_string(
         map, "description", vg_widget_get_accessible_description(widget));
@@ -224,42 +226,42 @@ static void *rt_gui_accessibility_make_node(vg_widget_t *widget, float scale, vo
         map,
         "value",
         rt_gui_accessibility_inferred_value(widget, value_buffer, sizeof(value_buffer)));
-    rt_map_set_bool(map, rt_const_cstr("visible"), widget->visible ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("visible"), widget->visible ? 1 : 0);
     rt_map_set_bool(
-        map, rt_const_cstr("enabled"), rt_gui_accessibility_effectively_enabled(widget) ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("checked"), (widget->state & VG_STATE_CHECKED) ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("selected"), (widget->state & VG_STATE_SELECTED) ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("focused"), (widget->state & VG_STATE_FOCUSED) ? 1 : 0);
-    rt_map_set_bool(map, rt_const_cstr("expanded"), 0);
+        map, RT_STR_LIT("enabled"), rt_gui_accessibility_effectively_enabled(widget) ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("checked"), (widget->state & VG_STATE_CHECKED) ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("selected"), (widget->state & VG_STATE_SELECTED) ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("focused"), (widget->state & VG_STATE_FOCUSED) ? 1 : 0);
+    rt_map_set_bool(map, RT_STR_LIT("expanded"), 0);
     rt_map_set_bool(map,
-                    rt_const_cstr("readOnly"),
+                    RT_STR_LIT("readOnly"),
                     widget->type == VG_WIDGET_TEXTINPUT && ((vg_textinput_t *)widget)->read_only);
     rt_map_set_bool(map,
-                    rt_const_cstr("multiline"),
+                    RT_STR_LIT("multiline"),
                     widget->type == VG_WIDGET_TEXTINPUT && ((vg_textinput_t *)widget)->multiline);
-    rt_map_set_float(map, rt_const_cstr("logicalX"), (double)screen_x / scale);
-    rt_map_set_float(map, rt_const_cstr("logicalY"), (double)screen_y / scale);
-    rt_map_set_float(map, rt_const_cstr("logicalWidth"), (double)screen_w / scale);
-    rt_map_set_float(map, rt_const_cstr("logicalHeight"), (double)screen_h / scale);
-    rt_map_set_float(map, rt_const_cstr("screenX"), screen_x);
-    rt_map_set_float(map, rt_const_cstr("screenY"), screen_y);
-    rt_map_set_float(map, rt_const_cstr("screenWidth"), screen_w);
-    rt_map_set_float(map, rt_const_cstr("screenHeight"), screen_h);
+    rt_map_set_float(map, RT_STR_LIT("logicalX"), (double)screen_x / scale);
+    rt_map_set_float(map, RT_STR_LIT("logicalY"), (double)screen_y / scale);
+    rt_map_set_float(map, RT_STR_LIT("logicalWidth"), (double)screen_w / scale);
+    rt_map_set_float(map, RT_STR_LIT("logicalHeight"), (double)screen_h / scale);
+    rt_map_set_float(map, RT_STR_LIT("screenX"), screen_x);
+    rt_map_set_float(map, RT_STR_LIT("screenY"), screen_y);
+    rt_map_set_float(map, RT_STR_LIT("screenWidth"), screen_w);
+    rt_map_set_float(map, RT_STR_LIT("screenHeight"), screen_h);
     rt_map_set_int(map,
-                   rt_const_cstr("labelForId"),
+                   RT_STR_LIT("labelForId"),
                    label_target ? rt_gui_saturating_u64_to_i64(label_target->id) : 0);
-    rt_map_set_int(map, rt_const_cstr("liveRegion"), (int64_t)vg_widget_get_live_region(widget));
-    rt_map_set_int(map, rt_const_cstr("revision"), rt_gui_saturating_u64_to_i64(widget->revision));
+    rt_map_set_int(map, RT_STR_LIT("liveRegion"), (int64_t)vg_widget_get_live_region(widget));
+    rt_map_set_int(map, RT_STR_LIT("revision"), rt_gui_saturating_u64_to_i64(widget->revision));
     rt_map_set_int(map,
-                   rt_const_cstr("semanticRevision"),
+                   RT_STR_LIT("semanticRevision"),
                    rt_gui_saturating_u64_to_i64(widget->accessibility.revision));
     rt_map_set_int(map,
-                   rt_const_cstr("announcementRevision"),
+                   RT_STR_LIT("announcementRevision"),
                    rt_gui_saturating_u64_to_i64(widget->accessibility.announcement_revision));
     rt_map_set_int(
-        map, rt_const_cstr("announcementMode"), (int64_t)widget->accessibility.announcement_mode);
+        map, RT_STR_LIT("announcementMode"), (int64_t)widget->accessibility.announcement_mode);
     rt_gui_accessibility_map_set_string(map, "announcement", widget->accessibility.announcement);
-    rt_map_set(map, rt_const_cstr("children"), children);
+    rt_map_set(map, RT_STR_LIT("children"), children);
 
     if (out_children)
         *out_children = children;
@@ -323,7 +325,7 @@ void *rt_accessibility_snapshot(void *root) {
     if (!root_widget) {
         empty = rt_map_new();
         if (empty)
-            rt_map_set_int(empty, rt_const_cstr("schemaVersion"), 1);
+            rt_map_set_int(empty, RT_STR_LIT("schemaVersion"), 1);
         return empty;
     }
 
@@ -390,13 +392,13 @@ void *rt_accessibility_snapshot(void *root) {
         --count;
     }
     free(frames);
-    rt_map_set_bool(root_map, rt_const_cstr("truncated"), truncated ? 1 : 0);
+    rt_map_set_bool(root_map, RT_STR_LIT("truncated"), truncated ? 1 : 0);
     return root_map;
 #else
     (void)root;
     empty = rt_map_new();
     if (empty)
-        rt_map_set_int(empty, rt_const_cstr("schemaVersion"), 1);
+        rt_map_set_int(empty, RT_STR_LIT("schemaVersion"), 1);
     return empty;
 #endif
 }

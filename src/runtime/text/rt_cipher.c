@@ -143,8 +143,12 @@ static rt_string cipher_current_error_message(const char *fallback) {
 /// @param null_message Diagnostic used for a NULL plaintext result.
 /// @return Caller-owned Result containing plaintext Bytes or an error string.
 static void *cipher_plaintext_result(void *plaintext, const char *null_message) {
-    if (!plaintext)
-        return rt_result_err_str(rt_const_cstr(null_message));
+    if (!plaintext) {
+        rt_string message = rt_const_cstr(null_message);
+        void *error = rt_result_err_str(message);
+        rt_string_unref(message);
+        return error;
+    }
     void *result = rt_result_ok(plaintext);
     cipher_release_temp_object(plaintext);
     return result;

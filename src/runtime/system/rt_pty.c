@@ -384,7 +384,9 @@ static rt_string buffer_take(pty_buffer *buf) {
 static void map_set_string_owned(void *map, const char *key, rt_string value) {
     if (!map || !key)
         return;
-    rt_map_set_str(map, rt_const_cstr(key), value ? value : rt_const_cstr(""));
+    rt_string map_key = rt_const_cstr(key);
+    rt_map_set_str(map, map_key, value ? value : rt_str_empty());
+    rt_string_unref(map_key);
 }
 
 /// @brief Consume terminal output into a structured nontrapping read result.
@@ -400,7 +402,7 @@ static void *buffer_take_result(pty_buffer *buf) {
         return NULL;
     }
     map_set_string_owned(result, "text", text);
-    rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
+    rt_map_set_bool(result, RT_STR_LIT("truncated"), truncated ? 1 : 0);
     rt_str_release_maybe(text);
     return result;
 }
@@ -1819,7 +1821,10 @@ void *rt_pty_open_result(
     if (RT_SETJMP(recovery) != 0) {
         const char *err = rt_trap_get_error();
         rt_trap_clear_recovery();
-        return rt_result_err_str(rt_const_cstr(err && err[0] ? err : "Pty.Open failed"));
+        rt_string message = rt_const_cstr(err && err[0] ? err : "Pty.Open failed");
+        void *result = rt_result_err_str(message);
+        rt_string_unref(message);
+        return result;
     }
 
     void *handle = rt_pty_open(program, args, cwd, env, cols, rows);
@@ -1828,7 +1833,7 @@ void *rt_pty_open_result(
         rt_string err = rt_pty_last_error();
         if (!err || rt_str_len(err) == 0) {
             rt_str_release_maybe(err);
-            return rt_result_err_str(rt_const_cstr("Pty.Open failed"));
+            return rt_result_err_str(RT_STR_LIT("Pty.Open failed"));
         }
         void *result = rt_result_err_str(err);
         rt_str_release_maybe(err);
@@ -1849,8 +1854,10 @@ void *rt_pty_open_with_env_overlay_result(
     if (RT_SETJMP(recovery) != 0) {
         const char *err = rt_trap_get_error();
         rt_trap_clear_recovery();
-        return rt_result_err_str(
-            rt_const_cstr(err && err[0] ? err : "Pty.OpenWithEnvOverlay failed"));
+        rt_string message = rt_const_cstr(err && err[0] ? err : "Pty.OpenWithEnvOverlay failed");
+        void *result = rt_result_err_str(message);
+        rt_string_unref(message);
+        return result;
     }
 
     void *handle = rt_pty_open_with_env_overlay(program, args, cwd, env, cols, rows);
@@ -1859,7 +1866,7 @@ void *rt_pty_open_with_env_overlay_result(
         rt_string err = rt_pty_last_error();
         if (!err || rt_str_len(err) == 0) {
             rt_str_release_maybe(err);
-            return rt_result_err_str(rt_const_cstr("Pty.OpenWithEnvOverlay failed"));
+            return rt_result_err_str(RT_STR_LIT("Pty.OpenWithEnvOverlay failed"));
         }
         void *result = rt_result_err_str(err);
         rt_str_release_maybe(err);

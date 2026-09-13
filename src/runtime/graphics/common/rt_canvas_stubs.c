@@ -1556,5 +1556,5 @@ double rt_ttf_font_ascent(void *obj, double size_px) {
 rt_string rt_ttf_font_family(void *obj) {
     (void)obj;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("TtfFont.get_Family: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }

@@ -138,7 +138,10 @@ static void *serialize_parse_value_to_result(void *value, const char *fallback) 
     }
     if (!value && has_error()) {
         rt_str_release_maybe(err);
-        return rt_result_err_str(rt_const_cstr(fallback ? fallback : "Serialize parse failed"));
+        rt_string message = rt_const_cstr(fallback ? fallback : "Serialize parse failed");
+        void *result = rt_result_err_str(message);
+        rt_string_unref(message);
+        return result;
     }
     rt_str_release_maybe(err);
 

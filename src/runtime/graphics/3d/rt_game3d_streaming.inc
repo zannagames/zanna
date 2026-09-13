@@ -327,7 +327,7 @@ static rt_string game3d_stream_resolve_manifest_path(rt_string manifest_path, rt
     const char *raw = payload ? rt_string_cstr(payload) : NULL;
     const char *manifest = manifest_path ? rt_string_cstr(manifest_path) : NULL;
     if (!raw || raw[0] == '\0')
-        return rt_string_ref(rt_const_cstr(""));
+        return rt_string_ref(RT_STR_LIT(""));
     if (game3d_path_is_absolute(raw) || !manifest || manifest[0] == '\0')
         return rt_string_ref(payload);
     const char *slash = strrchr(manifest, '/');
@@ -360,11 +360,11 @@ static rt_string game3d_json_resolved_sidecar_ref(void *entry, rt_string manifes
     if (!raw)
         raw = game3d_json_string_ref(entry, "binarySidecar");
     if (!raw)
-        return rt_string_ref(rt_const_cstr(""));
+        return rt_string_ref(RT_STR_LIT(""));
     const char *raw_cstr = rt_string_cstr(raw);
     if (!game3d_path_has_scheme(raw_cstr) && game3d_path_has_parent_segment(raw_cstr)) {
         rt_string_unref(raw);
-        return rt_string_ref(rt_const_cstr(""));
+        return rt_string_ref(RT_STR_LIT(""));
     }
     if (game3d_path_has_scheme(raw_cstr))
         return raw;
@@ -2129,7 +2129,7 @@ static int game3d_world_stream_parse_terrain_manifest(rt_game3d_world_stream *st
         tile->heightmap_path =
             raw_heightmap
                 ? game3d_stream_resolve_manifest_path(stream->terrain_manifest, raw_heightmap)
-                : rt_string_ref(rt_const_cstr(""));
+                : rt_string_ref(RT_STR_LIT(""));
         rt_string_unref(raw_heightmap);
         tile->name = game3d_json_string_ref(entry, "name");
         tile->material = game3d_json_string_ref(entry, "material");

@@ -232,9 +232,11 @@ void releaseObject(void *obj) {
 /// @param key Null-terminated constant key name.
 /// @param value Native byte string to copy into the map.
 void mapSetStr(void *map, const char *key, const std::string &value) {
+    rt_string k = rt_const_cstr(key);
     rt_string s = makeString(value);
-    rt_map_set_str(map, rt_const_cstr(key), s);
+    rt_map_set_str(map, k, s);
     rt_string_unref(s);
+    rt_string_unref(k);
 }
 
 /// @brief Store a sequence object under a constant key in a runtime map.
@@ -242,7 +244,9 @@ void mapSetStr(void *map, const char *key, const std::string &value) {
 /// @param key Null-terminated constant key name.
 /// @param seq Borrowed sequence reference retained by the map.
 void mapSetSeq(void *map, const char *key, void *seq) {
-    rt_map_set(map, rt_const_cstr(key), seq);
+    rt_string k = rt_const_cstr(key);
+    rt_map_set(map, k, seq);
+    rt_string_unref(k);
 }
 
 /// @brief Append an object to a runtime sequence and release the caller's reference.
@@ -1179,8 +1183,8 @@ void emitFileIndexEntry(void *entries,
     mapSetStr(entry, "name", dirEntry.path().filename().generic_string());
     mapSetStr(entry, "extension", dirEntry.path().extension().generic_string());
     mapSetStr(entry, "kind", isDir ? "directory" : "file");
-    rt_map_set_bool(entry, rt_const_cstr("isDirectory"), isDir ? 1 : 0);
-    rt_map_set_int(entry, rt_const_cstr("id"), stablePathId(normalizeSlashes(path)));
+    rt_map_set_bool(entry, RT_STR_LIT("isDirectory"), isDir ? 1 : 0);
+    rt_map_set_int(entry, RT_STR_LIT("id"), stablePathId(normalizeSlashes(path)));
     int64_t fileSize = isDir ? 0 : -1;
     int64_t sampleHash = isDir ? 0 : -1;
     if (!isDir) {
@@ -1193,10 +1197,10 @@ void emitFileIndexEntry(void *entries,
                 sampleHash = boundedFileSampleHash(dirEntry.path(), fileSize);
         }
     }
-    rt_map_set_int(entry, rt_const_cstr("size"), fileSize);
-    rt_map_set_int(entry, rt_const_cstr("modified"), fileTimeSeconds(dirEntry.path()));
-    rt_map_set_int(entry, rt_const_cstr("modifiedNs"), fileTimeNanoseconds(dirEntry.path()));
-    rt_map_set_int(entry, rt_const_cstr("sampleHash"), sampleHash);
+    rt_map_set_int(entry, RT_STR_LIT("size"), fileSize);
+    rt_map_set_int(entry, RT_STR_LIT("modified"), fileTimeSeconds(dirEntry.path()));
+    rt_map_set_int(entry, RT_STR_LIT("modifiedNs"), fileTimeNanoseconds(dirEntry.path()));
+    rt_map_set_int(entry, RT_STR_LIT("sampleHash"), sampleHash);
     seqPushOwned(entries, entry);
     (void)root;
 }
@@ -1282,7 +1286,7 @@ void *makeDiagnostic(const std::string &message,
     mapSetStr(diag, "message", message);
     mapSetStr(diag, "file", file);
     mapSetStr(diag, "code", code);
-    rt_map_set_int(diag, rt_const_cstr("line"), line);
+    rt_map_set_int(diag, RT_STR_LIT("line"), line);
     return diag;
 }
 
@@ -1319,7 +1323,9 @@ void *makeStringSeq(const std::vector<std::string> &items) {
 /// @param key Null-terminated field name.
 /// @return Copied field bytes, or an empty string when the field is absent/invalid/empty.
 std::string mapGetString(void *map, const char *key) {
-    rt_string value = rt_map_get_str(map, rt_const_cstr(key));
+    rt_string k = rt_const_cstr(key);
+    rt_string value = rt_map_get_str(map, k);
+    rt_string_unref(k);
     std::string out = toStd(value);
     rt_string_unref(value);
     return out;
@@ -1361,7 +1367,7 @@ void *newManifestMap() {
     mapSetSeq(map, "runConfigs", rt_seq_new_owned());
     mapSetSeq(map, "buildConfigs", rt_seq_new_owned());
     mapSetSeq(map, "diagnostics", rt_seq_new_owned());
-    rt_map_set_bool(map, rt_const_cstr("valid"), 1);
+    rt_map_set_bool(map, RT_STR_LIT("valid"), 1);
     return map;
 }
 
@@ -1371,7 +1377,9 @@ void *newManifestMap() {
 /// @param items Native strings to copy into the replacement sequence.
 void replaceStringSeq(void *map, const char *key, const std::vector<std::string> &items) {
     void *seq = makeStringSeq(items);
-    rt_map_set(map, rt_const_cstr(key), seq);
+    rt_string k = rt_const_cstr(key);
+    rt_map_set(map, k, seq);
+    rt_string_unref(k);
     releaseObject(seq);
 }
 
@@ -1381,13 +1389,15 @@ void replaceStringSeq(void *map, const char *key, const std::vector<std::string>
 /// @param key Null-terminated field name.
 /// @param value Native string to copy and append.
 void appendToStringSeqField(void *map, const char *key, const std::string &value) {
-    void *seq = rt_map_get(map, rt_const_cstr(key));
+    rt_string k = rt_const_cstr(key);
+    void *seq = rt_map_get(map, k);
     if (!seq) {
         seq = rt_seq_new_owned();
-        rt_map_set(map, rt_const_cstr(key), seq);
+        rt_map_set(map, k, seq);
         releaseObject(seq);
-        seq = rt_map_get(map, rt_const_cstr(key));
+        seq = rt_map_get(map, k);
     }
+    rt_string_unref(k);
     rt_string s = makeString(value);
     rt_seq_push(seq, s);
     rt_string_unref(s);
@@ -1399,13 +1409,15 @@ void appendToStringSeqField(void *map, const char *key, const std::string &value
 /// @param key Null-terminated field name.
 /// @param config Borrowed runtime configuration map to append.
 void appendConfigMap(void *map, const char *key, void *config) {
-    void *seq = rt_map_get(map, rt_const_cstr(key));
+    rt_string k = rt_const_cstr(key);
+    void *seq = rt_map_get(map, k);
     if (!seq) {
         seq = rt_seq_new_owned();
-        rt_map_set(map, rt_const_cstr(key), seq);
+        rt_map_set(map, k, seq);
         releaseObject(seq);
-        seq = rt_map_get(map, rt_const_cstr(key));
+        seq = rt_map_get(map, k);
     }
+    rt_string_unref(k);
     rt_seq_push(seq, config);
 }
 
@@ -2001,16 +2013,16 @@ bool loadEditRecord(void *obj, EditRecord &out, void *diagnostics, int64_t index
         return false;
     }
     out.file = mapGetString(obj, "file");
-    out.startLine = rt_map_get_int(obj, rt_const_cstr("startLine"));
-    out.startColumn = rt_map_get_int(obj, rt_const_cstr("startColumn"));
-    out.endLine = rt_map_get_int(obj, rt_const_cstr("endLine"));
-    out.endColumn = rt_map_get_int(obj, rt_const_cstr("endColumn"));
+    out.startLine = rt_map_get_int(obj, RT_STR_LIT("startLine"));
+    out.startColumn = rt_map_get_int(obj, RT_STR_LIT("startColumn"));
+    out.endLine = rt_map_get_int(obj, RT_STR_LIT("endLine"));
+    out.endColumn = rt_map_get_int(obj, RT_STR_LIT("endColumn"));
     out.newText = mapGetString(obj, "newText");
-    out.expectedMtime = rt_map_get_int_or(obj, rt_const_cstr("expectedMtime"), -1);
-    out.expectedSize = rt_map_get_int_or(obj, rt_const_cstr("expectedSize"), -1);
+    out.expectedMtime = rt_map_get_int_or(obj, RT_STR_LIT("expectedMtime"), -1);
+    out.expectedSize = rt_map_get_int_or(obj, RT_STR_LIT("expectedSize"), -1);
     out.expectedHash = mapGetString(obj, "expectedHash");
-    out.maxBytes = rt_map_get_int_or(obj, rt_const_cstr("maxBytes"), -1);
-    out.wholeFile = rt_map_get_bool_or(obj, rt_const_cstr("wholeFile"), 0) != 0;
+    out.maxBytes = rt_map_get_int_or(obj, RT_STR_LIT("maxBytes"), -1);
+    out.wholeFile = rt_map_get_bool_or(obj, RT_STR_LIT("wholeFile"), 0) != 0;
     if (out.file.empty()) {
         pushDiagnostic(diagnostics, "workspace edit missing file", "", index, "edit.file");
         return false;
@@ -2383,21 +2395,21 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
     auto *registration = retainFileIndexCursor(handle);
     auto *cursor = registration ? registration->cursor : nullptr;
     const int64_t offset = cursor ? cursor->matched : 0;
-    rt_map_set_bool(result, rt_const_cstr("valid"), cursor ? 1 : 0);
+    rt_map_set_bool(result, RT_STR_LIT("valid"), cursor ? 1 : 0);
     mapSetStr(result, "root", cursor ? cursor->root.generic_string() : "");
-    rt_map_set_int(result, rt_const_cstr("offset"), offset);
-    rt_map_set_int(result, rt_const_cstr("limit"), limit);
-    rt_map_set_int(result, rt_const_cstr("emitted"), 0);
-    rt_map_set_int(result, rt_const_cstr("work"), 0);
-    rt_map_set_int(result, rt_const_cstr("nextOffset"), offset);
-    rt_map_set_int(result, rt_const_cstr("scanned"), cursor ? cursor->scanned : 0);
-    rt_map_set_int(result, rt_const_cstr("generation"), cursor ? cursor->generation : 0);
-    rt_map_set_int(result, rt_const_cstr("maxEntries"), cursor ? cursor->maxEntries : 0);
-    rt_map_set_bool(result, rt_const_cstr("done"), cursor && !cursor->done ? 0 : 1);
-    rt_map_set_bool(result, rt_const_cstr("truncated"), cursor && cursor->truncated ? 1 : 0);
-    rt_map_set_bool(result, rt_const_cstr("stale"), 0);
-    rt_map_set(result, rt_const_cstr("entries"), entries);
-    rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+    rt_map_set_int(result, RT_STR_LIT("offset"), offset);
+    rt_map_set_int(result, RT_STR_LIT("limit"), limit);
+    rt_map_set_int(result, RT_STR_LIT("emitted"), 0);
+    rt_map_set_int(result, RT_STR_LIT("work"), 0);
+    rt_map_set_int(result, RT_STR_LIT("nextOffset"), offset);
+    rt_map_set_int(result, RT_STR_LIT("scanned"), cursor ? cursor->scanned : 0);
+    rt_map_set_int(result, RT_STR_LIT("generation"), cursor ? cursor->generation : 0);
+    rt_map_set_int(result, RT_STR_LIT("maxEntries"), cursor ? cursor->maxEntries : 0);
+    rt_map_set_bool(result, RT_STR_LIT("done"), cursor && !cursor->done ? 0 : 1);
+    rt_map_set_bool(result, RT_STR_LIT("truncated"), cursor && cursor->truncated ? 1 : 0);
+    rt_map_set_bool(result, RT_STR_LIT("stale"), 0);
+    rt_map_set(result, RT_STR_LIT("entries"), entries);
+    rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
     if (!cursor) {
         pushDiagnostic(diagnostics,
                        "workspace file-index cursor is invalid",
@@ -2422,16 +2434,16 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
                            0,
                            "fileindex.walk");
         }
-        rt_map_set_int(result, rt_const_cstr("emitted"), emitted);
-        rt_map_set_int(result, rt_const_cstr("work"), cursor->scanned - scannedBefore);
-        rt_map_set_int(result, rt_const_cstr("nextOffset"), cursor->matched);
-        rt_map_set_int(result, rt_const_cstr("scanned"), cursor->scanned);
-        rt_map_set_bool(result, rt_const_cstr("done"), cursor->done ? 1 : 0);
-        rt_map_set_bool(result, rt_const_cstr("truncated"), cursor->truncated ? 1 : 0);
+        rt_map_set_int(result, RT_STR_LIT("emitted"), emitted);
+        rt_map_set_int(result, RT_STR_LIT("work"), cursor->scanned - scannedBefore);
+        rt_map_set_int(result, RT_STR_LIT("nextOffset"), cursor->matched);
+        rt_map_set_int(result, RT_STR_LIT("scanned"), cursor->scanned);
+        rt_map_set_bool(result, RT_STR_LIT("done"), cursor->done ? 1 : 0);
+        rt_map_set_bool(result, RT_STR_LIT("truncated"), cursor->truncated ? 1 : 0);
     } catch (...) {
         cursor->done = true;
-        rt_map_set_bool(result, rt_const_cstr("valid"), 0);
-        rt_map_set_bool(result, rt_const_cstr("done"), 1);
+        rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("done"), 1);
         pushDiagnostic(diagnostics,
                        "workspace file-index cursor failed",
                        cursor->root.generic_string(),
@@ -2480,24 +2492,24 @@ void *rt_workspace_file_index_page(rt_string root_s,
     if (limit > 4096)
         limit = 4096;
 
-    rt_map_set_bool(result, rt_const_cstr("valid"), 1);
+    rt_map_set_bool(result, RT_STR_LIT("valid"), 1);
     mapSetStr(result, "root", "");
-    rt_map_set_int(result, rt_const_cstr("offset"), offset);
-    rt_map_set_int(result, rt_const_cstr("limit"), limit);
-    rt_map_set_int(result, rt_const_cstr("emitted"), 0);
-    rt_map_set_int(result, rt_const_cstr("nextOffset"), offset);
-    rt_map_set_int(result, rt_const_cstr("scanned"), 0);
-    rt_map_set_int(result, rt_const_cstr("generation"), 0);
-    rt_map_set_int(result, rt_const_cstr("maxEntries"), kWorkspaceFileIndexMaxEntries);
-    rt_map_set_bool(result, rt_const_cstr("done"), 1);
-    rt_map_set_bool(result, rt_const_cstr("truncated"), 0);
-    rt_map_set(result, rt_const_cstr("entries"), entries);
-    rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+    rt_map_set_int(result, RT_STR_LIT("offset"), offset);
+    rt_map_set_int(result, RT_STR_LIT("limit"), limit);
+    rt_map_set_int(result, RT_STR_LIT("emitted"), 0);
+    rt_map_set_int(result, RT_STR_LIT("nextOffset"), offset);
+    rt_map_set_int(result, RT_STR_LIT("scanned"), 0);
+    rt_map_set_int(result, RT_STR_LIT("generation"), 0);
+    rt_map_set_int(result, RT_STR_LIT("maxEntries"), kWorkspaceFileIndexMaxEntries);
+    rt_map_set_bool(result, RT_STR_LIT("done"), 1);
+    rt_map_set_bool(result, RT_STR_LIT("truncated"), 0);
+    rt_map_set(result, RT_STR_LIT("entries"), entries);
+    rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
 
     try {
         fs::path root = toStd(root_s);
         if (root.empty()) {
-            rt_map_set_bool(result, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
             pushDiagnostic(diagnostics, "workspace root is empty", "", 0, "fileindex.root");
             releaseObject(entries);
             releaseObject(diagnostics);
@@ -2507,7 +2519,7 @@ void *rt_workspace_file_index_page(rt_string root_s,
         std::error_code ec;
         root = fs::absolute(root, ec).lexically_normal();
         if (ec || !fs::is_directory(root, ec)) {
-            rt_map_set_bool(result, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
             pushDiagnostic(diagnostics,
                            "workspace root is not a directory",
                            root.generic_string(),
@@ -2528,7 +2540,7 @@ void *rt_workspace_file_index_page(rt_string root_s,
         WorkspaceFileIndexPageCursor *cursor = startFileIndexPageCursor(
             root, extensionsCsv, excludesCsv, include_dirs != 0, diagnostics);
         if (!cursor) {
-            rt_map_set_bool(result, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
             releaseObject(entries);
             releaseObject(diagnostics);
             return result;
@@ -2551,17 +2563,17 @@ void *rt_workspace_file_index_page(rt_string root_s,
                            0,
                            "fileindex.walk");
         }
-        rt_map_set_int(result, rt_const_cstr("emitted"), emitted);
-        rt_map_set_int(result, rt_const_cstr("nextOffset"), matched);
-        rt_map_set_int(result, rt_const_cstr("scanned"), scanned);
-        rt_map_set_int(result, rt_const_cstr("generation"), generation);
-        rt_map_set_bool(result, rt_const_cstr("done"), done ? 1 : 0);
-        rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
+        rt_map_set_int(result, RT_STR_LIT("emitted"), emitted);
+        rt_map_set_int(result, RT_STR_LIT("nextOffset"), matched);
+        rt_map_set_int(result, RT_STR_LIT("scanned"), scanned);
+        rt_map_set_int(result, RT_STR_LIT("generation"), generation);
+        rt_map_set_bool(result, RT_STR_LIT("done"), done ? 1 : 0);
+        rt_map_set_bool(result, RT_STR_LIT("truncated"), truncated ? 1 : 0);
         releaseObject(entries);
         releaseObject(diagnostics);
         return result;
     } catch (...) {
-        rt_map_set_bool(result, rt_const_cstr("valid"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("valid"), 0);
         pushDiagnostic(
             diagnostics, "workspace file-index page failed", "", 0, "fileindex.exception");
         releaseObject(entries);
@@ -2636,8 +2648,8 @@ void *rt_workspace_file_index_enumerate(rt_string root_s,
             mapSetStr(entry, "name", it->path().filename().generic_string());
             mapSetStr(entry, "extension", it->path().extension().generic_string());
             mapSetStr(entry, "kind", isDir ? "directory" : "file");
-            rt_map_set_bool(entry, rt_const_cstr("isDirectory"), isDir ? 1 : 0);
-            rt_map_set_int(entry, rt_const_cstr("id"), stablePathId(normalizeSlashes(path)));
+            rt_map_set_bool(entry, RT_STR_LIT("isDirectory"), isDir ? 1 : 0);
+            rt_map_set_int(entry, RT_STR_LIT("id"), stablePathId(normalizeSlashes(path)));
             int64_t file_size = isDir ? 0 : -1;
             int64_t sample_hash = isDir ? 0 : -1;
             if (!isDir) {
@@ -2647,10 +2659,10 @@ void *rt_workspace_file_index_enumerate(rt_string root_s,
                     file_size = static_cast<int64_t>(raw_size);
                 }
             }
-            rt_map_set_int(entry, rt_const_cstr("size"), file_size);
-            rt_map_set_int(entry, rt_const_cstr("modified"), fileTimeSeconds(it->path()));
-            rt_map_set_int(entry, rt_const_cstr("modifiedNs"), fileTimeNanoseconds(it->path()));
-            rt_map_set_int(entry, rt_const_cstr("sampleHash"), sample_hash);
+            rt_map_set_int(entry, RT_STR_LIT("size"), file_size);
+            rt_map_set_int(entry, RT_STR_LIT("modified"), fileTimeSeconds(it->path()));
+            rt_map_set_int(entry, RT_STR_LIT("modifiedNs"), fileTimeNanoseconds(it->path()));
+            rt_map_set_int(entry, RT_STR_LIT("sampleHash"), sample_hash);
             seqPushOwned(out, entry);
             emitted++;
         }
@@ -2676,18 +2688,18 @@ void *rt_workspace_file_index_status(rt_string root_s,
                                      int8_t include_dirs) {
     void *status = rt_map_new();
     void *diagnostics = rt_seq_new_owned();
-    rt_map_set_bool(status, rt_const_cstr("valid"), 1);
+    rt_map_set_bool(status, RT_STR_LIT("valid"), 1);
     mapSetStr(status, "root", "");
-    rt_map_set_int(status, rt_const_cstr("entryCount"), 0);
-    rt_map_set_int(status, rt_const_cstr("maxEntries"), kWorkspaceFileIndexMaxEntries);
-    rt_map_set_int(status, rt_const_cstr("fingerprint"), 0);
-    rt_map_set_bool(status, rt_const_cstr("truncated"), 0);
-    rt_map_set(status, rt_const_cstr("diagnostics"), diagnostics);
+    rt_map_set_int(status, RT_STR_LIT("entryCount"), 0);
+    rt_map_set_int(status, RT_STR_LIT("maxEntries"), kWorkspaceFileIndexMaxEntries);
+    rt_map_set_int(status, RT_STR_LIT("fingerprint"), 0);
+    rt_map_set_bool(status, RT_STR_LIT("truncated"), 0);
+    rt_map_set(status, RT_STR_LIT("diagnostics"), diagnostics);
 
     try {
         fs::path root = toStd(root_s);
         if (root.empty()) {
-            rt_map_set_bool(status, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(status, RT_STR_LIT("valid"), 0);
             pushDiagnostic(diagnostics, "workspace root is empty", "", 0, "fileindex.root");
             releaseObject(diagnostics);
             return status;
@@ -2695,7 +2707,7 @@ void *rt_workspace_file_index_status(rt_string root_s,
         std::error_code ec;
         root = fs::absolute(root, ec).lexically_normal();
         if (ec || !fs::is_directory(root, ec)) {
-            rt_map_set_bool(status, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(status, RT_STR_LIT("valid"), 0);
             pushDiagnostic(diagnostics,
                            "workspace root is not a directory",
                            root.string(),
@@ -2740,7 +2752,7 @@ void *rt_workspace_file_index_status(rt_string root_s,
                     continue;
             }
             if (counted >= kWorkspaceFileIndexMaxEntries) {
-                rt_map_set_bool(status, rt_const_cstr("truncated"), 1);
+                rt_map_set_bool(status, RT_STR_LIT("truncated"), 1);
                 pushDiagnostic(diagnostics,
                                "workspace file index entry cap reached",
                                root.string(),
@@ -2759,19 +2771,19 @@ void *rt_workspace_file_index_status(rt_string root_s,
             counted++;
         }
         if (ec) {
-            rt_map_set_bool(status, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(status, RT_STR_LIT("valid"), 0);
             pushDiagnostic(diagnostics,
                            "workspace traversal failed: " + ec.message(),
                            root.string(),
                            0,
                            "fileindex.traverse");
         }
-        rt_map_set_int(status, rt_const_cstr("entryCount"), counted);
-        rt_map_set_int(status, rt_const_cstr("fingerprint"), static_cast<int64_t>(fingerprint));
+        rt_map_set_int(status, RT_STR_LIT("entryCount"), counted);
+        rt_map_set_int(status, RT_STR_LIT("fingerprint"), static_cast<int64_t>(fingerprint));
         releaseObject(diagnostics);
         return status;
     } catch (...) {
-        rt_map_set_bool(status, rt_const_cstr("valid"), 0);
+        rt_map_set_bool(status, RT_STR_LIT("valid"), 0);
         pushDiagnostic(
             diagnostics, "workspace file index status failed", "", 0, "fileindex.exception");
         releaseObject(diagnostics);
@@ -2840,15 +2852,15 @@ void *rt_workspace_watcher_poll_batch(void *watcher, int64_t max_events) {
             mapSetStr(event, "oldPath", oldPath);
             mapSetStr(event, "newPath", newPath);
             mapSetStr(event, "typeName", eventTypeName(type));
-            rt_map_set_int(event, rt_const_cstr("type"), type);
+            rt_map_set_int(event, RT_STR_LIT("type"), type);
             rt_map_set_int(
                 event,
-                rt_const_cstr("overflowCount"),
+                RT_STR_LIT("overflowCount"),
                 type == RT_WATCH_EVENT_OVERFLOW ? rt_watcher_event_overflow_count(watcher) : 0);
             int requiresRescan =
                 type == RT_WATCH_EVENT_OVERFLOW ||
                 (type == RT_WATCH_EVENT_RENAMED && (oldPath.empty() || newPath.empty()));
-            rt_map_set_bool(event, rt_const_cstr("requiresRescan"), requiresRescan ? 1 : 0);
+            rt_map_set_bool(event, RT_STR_LIT("requiresRescan"), requiresRescan ? 1 : 0);
             seqPushOwned(events, event);
         }
         return events;
@@ -2890,8 +2902,8 @@ void *rt_asset_resolver_resolve(rt_string scene_path_s,
         mapSetStr(result, "displayPath", assetPath);
         mapSetStr(result, "source", "missing");
         mapSetStr(result, "diagnostic", "");
-        rt_map_set_bool(result, rt_const_cstr("exists"), 0);
-        rt_map_set_bool(result, rt_const_cstr("found"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("exists"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("found"), 0);
 
         // An empty asset name must not resolve to the project directory itself
         // (`projectRoot / "" == projectRoot`, which exists) — reject it up front
@@ -2926,8 +2938,8 @@ void *rt_asset_resolver_resolve(rt_string scene_path_s,
                           "displayPath",
                           fs::relative(candidate, projectRoot, ec).generic_string());
                 mapSetStr(result, "source", source);
-                rt_map_set_bool(result, rt_const_cstr("exists"), 1);
-                rt_map_set_bool(result, rt_const_cstr("found"), 1);
+                rt_map_set_bool(result, RT_STR_LIT("exists"), 1);
+                rt_map_set_bool(result, RT_STR_LIT("found"), 1);
                 return result;
             }
         }
@@ -2937,8 +2949,8 @@ void *rt_asset_resolver_resolve(rt_string scene_path_s,
             mapSetStr(result, "path", assetPath);
             mapSetStr(result, "displayPath", assetPath);
             mapSetStr(result, "source", "mounted");
-            rt_map_set_bool(result, rt_const_cstr("exists"), 1);
-            rt_map_set_bool(result, rt_const_cstr("found"), 1);
+            rt_map_set_bool(result, RT_STR_LIT("exists"), 1);
+            rt_map_set_bool(result, RT_STR_LIT("found"), 1);
             rt_string_unref(assetName);
             return result;
         }
@@ -2952,8 +2964,8 @@ void *rt_asset_resolver_resolve(rt_string scene_path_s,
         mapSetStr(result, "displayPath", "");
         mapSetStr(result, "source", "missing");
         mapSetStr(result, "diagnostic", "asset resolver failed");
-        rt_map_set_bool(result, rt_const_cstr("exists"), 0);
-        rt_map_set_bool(result, rt_const_cstr("found"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("exists"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("found"), 0);
         return result;
     }
 }
@@ -2969,7 +2981,7 @@ void *rt_asset_resolver_resolve(rt_string scene_path_s,
 void *rt_project_manifest_parse_text(rt_string text_s) {
     try {
         void *manifest = newManifestMap();
-        void *diagnostics = rt_map_get(manifest, rt_const_cstr("diagnostics"));
+        void *diagnostics = rt_map_get(manifest, RT_STR_LIT("diagnostics"));
         std::string section;
         void *sectionMap = nullptr;
         std::string sectionKind;
@@ -3075,15 +3087,15 @@ void *rt_project_manifest_parse_text(rt_string text_s) {
             }
         }
 
-        rt_map_set_bool(manifest, rt_const_cstr("valid"), rt_seq_len(diagnostics) == 0 ? 1 : 0);
+        rt_map_set_bool(manifest, RT_STR_LIT("valid"), rt_seq_len(diagnostics) == 0 ? 1 : 0);
         if (mapGetString(manifest, "name").empty())
             mapSetStr(manifest, "name", "ZannaProject");
         return manifest;
     } catch (...) {
         void *manifest = newManifestMap();
-        void *diagnostics = rt_map_get(manifest, rt_const_cstr("diagnostics"));
+        void *diagnostics = rt_map_get(manifest, RT_STR_LIT("diagnostics"));
         pushDiagnostic(diagnostics, "manifest parse failed", "", 0, "manifest.exception");
-        rt_map_set_bool(manifest, rt_const_cstr("valid"), 0);
+        rt_map_set_bool(manifest, RT_STR_LIT("valid"), 0);
         return manifest;
     }
 }
@@ -3101,9 +3113,9 @@ void *rt_project_manifest_parse_file(rt_string path_s) {
         std::ifstream in(path, std::ios::binary);
         if (!in) {
             void *manifest = newManifestMap();
-            void *diagnostics = rt_map_get(manifest, rt_const_cstr("diagnostics"));
+            void *diagnostics = rt_map_get(manifest, RT_STR_LIT("diagnostics"));
             pushDiagnostic(diagnostics, "cannot open manifest", path, 0, "manifest.open");
-            rt_map_set_bool(manifest, rt_const_cstr("valid"), 0);
+            rt_map_set_bool(manifest, RT_STR_LIT("valid"), 0);
             return manifest;
         }
         std::ostringstream buffer;
@@ -3120,9 +3132,9 @@ void *rt_project_manifest_parse_file(rt_string path_s) {
         return manifest;
     } catch (...) {
         void *manifest = newManifestMap();
-        void *diagnostics = rt_map_get(manifest, rt_const_cstr("diagnostics"));
+        void *diagnostics = rt_map_get(manifest, RT_STR_LIT("diagnostics"));
         pushDiagnostic(diagnostics, "manifest read failed", "", 0, "manifest.exception");
-        rt_map_set_bool(manifest, rt_const_cstr("valid"), 0);
+        rt_map_set_bool(manifest, RT_STR_LIT("valid"), 0);
         return manifest;
     }
 }
@@ -3187,9 +3199,9 @@ static void *workspace_edit_validate_into(
         if (ok && !validateEditRecords(records, contents, identities, diagnostics, roots))
             ok = false;
     }
-    rt_map_set_bool(result, rt_const_cstr("success"), ok ? 1 : 0);
-    rt_map_set_int(result, rt_const_cstr("editCount"), static_cast<int64_t>(records.size()));
-    rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+    rt_map_set_bool(result, RT_STR_LIT("success"), ok ? 1 : 0);
+    rt_map_set_int(result, RT_STR_LIT("editCount"), static_cast<int64_t>(records.size()));
+    rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
     releaseObject(diagnostics);
     return result;
 }
@@ -3942,29 +3954,29 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(
             diagnostics, "prepared workspace edit is invalid", "", 0, "edit.prepared.invalid");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }
 
     void *result = rt_map_clone(prepared->validation);
-    void *diagnostics = rt_map_get(result, rt_const_cstr("diagnostics"));
+    void *diagnostics = rt_map_get(result, RT_STR_LIT("diagnostics"));
     if (prepared->consumed) {
         pushDiagnostic(diagnostics,
                        "prepared workspace edit was already consumed",
                        "",
                        0,
                        "edit.prepared.consumed");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
         return result;
     }
     prepared->consumed = true;
-    if (!rt_map_get_bool(result, rt_const_cstr("success"))) {
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+    if (!rt_map_get_bool(result, RT_STR_LIT("success"))) {
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
         return result;
     }
 
@@ -4005,9 +4017,9 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                            file,
                            0,
                            "edit.version");
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
             rollbackWorkspaceWrites(writes, diagnostics);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
             return result;
         }
         // Exclusively reserve the backup name up front so no stale artifact or
@@ -4017,9 +4029,9 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         if (!reserveWorkspaceEditBackup(*write.access, write.backup, write.backupLeaf)) {
             pushDiagnostic(
                 diagnostics, "cannot reserve backup for edit target", file, 0, "edit.write");
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
             rollbackWorkspaceWrites(writes, diagnostics);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
             return result;
         }
         write.backupReserved = true;
@@ -4030,9 +4042,9 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         if (!writeWorkspaceEditTemp(*pending.access, pending.temp, pending.tempLeaf, text)) {
             pushDiagnostic(
                 diagnostics, "cannot write temporary edit target", file, 0, "edit.write");
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
             rollbackWorkspaceWrites(writes, diagnostics);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
             return result;
         }
         if (!preserveWorkspaceEditMetadata(*pending.access, pending.temp, pending.tempLeaf)) {
@@ -4041,15 +4053,15 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                            file,
                            0,
                            "edit.metadata");
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
             rollbackWorkspaceWrites(writes, diagnostics);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
             return result;
         }
     }
 
     if (writes.empty()) {
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
         return result;
     }
     WorkspaceEditJournal journal;
@@ -4059,9 +4071,9 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                        writes.empty() ? "" : writes.front().file,
                        0,
                        "edit.journal");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
         rollbackWorkspaceWrites(writes, diagnostics);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
         return result;
     }
 
@@ -4094,28 +4106,28 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                                write.file,
                                0,
                                "edit.version");
-                rt_map_set_bool(result, rt_const_cstr("success"), 0);
+                rt_map_set_bool(result, RT_STR_LIT("success"), 0);
                 if (rollbackWorkspaceWrites(writes, diagnostics))
                     removeWorkspaceEditJournal(journal);
-                rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+                rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
                 return result;
             }
         }
         if (!moveWorkspaceTargetToReservedBackup(*write.access, write.backupLeaf)) {
             pushDiagnostic(diagnostics, "cannot back up edit target", write.file, 0, "edit.write");
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
             if (rollbackWorkspaceWrites(writes, diagnostics))
                 removeWorkspaceEditJournal(journal);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
             return result;
         }
         write.backupCreated = true;
         if (!moveWorkspaceTempToTarget(*write.access, write.temp, write.tempLeaf)) {
             pushDiagnostic(diagnostics, "cannot replace edit target", write.file, 0, "edit.write");
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
             if (rollbackWorkspaceWrites(writes, diagnostics))
                 removeWorkspaceEditJournal(journal);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
             return result;
         }
         flushWorkspaceEditDirectory(*write.access);
@@ -4126,10 +4138,10 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                            write.file,
                            0,
                            "edit.journal");
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
             if (rollbackWorkspaceWrites(writes, diagnostics))
                 removeWorkspaceEditJournal(journal);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
             return result;
         }
     }
@@ -4139,10 +4151,10 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                        writes.front().file,
                        0,
                        "edit.journal");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
         if (rollbackWorkspaceWrites(writes, diagnostics))
             removeWorkspaceEditJournal(journal);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
         return result;
     }
     bool cleanupComplete = true;
@@ -4182,7 +4194,7 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                        0,
                        "edit.cleanup");
     }
-    rt_map_set_int(result, rt_const_cstr("appliedFiles"), applied);
+    rt_map_set_int(result, RT_STR_LIT("appliedFiles"), applied);
     return result;
 }
 
@@ -4203,9 +4215,9 @@ static void *workspace_edit_apply_impl(void *edits, const std::vector<fs::path> 
 static PreparedWorkspaceEdit *workspace_edit_prepare_failure(void *diagnostics) {
     auto *prepared = new PreparedWorkspaceEdit();
     prepared->validation = rt_map_new();
-    rt_map_set_bool(prepared->validation, rt_const_cstr("success"), 0);
-    rt_map_set_int(prepared->validation, rt_const_cstr("editCount"), 0);
-    rt_map_set(prepared->validation, rt_const_cstr("diagnostics"), diagnostics);
+    rt_map_set_bool(prepared->validation, RT_STR_LIT("success"), 0);
+    rt_map_set_int(prepared->validation, RT_STR_LIT("editCount"), 0);
+    rt_map_set(prepared->validation, RT_STR_LIT("diagnostics"), diagnostics);
     return prepared;
 }
 
@@ -4277,7 +4289,7 @@ void *rt_workspace_edit_prepare_in_roots(void *edits, void *roots) {
 int8_t rt_workspace_edit_prepared_is_valid(void *handle) {
     auto *prepared = static_cast<PreparedWorkspaceEdit *>(handle);
     return prepared && prepared->validation && !prepared->consumed &&
-                   rt_map_get_bool(prepared->validation, rt_const_cstr("success"))
+                   rt_map_get_bool(prepared->validation, RT_STR_LIT("success"))
                ? 1
                : 0;
 }
@@ -4296,7 +4308,7 @@ void *rt_workspace_edit_prepared_result(void *handle) {
         return result;
     }
     void *result = rt_map_clone(prepared->validation);
-    rt_map_set_bool(result, rt_const_cstr("consumed"), prepared->consumed ? 1 : 0);
+    rt_map_set_bool(result, RT_STR_LIT("consumed"), prepared->consumed ? 1 : 0);
     return result;
 }
 
@@ -4308,10 +4320,10 @@ void *rt_workspace_edit_prepared_apply(void *handle) {
         void *result = rt_map_new();
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(diagnostics, "workspace edit apply failed", "", 0, "edit.exception");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }
@@ -4335,9 +4347,9 @@ void *rt_workspace_edit_validate(void *edits) {
         void *result = rt_map_new();
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(diagnostics, "workspace edit validation failed", "", 0, "edit.exception");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }
@@ -4355,9 +4367,9 @@ void *rt_workspace_edit_validate_in_root(void *edits, rt_string root) {
         fs::path resolvedRoot;
         if (!workspaceEditRootFromString(root, diagnostics, resolvedRoot)) {
             void *result = rt_map_new();
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
-            rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-            rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+            rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+            rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
             releaseObject(diagnostics);
             return result;
         }
@@ -4369,9 +4381,9 @@ void *rt_workspace_edit_validate_in_root(void *edits, rt_string root) {
         void *result = rt_map_new();
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(diagnostics, "workspace edit validation failed", "", 0, "edit.exception");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }
@@ -4390,10 +4402,10 @@ void *rt_workspace_edit_apply(void *edits) {
         void *result = rt_map_new();
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(diagnostics, "workspace edit apply failed", "", 0, "edit.exception");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }
@@ -4411,10 +4423,10 @@ void *rt_workspace_edit_apply_in_root(void *edits, rt_string root) {
         fs::path resolvedRoot;
         if (!workspaceEditRootFromString(root, diagnostics, resolvedRoot)) {
             void *result = rt_map_new();
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
-            rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
-            rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+            rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
+            rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
             releaseObject(diagnostics);
             return result;
         }
@@ -4426,10 +4438,10 @@ void *rt_workspace_edit_apply_in_root(void *edits, rt_string root) {
         void *result = rt_map_new();
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(diagnostics, "workspace edit apply failed", "", 0, "edit.exception");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }
@@ -4447,9 +4459,9 @@ void *rt_workspace_edit_validate_in_roots(void *edits, void *roots) {
         std::vector<fs::path> resolvedRoots;
         if (!workspaceEditRootsFromSequence(roots, diagnostics, resolvedRoots)) {
             void *result = rt_map_new();
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
-            rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-            rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+            rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+            rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
             releaseObject(diagnostics);
             return result;
         }
@@ -4459,9 +4471,9 @@ void *rt_workspace_edit_validate_in_roots(void *edits, void *roots) {
         void *result = rt_map_new();
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(diagnostics, "workspace edit validation failed", "", 0, "edit.exception");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }
@@ -4480,10 +4492,10 @@ void *rt_workspace_edit_apply_in_roots(void *edits, void *roots) {
         std::vector<fs::path> resolvedRoots;
         if (!workspaceEditRootsFromSequence(roots, diagnostics, resolvedRoots)) {
             void *result = rt_map_new();
-            rt_map_set_bool(result, rt_const_cstr("success"), 0);
-            rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
-            rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+            rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+            rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+            rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
+            rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
             releaseObject(diagnostics);
             return result;
         }
@@ -4493,10 +4505,10 @@ void *rt_workspace_edit_apply_in_roots(void *edits, void *roots) {
         void *result = rt_map_new();
         void *diagnostics = rt_seq_new_owned();
         pushDiagnostic(diagnostics, "workspace edit apply failed", "", 0, "edit.exception");
-        rt_map_set_bool(result, rt_const_cstr("success"), 0);
-        rt_map_set_int(result, rt_const_cstr("editCount"), 0);
-        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
-        rt_map_set(result, rt_const_cstr("diagnostics"), diagnostics);
+        rt_map_set_bool(result, RT_STR_LIT("success"), 0);
+        rt_map_set_int(result, RT_STR_LIT("editCount"), 0);
+        rt_map_set_int(result, RT_STR_LIT("appliedFiles"), 0);
+        rt_map_set(result, RT_STR_LIT("diagnostics"), diagnostics);
         releaseObject(diagnostics);
         return result;
     }

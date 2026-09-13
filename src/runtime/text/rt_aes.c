@@ -131,8 +131,12 @@ static rt_string aes_current_error_message(const char *fallback) {
 /// @param null_message Diagnostic text used for a NULL plaintext.
 /// @return Caller-owned Result containing Bytes or an error string.
 static void *aes_plaintext_result(void *plaintext, const char *null_message) {
-    if (!plaintext)
-        return rt_result_err_str(rt_const_cstr(null_message));
+    if (!plaintext) {
+        rt_string message = rt_const_cstr(null_message);
+        void *error = rt_result_err_str(message);
+        rt_string_unref(message);
+        return error;
+    }
     void *result = rt_result_ok(plaintext);
     aes_release_temp_object(plaintext);
     return result;
@@ -158,8 +162,12 @@ static void *aes_plaintext_option(void *plaintext) {
 /// @param null_message Diagnostic text used for a NULL plaintext.
 /// @return Caller-owned Result containing a string or error string.
 static void *aes_string_result(rt_string plaintext, const char *null_message) {
-    if (!plaintext)
-        return rt_result_err_str(rt_const_cstr(null_message));
+    if (!plaintext) {
+        rt_string message = rt_const_cstr(null_message);
+        void *error = rt_result_err_str(message);
+        rt_string_unref(message);
+        return error;
+    }
     void *result = rt_result_ok_str(plaintext);
     aes_release_temp_string(plaintext);
     return result;

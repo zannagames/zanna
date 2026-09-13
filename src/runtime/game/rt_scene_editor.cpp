@@ -1962,10 +1962,9 @@ void parseObjects(SceneState &s, void *root) {
             std::string key = toStd(keyStr);
             void *value = rt_map_get(objMap, keyStr);
             rt_string_unref(keyStr);
-            if (key == "type" || key == "id" || key == "x" || key == "y" ||
-                key == "properties" || key == "rotation" || key == "scaleX" ||
-                key == "scaleY" || key == "flipX" || key == "flipY" || key == "tint" ||
-                key == "pivotX" || key == "pivotY")
+            if (key == "type" || key == "id" || key == "x" || key == "y" || key == "properties" ||
+                key == "rotation" || key == "scaleX" || key == "scaleY" || key == "flipX" ||
+                key == "flipY" || key == "tint" || key == "pivotX" || key == "pivotY")
                 continue;
             if (obj.properties.size() >= static_cast<size_t>(kMaxObjectProperties)) {
                 addDiagnostic(s,
@@ -3239,8 +3238,12 @@ static std::string firstErrorMessage(const SceneState &s) {
 /// @param fallback Fallback error message when the document has no error diagnostic.
 /// @return Owned `Zanna.Result` carrying a SceneDocument or an error string.
 static void *scene_load_to_result(void *scene, const char *fallback) {
-    if (!scene)
-        return rt_result_err_str(rt_const_cstr(fallback ? fallback : "SceneDocument load failed"));
+    if (!scene) {
+        rt_string message = rt_const_cstr(fallback ? fallback : "SceneDocument load failed");
+        void *result = rt_result_err_str(message);
+        rt_string_unref(message);
+        return result;
+    }
 
     if (rt_game_scene_has_errors(scene)) {
         // Choose the first error-severity diagnostic rather than lastError (the
@@ -3253,8 +3256,9 @@ static void *scene_load_to_result(void *scene, const char *fallback) {
             result = rt_result_err_str(err);
             rt_str_release_maybe(err);
         } else {
-            result =
-                rt_result_err_str(rt_const_cstr(fallback ? fallback : "SceneDocument load failed"));
+            rt_string message = rt_const_cstr(fallback ? fallback : "SceneDocument load failed");
+            result = rt_result_err_str(message);
+            rt_string_unref(message);
         }
         releaseObject(scene);
         return result;

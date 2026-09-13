@@ -1948,7 +1948,7 @@ rt_string rt_scene3d_get_animation_name(void *scene, int64_t index) {
     (void)scene;
     (void)index;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.GetAnimationName: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }
 
 /// @brief Silent fallback stub for `SceneGraph.GetAnimationDuration` (graphics-disabled build).
@@ -2032,7 +2032,7 @@ void *rt_scene3d_raycast_precise_hit(void *scene,
 rt_string rt_scene3d_save_text(void *scene) {
     (void)scene;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.SaveToText: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }
 
 /// @brief Silent fallback stub for internal `rt_scene3d_load_from_memory` (graphics-disabled
@@ -2187,7 +2187,7 @@ void *rt_scene_node3d_get_light(void *node) {
 rt_string rt_scene_node3d_get_prefab_path(void *node) {
     (void)node;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneNode.get_PrefabPath: graphics support not compiled in",
-                                  rt_const_cstr(""));
+                                  RT_STR_LIT(""));
 }
 
 /// @brief Silent fallback stub for `SceneNode.get_IsInstanceContent` (graphics-disabled build).

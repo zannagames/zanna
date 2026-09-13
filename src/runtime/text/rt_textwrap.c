@@ -676,7 +676,7 @@ rt_string rt_textwrap_shorten(rt_string text, int64_t width) {
     rt_string left_part = rt_str_substr(text, 0, left);
     rt_string right_part = rt_str_substr(text, right_start, text_len - right_start);
 
-    rt_string result = rt_str_concat(left_part, rt_const_cstr("..."));
+    rt_string result = rt_str_concat(left_part, RT_STR_LIT("..."));
     return rt_str_concat(result, right_part);
 }
 

@@ -146,7 +146,7 @@ static rt_game3d_asset_handle *game3d_asset_handle_new(
 static rt_game3d_asset_handle *game3d_asset_handle_pending(rt_string path,
                                                            int8_t asset_path,
                                                            int8_t template_request) {
-    rt_game3d_asset_handle *handle = game3d_asset_handle_new(0, 0.0, rt_const_cstr(""), NULL, NULL);
+    rt_game3d_asset_handle *handle = game3d_asset_handle_new(0, 0.0, RT_STR_LIT(""), NULL, NULL);
     if (!handle)
         return NULL;
     handle->deferred = 1;

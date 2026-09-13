@@ -272,7 +272,7 @@ static int rt_gui_font_system_size_is_valid(double size) {
 static void *rt_gui_font_load_system_ui_result(double size, int bold) {
     if (!rt_gui_font_system_size_is_valid(size)) {
         return rt_result_err_str(
-            rt_const_cstr("font size must be finite and between 1 and 512 logical points"));
+            RT_STR_LIT("font size must be finite and between 1 and 512 logical points"));
     }
     vg_font_t *font = rt_gui_font_platform_load_system_ui(bold != 0);
     if (font)
@@ -281,13 +281,13 @@ static void *rt_gui_font_load_system_ui_result(double size, int bold) {
         font = vg_font_load(vg_embedded_font_data, (size_t)vg_embedded_font_size);
     if (!font) {
         return rt_result_err_str(
-            rt_const_cstr("unable to load the system UI font or embedded fallback"));
+            RT_STR_LIT("unable to load the system UI font or embedded fallback"));
     }
     vg_font_set_logical_size(font, (float)size);
     void *managed = rt_gui_font_wrap(font);
     if (!managed) {
         vg_font_destroy(font);
-        return rt_result_err_str(rt_const_cstr("unable to create a managed GUI font"));
+        return rt_result_err_str(RT_STR_LIT("unable to create a managed GUI font"));
     }
     void *result = rt_result_ok(managed);
     if (rt_obj_release_check0(managed))
@@ -2780,7 +2780,7 @@ void *rt_font_load(rt_string path) {
 /// @return Caller-owned Result.ErrStr containing the stable GUI-unavailable reason.
 void *rt_font_load_system_ui(double size) {
     (void)size;
-    return rt_result_err_str(rt_const_cstr("GUI support is not available in this build"));
+    return rt_result_err_str(RT_STR_LIT("GUI support is not available in this build"));
 }
 
 /// @brief Stub: graphics-disabled builds return an explicit capability failure.
@@ -2788,7 +2788,7 @@ void *rt_font_load_system_ui(double size) {
 /// @return Caller-owned Result.ErrStr containing the stable GUI-unavailable reason.
 void *rt_font_load_system_ui_bold(double size) {
     (void)size;
-    return rt_result_err_str(rt_const_cstr("GUI support is not available in this build"));
+    return rt_result_err_str(RT_STR_LIT("GUI support is not available in this build"));
 }
 
 /// @brief Stub: graphics-disabled builds have no live GUI Font metadata.

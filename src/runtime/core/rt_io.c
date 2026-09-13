@@ -818,8 +818,12 @@ void *rt_str_split_fields_result(rt_string line) {
     }
     if (!err && state == QUOTED)
         err = "SplitFields: unclosed quote";
-    if (err)
-        return rt_result_err_str(rt_const_cstr(err));
+    if (err) {
+        rt_string message = rt_const_cstr(err);
+        void *result = rt_result_err_str(message);
+        rt_string_unref(message);
+        return result;
+    }
     return rt_result_ok(rt_str_split_fields_seq(line));
 }
 
