@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-08-29
+---
+
 # MP3 (Layer III) decoder conformance — 2026-08-29
 
 The runtime's from-scratch MPEG Layer III decoder (`src/runtime/audio/rt_mp3.c`,

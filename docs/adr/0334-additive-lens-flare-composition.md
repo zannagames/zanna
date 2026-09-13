@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-06
+---
+
 # ADR 0334: Additive lens-flare composition
 
 Status: Accepted; implemented. Date: 2026-09-06.

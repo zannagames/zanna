@@ -229,7 +229,7 @@ remove the active handler.
 > BASIC front end does not emit them: all three `RESUME` forms currently lower to
 > a bare `trap` (see `src/tests/golden/eh_lowering/resume_forms.il`). The table
 > above describes the intended mapping. See
-> [defect audit #22](../audit_09012026.md).
+> [defect audit #22](../defect-audit-2026-09-01.md).
 
 The `%tok` value is always the resume token received by the handler block. Hand
 crafted IL must not forge resume tokens.

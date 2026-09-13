@@ -183,7 +183,7 @@ entry:
 > (`entry(%a:i64, %b:i64):`). Writing a bare `entry:` produces a function that
 > takes zero arguments; `il-verify` still reports `OK`, and the call traps at
 > runtime with `argument count mismatch for function add: expected 0 arguments,
-> received 2`. See [defect audit #23](../audit_09012026.md).
+> received 2`. See [defect audit #23](../defect-audit-2026-09-01.md).
 
 **Line by line**
 

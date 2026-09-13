@@ -563,7 +563,7 @@ There is no special "end the program" form; use `END` from inside the handler in
 > instruction, so the handler runs and the program then ends instead of
 > resuming. Write handlers that finish the work themselves (or call `END`)
 > rather than relying on `RESUME`. See
-> [defect audit #22](../audit_09012026.md).
+> [defect audit #22](../defect-audit-2026-09-01.md).
 
 ```basic
 ErrHandler:
@@ -990,7 +990,7 @@ END NAMESPACE
 (`--no-runtime-namespaces`). In the default configuration the directive is
 accepted, has no effect, and the resulting module fails IL verification with
 `unknown callee`. Keep `USING` at file scope. See
-[defect audit #18](../audit_09012026.md).
+[defect audit #18](../defect-audit-2026-09-01.md).
 
 ### USING Rules
 
@@ -1003,7 +1003,7 @@ accepted, has no effect, and the resulting module fails IL verification with
       currently resolves **type** references only (`DIM w AS VC.Widget`,
       `NEW VC.Widget()`); an alias-qualified *call* such as `VC.PrintI64(7)`
       fails with `B1001: unknown variable 'VC'`. See
-      [defect audit #19](../audit_09012026.md).
+      [defect audit #19](../defect-audit-2026-09-01.md).
 
 For complete namespace documentation, see [Namespace Reference](basic-namespaces.md).
 
@@ -1332,7 +1332,7 @@ RTTI operators:
 > `STATIC DESTRUCTOR` never runs; a static method resolves only through an
 > instance receiver (`c.Ping()`, not `C.Ping()`); and referencing `ME` inside a
 > `STATIC SUB` is accepted rather than rejected. See
-> [defect audit](../audit_09012026.md) entries 1, 2, 3, 9, and 16.
+> [defect audit](../defect-audit-2026-09-01.md) entries 1, 2, 3, 9, and 16.
 
 ### Properties
 

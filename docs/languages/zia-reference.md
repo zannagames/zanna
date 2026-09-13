@@ -485,7 +485,7 @@ custom value semantics.
 > fail IL verification: string concatenation (`"v=" + aByte`) and storing a
 > `Byte`-operand arithmetic result into an `Integer`. `Integer as Byte`,
 > implicit widening in a direct initialization, and `SayInt(aByte)` do work.
-> See [defect audit #5](../audit_09012026.md). Note that `zanna check` does not
+> See [defect audit #5](../defect-audit-2026-09-01.md). Note that `zanna check` does not
 > currently report these — use `zanna build` to confirm.
 
 ### Ternary Operator
@@ -823,7 +823,7 @@ value as Type           // Type cast
   that traps on overflow, and `Byte as Integer` zero-extends. **The narrowing is
   currently 32-bit, not 8-bit**, so `256 as Byte` is `256`, `300 as Byte` is
   `300`, and `-1 as Byte` reads back as `4294967295` instead of trapping. See
-  [defect audit #12](../audit_09012026.md).
+  [defect audit #12](../defect-audit-2026-09-01.md).
 - Class/interface casts are checked at runtime and trap on a mismatch.
 
 `as` does **not** convert between `String` and scalar types — there is no
@@ -1195,7 +1195,7 @@ try {
   - `kind`: runtime error kind name such as `"RuntimeError"` or `"DivideByZero"`
     (an alias spelled `type` is documented elsewhere but cannot be written —
     `type` is a reserved word, so `e.type` is a parse error; see
-    [defect audit #14](../audit_09012026.md))
+    [defect audit #14](../defect-audit-2026-09-01.md))
   - `message`: `throw` payload text for language throws, or a default message for runtime faults
   - `code`: numeric runtime error code
   - `line`: source line if available, otherwise `-1`
@@ -1616,7 +1616,7 @@ func start() {
 > bare `instanceCount` and a qualified `Counter.instanceCount` inside a method of
 > `Counter` fail with `error[V3000]: Unknown identifier ... reached lowering`.
 > Only access from outside the declaring type works. See
-> [defect audit #15](../audit_09012026.md).
+> [defect audit #15](../defect-audit-2026-09-01.md).
 
 ### Destructors
 

@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-06
+---
+
 # ADR 0337: Expanded fixture shadow capacity
 
 Status: Implemented; native Metal/software verified, native OpenGL/D3D11 pending

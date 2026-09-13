@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-01
+---
+
 # ADR 0314: Declared result ownership for runtime functions
 
 - Status: Accepted
@@ -40,7 +46,7 @@ search and its 3D scene editor both failed this way).
 Every `RT_FUNC` / `RT_INTERNAL_FUNC` row whose signature returns a managed
 reference (`obj`, `obj<…>`, `seq<…>`, `str`) carries a trailing token:
 
-```
+```c
 RT_FUNC(Mesh3DBox, rt_mesh3d_new_box, "Zanna.Graphics3D.Mesh3D.Box", "obj(f64,f64,f64)", owned)
 RT_FUNC(SceneAssetGetMesh, rt_model3d_get_mesh, "Zanna.Graphics3D.SceneAsset.GetMesh", "obj<Zanna.Graphics3D.Mesh3D>(obj,i64)", borrowed)
 RT_FUNC(ResultUnwrapStr, rt_result_unwrap_str, "Zanna.Result.UnwrapStr", "str(obj)", borrowed)

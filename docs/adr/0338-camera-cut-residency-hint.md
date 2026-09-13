@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-07
+---
+
 # ADR 0338: Camera-cut residency hint
 
 Status: Implemented; native Metal verified, native OpenGL/D3D11 pending

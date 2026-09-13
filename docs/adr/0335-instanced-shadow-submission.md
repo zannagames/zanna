@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-06
+---
+
 # ADR 0335: Instanced shadow submission
 
 Status: Implemented; native Metal/software verified, native OpenGL/D3D11 acceptance pending

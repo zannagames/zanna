@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-06
+---
+
 # ADR 0332: Authored range for point and spot lights
 
 Status: Accepted and implemented. Date: 2026-09-06.

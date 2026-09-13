@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-05
+---
+
 # ADR 0331: Indirect-only lightmap baking
 
 Status: Accepted and implemented. Date: 2026-09-05.

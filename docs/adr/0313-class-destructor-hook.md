@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-01
+---
+
 # ADR 0313: Class destructor hook and synthesized destructors
 
 - Status: Accepted

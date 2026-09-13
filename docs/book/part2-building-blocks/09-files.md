@@ -1224,7 +1224,7 @@ Let's build a full application that demonstrates proper file handling:
 > early `return` with a managed local and a `try`/`catch`, which triggers a
 > lowering defect that produces SSA-invalid IL
 > (`use of %N in ^catch_cont not dominated by definition`). Read it for the
-> structure; see [defect audit #24](../../audit_09012026.md) for the minimal
+> structure; see [defect audit #24](../../defect-audit-2026-09-01.md) for the minimal
 > repro and workaround (declare the managed local before the early return).
 
 ```zia

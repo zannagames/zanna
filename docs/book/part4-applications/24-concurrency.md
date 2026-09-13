@@ -517,7 +517,7 @@ Channels naturally compose into pipelines where each stage processes data and pa
 > pipeline fails roughly 30% of runs with
 > `rt_unbox_i64: invalid boxed value`. Until it is fixed, keep a strong
 > reference to anything you send (e.g. push it into a `Seq` the sender owns).
-> See [defect audit #31](../../audit_09012026.md).
+> See [defect audit #31](../../defect-audit-2026-09-01.md).
 
 ```zia
 bind Thread = Zanna.Threads.Thread;

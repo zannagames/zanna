@@ -138,8 +138,8 @@ runtime.def ──→ rtgen ──→ 5 generated files:
 | 1 | `src/il/runtime/classes/RuntimeClasses.hpp` | `RTCLS_Gauge` enum entry | Stable type identifier |
 | 2 | `src/runtime/<sub>/rt_gauge.h` | C function declarations | Public API |
 | 3 | `src/runtime/<sub>/rt_gauge.c` | C function implementations | Runtime logic |
-| 4 | `src/il/runtime/runtime.def` | `RT_FUNC(...)` entries | Function registry (source of truth) |
-| 5 | `src/il/runtime/runtime.def` | `RT_CLASS_BEGIN/END` block | Class structure definition |
+| 4 | `src/il/runtime/defs/<area>/<topic>.def` (included by `runtime.def`) | `RT_FUNC(...)` entries | Function registry (source of truth) |
+| 5 | `src/il/runtime/defs/<area>/<topic>.def` | Documented `RT_CLASS_BEGIN/END` block | Class structure definition |
 | 6 | `src/il/runtime/RuntimeSignatures.cpp` | `#include "rt_gauge.h"` | VM handler resolution |
 | 7 | `src/runtime/CMakeLists.txt` | Source + header in build lists | Compilation |
 | 8 | `src/tests/runtime/RTGaugeTests.cpp` | Unit tests | Correctness verification |
@@ -230,7 +230,7 @@ The header declares your class's public C API. All runtime headers follow the sa
 | Boolean | `int8_t` (0 or 1) | `i1` |
 | 64-bit integer | `int64_t` | `i64` |
 | 64-bit float | `double` | `f64` |
-| String | `const char*` | `str` |
+| String | `rt_string` | `str` |
 | Object reference | `void*` | `obj` |
 
 ### The Dual-Signature Convention
@@ -245,7 +245,7 @@ This is the trickiest part of runtime class development. The same C function is 
 
 The `RT_FUNC` describes the actual C ABI. The `RT_METHOD` describes the user-facing API (what the programmer sees). For instance methods, the receiver is implicit in `RT_METHOD` because it comes from the object the method is called on. Static/factory methods are receiverless: their `RT_FUNC` ABI has the same parameter count as the `RT_METHOD` signature, and frontend metadata records `hasReceiver=false`.
 
-If a method returns a retained object or copied string, update `src/il/runtime/RuntimeOwnership.hpp` at the same time as the runtime implementation. The optimizer and verifier use this metadata to avoid inserting incorrect extra retains or releases around runtime calls.
+Every `RT_FUNC` row that returns a managed reference (`obj`, `obj<…>`, `seq<…>`, or `str`) must end with an ownership token: `owned` when the function hands the caller a new reference (constructors, loaders, copied strings), or `borrowed` when it returns a view the caller must not release (a stored field, the receiver itself). `rtgen` rejects a reference-returning row without the token and a token on a row that returns no reference ([ADR 0314](../adr/0314-declared-runtime-result-ownership.md)). Decide the token from what the C code actually returns, not from the name. `src/il/runtime/RuntimeOwnership.hpp` is still updated by hand, but only for argument consumption and retention masks and other optimizer facts; the row's token alone decides result ownership.
 
 ### Complete Header Example
 
@@ -407,7 +407,7 @@ void *rt_gauge_new(...)
 
 ### Error Handling
 
-Use `rt_trap()` for unrecoverable errors. It terminates execution with a descriptive message:
+Use `rt_trap()` for unrecoverable errors. It takes one message string, so format any values into a local buffer first:
 
 ```c
 void rt_gauge_set_value(void *obj, int64_t value)
@@ -415,13 +415,17 @@ void rt_gauge_set_value(void *obj, int64_t value)
     ZannaGauge *gauge = (ZannaGauge *)obj;
     if (value < gauge->min || value > gauge->max)
     {
-        rt_trap("Gauge: value %lld out of bounds [%lld, %lld]",
-                (long long)value, (long long)gauge->min, (long long)gauge->max);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Gauge: value %lld out of bounds [%lld, %lld]",
+                 (long long)value, (long long)gauge->min, (long long)gauge->max);
+        rt_trap(msg);
         return;
     }
     gauge->value = value;
 }
 ```
+
+A trap does not always unwind: tests and embedders can install a handler that returns, so always return a safe value after calling `rt_trap()`.
 
 ### Complete Implementation Example
 
@@ -457,6 +461,8 @@ void rt_gauge_set_value(void *obj, int64_t value)
 #include "rt_internal.h"
 #include "rt_object.h"
 
+#include <stdio.h>
+
 /// @brief Internal gauge structure.
 typedef struct
 {
@@ -469,8 +475,10 @@ void *rt_gauge_new(int64_t min, int64_t max)
 {
     if (max < min)
     {
-        rt_trap("Gauge: max (%lld) must be >= min (%lld)",
-                (long long)max, (long long)min);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Gauge: max (%lld) must be >= min (%lld)",
+                 (long long)max, (long long)min);
+        rt_trap(msg);
         return NULL;
     }
 
@@ -502,8 +510,10 @@ void rt_gauge_set_value(void *obj, int64_t value)
     ZannaGauge *g = (ZannaGauge *)obj;
     if (value < g->min || value > g->max)
     {
-        rt_trap("Gauge: value %lld out of bounds [%lld, %lld]",
-                (long long)value, (long long)g->min, (long long)g->max);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Gauge: value %lld out of bounds [%lld, %lld]",
+                 (long long)value, (long long)g->min, (long long)g->max);
+        rt_trap(msg);
         return;
     }
     g->value = value;
@@ -573,13 +583,13 @@ void rt_gauge_clamp(void *obj)
 
 ## 7. Step 4 — RT_FUNC Entries in runtime.def
 
-**File:** `src/il/runtime/runtime.def`
+**File:** a definition fragment under `src/il/runtime/defs/<area>/` (for example `defs/classes/foundation.def`), `#include`d by `src/il/runtime/runtime.def`
 
-Every public function — constructors, property getters, property setters, and methods — must have an `RT_FUNC` entry. This is the single source of truth for all runtime metadata.
+Every public function — constructors, property getters, property setters, and methods — must have an `RT_FUNC` entry. Together, `runtime.def` and its fragments are the single source of truth for all runtime metadata.
 
 ### Where to Add
 
-Find the alphabetically appropriate section, or create a new one with the standard banner:
+Add rows to the fragment that owns the area. For a new area, create `defs/<area>/<topic>.def` and add its `#include` line (and table-of-contents entry) to `runtime.def`. Within a fragment, find the alphabetically appropriate section, or create a new one with the standard banner:
 
 ```c
 //=============================================================================
@@ -590,7 +600,7 @@ Find the alphabetically appropriate section, or create a new one with the standa
 ### RT_FUNC Parameters
 
 ```c
-RT_FUNC(id, c_symbol, "canonical", "signature")
+RT_FUNC(id, c_symbol, "canonical", "signature"[, owned | borrowed])
 ```
 
 | Parameter | Description | Example |
@@ -599,6 +609,7 @@ RT_FUNC(id, c_symbol, "canonical", "signature")
 | `c_symbol` | Exact C function name from your `.h` | `rt_gauge_new` |
 | `canonical` | Zanna namespace path | `"Zanna.Utils.Gauge.New"` |
 | `signature` | IL type signature (receiver included) | `"obj(i64,i64)"` |
+| ownership | Required when the signature returns `obj`, `obj<…>`, `seq<…>`, or `str`; forbidden otherwise. `owned` = caller receives a reference, `borrowed` = caller must not release it ([ADR 0314](../adr/0314-declared-runtime-result-ownership.md)) | `owned` |
 
 ### Property Canonical Naming
 
@@ -636,8 +647,8 @@ Every handler ID referenced in `RT_METHOD` or `RT_PROP` **must** have a correspo
 // GAUGE (Bounded Numeric Value)
 //=============================================================================
 
-RT_FUNC(GaugeNew,           rt_gauge_new,            "Zanna.Utils.Gauge.New",            "obj(i64,i64)")
-RT_FUNC(GaugeNewDefault,    rt_gauge_new_default,    "Zanna.Utils.Gauge.NewDefault",     "obj()")
+RT_FUNC(GaugeNew,           rt_gauge_new,            "Zanna.Utils.Gauge.New",            "obj(i64,i64)", owned)
+RT_FUNC(GaugeNewDefault,    rt_gauge_new_default,    "Zanna.Utils.Gauge.NewDefault",     "obj()", owned)
 RT_FUNC(GaugeGetValue,      rt_gauge_get_value,      "Zanna.Utils.Gauge.get_Value",      "i64(obj)")
 RT_FUNC(GaugeSetValue,      rt_gauge_set_value,      "Zanna.Utils.Gauge.set_Value",      "void(obj,i64)")
 RT_FUNC(GaugeGetMin,        rt_gauge_get_min,        "Zanna.Utils.Gauge.get_Min",        "i64(obj)")
@@ -655,13 +666,18 @@ RT_FUNC(GaugeClamp,         rt_gauge_clamp,          "Zanna.Utils.Gauge.Clamp", 
 
 ## 8. Step 5 — RT_CLASS_BEGIN/END Block
 
-**File:** `src/il/runtime/runtime.def` (in the RUNTIME CLASSES section, after all RT_FUNC entries)
+**File:** the same definition fragment as the class's `RT_FUNC` rows, after those rows
 
 The class block defines the OOP structure — which properties and methods belong to the class. This is consumed by `rtgen` to generate the `RuntimeClasses.inc` catalog.
+
+Every public class block must be immediately preceded by authored documentation: a one-line `/// @summary` and a Markdown `/// @details` block ([ADR 0101](../adr/0101-modular-runtime-definitions-and-documentation.md)). Generator audits and tests report classes without them, `rtgen` rejects malformed blocks (for example a block missing either tag, or one separated from `RT_CLASS_BEGIN`), and both texts flow into `docs/generated/runtime/` and `zanna --dump-runtime-api`.
 
 ### RT_CLASS_BEGIN Parameters
 
 ```c
+/// @summary One-line plain-text description.
+/// @details
+/// Long-form Markdown description.
 RT_CLASS_BEGIN("name", type_id, "layout", ctor_id)
 ```
 
@@ -702,6 +718,9 @@ RT_METHOD("name", "signature", target_id)
 For classes with no instances (all static methods), use `none` for both constructor and layout:
 
 ```c
+/// @summary Provides static mathematical functions.
+/// @details
+/// `Zanna.Math` has no instances; every member is a static function.
 RT_CLASS_BEGIN("Zanna.Math", Math, "none", none)
     RT_METHOD("Sin", "f64(f64)", MathSin)
     RT_METHOD("Cos", "f64(f64)", MathCos)
@@ -713,7 +732,10 @@ Static methods do not receive an implicit object. Their `RT_FUNC` signatures sho
 ### Complete Class Block
 
 ```c
-// Zanna.Utils.Gauge - bounded numeric value with clamping
+/// @summary Holds an integer value clamped to a [min, max] range.
+/// @details
+/// `Zanna.Utils.Gauge` tracks a bounded value such as health, progress, or volume.
+/// `Increment` and `Decrement` clamp silently; assigning an out-of-range `Value` traps.
 RT_CLASS_BEGIN("Zanna.Utils.Gauge", Gauge, "obj", GaugeNew)
     RT_PROP("Value", "i64", GaugeGetValue, GaugeSetValue)
     RT_PROP("Min", "i64", GaugeGetMin, none)
@@ -1171,11 +1193,11 @@ Create `src/runtime/core/rt_gauge.c` — see [Section 6](#6-step-3--c-implementa
 
 ### Step 4: RT_FUNC Entries
 
-In `src/il/runtime/runtime.def` — see [Section 7](#7-step-4--rt_func-entries-in-runtimedef) for the complete block.
+In the owning fragment under `src/il/runtime/defs/` — see [Section 7](#7-step-4--rt_func-entries-in-runtimedef) for the complete block.
 
 ### Step 5: RT_CLASS_BEGIN/END
 
-In `src/il/runtime/runtime.def` — see [Section 8](#8-step-5--rt_class_beginend-block) for the complete block.
+In the same fragment — see [Section 8](#8-step-5--rt_class_beginend-block) for the complete block.
 
 ### Step 6: Include
 
@@ -1271,6 +1293,9 @@ No instances, all static methods. Constructor is `none`, layout is `"none"`:
 
 ```c
 // runtime.def
+/// @summary Provides static mathematical functions.
+/// @details
+/// `Zanna.Math` has no instances; every member is a static function.
 RT_CLASS_BEGIN("Zanna.Math", Math, "none", none)
     RT_METHOD("Sin", "f64(f64)", MathSin)
     RT_METHOD("Cos", "f64(f64)", MathCos)
@@ -1284,8 +1309,8 @@ The primary constructor goes in `ctor_id`. Additional factories are regular meth
 
 ```c
 // runtime.def
-RT_FUNC(GaugeNew,        rt_gauge_new,         "Zanna.Utils.Gauge.New",        "obj(i64,i64)")
-RT_FUNC(GaugeNewDefault, rt_gauge_new_default,  "Zanna.Utils.Gauge.NewDefault", "obj()")
+RT_FUNC(GaugeNew,        rt_gauge_new,         "Zanna.Utils.Gauge.New",        "obj(i64,i64)", owned)
+RT_FUNC(GaugeNewDefault, rt_gauge_new_default,  "Zanna.Utils.Gauge.NewDefault", "obj()", owned)
 
 RT_CLASS_BEGIN("Zanna.Utils.Gauge", Gauge, "obj", GaugeNew)
     // GaugeNewDefault is accessible as Gauge.NewDefault() via RT_FUNC canonical name
@@ -1316,7 +1341,7 @@ Return the receiver from methods to enable chaining:
 
 ```c
 // C implementation
-void *rt_builder_append(void *obj, const char *text)
+void *rt_builder_append(void *obj, rt_string text)
 {
     // ... append logic ...
     return obj;  // Return self
@@ -1328,18 +1353,20 @@ RT_METHOD("Append", "obj(str)", BuilderAppend)
 
 Usage: `builder.Append("Hello").Append(" World")`
 
+The receiver comes back without a retain, so the matching `RT_FUNC` row declares `borrowed`, for example `RT_FUNC(BuilderAppend, rt_builder_append, "Zanna.Text.Builder.Append", "obj(obj,str)", borrowed)`.
+
 ### Pattern 6: Overloaded Methods (Different Arities)
 
 Create multiple RT_FUNC entries with different canonical names. Methods with the same user-facing name but different arities are resolved by the frontend:
 
 ```c
-RT_FUNC(SubstrFrom,  rt_substr_from,  "Zanna.String.Substring", "str(obj,i64)")
-RT_FUNC(SubstrRange, rt_substr_range, "Zanna.String.Substring", "str(obj,i64,i64)")
+RT_FUNC(SubstrFrom,  rt_substr_from,  "Zanna.String.Substring", "str(obj,i64)", owned)
+RT_FUNC(SubstrRange, rt_substr_range, "Zanna.String.Substring", "str(obj,i64,i64)", owned)
 ```
 
 ### Pattern 7: Error Handling with rt_trap
 
-Use `rt_trap()` for precondition violations. Always include a descriptive message:
+Use `rt_trap()` for precondition violations. Always include a descriptive message; `rt_trap()` takes a single string, so format values with `snprintf` first:
 
 ```c
 void *rt_list_get(void *obj, int64_t index)
@@ -1347,9 +1374,11 @@ void *rt_list_get(void *obj, int64_t index)
     ZannaList *list = (ZannaList *)obj;
     if (index < 0 || index >= list->count)
     {
-        rt_trap("List index out of bounds: %lld (size: %lld)",
-                (long long)index, (long long)list->count);
-        return NULL;  // Unreachable after trap
+        char msg[128];
+        snprintf(msg, sizeof(msg), "List index out of bounds: %lld (size: %lld)",
+                 (long long)index, (long long)list->count);
+        rt_trap(msg);
+        return NULL;  // Reached when an installed trap handler returns
     }
     return list->items[index];
 }
@@ -1412,8 +1441,9 @@ void *rt_physics_add_body(void *world, void *body)
     return body;
 }
 
-// runtime.def — both params are "obj" regardless of specific class
-RT_FUNC(PhysAddBody, rt_physics_add_body, "Zanna.Physics2D.World.AddBody", "obj(obj,obj)")
+// runtime.def — both params are "obj" regardless of specific class. The result is the
+// caller's own body argument returned without a retain, so it is declared borrowed.
+RT_FUNC(PhysAddBody, rt_physics_add_body, "Zanna.Physics2D.World.AddBody", "obj(obj,obj)", borrowed)
 ```
 
 ---
@@ -1461,7 +1491,7 @@ cmake --build build -j
 - `i64` = `int64_t` (NOT `int` or `long`)
 - `f64` = `double` (NOT `float`)
 - `i1` = `int8_t` (0 or 1)
-- `str` = `const char*`
+- `str` = `rt_string`
 - `obj` = `void*`
 
 ---
@@ -1582,8 +1612,8 @@ All commands should complete with zero errors and zero warnings.
 □ 1. RTCLS_ enum     → src/il/runtime/classes/RuntimeClasses.hpp
 □ 2. C header (.h)   → src/runtime/<sub>/rt_myclass.h
 □ 3. C source (.c)   → src/runtime/<sub>/rt_myclass.c
-□ 4. RT_FUNC entries  → src/il/runtime/runtime.def
-□ 5. RT_CLASS block   → src/il/runtime/runtime.def
+□ 4. RT_FUNC entries  → src/il/runtime/defs/<area>/<topic>.def (+ ownership tokens)
+□ 5. RT_CLASS block   → same fragment (+ @summary/@details)
 □ 6. #include header  → src/il/runtime/RuntimeSignatures.cpp
 □ 7. CMakeLists.txt   → src/runtime/CMakeLists.txt
 □ 8. Tests            → src/tests/runtime/RTMyClassTests.cpp
@@ -1614,13 +1644,16 @@ void     rt_myclass_do_thing(void *obj);
 
 **runtime.def (RT_FUNC):**
 ```c
-RT_FUNC(MyClassNew,      rt_myclass_new,       "Zanna.NS.MyClass.New",       "obj()")
+RT_FUNC(MyClassNew,      rt_myclass_new,       "Zanna.NS.MyClass.New",       "obj()", owned)
 RT_FUNC(MyClassGetValue, rt_myclass_get_value,  "Zanna.NS.MyClass.get_Value", "i64(obj)")
 RT_FUNC(MyClassDoThing,  rt_myclass_do_thing,   "Zanna.NS.MyClass.DoThing",   "void(obj)")
 ```
 
 **runtime.def (RT_CLASS):**
 ```c
+/// @summary One-line description of MyClass.
+/// @details
+/// Markdown description of what MyClass is for and how its members behave.
 RT_CLASS_BEGIN("Zanna.NS.MyClass", MyClass, "obj", MyClassNew)
     RT_PROP("Value", "i64", MyClassGetValue, none)
     RT_METHOD("DoThing", "void()", MyClassDoThing)
@@ -1659,7 +1692,7 @@ zanna_add_ctest(test_rt_myclass test_rt_myclass)
 | `i64` | `int64_t` | `i64` | `BasicType::Int` | `types::integer()` |
 | `f32` | `float` | `f32` | — | — |
 | `f64` | `double` | `f64` | `BasicType::Float` | `types::float64()` |
-| `str` | `const char*` | `str` | `BasicType::String` | `types::string()` |
+| `str` | `rt_string` | `str` | `BasicType::String` | `types::string()` |
 | `obj` | `void*` | `obj` | `BasicType::Object` | `types::runtimeClass(qname)` |
 | `ptr` | `void*` | `ptr` | `BasicType::Object` | `types::ptr()` |
 | `seq<T>` | `void*` | `seq<str>` | — | `types::seqOf(T)` |
@@ -1673,8 +1706,8 @@ zanna_add_ctest(test_rt_myclass test_rt_myclass)
 | Type ID enum | `src/il/runtime/classes/RuntimeClasses.hpp` | `RTCLS_MyClass` entry |
 | C header | `src/runtime/<sub>/rt_myclass.h` | Function declarations |
 | C source | `src/runtime/<sub>/rt_myclass.c` | Function implementations |
-| Function registry | `src/il/runtime/runtime.def` | `RT_FUNC(...)` entries |
-| Class definition | `src/il/runtime/runtime.def` | `RT_CLASS_BEGIN`/`END` block |
+| Function registry | `src/il/runtime/defs/<area>/<topic>.def` (included by `src/il/runtime/runtime.def`) | `RT_FUNC(...)` entries |
+| Class definition | `src/il/runtime/defs/<area>/<topic>.def` | `RT_CLASS_BEGIN`/`END` block |
 | VM handler include | `src/il/runtime/RuntimeSignatures.cpp` | `#include "rt_myclass.h"` |
 | Build: source | `src/runtime/CMakeLists.txt` | `.c` in `RT_*_SOURCES` |
 | Build: header | `src/runtime/CMakeLists.txt` | `.h` in `RT_PUBLIC_HEADERS` |

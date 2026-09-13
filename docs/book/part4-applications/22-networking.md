@@ -1121,7 +1121,7 @@ For important operations, implement retry logic with exponential backoff:
 
 > **Note:** the `return null;` statements below currently fail IL verification —
 > returning `null` directly from a `String?` function is a known lowering defect
-> ([audit #25](../../audit_09012026.md)). Return through a typed local
+> ([audit #25](../../defect-audit-2026-09-01.md)). Return through a typed local
 > (`var none: String? = null; return none;`) until it is fixed.
 
 ```zia

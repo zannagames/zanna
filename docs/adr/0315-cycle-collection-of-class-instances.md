@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-02
+---
+
 # ADR 0315: Cycle collection of Zia class instances
 
 - Status: Accepted

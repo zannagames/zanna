@@ -1161,7 +1161,7 @@ Components publish events without knowing who listens. Other components subscrib
 
 > **Note:** this pattern is not currently runnable in Zia. Invoking a handler
 > through a `&function` reference segfaults
-> ([audit #26](../../audit_09012026.md)), so the `publish` loop below cannot
+> ([audit #26](../../defect-audit-2026-09-01.md)), so the `publish` loop below cannot
 > execute today. The structure is still the right shape to learn from.
 
 ```zia

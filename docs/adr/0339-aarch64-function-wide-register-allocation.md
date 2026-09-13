@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-09-07
+---
+
 # ADR 0339: AArch64 function-wide register allocation
 
 Status: Implemented (default since Phase 3 C6 of the backend codegen review; the block-local

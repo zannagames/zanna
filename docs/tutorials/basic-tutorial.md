@@ -374,7 +374,7 @@ DIM B AS Graphics.UI.Button
 > `unknown callee @NS.C.__ctor` unless the class declares an explicit
 > `SUB NEW()`), and its fields are not visible from inside or outside the class
 > (`E_PROP_NO_SUCH_PROPERTY`). Method-only namespaced classes with an explicit
-> constructor do work. See [defect audit](../audit_09012026.md) #17 and #21.
+> constructor do work. See [defect audit](../defect-audit-2026-09-01.md) #17 and #21.
 
 ### Using the USING Directive
 
@@ -514,7 +514,7 @@ END
 > **`RESUME` is not implemented yet.** Every form lowers to a `trap`, so control
 > does not return to the protected code — the handler runs and the program ends.
 > Have the handler do the recovery work itself for now. See
-> [defect audit #22](../audit_09012026.md).
+> [defect audit #22](../defect-audit-2026-09-01.md).
 
 To stop execution from a handler use `END` (or fall through). Zanna BASIC does **not** treat
 `RESUME 0` as "end the program"; it parses as a `RESUME <label>` jump to label `0`, which simply
