@@ -1366,7 +1366,7 @@ typedef struct {
     const char *backend_fallback_reason; /* empty unless backend_fallback is true */
 
     /* Frame state */
-    int8_t in_frame;                       /* 1 = between Begin/End */
+    int8_t in_frame; /* 1 = between Begin/End */
     /* Plan 109: the active light limit for the frame in progress (0 = not yet computed);
      * the capability query behind it built a string per draw. */
     int32_t frame_light_limit;

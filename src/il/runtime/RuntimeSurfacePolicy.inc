@@ -438,8 +438,7 @@ RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.InstanceBatch3D.get_Material",
                                 "rt_instbatch3d_borrow_material")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Skeleton3D.GetBoneBindPose",
                                 "rt_skeleton3d_get_bone_bind_pose")
-RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_SkeletonCount",
-                                "rt_gltf_skeleton_count")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_SkeletonCount", "rt_gltf_skeleton_count")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetSkeleton", "rt_gltf_get_skeleton")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_AnimationCount",
                                 "rt_gltf_animation_count")
@@ -448,17 +447,13 @@ RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_NodeAnimationCount",
                                 "rt_gltf_node_animation_count")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetNodeAnimation",
                                 "rt_gltf_get_node_animation")
-RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_CameraCount",
-                                "rt_gltf_camera_count")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_CameraCount", "rt_gltf_camera_count")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetCamera", "rt_gltf_get_camera")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_SceneCount", "rt_gltf_scene_count")
-RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetSceneName",
-                                "rt_gltf_get_scene_name")
-RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetSceneRootAt",
-                                "rt_gltf_get_scene_root_at")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetSceneName", "rt_gltf_get_scene_name")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetSceneRootAt", "rt_gltf_get_scene_root_at")
 RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.get_NodeCount", "rt_gltf_node_count")
-RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetSceneRoot",
-                                "rt_gltf_get_scene_root")
+RUNTIME_SURFACE_EXPECT_FUNCTION("Zanna.Graphics3D.Gltf.GetSceneRoot", "rt_gltf_get_scene_root")
 
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_box_try_to_i64")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_box_try_to_f64")
