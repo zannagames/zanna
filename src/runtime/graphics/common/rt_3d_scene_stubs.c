@@ -1885,3 +1885,433 @@ void rt_scene3d_set_portal_clipping(void *o, int8_t a1) {
     (void)a1;
     RT_GRAPHICS_TRAP_VOID("SceneGraph.set_PortalClipping: graphics support not compiled in");
 }
+
+/* LightBaker3D stubs */
+
+/// @brief Silent no-op stub for `LightBaker3D.set_IncludeDirect` (graphics-disabled build).
+/// @param baker LightBaker3D receiver (ignored).
+/// @param enabled Nonzero enables direct light. Writes after gathering are ignored (ignored).
+void rt_lightbaker3d_set_include_direct(void *baker, int8_t enabled) {
+    (void)baker;
+    (void)enabled;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID(
+        "LightBaker3D.set_IncludeDirect: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `LightBaker3D.get_IncludeDirect` (graphics-disabled build).
+/// @param baker LightBaker3D receiver (ignored).
+/// @return `0`.
+int8_t rt_lightbaker3d_get_include_direct(void *baker) {
+    (void)baker;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "LightBaker3D.get_IncludeDirect: graphics support not compiled in", 0);
+}
+
+/* SceneGraph stubs */
+
+/// @brief Silent fallback stub for `SceneGraph.AdoptAnimations` (graphics-disabled build).
+/// @param scene Borrowed destination Scene3D handle (ignored).
+/// @param source Borrowed source Scene3D handle whose clips are adopted (ignored).
+/// @return `0`.
+int64_t rt_scene3d_adopt_baked_animations(void *scene, void *source) {
+    (void)scene;
+    (void)source;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.AdoptAnimations: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.get_AnimationCount` (graphics-disabled build).
+/// @param scene Borrowed SceneGraph handle (ignored).
+/// @return `0`.
+int64_t rt_scene3d_get_animation_count(void *scene) {
+    (void)scene;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.get_AnimationCount: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.GetAnimation` (graphics-disabled build).
+/// @param scene Borrowed SceneGraph handle (ignored).
+/// @param index Zero-based clip index (ignored).
+/// @return `NULL`.
+void *rt_scene3d_get_animation(void *scene, int64_t index) {
+    (void)scene;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.GetAnimation: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.GetAnimationName` (graphics-disabled build).
+/// @param scene Borrowed SceneGraph handle (ignored).
+/// @param index Zero-based clip index (ignored).
+/// @return An empty runtime string.
+rt_string rt_scene3d_get_animation_name(void *scene, int64_t index) {
+    (void)scene;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.GetAnimationName: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for `SceneGraph.GetAnimationDuration` (graphics-disabled build).
+/// @param scene Borrowed SceneGraph handle (ignored).
+/// @param index Zero-based clip index (ignored).
+/// @return `0.0`.
+double rt_scene3d_get_animation_duration(void *scene, int64_t index) {
+    (void)scene;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SceneGraph.GetAnimationDuration: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.get_UnresolvedPrefabCount` (graphics-disabled
+/// build).
+/// @param scene Borrowed Scene3D handle (ignored).
+/// @return `0`.
+int64_t rt_scene3d_get_unresolved_prefab_count(void *scene) {
+    (void)scene;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SceneGraph.get_UnresolvedPrefabCount: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.RaycastNodesPrecise` (graphics-disabled build).
+/// @param scene Borrowed Scene3D handle (ignored).
+/// @param origin Borrowed Vec3 ray origin (ignored).
+/// @param direction Borrowed Vec3 ray direction (ignored).
+/// @param max_distance Maximum accepted world-space hit distance (ignored).
+/// @return `NULL`.
+void *rt_scene3d_raycast_nodes_precise(void *scene,
+                                       void *origin,
+                                       void *direction,
+                                       double max_distance) {
+    (void)scene;
+    (void)origin;
+    (void)direction;
+    (void)max_distance;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SceneGraph.RaycastNodesPrecise: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.RaycastNodesPreciseAll` (graphics-disabled build).
+/// @param scene Borrowed Scene3D handle (ignored).
+/// @param origin Borrowed Vec3 ray origin (ignored).
+/// @param direction Borrowed Vec3 ray direction (ignored).
+/// @param max_distance Maximum accepted world-space hit distance (ignored).
+/// @return `NULL`.
+void *rt_scene3d_raycast_nodes_precise_all(void *scene,
+                                           void *origin,
+                                           void *direction,
+                                           double max_distance) {
+    (void)scene;
+    (void)origin;
+    (void)direction;
+    (void)max_distance;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SceneGraph.RaycastNodesPreciseAll: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.RaycastPreciseHit` (graphics-disabled build).
+/// @param scene Borrowed Scene3D handle (ignored).
+/// @param origin Borrowed Vec3 ray origin (ignored).
+/// @param direction Borrowed Vec3 ray direction (ignored).
+/// @param max_distance Maximum accepted world-space hit distance (ignored).
+/// @return `NULL`.
+void *rt_scene3d_raycast_precise_hit(void *scene,
+                                     void *origin,
+                                     void *direction,
+                                     double max_distance) {
+    (void)scene;
+    (void)origin;
+    (void)direction;
+    (void)max_distance;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.RaycastPreciseHit: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `SceneGraph.SaveToText` (graphics-disabled build).
+/// @param scene Borrowed Scene3D handle (ignored).
+/// @return An empty runtime string.
+rt_string rt_scene3d_save_text(void *scene) {
+    (void)scene;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneGraph.SaveToText: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for internal `rt_scene3d_load_from_memory` (graphics-disabled
+/// build).
+/// @param path Borrowed diagnostics-only source path (ignored).
+/// @param text Borrowed UTF-8 JSON buffer (ignored).
+/// @param len Exact number of readable bytes in @p text (ignored).
+/// @return `NULL`.
+void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len) {
+    (void)path;
+    (void)text;
+    (void)len;
+    return NULL;
+}
+
+/// @brief Fallback stub for `SceneGraph.LoadResult` (graphics-disabled build).
+/// @details Result-returning APIs report unavailable graphics support as `Err(String)`
+///          instead of trapping.
+/// @param path Borrowed VSCN file path (ignored).
+/// @return `Err("SceneGraph.LoadResult: graphics support not compiled in")`.
+void *rt_scene3d_load_result(rt_string path) {
+    (void)path;
+    return rt_graphics_unavailable_result_(
+        "SceneGraph.LoadResult: graphics support not compiled in");
+}
+
+/// @brief Fallback stub for `SceneGraph.LoadTextResult` (graphics-disabled build).
+/// @details Result-returning APIs report unavailable graphics support as `Err(String)`
+///          instead of trapping.
+/// @param virtual_path Borrowed diagnostic path naming the base directory for relative prefab
+/// references (ignored).
+/// @param text Borrowed canonical VSCN text (ignored).
+/// @return `Err("SceneGraph.LoadTextResult: graphics support not compiled in")`.
+void *rt_scene3d_load_text_result(rt_string virtual_path, rt_string text) {
+    (void)virtual_path;
+    (void)text;
+    return rt_graphics_unavailable_result_(
+        "SceneGraph.LoadTextResult: graphics support not compiled in");
+}
+
+/* SceneNode stubs */
+
+/// @brief Silent fallback stub for `SceneNode.TrySetWorldPosition` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param x Finite world-space X coordinate (ignored).
+/// @param y Finite world-space Y coordinate (ignored).
+/// @param z Finite world-space Z coordinate (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_try_set_world_position(void *node, double x, double y, double z) {
+    (void)node;
+    (void)x;
+    (void)y;
+    (void)z;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneNode.TrySetWorldPosition: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for internal `rt_scene_node3d_get_position_components`
+/// (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param x Output receiving the local X coordinate (ignored).
+/// @param y Output receiving the local Y coordinate (ignored).
+/// @param z Output receiving the local Z coordinate (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_get_position_components(void *node, double *x, double *y, double *z) {
+    (void)node;
+    (void)x;
+    (void)y;
+    (void)z;
+    return 0;
+}
+
+/// @brief Silent fallback stub for internal `rt_scene_node3d_get_world_rotation_components`
+/// (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param x Output receiving quaternion X (ignored).
+/// @param y Output receiving quaternion Y (ignored).
+/// @param z Output receiving quaternion Z (ignored).
+/// @param w Output receiving quaternion W (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_get_world_rotation_components(
+    void *node, double *x, double *y, double *z, double *w) {
+    (void)node;
+    (void)x;
+    (void)y;
+    (void)z;
+    (void)w;
+    return 0;
+}
+
+/// @brief Silent fallback stub for internal `rt_scene_node3d_get_scale_components`
+/// (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param x Output receiving local X scale (ignored).
+/// @param y Output receiving local Y scale (ignored).
+/// @param z Output receiving local Z scale (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_get_scale_components(void *node, double *x, double *y, double *z) {
+    (void)node;
+    (void)x;
+    (void)y;
+    (void)z;
+    return 0;
+}
+
+/// @brief Silent fallback stub for internal `rt_scene_node3d_get_world_scale_components`
+/// (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param x Output receiving world X scale magnitude (ignored).
+/// @param y Output receiving world Y scale magnitude (ignored).
+/// @param z Output receiving world Z scale magnitude (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_get_world_scale_components(void *node, double *x, double *y, double *z) {
+    (void)node;
+    (void)x;
+    (void)y;
+    (void)z;
+    return 0;
+}
+
+/// @brief Silent fallback stub for internal `rt_scene_node3d_get_world_matrix_components`
+/// (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param out Output array receiving sixteen row-major matrix lanes (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_get_world_matrix_components(void *node, double out[16]) {
+    (void)node;
+    (void)out;
+    return 0;
+}
+
+/// @brief Silent no-op stub for `SceneNode.set_Light` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param light Borrowed Light3D retained by the node, or `NULL` to clear (ignored).
+void rt_scene_node3d_set_light(void *node, void *light) {
+    (void)node;
+    (void)light;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("SceneNode.set_Light: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `SceneNode.get_Light` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @return `NULL`.
+void *rt_scene_node3d_get_light(void *node) {
+    (void)node;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneNode.get_Light: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SceneNode.get_PrefabPath` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @return An empty runtime string.
+rt_string rt_scene_node3d_get_prefab_path(void *node) {
+    (void)node;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneNode.get_PrefabPath: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for `SceneNode.get_IsInstanceContent` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_get_is_instance_content(void *node) {
+    (void)node;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SceneNode.get_IsInstanceContent: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `SceneNode.SetPrefabReference` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @param path Borrowed non-empty prefab path retained by the node (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_set_prefab_reference(void *node, rt_string path) {
+    (void)node;
+    (void)path;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneNode.SetPrefabReference: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `SceneNode.ClearPrefabReference` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+/// @return `0`.
+int8_t rt_scene_node3d_clear_prefab_reference(void *node) {
+    (void)node;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SceneNode.ClearPrefabReference: graphics support not compiled in", 0);
+}
+
+/// @brief Silent no-op stub for `SceneNode.AttachToBone` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D socket node (ignored).
+/// @param animator Borrowed skeletal AnimController3D retained by the binding (ignored).
+/// @param bone_index Zero-based target bone index (ignored).
+/// @param offset_x Local socket offset X (ignored).
+/// @param offset_y Local socket offset Y (ignored).
+/// @param offset_z Local socket offset Z (ignored).
+void rt_scene_node3d_attach_to_bone(void *node,
+                                    void *animator,
+                                    int64_t bone_index,
+                                    double offset_x,
+                                    double offset_y,
+                                    double offset_z) {
+    (void)node;
+    (void)animator;
+    (void)bone_index;
+    (void)offset_x;
+    (void)offset_y;
+    (void)offset_z;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("SceneNode.AttachToBone: graphics support not compiled in");
+}
+
+/// @brief Silent no-op stub for `SceneNode.DetachBoneSocket` (graphics-disabled build).
+/// @param node Borrowed SceneNode3D handle (ignored).
+void rt_scene_node3d_detach_bone_socket(void *node) {
+    (void)node;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("SceneNode.DetachBoneSocket: graphics support not compiled in");
+}
+
+/// @brief No-op stub for internal `rt_scene_node3d_set_bone_socket_rotation` (graphics-disabled
+/// build).
+/// @param node Node (ignored).
+/// @param qx Qx (ignored).
+/// @param qy Qy (ignored).
+/// @param qz Qz (ignored).
+/// @param qw Qw (ignored).
+void rt_scene_node3d_set_bone_socket_rotation(
+    void *node, double qx, double qy, double qz, double qw) {
+    (void)node;
+    (void)qx;
+    (void)qy;
+    (void)qz;
+    (void)qw;
+}
+
+/* Sky3D stubs */
+
+/// @brief Silent fallback stub for `Sky3D.get_SunDirection` (graphics-disabled build).
+/// @param sky Sky3D handle (ignored).
+/// @return `NULL`.
+void *rt_sky3d_get_sun_direction(void *sky) {
+    (void)sky;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Sky3D.get_SunDirection: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Sky3D.get_GroundAlbedo` (graphics-disabled build).
+/// @param sky Sky3D handle (ignored).
+/// @return `NULL`.
+void *rt_sky3d_get_ground_albedo(void *sky) {
+    (void)sky;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Sky3D.get_GroundAlbedo: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent no-op stub for `Sky3D.set_Stars` (graphics-disabled build).
+/// @param obj Sky3D handle (ignored).
+/// @param enabled Non-zero draws the fixed star catalog once the sun sets (ignored).
+void rt_sky3d_set_stars(void *obj, int8_t enabled) {
+    (void)obj;
+    (void)enabled;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("Sky3D.set_Stars: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `Sky3D.get_Stars` (graphics-disabled build).
+/// @param obj Sky3D handle (ignored).
+/// @return `0`.
+int8_t rt_sky3d_get_stars(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Sky3D.get_Stars: graphics support not compiled in", 0);
+}
+
+/// @brief Silent no-op stub for `Sky3D.set_StarIntensity` (graphics-disabled build).
+/// @param obj Sky3D handle (ignored).
+/// @param intensity Brightness multiplier applied to every star (ignored).
+void rt_sky3d_set_star_intensity(void *obj, double intensity) {
+    (void)obj;
+    (void)intensity;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("Sky3D.set_StarIntensity: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `Sky3D.get_StarIntensity` (graphics-disabled build).
+/// @param obj Sky3D handle (ignored).
+/// @return `0.0`.
+double rt_sky3d_get_star_intensity(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Sky3D.get_StarIntensity: graphics support not compiled in", 0.0);
+}

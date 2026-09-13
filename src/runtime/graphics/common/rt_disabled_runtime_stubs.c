@@ -9,56 +9,56 @@
 /// @brief Supplies deterministic fallback symbols for graphics-disabled runtime builds.
 ///
 /// @details
-/// This translation unit preserves ABI compatibility for GUI, command,
+/// This translation unit preserves ABI compatibility for GUI progress-bar,
 /// rendering, scene, asset, physics, and navigation helpers that are normally
 /// provided by graphics-enabled components. Mutators retain no state, queries
-/// return explicit empty defaults, and mutation probes report failure.
+/// return explicit empty defaults, and mutation probes report failure. Commands,
+/// virtual lists and trees, accessibility helpers, the GUI test harness, and
+/// widget sizing keep their real backend-free implementations from
+/// rt_gui_ide.cpp and rt_gui_widgets.c, so they are deliberately absent here.
 ///
 // File: src/runtime/graphics/common/rt_disabled_runtime_stubs.c
 // Purpose: Supplemental exported runtime stubs for graphics-disabled builds.
 // Key invariants:
 //   - Every supplemental public symbol remains link-compatible with the full runtime.
+//   - Every declaring header is included, so a stub whose signature drifts from its
+//     header contract fails to compile instead of silently mismatching the ABI.
 //   - Scene mutation probes return failure when no graphics scene graph exists.
 // Ownership/Lifetime:
 //   - Stubs retain no graphics handles and allocate only documented fallback values.
+//   - Stubs for consuming entry points release the buffers their contracts transfer.
 // Links: src/runtime/graphics/3d/scene/rt_scene3d.h,
 //   docs/adr/0162-exact-preserve-world-scenenode-reparenting.md,
 //   docs/adr/0166-exact-scenenode-world-matrix-assignment.md
 //
 //===----------------------------------------------------------------------===//
 
+#include "rt_animcontroller3d.h"
+#include "rt_canvas3d.h"
+#include "rt_decal3d.h"
+#include "rt_game3d_internal.h"
+#include "rt_gltf.h"
+#include "rt_gui.h"
+#include "rt_iksolver3d.h"
+#include "rt_model3d.h"
+#include "rt_navmesh3d.h"
+#include "rt_particles3d.h"
+#include "rt_physics3d.h"
+#include "rt_scene3d.h"
+#include "rt_sprite3d.h"
 #include "rt_string.h"
+#include "rt_terrain3d.h"
 
 #include <stddef.h>
 #include <stdint.h>
-
-typedef struct rt_gltf_preload_bundle rt_gltf_preload_bundle;
+#include <stdio.h>
+#include <stdlib.h>
 
 /// @brief Create an owned empty runtime string for disabled-feature fallbacks.
 ///
 /// @return A newly created empty runtime string.
 static rt_string disabled_empty_string(void) {
     return rt_string_from_bytes("", 0);
-}
-
-/// @brief Ignore a preferred-size update when the GUI runtime is unavailable.
-/// @param widget Widget handle (ignored).
-/// @param width Preferred width (ignored).
-/// @param height Preferred height (ignored).
-void rt_widget_set_preferred_size(void *widget, double width, double height) {
-    (void)widget;
-    (void)width;
-    (void)height;
-}
-
-/// @brief Ignore a maximum-size update when the GUI runtime is unavailable.
-/// @param widget Widget handle (ignored).
-/// @param width Maximum width (ignored).
-/// @param height Maximum height (ignored).
-void rt_widget_set_max_size(void *widget, double width, double height) {
-    (void)widget;
-    (void)width;
-    (void)height;
 }
 
 /// @brief Ignore a progress-bar style update in a disabled GUI build.
@@ -75,554 +75,6 @@ void rt_progressbar_set_style(void *progress, int64_t style) {
 void rt_progressbar_show_percentage(void *progress, int64_t show) {
     (void)progress;
     (void)show;
-}
-
-/// @brief Return no GUI test harness when graphics and GUI support are disabled.
-/// @return `NULL`.
-void *rt_gui_test_harness_new(void) {
-    return NULL;
-}
-
-/// @brief Ignore a request to clear a disabled GUI test harness.
-/// @param harness GUI test-harness handle (ignored).
-void rt_gui_test_harness_clear(void *harness) {
-    (void)harness;
-}
-
-/// @brief Report that a disabled GUI test harness advanced no work.
-/// @param harness GUI test-harness handle (ignored).
-/// @param ms Elapsed virtual time in milliseconds (ignored).
-/// @return `0`.
-int64_t rt_gui_test_harness_tick(void *harness, int64_t ms) {
-    (void)harness;
-    (void)ms;
-    return 0;
-}
-
-/// @brief Ignore registration of a widget with the disabled GUI test harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @param id Stable widget identifier (ignored).
-/// @param name Widget name (ignored).
-/// @param type Widget type name (ignored).
-/// @param x Widget X coordinate (ignored).
-/// @param y Widget Y coordinate (ignored).
-/// @param w Widget width (ignored).
-/// @param h Widget height (ignored).
-void rt_gui_test_harness_register_widget(void *harness,
-                                         rt_string id,
-                                         rt_string name,
-                                         rt_string type,
-                                         int64_t x,
-                                         int64_t y,
-                                         int64_t w,
-                                         int64_t h) {
-    (void)harness;
-    (void)id;
-    (void)name;
-    (void)type;
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
-}
-
-/// @brief Return no widget for an identifier lookup in the disabled harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @param id Widget identifier (ignored).
-/// @return `NULL`.
-void *rt_gui_test_harness_find_by_id(void *harness, rt_string id) {
-    (void)harness;
-    (void)id;
-    return NULL;
-}
-
-/// @brief Return no widget for a name lookup in the disabled harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @param name Widget name (ignored).
-/// @return `NULL`.
-void *rt_gui_test_harness_find_by_name(void *harness, rt_string name) {
-    (void)harness;
-    (void)name;
-    return NULL;
-}
-
-/// @brief Return no widget for a type lookup in the disabled harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @param type Widget type name (ignored).
-/// @return `NULL`.
-void *rt_gui_test_harness_find_by_type(void *harness, rt_string type) {
-    (void)harness;
-    (void)type;
-    return NULL;
-}
-
-/// @brief Ignore synthetic key input sent to a disabled GUI harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @param id Target widget identifier (ignored).
-/// @param key Key code (ignored).
-void rt_gui_test_harness_send_key(void *harness, rt_string id, int64_t key) {
-    (void)harness;
-    (void)id;
-    (void)key;
-}
-
-/// @brief Ignore synthetic mouse input sent to a disabled GUI harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @param id Target widget identifier (ignored).
-/// @param x Mouse X coordinate (ignored).
-/// @param y Mouse Y coordinate (ignored).
-/// @param buttons Mouse-button bitmask (ignored).
-void rt_gui_test_harness_send_mouse(
-    void *harness, rt_string id, int64_t x, int64_t y, int64_t buttons) {
-    (void)harness;
-    (void)id;
-    (void)x;
-    (void)y;
-    (void)buttons;
-}
-
-/// @brief Return the empty focus identifier from a disabled GUI harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @return An owned empty runtime string.
-rt_string rt_gui_test_harness_get_focus(void *harness) {
-    (void)harness;
-    return disabled_empty_string();
-}
-
-/// @brief Return no focus-order collection from a disabled GUI harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @return `NULL`.
-void *rt_gui_test_harness_focus_order(void *harness) {
-    (void)harness;
-    return NULL;
-}
-
-/// @brief Return no framebuffer capture from a disabled GUI harness.
-/// @param harness GUI test-harness handle (ignored).
-/// @param x Capture-region X coordinate (ignored).
-/// @param y Capture-region Y coordinate (ignored).
-/// @param w Capture width (ignored).
-/// @param h Capture height (ignored).
-/// @return `NULL`.
-void *rt_gui_test_harness_capture_region(
-    void *harness, int64_t x, int64_t y, int64_t w, int64_t h) {
-    (void)harness;
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
-    return NULL;
-}
-
-/// @brief Report that a disabled GUI harness has no nonblank capture.
-/// @param harness GUI test-harness handle (ignored).
-/// @return `0`.
-int8_t rt_gui_test_harness_assert_nonblank(void *harness) {
-    (void)harness;
-    return 0;
-}
-
-/// @brief Return no virtual-list model when GUI support is disabled.
-/// @param row_count Logical row count (ignored).
-/// @param row_height Row height in pixels (ignored).
-/// @param viewport_height Viewport height in pixels (ignored).
-/// @return `NULL`.
-void *rt_virtual_list_new(int64_t row_count, int64_t row_height, int64_t viewport_height) {
-    (void)row_count;
-    (void)row_height;
-    (void)viewport_height;
-    return NULL;
-}
-
-/// @brief Ignore a virtual-list row-count update.
-/// @param list Virtual-list handle (ignored).
-/// @param count New row count (ignored).
-void rt_virtual_list_set_count(void *list, int64_t count) {
-    (void)list;
-    (void)count;
-}
-
-/// @brief Ignore assignment of a stable identifier to a virtual-list row.
-/// @param list Virtual-list handle (ignored).
-/// @param row Row index (ignored).
-/// @param id Stable row identifier (ignored).
-void rt_virtual_list_set_row_id(void *list, int64_t row, rt_string id) {
-    (void)list;
-    (void)row;
-    (void)id;
-}
-
-/// @brief Return no visible-range descriptor from a disabled virtual list.
-/// @param list Virtual-list handle (ignored).
-/// @param scroll_y Vertical scroll offset (ignored).
-/// @return `NULL`.
-void *rt_virtual_list_visible_range(void *list, int64_t scroll_y) {
-    (void)list;
-    (void)scroll_y;
-    return NULL;
-}
-
-/// @brief Ignore virtual-list selection by stable identifier.
-/// @param list Virtual-list handle (ignored).
-/// @param id Row identifier (ignored).
-void rt_virtual_list_select_id(void *list, rt_string id) {
-    (void)list;
-    (void)id;
-}
-
-/// @brief Return the empty selected-row identifier from a disabled virtual list.
-/// @param list Virtual-list handle (ignored).
-/// @return An owned empty runtime string.
-rt_string rt_virtual_list_get_selected_id(void *list) {
-    (void)list;
-    return disabled_empty_string();
-}
-
-/// @brief Return the invalid selected index from a disabled virtual list.
-/// @param list Virtual-list handle (ignored).
-/// @return `-1`.
-int64_t rt_virtual_list_get_selected_index(void *list) {
-    (void)list;
-    return -1;
-}
-
-/// @brief Return no virtual-tree model when GUI support is disabled.
-/// @return `NULL`.
-void *rt_virtual_tree_new(void) {
-    return NULL;
-}
-
-/// @brief Ignore insertion of a node into a disabled virtual tree.
-/// @param tree Virtual-tree handle (ignored).
-/// @param id Stable node identifier (ignored).
-/// @param parent Parent identifier, or empty for a root (ignored).
-/// @param label Display label (ignored).
-void rt_virtual_tree_add_node(void *tree, rt_string id, rt_string parent, rt_string label) {
-    (void)tree;
-    (void)id;
-    (void)parent;
-    (void)label;
-}
-
-/// @brief Return no expansion result for a disabled virtual-tree node.
-/// @param tree Virtual-tree handle (ignored).
-/// @param id Node identifier (ignored).
-/// @return `NULL`.
-void *rt_virtual_tree_expand(void *tree, rt_string id) {
-    (void)tree;
-    (void)id;
-    return NULL;
-}
-
-/// @brief Ignore collapse of a disabled virtual-tree node.
-/// @param tree Virtual-tree handle (ignored).
-/// @param id Node identifier (ignored).
-void rt_virtual_tree_collapse(void *tree, rt_string id) {
-    (void)tree;
-    (void)id;
-}
-
-/// @brief Ignore virtual-tree selection by stable identifier.
-/// @param tree Virtual-tree handle (ignored).
-/// @param id Node identifier (ignored).
-void rt_virtual_tree_select_id(void *tree, rt_string id) {
-    (void)tree;
-    (void)id;
-}
-
-/// @brief Return the empty selected-node identifier from a disabled virtual tree.
-/// @param tree Virtual-tree handle (ignored).
-/// @return An owned empty runtime string.
-rt_string rt_virtual_tree_get_selected_id(void *tree) {
-    (void)tree;
-    return disabled_empty_string();
-}
-
-/// @brief Return no visible-row collection from a disabled virtual tree.
-/// @param tree Virtual-tree handle (ignored).
-/// @return `NULL`.
-void *rt_virtual_tree_visible_rows(void *tree) {
-    (void)tree;
-    return NULL;
-}
-
-/// @brief Ignore refresh of a disabled virtual-tree subtree.
-/// @param tree Virtual-tree handle (ignored).
-/// @param id Subtree root identifier (ignored).
-void rt_virtual_tree_refresh_subtree(void *tree, rt_string id) {
-    (void)tree;
-    (void)id;
-}
-
-/// @brief Return no command-state model when GUI command support is disabled.
-/// @param id Stable command identifier (ignored).
-/// @param label Accessible display label (ignored).
-/// @return `NULL`.
-void *rt_command_state_new(rt_string id, rt_string label) {
-    (void)id;
-    (void)label;
-    return NULL;
-}
-
-/// @brief Ignore an enabled-state update on a disabled command state.
-/// @param state Command-state handle (ignored).
-/// @param enabled Requested enabled flag (ignored).
-void rt_command_state_set_enabled(void *state, int8_t enabled) {
-    (void)state;
-    (void)enabled;
-}
-
-/// @brief Report that a disabled command state is not enabled.
-/// @param state Command-state handle (ignored).
-/// @return `0`.
-int8_t rt_command_state_get_enabled(void *state) {
-    (void)state;
-    return 0;
-}
-
-/// @brief Ignore a checked-state update on a disabled command state.
-/// @param state Command-state handle (ignored).
-/// @param checked Requested checked flag (ignored).
-void rt_command_state_set_checked(void *state, int8_t checked) {
-    (void)state;
-    (void)checked;
-}
-
-/// @brief Report that a disabled command state is not checked.
-/// @param state Command-state handle (ignored).
-/// @return `0`.
-int8_t rt_command_state_get_checked(void *state) {
-    (void)state;
-    return 0;
-}
-
-/// @brief Ignore accessible text assigned to a disabled command state.
-/// @param state Command-state handle (ignored).
-/// @param label Accessible label (ignored).
-/// @param description Accessible description (ignored).
-void rt_command_state_set_accessible(void *state, rt_string label, rt_string description) {
-    (void)state;
-    (void)label;
-    (void)description;
-}
-
-/// @brief Return no serialized snapshot for a disabled command state.
-/// @param state Command-state handle (ignored).
-/// @return `NULL`.
-void *rt_command_state_snapshot(void *state) {
-    (void)state;
-    return NULL;
-}
-
-/// @brief Return no command object when GUI command support is disabled.
-/// @param id Stable command identifier (ignored).
-/// @param title Display title (ignored).
-/// @return `NULL`.
-void *rt_command_new(rt_string id, rt_string title) {
-    (void)id;
-    (void)title;
-    return NULL;
-}
-
-/// @brief Return the empty identifier for a disabled command.
-/// @param command Command handle (ignored).
-/// @return An owned empty runtime string.
-rt_string rt_command_get_id(void *command) {
-    (void)command;
-    return disabled_empty_string();
-}
-
-/// @brief Return the empty title for a disabled command.
-/// @param command Command handle (ignored).
-/// @return An owned empty runtime string.
-rt_string rt_command_get_title(void *command) {
-    (void)command;
-    return disabled_empty_string();
-}
-
-/// @brief Ignore assignment of a keyboard shortcut to a disabled command.
-/// @param command Command handle (ignored).
-/// @param keys Shortcut description (ignored).
-void rt_command_set_shortcut(void *command, rt_string keys) {
-    (void)command;
-    (void)keys;
-}
-
-/// @brief Return the empty shortcut for a disabled command.
-/// @param command Command handle (ignored).
-/// @return An owned empty runtime string.
-rt_string rt_command_get_shortcut(void *command) {
-    (void)command;
-    return disabled_empty_string();
-}
-
-/// @brief Ignore an enabled-state update on a disabled command.
-/// @param command Command handle (ignored).
-/// @param enabled Requested enabled flag (ignored).
-void rt_command_set_enabled(void *command, int8_t enabled) {
-    (void)command;
-    (void)enabled;
-}
-
-/// @brief Report that a disabled command is not enabled.
-/// @param command Command handle (ignored).
-/// @return `0`.
-int8_t rt_command_is_enabled(void *command) {
-    (void)command;
-    return 0;
-}
-
-/// @brief Ignore a checkable-state update on a disabled command.
-/// @param command Command handle (ignored).
-/// @param checkable Requested checkable flag (ignored).
-void rt_command_set_checkable(void *command, int8_t checkable) {
-    (void)command;
-    (void)checkable;
-}
-
-/// @brief Report that a disabled command is not checkable.
-/// @param command Command handle (ignored).
-/// @return `0`.
-int8_t rt_command_is_checkable(void *command) {
-    (void)command;
-    return 0;
-}
-
-/// @brief Ignore a checked-state update on a disabled command.
-/// @param command Command handle (ignored).
-/// @param checked Requested checked flag (ignored).
-void rt_command_set_checked(void *command, int8_t checked) {
-    (void)command;
-    (void)checked;
-}
-
-/// @brief Report that a disabled command is not checked.
-/// @param command Command handle (ignored).
-/// @return `0`.
-int8_t rt_command_is_checked(void *command) {
-    (void)command;
-    return 0;
-}
-
-/// @brief Ignore binding a disabled command to a menu item.
-/// @param command Command handle (ignored).
-/// @param item Menu-item handle (ignored).
-void rt_command_bind_menu_item(void *command, void *item) {
-    (void)command;
-    (void)item;
-}
-
-/// @brief Ignore binding a disabled command to a toolbar item.
-/// @param command Command handle (ignored).
-/// @param item Toolbar-item handle (ignored).
-void rt_command_bind_toolbar_item(void *command, void *item) {
-    (void)command;
-    (void)item;
-}
-
-/// @brief Report no pending invocation while polling a disabled command.
-/// @param command Command handle (ignored).
-/// @return `0`.
-int8_t rt_command_poll(void *command) {
-    (void)command;
-    return 0;
-}
-
-/// @brief Report that a disabled command was not invoked.
-/// @param command Command handle (ignored).
-/// @return `0`.
-int8_t rt_command_was_invoked(void *command) {
-    (void)command;
-    return 0;
-}
-
-/// @brief Return no serialized snapshot for a disabled command.
-/// @param command Command handle (ignored).
-/// @return `NULL`.
-void *rt_command_snapshot(void *command) {
-    (void)command;
-    return NULL;
-}
-
-/// @brief Return no command registry when GUI command support is disabled.
-/// @return `NULL`.
-void *rt_command_registry_new(void) {
-    return NULL;
-}
-
-/// @brief Ignore insertion into a disabled command registry.
-/// @param registry Command-registry handle (ignored).
-/// @param command Command handle (ignored).
-void rt_command_registry_add(void *registry, void *command) {
-    (void)registry;
-    (void)command;
-}
-
-/// @brief Return the command count of a disabled registry.
-/// @param registry Command-registry handle (ignored).
-/// @return `0`.
-int64_t rt_command_registry_count(void *registry) {
-    (void)registry;
-    return 0;
-}
-
-/// @brief Return no command from a disabled registry lookup.
-/// @param registry Command-registry handle (ignored).
-/// @param id Command identifier (ignored).
-/// @return `NULL`.
-void *rt_command_registry_find(void *registry, rt_string id) {
-    (void)registry;
-    (void)id;
-    return NULL;
-}
-
-/// @brief Ignore binding a disabled command registry to a palette.
-/// @param registry Command-registry handle (ignored).
-/// @param palette Command-palette handle (ignored).
-void rt_command_registry_bind_palette(void *registry, void *palette) {
-    (void)registry;
-    (void)palette;
-}
-
-/// @brief Return no invoked command identifier from a disabled registry.
-/// @param registry Command-registry handle (ignored).
-/// @return An owned empty runtime string.
-rt_string rt_command_registry_poll(void *registry) {
-    (void)registry;
-    return disabled_empty_string();
-}
-
-/// @brief Ignore clearing a disabled command registry.
-/// @param registry Command-registry handle (ignored).
-void rt_command_registry_clear(void *registry) {
-    (void)registry;
-}
-
-/// @brief Return the neutral fallback contrast ratio for unavailable accessibility color math.
-/// @param fg_rgb Packed foreground RGB color (ignored).
-/// @param bg_rgb Packed background RGB color (ignored).
-/// @return `1.0`.
-double rt_accessibility_contrast_ratio(int64_t fg_rgb, int64_t bg_rgb) {
-    (void)fg_rgb;
-    (void)bg_rgb;
-    return 1.0;
-}
-
-/// @brief Evaluate a contrast threshold against the neutral fallback ratio.
-/// @param fg_rgb Packed foreground RGB color (ignored).
-/// @param bg_rgb Packed background RGB color (ignored).
-/// @param min_ratio Required contrast ratio.
-/// @return `1` when `min_ratio` is at most `1.0`; otherwise `0`.
-int8_t rt_accessibility_meets_contrast(int64_t fg_rgb, int64_t bg_rgb, double min_ratio) {
-    (void)fg_rgb;
-    (void)bg_rgb;
-    return min_ratio <= 1.0 ? 1 : 0;
-}
-
-/// @brief Return no high-contrast token map in a disabled GUI build.
-/// @return `NULL`.
-void *rt_accessibility_high_contrast_tokens(void) {
-    return NULL;
 }
 
 /// @brief Ignore entry into a Canvas3D overlay pass.
@@ -800,18 +252,22 @@ int64_t rt_model3d_get_scene_count(void *model) {
 
 /// @brief Return the camera count of an unavailable model.
 /// @param model Model3D handle (ignored).
+/// @param scene_index Scene index (ignored).
 /// @return `0`.
-int64_t rt_model3d_get_camera_count(void *model) {
+int64_t rt_model3d_get_camera_count(void *model, int64_t scene_index) {
     (void)model;
+    (void)scene_index;
     return 0;
 }
 
 /// @brief Return no camera from an unavailable model.
 /// @param model Model3D handle (ignored).
+/// @param scene_index Scene index (ignored).
 /// @param index Camera index (ignored).
 /// @return `NULL`.
-void *rt_model3d_get_camera(void *model, int64_t index) {
+void *rt_model3d_get_camera(void *model, int64_t scene_index, int64_t index) {
     (void)model;
+    (void)scene_index;
     (void)index;
     return NULL;
 }
@@ -837,33 +293,35 @@ void *rt_model3d_instantiate_scene_at(void *model, int64_t index) {
 }
 
 /// @brief Return no model from a preloaded glTF bundle in a disabled build.
+/// @details The contract transfers @p bundle to this call on every path, so it is released.
 /// @param path Logical source path (ignored).
-/// @param bundle Predecoded glTF bundle (ignored).
-/// @param asset_path Non-zero when `path` names a packed asset (ignored).
+/// @param bundle Owned staged glTF bundle, released here.
+/// @param load_assets Nonzero for asset-manager resolution semantics (ignored).
 /// @return `NULL`.
 void *rt_model3d_load_preloaded_gltf_bundle(rt_string path,
-                                            rt_gltf_preload_bundle *bundle,
-                                            int8_t asset_path) {
+                                            struct rt_gltf_preload_bundle *bundle,
+                                            int load_assets) {
     (void)path;
-    (void)bundle;
-    (void)asset_path;
+    (void)load_assets;
+    rt_gltf_preload_bundle_free(bundle);
     return NULL;
 }
 
 /// @brief Return no model from preloaded FBX bytes in a disabled build.
+/// @details The contract transfers @p preloaded_data to this call on every path, so it is freed.
 /// @param path Logical source path (ignored).
-/// @param data FBX byte buffer (ignored).
-/// @param size Buffer length in bytes (ignored).
-/// @param asset_path Non-zero when `path` names a packed asset (ignored).
+/// @param preloaded_data Owned FBX byte buffer, freed here.
+/// @param preloaded_size Buffer length in bytes (ignored).
+/// @param load_assets Nonzero for asset-manager dependency behavior (ignored).
 /// @return `NULL`.
 void *rt_model3d_load_preloaded_fbx(rt_string path,
-                                    const uint8_t *data,
-                                    size_t size,
-                                    int8_t asset_path) {
+                                    uint8_t *preloaded_data,
+                                    size_t preloaded_size,
+                                    int load_assets) {
     (void)path;
-    (void)data;
-    (void)size;
-    (void)asset_path;
+    (void)preloaded_size;
+    (void)load_assets;
+    free(preloaded_data);
     return NULL;
 }
 
@@ -874,22 +332,6 @@ void *rt_model3d_load_preloaded_fbx(rt_string path,
 int8_t rt_world3d_contains_body(void *world, void *body) {
     (void)world;
     (void)body;
-    return 0;
-}
-
-/// @brief Return the most recent disabled-world CCD clamped-body count.
-/// @param world Physics3DWorld handle (ignored).
-/// @return `0`.
-int64_t rt_world3d_get_last_ccd_clamped_body_count(void *world) {
-    (void)world;
-    return 0;
-}
-
-/// @brief Return the cumulative disabled-world CCD clamped-body count.
-/// @param world Physics3DWorld handle (ignored).
-/// @return `0`.
-int64_t rt_world3d_get_ccd_substep_clamped_body_count(void *world) {
-    (void)world;
     return 0;
 }
 
@@ -971,9 +413,11 @@ double rt_anim_controller3d_get_state_time(void *controller) {
 
 /// @brief Report that a disabled animation controller is not playing a state.
 /// @param controller AnimController3D handle (ignored).
+/// @param state_name State name (ignored).
 /// @return `0`.
-int8_t rt_anim_controller3d_is_state_playing(void *controller) {
+int8_t rt_anim_controller3d_is_state_playing(void *controller, rt_string state_name) {
     (void)controller;
+    (void)state_name;
     return 0;
 }
 
@@ -1071,19 +515,27 @@ void rt_canvas3d_draw_terrain_at(void *canvas, void *terrain, double x, double y
 }
 
 /// @brief Return no glTF preload bundle in a graphics-disabled build.
+/// @details The contract transfers @p root_data to this call, so it is freed; the diagnostic
+///          buffer receives the unavailable-graphics reason like any other preload failure.
 /// @param path Null-terminated source path (ignored).
-/// @param asset_path Non-zero for a packed-asset path (ignored).
-/// @param data Optional source bytes (ignored).
-/// @param size Source byte count (ignored).
+/// @param root_data Malloc-owned root bytes, freed here.
+/// @param root_size Number of readable root bytes (ignored).
+/// @param load_assets Non-zero for asset-manager resolution (ignored).
+/// @param error Optional diagnostic buffer.
+/// @param error_cap Capacity of @p error in bytes.
 /// @return `NULL`.
 rt_gltf_preload_bundle *rt_gltf_preload_bundle_create_cstr(const char *path,
-                                                           int8_t asset_path,
-                                                           const uint8_t *data,
-                                                           size_t size) {
+                                                           uint8_t *root_data,
+                                                           size_t root_size,
+                                                           int load_assets,
+                                                           char *error,
+                                                           size_t error_cap) {
     (void)path;
-    (void)asset_path;
-    (void)data;
-    (void)size;
+    (void)root_size;
+    (void)load_assets;
+    free(root_data);
+    if (error && error_cap > 0)
+        snprintf(error, error_cap, "graphics support not compiled in");
     return NULL;
 }
 
@@ -1142,18 +594,32 @@ int8_t rt_camera3d_get_position_components(void *camera, double *x, double *y, d
 
 /// @brief Ignore a component-wise look-at update on a disabled camera.
 /// @param camera Camera3D handle (ignored).
-/// @param x Target X coordinate (ignored).
-/// @param y Target Y coordinate (ignored).
-/// @param z Target Z coordinate (ignored).
+/// @param eye_x Eye X coordinate (ignored).
+/// @param eye_y Eye Y coordinate (ignored).
+/// @param eye_z Eye Z coordinate (ignored).
+/// @param target_x Target X coordinate (ignored).
+/// @param target_y Target Y coordinate (ignored).
+/// @param target_z Target Z coordinate (ignored).
 /// @param up_x Up-vector X component (ignored).
 /// @param up_y Up-vector Y component (ignored).
 /// @param up_z Up-vector Z component (ignored).
-void rt_camera3d_look_at_components(
-    void *camera, double x, double y, double z, double up_x, double up_y, double up_z) {
+void rt_camera3d_look_at_components(void *camera,
+                                    double eye_x,
+                                    double eye_y,
+                                    double eye_z,
+                                    double target_x,
+                                    double target_y,
+                                    double target_z,
+                                    double up_x,
+                                    double up_y,
+                                    double up_z) {
     (void)camera;
-    (void)x;
-    (void)y;
-    (void)z;
+    (void)eye_x;
+    (void)eye_y;
+    (void)eye_z;
+    (void)target_x;
+    (void)target_y;
+    (void)target_z;
     (void)up_x;
     (void)up_y;
     (void)up_z;

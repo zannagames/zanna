@@ -38,11 +38,13 @@
 #include "rt_gui_internal.h"
 #include "rt_pixels.h"
 #include "rt_platform.h"
-#include "vg_icon_vector.h"
 
 #include <string.h>
 
 #ifdef ZANNA_ENABLE_GRAPHICS
+
+/* ZannaGUI's include directory is only on the include path when graphics is enabled. */
+#include "vg_icon_vector.h"
 
 void rt_gui_set_clicked_statusbar_item(void *item);
 

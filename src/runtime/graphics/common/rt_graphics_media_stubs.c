@@ -1072,3 +1072,17 @@ void *rt_videoplayer_get_frame(void *v) {
     (void)v;
     return NULL;
 }
+
+/* SoundSource3D stubs */
+
+/// @brief No-op stub for internal `rt_soundsource3d_rebase_origin` (graphics-disabled build).
+/// @param source Source object (ignored).
+/// @param dx Origin X displacement (ignored).
+/// @param dy Origin Y displacement (ignored).
+/// @param dz Origin Z displacement (ignored).
+void rt_soundsource3d_rebase_origin(void *source, double dx, double dy, double dz) {
+    (void)source;
+    (void)dx;
+    (void)dy;
+    (void)dz;
+}

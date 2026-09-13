@@ -112,6 +112,24 @@
 #define RT_GAME3D_MODEL_CACHE_KEY_MAX 4096 ///< Max bytes snapshotted for model cache/load paths.
 #endif
 
+/// @name Graphics3D payload sizes for size-checked handle validation
+/// @brief Payload sizes Game3D passes to rt_obj_is_instance for borrowed Graphics3D handles.
+/// @details Game3D also compiles into graphics-disabled builds, where the Mesh3D, Material3D, and
+///   SceneNode3D payload types are incomplete because no such object can be constructed (their
+///   constructors are trap stubs). There the sizes collapse to one byte so every check still
+///   compiles and fails closed on the class id.
+/// @{
+#ifdef ZANNA_ENABLE_GRAPHICS
+#define RT_GAME3D_MESH3D_PAYLOAD_SIZE sizeof(rt_mesh3d)
+#define RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE sizeof(rt_material3d)
+#define RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE sizeof(rt_scene_node3d)
+#else
+#define RT_GAME3D_MESH3D_PAYLOAD_SIZE ((size_t)1)
+#define RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE ((size_t)1)
+#define RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE ((size_t)1)
+#endif
+/// @}
+
 /// @brief Return non-zero only when a frontend callback is null or resides in executable native
 /// memory.
 /// @details Kept on the private Game3D surface so platform-specific mapping tests can exercise the

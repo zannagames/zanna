@@ -385,10 +385,12 @@ TEST(RuntimeSurfaceAudit, BroadInternalHeadersDoNotExposeRuntimeDefSymbols) {
     const auto defSymbols = runtimeDefSymbols();
 
     const std::unordered_map<std::string, std::unordered_set<std::string>> allowedPublicTokens = {
-        // `rt_gui_internal.h` contains inline helpers that call public string APIs; the
-        // broad-header
-        // policy remains correct because the header does not declare these functions.
+        // `rt_gui_internal.h` and `rt_graphics_internal.h` contain inline helpers that call
+        // public string APIs (the latter for built-in font text measurement shared by
+        // graphics-enabled and graphics-disabled builds); the broad-header policy remains
+        // correct because neither header declares these functions.
         {"src/runtime/graphics/gui/rt_gui_internal.h", {"rt_str_len", "rt_string_cstr"}},
+        {"src/runtime/graphics/common/rt_graphics_internal.h", {"rt_str_len", "rt_string_cstr"}},
     };
 
     for (const auto &header : internalHeaders()) {

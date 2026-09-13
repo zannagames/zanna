@@ -71,6 +71,25 @@ The same change classifies the four internal headers explicitly and pins twelve
 Platform, Request, and Steam members with expectations, raising the policy
 coverage baseline from 1229 to 1247 (the tree already stood at 1231).
 
+The graphics-disabled runtime (`ZANNA_GRAPHICS_MODE=OFF`, and the configuration
+`AUTO` falls back to on Linux hosts without X11 development headers) had stopped
+compiling and linking. A symbol-level audit against the generated VM handler
+table found 329 registered entry points and 33 internal Game3D hooks with no
+graphics-disabled definition, seven stubs whose signatures had drifted from
+their headers, and 65 stubs duplicating real backend-free definitions. Repairing
+that surface moves three baselines:
+
+- `graphics_stub_functions` rises from 1229 to 1396. New stubs cover the missing
+  entry points in two new files (`rt_3d_render_stubs.c`, `rt_3d_game_stubs.c`)
+  and the existing split files. Removing the 65 duplicates and the drifted color
+  copies in `rt_graphics_helper_stubs.c` offsets part of the growth; `rt_color.c`
+  now compiles in both modes instead.
+- `graphics_stub_unclassified_functions` falls from 315 to 241. Every new stub
+  carries trap, fallback, or no-op classification language, and the removed
+  duplicates were unclassified.
+- `runtime_api_contract_files` rises from 908 to 909: two new stub files, one
+  deleted stub file.
+
 ## Current Metrics
 
 | Metric | Purpose |

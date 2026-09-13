@@ -1828,3 +1828,341 @@ void rt_navmesh3d_set_heuristic_mode(void *o, int64_t a1) {
     (void)a1;
     RT_GRAPHICS_TRAP_VOID("NavMesh3D.SetHeuristicMode: graphics support not compiled in");
 }
+
+/* NavAgent3D stubs */
+
+/// @brief Silent no-op stub for `NavAgent3D.Stop` (graphics-disabled build).
+/// @param agent Opaque NavAgent3D handle (ignored).
+void rt_navagent3d_stop(void *agent) {
+    (void)agent;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("NavAgent3D.Stop: graphics support not compiled in");
+}
+
+/// @brief Silent no-op stub for `NavAgent3D.Resume` (graphics-disabled build).
+/// @param agent Opaque NavAgent3D handle (ignored).
+void rt_navagent3d_resume(void *agent) {
+    (void)agent;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("NavAgent3D.Resume: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `NavAgent3D.get_IsStopped` (graphics-disabled build).
+/// @param agent Opaque NavAgent3D handle (ignored).
+/// @return `0`.
+int8_t rt_navagent3d_get_is_stopped(void *agent) {
+    (void)agent;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("NavAgent3D.get_IsStopped: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `NavAgent3D.get_PathCornerCount` (graphics-disabled build).
+/// @param agent Opaque NavAgent3D handle (ignored).
+/// @return `0`.
+int64_t rt_navagent3d_get_path_corner_count(void *agent) {
+    (void)agent;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "NavAgent3D.get_PathCornerCount: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `NavAgent3D.GetPathCorner` (graphics-disabled build).
+/// @param agent Opaque NavAgent3D handle (ignored).
+/// @param index Zero-based corner index (ignored).
+/// @return `NULL`.
+void *rt_navagent3d_get_path_corner(void *agent, int64_t index) {
+    (void)agent;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("NavAgent3D.GetPathCorner: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `NavAgent3D.get_HasTarget` (graphics-disabled build).
+/// @param agent Opaque NavAgent3D handle (ignored).
+/// @return `0`.
+int8_t rt_navagent3d_get_has_target(void *agent) {
+    (void)agent;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("NavAgent3D.get_HasTarget: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `NavAgent3D.get_Target` (graphics-disabled build).
+/// @param agent Opaque NavAgent3D handle (ignored).
+/// @return `NULL`.
+void *rt_navagent3d_get_target(void *agent) {
+    (void)agent;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("NavAgent3D.get_Target: graphics support not compiled in", NULL);
+}
+
+/* Path3D stubs */
+
+/// @brief Silent fallback stub for `Path3D.get_Looping` (graphics-disabled build).
+/// @param path Path3D receiver (ignored).
+/// @return `0`.
+int8_t rt_path3d_get_looping(void *path) {
+    (void)path;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Path3D.get_Looping: graphics support not compiled in", 0);
+}
+
+/// @brief No-op stub for internal `rt_path3d_eval_spline_raw` (graphics-disabled build).
+/// @param path Path3D handle to evaluate (ignored).
+/// @param t Normalized arc-length parameter (ignored).
+/// @param pos_out Required three-component output receiving the position (ignored).
+/// @param tan_out Optional three-component output receiving the unit tangent (ignored).
+void rt_path3d_eval_spline_raw(void *path, double t, double *pos_out, double *tan_out) {
+    (void)path;
+    (void)t;
+    if (pos_out)
+        memset(pos_out, 0, 3 * sizeof(*pos_out));
+    if (tan_out)
+        memset(tan_out, 0, 3 * sizeof(*tan_out));
+}
+
+/* Transform3D stubs */
+
+/// @brief Silent fallback stub for `Transform3D.GetEuler` (graphics-disabled build).
+/// @param xf Borrowed Transform3D handle (ignored).
+/// @return `NULL`.
+void *rt_transform3d_get_euler(void *xf) {
+    (void)xf;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Transform3D.GetEuler: graphics support not compiled in", NULL);
+}
+
+/* Terrain3D stubs */
+
+/// @brief Silent fallback stub for `Terrain3D.GetScale` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `NULL`.
+void *rt_terrain3d_get_scale(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetScale: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.get_Material` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `NULL`.
+void *rt_terrain3d_get_material(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.get_Material: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.GetLayerTexture` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @param layer Layer index from 0 through 7 (ignored).
+/// @return `NULL`.
+void *rt_terrain3d_get_layer_texture(void *terrain, int64_t layer) {
+    (void)terrain;
+    (void)layer;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetLayerTexture: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.GetLayerScale` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @param layer Layer index from 0 through 7 (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_layer_scale(void *terrain, int64_t layer) {
+    (void)terrain;
+    (void)layer;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetLayerScale: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.GetSplatMap` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @param index Splat map index, 0 or 1 (ignored).
+/// @return `NULL`.
+void *rt_terrain3d_get_splat_map(void *terrain, int64_t index) {
+    (void)terrain;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetSplatMap: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.get_LodNearDistance` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_lod_near_distance(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.get_LodNearDistance: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.get_LodFarDistance` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_lod_far_distance(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.get_LodFarDistance: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.get_LodHysteresis` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_lod_hysteresis(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.get_LodHysteresis: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.get_SkirtDepth` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_skirt_depth(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.get_SkirtDepth: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.get_HeightmapWidth` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `0`.
+int64_t rt_terrain3d_get_heightmap_width(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.get_HeightmapWidth: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.get_HeightmapDepth` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @return `0`.
+int64_t rt_terrain3d_get_heightmap_depth(void *terrain) {
+    (void)terrain;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.get_HeightmapDepth: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.GetHoleX` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @param index Zero-based hole index (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_hole_x(void *terrain, int64_t index) {
+    (void)terrain;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetHoleX: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.GetHoleZ` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @param index Zero-based hole index (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_hole_z(void *terrain, int64_t index) {
+    (void)terrain;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetHoleZ: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.GetHoleWidth` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @param index Zero-based hole index (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_hole_width(void *terrain, int64_t index) {
+    (void)terrain;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetHoleWidth: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Terrain3D.GetHoleDepth` (graphics-disabled build).
+/// @param terrain Terrain3D handle (ignored).
+/// @param index Zero-based hole index (ignored).
+/// @return `0.0`.
+double rt_terrain3d_get_hole_depth(void *terrain, int64_t index) {
+    (void)terrain;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Terrain3D.GetHoleDepth: graphics support not compiled in", 0.0);
+}
+
+/* Water3D stubs */
+
+/// @brief Silent fallback stub for `Water3D.get_Height` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `0.0`.
+double rt_water3d_get_height(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_Height: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_Position` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `NULL`.
+void *rt_water3d_get_position(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_Position: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_WaveSpeed` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `0.0`.
+double rt_water3d_get_wave_speed(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_WaveSpeed: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_WaveAmplitude` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `0.0`.
+double rt_water3d_get_wave_amplitude(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_WaveAmplitude: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_WaveFrequency` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `0.0`.
+double rt_water3d_get_wave_frequency(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_WaveFrequency: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_Color` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `NULL`.
+void *rt_water3d_get_color(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_Color: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_Alpha` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `0.0`.
+double rt_water3d_get_alpha(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_Alpha: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_Reflectivity` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `0.0`.
+double rt_water3d_get_reflectivity(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_Reflectivity: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_Resolution` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `0`.
+int64_t rt_water3d_get_resolution(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_Resolution: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_Texture` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `NULL`.
+void *rt_water3d_get_texture(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_Texture: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_NormalMap` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `NULL`.
+void *rt_water3d_get_normal_map(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_NormalMap: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `Water3D.get_EnvMap` (graphics-disabled build).
+/// @param water Water3D handle (ignored).
+/// @return `NULL`.
+void *rt_water3d_get_env_map(void *water) {
+    (void)water;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Water3D.get_EnvMap: graphics support not compiled in", NULL);
+}

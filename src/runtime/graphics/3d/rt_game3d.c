@@ -2129,6 +2129,7 @@ static void game3d_world_update_behaviors(rt_game3d_world *world, double dt) {
 ///   node pose is the "to" endpoint. Skipped entirely unless render interpolation is on.
 /// @param world World whose live spawned entity poses are captured.
 static void game3d_world_capture_interpolation_poses(rt_game3d_world *world) {
+#ifdef ZANNA_ENABLE_GRAPHICS
     int32_t count;
     if (!world || !world->render_interpolation)
         return;
@@ -2151,6 +2152,10 @@ static void game3d_world_capture_interpolation_poses(rt_game3d_world *world) {
         memcpy(entity->interp_prev_rotation, node->rotation, sizeof(entity->interp_prev_rotation));
         entity->interp_has_prev = 1;
     }
+#else
+    /* Graphics-disabled builds have no SceneNode3D poses to capture. */
+    (void)world;
+#endif
 }
 
 /// @brief Drop all captured interpolation endpoints (call after floating-origin rebases).
@@ -2177,6 +2182,7 @@ static void game3d_world_invalidate_interpolation_poses(rt_game3d_world *world) 
 /// @param world World whose entities may receive temporary interpolated poses.
 /// @return 1 when at least one pose was blended (caller must restore after drawing).
 static int game3d_world_apply_render_interpolation(rt_game3d_world *world) {
+#ifdef ZANNA_ENABLE_GRAPHICS
     double alpha;
     double t;
     int blended = 0;
@@ -2237,11 +2243,17 @@ static int game3d_world_apply_render_interpolation(rt_game3d_world *world) {
         blended = 1;
     }
     return blended;
+#else
+    /* Graphics-disabled builds have no SceneNode3D poses to blend. */
+    (void)world;
+    return 0;
+#endif
 }
 
 /// @brief Restore authoritative sim poses after an interpolated render.
 /// @param world World whose temporarily blended nodes are restored.
 static void game3d_world_restore_render_interpolation(rt_game3d_world *world) {
+#ifdef ZANNA_ENABLE_GRAPHICS
     int32_t count;
     if (!world)
         return;
@@ -2263,6 +2275,10 @@ static void game3d_world_restore_render_interpolation(rt_game3d_world *world) {
         memcpy(node->rotation, entity->interp_saved_rotation, sizeof(node->rotation));
         node->world_dirty = 1;
     }
+#else
+    /* Graphics-disabled builds never blend poses, so there is nothing to restore. */
+    (void)world;
+#endif
 }
 
 /// @brief Advance every spawned entity's active/blending ragdoll: powered drive,

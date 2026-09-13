@@ -144,6 +144,16 @@ if (ZANNA_BASH_EXECUTABLE)
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             LABELS "conformance;vm;bytecode;requires_posix_shell")
 
+    # Registry cross-references plus graphics-disabled definition parity: every
+    # registered C symbol must stay defined when ZANNA_ENABLE_GRAPHICS is off.
+    add_test(NAME check_runtime_completeness
+            COMMAND ${ZANNA_BASH_COMMAND}
+            scripts/check_runtime_completeness.sh)
+    set_tests_properties(check_runtime_completeness PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            ENVIRONMENT "ZANNA_RTGEN=$<TARGET_FILE:rtgen>"
+            LABELS "tools;audit;requires_posix_shell")
+
     add_test(NAME zia_runtime_name_literal_lint
             COMMAND ${ZANNA_BASH_COMMAND}
             scripts/lint_zia_runtime_names.sh

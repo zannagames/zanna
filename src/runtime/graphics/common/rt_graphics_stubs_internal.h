@@ -28,20 +28,23 @@
 //     same declarations and compile under the same include environment.
 //
 // Ownership/Lifetime:
-//   - No resources are owned by this header; helper calls only raise traps.
+//   - No resources are owned by this header; helper calls raise traps or
+//     return caller-owned `Err(String)` results.
 //
 // Links: src/runtime/graphics/common/rt_canvas_stubs.c,
 //        src/runtime/graphics/common/rt_canvas3d_stubs.c,
 //        src/runtime/graphics/common/rt_3d_asset_stubs.c,
+//        src/runtime/graphics/common/rt_3d_render_stubs.c,
 //        src/runtime/graphics/common/rt_3d_scene_stubs.c,
 //        src/runtime/graphics/common/rt_3d_physics_stubs.c,
 //        src/runtime/graphics/common/rt_3d_world_stubs.c,
-//        src/runtime/graphics/common/rt_graphics_media_stubs.c,
-//        src/runtime/graphics/common/rt_graphics_helper_stubs.c
+//        src/runtime/graphics/common/rt_3d_game_stubs.c,
+//        src/runtime/graphics/common/rt_graphics_media_stubs.c
 //
 //===----------------------------------------------------------------------===//
 #pragma once
 
+#include "rt_animcontroller3d.h"
 #include "rt_blendtree3d.h"
 #include "rt_canvas3d.h"
 #include "rt_cloth3d.h"
@@ -54,8 +57,10 @@
 #include "rt_graphics_internal.h"
 #include "rt_instbatch3d.h"
 #include "rt_joints3d.h"
+#include "rt_lightbaker3d.h"
 #include "rt_model3d.h"
 #include "rt_morphtarget3d.h"
+#include "rt_navagent3d.h"
 #include "rt_navmesh3d.h"
 #include "rt_option.h"
 #include "rt_particles3d.h"
@@ -67,12 +72,16 @@
 #include "rt_result.h"
 #include "rt_scene3d.h"
 #include "rt_skeleton3d.h"
+#include "rt_sky3d.h"
 #include "rt_sound3d.h"
+#include "rt_soundsource3d.h"
 #include "rt_sprite3d.h"
+#include "rt_string.h"
 #include "rt_terrain3d.h"
 #include "rt_texatlas3d.h"
 #include "rt_textureasset3d.h"
 #include "rt_transform3d.h"
+#include "rt_ttf_font.h"
 #include "rt_water3d.h"
 
 #include <stddef.h>
@@ -99,6 +108,22 @@
 /// remain only to satisfy the C type checker after the trap call.
 static inline void rt_graphics_unavailable_(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_INVALID_OPERATION, Err_InvalidOperation, 0, msg);
+}
+
+/// @brief Build the `Err(String)` result a Result-returning graphics API reports when disabled.
+///
+/// @details Result-returning entry points report unavailability through their return value
+/// instead of trapping. rt_result_err_str() retains its message, so the temporary string
+/// created here is released before returning.
+///
+/// @param msg Diagnostic string using the `"<Class>.<Method>: graphics support not compiled in"`
+///            convention.
+/// @return Owned `Err(String)` result, or `NULL` if result allocation failed.
+static inline void *rt_graphics_unavailable_result_(const char *msg) {
+    rt_string message = rt_const_cstr(msg);
+    void *result = rt_result_err_str(message);
+    rt_string_unref(message);
+    return result;
 }
 
 /// @brief Return whether silent graphics stubs should trap instead of returning fallbacks.

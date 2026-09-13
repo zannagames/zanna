@@ -9,9 +9,10 @@
 /// @file
 /// @brief Implements allocation-free color transforms plus runtime-string hex
 ///        parsing and formatting.
-// Purpose: Color utilities for the 2D graphics API: HSL<->RGB conversion, component
-//   getters, lerp, brighten/darken, saturate/desaturate, complement,
-//   grayscale, invert, and hex parse/format. Pure color math (no canvas).
+// Purpose: Color utilities for the 2D graphics API: named color constants,
+//   RGB/RGBA construction, HSL<->RGB conversion, component getters, lerp,
+//   brighten/darken, saturate/desaturate, complement, grayscale, invert, and
+//   hex parse/format. Pure color math (no canvas).
 //
 // Key invariants:
 //   - Plain RGB values occupy 0xRRGGBB and imply full opacity when rendered.
@@ -19,6 +20,9 @@
 //     RT_COLOR_EXPLICIT_ALPHA_FLAG outside the component bytes.
 //   - Transform operations preserve explicit-alpha intent; if either endpoint
 //     of a lerp is explicit, the result is explicit.
+//   - The file has no backend dependency and compiles identically into
+//     graphics-enabled and graphics-disabled runtimes, so Color results never
+//     depend on the build's graphics mode.
 //
 // Ownership/Lifetime:
 //   - Numeric color helpers allocate nothing. Hex input strings are borrowed;
@@ -36,7 +40,97 @@
 
 #include <limits.h>
 
-#ifdef ZANNA_ENABLE_GRAPHICS
+//=============================================================================
+// Color Constants and Construction
+//=============================================================================
+
+/// @brief Return the predefined red color constant.
+/// @return Plain RGB `0xFF0000`.
+int64_t rt_color_red(void) {
+    return 0xFF0000;
+}
+
+/// @brief Return the predefined green color constant.
+/// @return Plain RGB `0x00FF00`.
+int64_t rt_color_green(void) {
+    return 0x00FF00;
+}
+
+/// @brief Return the predefined blue color constant.
+/// @return Plain RGB `0x0000FF`.
+int64_t rt_color_blue(void) {
+    return 0x0000FF;
+}
+
+/// @brief Return the predefined white color constant.
+/// @return Plain RGB `0xFFFFFF`.
+int64_t rt_color_white(void) {
+    return 0xFFFFFF;
+}
+
+/// @brief Return the predefined black color constant.
+/// @return Plain RGB `0x000000`.
+int64_t rt_color_black(void) {
+    return 0x000000;
+}
+
+/// @brief Return the predefined yellow color constant.
+/// @return Plain RGB `0xFFFF00`.
+int64_t rt_color_yellow(void) {
+    return 0xFFFF00;
+}
+
+/// @brief Return the predefined cyan color constant.
+/// @return Plain RGB `0x00FFFF`.
+int64_t rt_color_cyan(void) {
+    return 0x00FFFF;
+}
+
+/// @brief Return the predefined magenta color constant.
+/// @return Plain RGB `0xFF00FF`.
+int64_t rt_color_magenta(void) {
+    return 0xFF00FF;
+}
+
+/// @brief Return the predefined gray color constant.
+/// @return Plain RGB `0x808080`.
+int64_t rt_color_gray(void) {
+    return 0x808080;
+}
+
+/// @brief Return the predefined orange color constant.
+/// @return Plain RGB `0xFFA500`.
+int64_t rt_color_orange(void) {
+    return 0xFFA500;
+}
+
+/// @brief Construct a color from red, green, blue components (0-255).
+/// @param r Red channel, clamped to 0..255.
+/// @param g Green channel, clamped to 0..255.
+/// @param b Blue channel, clamped to 0..255.
+/// @return Plain implicit-alpha `0xRRGGBB` color.
+int64_t rt_color_rgb(int64_t r, int64_t g, int64_t b) {
+    uint8_t r8 = (r < 0) ? 0 : (r > 255) ? 255 : (uint8_t)r;
+    uint8_t g8 = (g < 0) ? 0 : (g > 255) ? 255 : (uint8_t)g;
+    uint8_t b8 = (b < 0) ? 0 : (b > 255) ? 255 : (uint8_t)b;
+    return (int64_t)(((uint32_t)r8 << 16) | ((uint32_t)g8 << 8) | (uint32_t)b8);
+}
+
+/// @brief Construct a color from red, green, blue, alpha components (0-255).
+/// @param r Red channel, clamped to 0..255.
+/// @param g Green channel, clamped to 0..255.
+/// @param b Blue channel, clamped to 0..255.
+/// @param a Alpha channel, clamped to 0..255.
+/// @return Tagged explicit-alpha runtime `0xAARRGGBB` color.
+int64_t rt_color_rgba(int64_t r, int64_t g, int64_t b, int64_t a) {
+    uint8_t r8 = (r < 0) ? 0 : (r > 255) ? 255 : (uint8_t)r;
+    uint8_t g8 = (g < 0) ? 0 : (g > 255) ? 255 : (uint8_t)g;
+    uint8_t b8 = (b < 0) ? 0 : (b > 255) ? 255 : (uint8_t)b;
+    uint8_t a8 = (a < 0) ? 0 : (a > 255) ? 255 : (uint8_t)a;
+    int64_t packed =
+        (int64_t)(((uint32_t)a8 << 24) | ((uint32_t)r8 << 16) | ((uint32_t)g8 << 8) | (uint32_t)b8);
+    return packed | RT_COLOR_EXPLICIT_ALPHA_FLAG;
+}
 
 //=============================================================================
 // Extended Color Functions
@@ -632,7 +726,3 @@ double rt_color_luma(int64_t color) {
     rt_color_split_rgba(color, &r, &g, &b, &a, &has_alpha);
     return (0.2126 * (double)r + 0.7152 * (double)g + 0.0722 * (double)b) / 255.0;
 }
-
-#else
-typedef int rt_color_disabled_tu_guard;
-#endif /* ZANNA_ENABLE_GRAPHICS */

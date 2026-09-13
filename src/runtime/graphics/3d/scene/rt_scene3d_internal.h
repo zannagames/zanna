@@ -1055,4 +1055,29 @@ void *scene3d_effective_animator(rt_scene_node3d *node);
 }
 #endif
 
+#else /* !ZANNA_ENABLE_GRAPHICS */
+
+/* Graphics-disabled builds still compile the backend-independent Game3D sources against the
+ * Scene3D trap stubs. No Scene3D or SceneNode3D object can be constructed there, so the payload
+ * types stay incomplete (any field access must sit behind ZANNA_ENABLE_GRAPHICS) and the checked
+ * casts keep their graphics-build signatures while failing closed. */
+typedef struct rt_scene_node3d rt_scene_node3d;
+typedef struct rt_scene3d rt_scene3d;
+
+/// @brief Graphics-disabled SceneNode3D validation: no handle can be a SceneNode3D.
+/// @param obj Borrowed candidate handle (ignored).
+/// @return Always `NULL`.
+static inline rt_scene_node3d *scene_node3d_checked(void *obj) {
+    (void)obj;
+    return NULL;
+}
+
+/// @brief Graphics-disabled Scene3D validation: no handle can be a Scene3D.
+/// @param obj Borrowed candidate handle (ignored).
+/// @return Always `NULL`.
+static inline rt_scene3d *scene3d_checked(void *obj) {
+    (void)obj;
+    return NULL;
+}
+
 #endif /* ZANNA_ENABLE_GRAPHICS */

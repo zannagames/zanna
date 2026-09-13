@@ -3212,3 +3212,382 @@ double rt_ray3d_intersect_triangle_cull(
     RT_GRAPHICS_OPTIONAL_TRAP_RET("Ray3D.IntersectTriangleCull: graphics support not compiled in",
                                   0.0);
 }
+
+/* Collider3D stubs */
+
+/// @brief Silent fallback stub for internal `rt_collider3d_overlap_at_raw` (graphics-disabled
+/// build).
+/// @param collider_a First Collider3D handle (ignored).
+/// @param pos_a Three-component world position of the first shape (ignored).
+/// @param quat_a Finite XYZW world rotation of the first shape, normalized internally (ignored).
+/// @param collider_b Second Collider3D handle (ignored).
+/// @param pos_b Three-component world position of the second shape (ignored).
+/// @param quat_b Finite XYZW world rotation of the second shape, normalized internally (ignored).
+/// @param out_normal Optional unit contact normal output (ignored).
+/// @param out_depth Optional bounded penetration-depth output (ignored).
+/// @param out_point Optional bounded witness-point output (ignored).
+/// @return `0`.
+int8_t rt_collider3d_overlap_at_raw(void *collider_a,
+                                    const double *pos_a,
+                                    const double *quat_a,
+                                    void *collider_b,
+                                    const double *pos_b,
+                                    const double *quat_b,
+                                    double *out_normal,
+                                    double *out_depth,
+                                    double *out_point) {
+    (void)collider_a;
+    (void)pos_a;
+    (void)quat_a;
+    (void)collider_b;
+    (void)pos_b;
+    (void)quat_b;
+    (void)out_normal;
+    (void)out_depth;
+    (void)out_point;
+    return 0;
+}
+
+/* DistanceJoint3D stubs */
+
+/// @brief Silent fallback stub for `DistanceJoint3D.get_BodyA` (graphics-disabled build).
+/// @param joint DistanceJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_distance_joint3d_get_body_a(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("DistanceJoint3D.get_BodyA: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `DistanceJoint3D.get_BodyB` (graphics-disabled build).
+/// @param joint DistanceJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_distance_joint3d_get_body_b(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("DistanceJoint3D.get_BodyB: graphics support not compiled in",
+                                  NULL);
+}
+
+/* SpringJoint3D stubs */
+
+/// @brief Silent fallback stub for `SpringJoint3D.get_BodyA` (graphics-disabled build).
+/// @param joint SpringJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_spring_joint3d_get_body_a(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SpringJoint3D.get_BodyA: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `SpringJoint3D.get_BodyB` (graphics-disabled build).
+/// @param joint SpringJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_spring_joint3d_get_body_b(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SpringJoint3D.get_BodyB: graphics support not compiled in",
+                                  NULL);
+}
+
+/* HingeJoint3D stubs */
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_BodyA` (graphics-disabled build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_hinge_joint3d_get_body_a(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("HingeJoint3D.get_BodyA: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_BodyB` (graphics-disabled build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_hinge_joint3d_get_body_b(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("HingeJoint3D.get_BodyB: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_MotorEnabled` (graphics-disabled build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `0`.
+int8_t rt_hinge_joint3d_get_motor_enabled(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("HingeJoint3D.get_MotorEnabled: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_MotorTargetVelocity` (graphics-disabled
+/// build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `0.0`.
+double rt_hinge_joint3d_get_motor_target_velocity(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "HingeJoint3D.get_MotorTargetVelocity: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_MotorMaxImpulse` (graphics-disabled build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `0.0`.
+double rt_hinge_joint3d_get_motor_max_impulse(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "HingeJoint3D.get_MotorMaxImpulse: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_LimitsEnabled` (graphics-disabled build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `0`.
+int8_t rt_hinge_joint3d_get_limits_enabled(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "HingeJoint3D.get_LimitsEnabled: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_LimitMin` (graphics-disabled build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `0.0`.
+double rt_hinge_joint3d_get_limit_min(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("HingeJoint3D.get_LimitMin: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `HingeJoint3D.get_LimitMax` (graphics-disabled build).
+/// @param joint HingeJoint3D handle (ignored).
+/// @return `0.0`.
+double rt_hinge_joint3d_get_limit_max(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("HingeJoint3D.get_LimitMax: graphics support not compiled in",
+                                  0.0);
+}
+
+/* RopeJoint3D stubs */
+
+/// @brief Silent fallback stub for `RopeJoint3D.get_BodyA` (graphics-disabled build).
+/// @param joint RopeJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_rope_joint3d_get_body_a(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("RopeJoint3D.get_BodyA: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `RopeJoint3D.get_BodyB` (graphics-disabled build).
+/// @param joint RopeJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_rope_joint3d_get_body_b(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("RopeJoint3D.get_BodyB: graphics support not compiled in", NULL);
+}
+
+/* SixDofJoint3D stubs */
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_BodyA` (graphics-disabled build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_sixdof_joint3d_get_body_a(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SixDofJoint3D.get_BodyA: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_BodyB` (graphics-disabled build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_sixdof_joint3d_get_body_b(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SixDofJoint3D.get_BodyB: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_LinearLimitMin` (graphics-disabled build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_sixdof_joint3d_get_linear_limit_min(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SixDofJoint3D.get_LinearLimitMin: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_LinearLimitMax` (graphics-disabled build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_sixdof_joint3d_get_linear_limit_max(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SixDofJoint3D.get_LinearLimitMax: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_AngularLimitMin` (graphics-disabled build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_sixdof_joint3d_get_angular_limit_min(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SixDofJoint3D.get_AngularLimitMin: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_AngularLimitMax` (graphics-disabled build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_sixdof_joint3d_get_angular_limit_max(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SixDofJoint3D.get_AngularLimitMax: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_LinearMotorEnabled` (graphics-disabled
+/// build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `0`.
+int8_t rt_sixdof_joint3d_get_linear_motor_enabled(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SixDofJoint3D.get_LinearMotorEnabled: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_LinearMotorVelocity` (graphics-disabled
+/// build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `NULL`.
+void *rt_sixdof_joint3d_get_linear_motor_velocity(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SixDofJoint3D.get_LinearMotorVelocity: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `SixDofJoint3D.get_LinearMotorMaxImpulse` (graphics-disabled
+/// build).
+/// @param joint SixDofJoint3D handle (ignored).
+/// @return `0.0`.
+double rt_sixdof_joint3d_get_linear_motor_max_impulse(void *joint) {
+    (void)joint;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "SixDofJoint3D.get_LinearMotorMaxImpulse: graphics support not compiled in", 0.0);
+}
+
+/* PhysicsWorld3D stubs */
+
+/// @brief Silent fallback stub for `PhysicsWorld3D.BuildSceneColliders` (graphics-disabled build).
+/// @param world Borrowed PhysicsWorld3D receiving the new static bodies (ignored).
+/// @param scene Borrowed SceneGraph scanned recursively from its root (ignored).
+/// @return `0`.
+int64_t rt_world3d_build_scene_colliders(void *world, void *scene) {
+    (void)world;
+    (void)scene;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "PhysicsWorld3D.BuildSceneColliders: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `PhysicsWorld3D.get_Gravity` (graphics-disabled build).
+/// @param world World3D handle to inspect (ignored).
+/// @return `NULL`.
+void *rt_world3d_get_gravity(void *world) {
+    (void)world;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("PhysicsWorld3D.get_Gravity: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `PhysicsWorld3D.GetBody` (graphics-disabled build).
+/// @param world World3D handle to inspect (ignored).
+/// @param index Zero-based index below `rt_world3d_body_count` (ignored).
+/// @return `NULL`.
+void *rt_world3d_get_body_at(void *world, int64_t index) {
+    (void)world;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("PhysicsWorld3D.GetBody: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `PhysicsWorld3D.GetJoint` (graphics-disabled build).
+/// @param world World3D handle to inspect (ignored).
+/// @param index Zero-based index below `rt_world3d_joint_count` (ignored).
+/// @return `NULL`.
+void *rt_world3d_get_joint_at(void *world, int64_t index) {
+    (void)world;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("PhysicsWorld3D.GetJoint: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for internal `rt_world3d_raycast_all_bodies_raw` (graphics-disabled
+/// build).
+/// @param world World3D handle to query (ignored).
+/// @param origin Three-component ray origin (ignored).
+/// @param direction Three-component nonzero ray direction (ignored).
+/// @param max_distance Non-negative ray length (ignored).
+/// @param mask Collision-layer mask used to filter bodies (ignored).
+/// @param out_bodies Caller-owned array receiving borrowed Body3D handles (ignored).
+/// @param out_cap Number of available slots in @p out_bodies (ignored).
+/// @return `0`.
+int32_t rt_world3d_raycast_all_bodies_raw(void *world,
+                                          const double *origin,
+                                          const double *direction,
+                                          double max_distance,
+                                          int64_t mask,
+                                          void **out_bodies,
+                                          int32_t out_cap) {
+    (void)world;
+    (void)origin;
+    (void)direction;
+    (void)max_distance;
+    (void)mask;
+    (void)out_bodies;
+    (void)out_cap;
+    return 0;
+}
+
+/* PhysicsBody3D stubs */
+
+/// @brief Silent no-op stub for `PhysicsBody3D.SetMass` (graphics-disabled build).
+/// @param body Body3D handle to modify (ignored).
+/// @param mass Requested mass (ignored).
+void rt_body3d_set_mass(void *body, double mass) {
+    (void)body;
+    (void)mass;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("PhysicsBody3D.SetMass: graphics support not compiled in");
+}
+
+/// @brief No-op stub for internal `rt_body3d_set_orientation_components` (graphics-disabled build).
+/// @param obj Obj (ignored).
+/// @param x X component (ignored).
+/// @param y Y component (ignored).
+/// @param z Z component (ignored).
+/// @param w W component (ignored).
+void rt_body3d_set_orientation_components(void *obj, double x, double y, double z, double w) {
+    (void)obj;
+    (void)x;
+    (void)y;
+    (void)z;
+    (void)w;
+}
+
+/* Character3D stubs */
+
+/// @brief Silent fallback stub for internal `rt_character3d_get_position_components`
+/// (graphics-disabled build).
+/// @param obj Obj (ignored).
+/// @param x X component (ignored).
+/// @param y Y component (ignored).
+/// @param z Z component (ignored).
+/// @return `0`.
+int8_t rt_character3d_get_position_components(void *obj, double *x, double *y, double *z) {
+    (void)obj;
+    (void)x;
+    (void)y;
+    (void)z;
+    return 0;
+}
+
+/// @brief No-op stub for internal `rt_character3d_move_components` (graphics-disabled build).
+/// @param obj Obj (ignored).
+/// @param velocity_x Velocity x (ignored).
+/// @param velocity_y Velocity y (ignored).
+/// @param velocity_z Velocity z (ignored).
+/// @param dt Dt (ignored).
+void rt_character3d_move_components(
+    void *obj, double velocity_x, double velocity_y, double velocity_z, double dt) {
+    (void)obj;
+    (void)velocity_x;
+    (void)velocity_y;
+    (void)velocity_z;
+    (void)dt;
+}

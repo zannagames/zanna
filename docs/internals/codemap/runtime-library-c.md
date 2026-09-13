@@ -11,7 +11,7 @@ graphics, audio, input, networking, system, diagnostics, crypto, time, and threa
 
 ## Overview
 
-- **Total source files**: 936 (.c/.h/.cpp/.hpp/.m)
+- **Total source files**: 937 (.c/.h/.cpp/.hpp/.m)
 
 ## Memory Management
 
@@ -312,7 +312,7 @@ graphics, audio, input, networking, system, diagnostics, crypto, time, and threa
 | `rt_font.h`         | Font declarations                    |
 | `rt_graphics.c`     | 2D graphics rendering                |
 | `rt_graphics.h`     | Graphics declarations                |
-| `rt_graphics_stubs.c` | Graphics-disabled runtime surface; traps unavailable stateful APIs while keeping backend-free helpers usable |
+| `rt_graphics_stubs.c` | Anchor for the split graphics-disabled runtime surface (`common/*_stubs.c`); traps unavailable stateful APIs while keeping backend-free helpers usable. See [runtime-graphics-stubs.md](runtime-graphics-stubs.md) |
 | `rt_pixels.c`       | Pixel buffer operations              |
 | `rt_pixels.h`       | Pixel buffer declarations            |
 | `rt_sprite.c`       | Sprite rendering and animation       |

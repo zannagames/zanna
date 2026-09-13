@@ -350,6 +350,135 @@ static inline void rtg_hsl_to_rgb(
         *b = 255;
 }
 
+/// @brief Tag bit marking a runtime color as explicit-alpha `0xAARRGGBB`.
+/// @details Plain `0xRRGGBB` colors imply full opacity; Color.RGBA sets this bit outside the
+///          component bytes. Defined for graphics-disabled builds too, where the pure color
+///          helpers in rt_color.c stay functional.
+#define RT_COLOR_EXPLICIT_ALPHA_FLAG ((int64_t)1 << 56)
+
+//=============================================================================
+// Built-in font text measurement (shared by graphics-enabled and -disabled builds)
+//=============================================================================
+
+/// @brief Decode the next UTF-8 codepoint from `str` starting at `*index`.
+/// @details Implements the standard 1/2/3/4-byte UTF-8 walk:
+///          - `0xxxxxxx`            → ASCII (1 byte).
+///          - `110xxxxx 10xxxxxx`   → U+0080..U+07FF (2 bytes).
+///          - `1110xxxx 10xxxxxx ×2` → U+0800..U+FFFF (3 bytes).
+///          - `11110xxx 10xxxxxx ×3` → U+10000..U+10FFFF (4 bytes).
+///          For each multi-byte form, validates the continuation bytes
+///          (`10xxxxxx`) and rejects:
+///          - Overlong encodings (e.g. 2-byte sequence < U+0080).
+///          - Surrogate halves (U+D800..U+DFFF) — never legal in UTF-8.
+///          - Out-of-range scalars (> U+10FFFF).
+///          Substitutes `?` (U+003F) for any malformed sequence so the
+///          renderer never blows up on bad input. Advances `*index`
+///          by the consumed byte count and returns 0 at EOF.
+/// @param str Borrowed UTF-8 byte buffer.
+/// @param byte_len Number of readable bytes in @p str.
+/// @param index Required in/out byte offset.
+/// @param codepoint_out Required output for the decoded scalar or `'?'`.
+/// @return `1` when one input unit was consumed; `0` for invalid pointers or EOF.
+static inline int rt_canvas_next_codepoint(const char *str,
+                                           size_t byte_len,
+                                           size_t *index,
+                                           int *codepoint_out) {
+    if (!str || !index || !codepoint_out || *index >= byte_len)
+        return 0;
+
+    size_t i = *index;
+    unsigned char c0 = (unsigned char)str[i];
+    uint32_t cp = '?';
+    size_t advance = 1;
+
+    if (c0 < 0x80) {
+        cp = c0;
+    } else if ((c0 & 0xE0u) == 0xC0u && i + 1 < byte_len) {
+        unsigned char c1 = (unsigned char)str[i + 1];
+        if ((c1 & 0xC0u) == 0x80u) {
+            cp = ((uint32_t)(c0 & 0x1Fu) << 6) | (uint32_t)(c1 & 0x3Fu);
+            advance = 2;
+            if (cp < 0x80u)
+                cp = '?';
+        }
+    } else if ((c0 & 0xF0u) == 0xE0u && i + 2 < byte_len) {
+        unsigned char c1 = (unsigned char)str[i + 1];
+        unsigned char c2 = (unsigned char)str[i + 2];
+        if ((c1 & 0xC0u) == 0x80u && (c2 & 0xC0u) == 0x80u) {
+            cp = ((uint32_t)(c0 & 0x0Fu) << 12) | ((uint32_t)(c1 & 0x3Fu) << 6) |
+                 (uint32_t)(c2 & 0x3Fu);
+            advance = 3;
+            if (cp < 0x800u || (cp >= 0xD800u && cp <= 0xDFFFu))
+                cp = '?';
+        }
+    } else if ((c0 & 0xF8u) == 0xF0u && i + 3 < byte_len) {
+        unsigned char c1 = (unsigned char)str[i + 1];
+        unsigned char c2 = (unsigned char)str[i + 2];
+        unsigned char c3 = (unsigned char)str[i + 3];
+        if ((c1 & 0xC0u) == 0x80u && (c2 & 0xC0u) == 0x80u && (c3 & 0xC0u) == 0x80u) {
+            cp = ((uint32_t)(c0 & 0x07u) << 18) | ((uint32_t)(c1 & 0x3Fu) << 12) |
+                 ((uint32_t)(c2 & 0x3Fu) << 6) | (uint32_t)(c3 & 0x3Fu);
+            advance = 4;
+            if (cp < 0x10000u || cp > 0x10FFFFu)
+                cp = '?';
+        }
+    }
+
+    *index = i + advance;
+    *codepoint_out = (int)cp;
+    return 1;
+}
+
+/// @brief Validate a runtime text string and expose its counted byte range.
+/// @param text Borrowed runtime string.
+/// @param bytes_out Required output receiving the borrowed byte pointer.
+/// @param byte_len_out Required output receiving the safe `size_t` length.
+/// @return Non-zero for a valid string representation, including an empty one.
+static inline int8_t rt_canvas_text_bytes(rt_string text,
+                                          const char **bytes_out,
+                                          size_t *byte_len_out) {
+    if (bytes_out)
+        *bytes_out = NULL;
+    if (byte_len_out)
+        *byte_len_out = 0;
+    if (!text || !bytes_out || !byte_len_out)
+        return 0;
+    const char *bytes = rt_string_cstr(text);
+    int64_t raw_len = rt_str_len(text);
+    if (!bytes || raw_len < 0 || (uint64_t)raw_len > SIZE_MAX)
+        return 0;
+    *bytes_out = bytes;
+    *byte_len_out = (size_t)raw_len;
+    return 1;
+}
+
+/// @brief Measure rendered text width by counting UTF-8 codepoints (not bytes).
+/// @details The 8×8 bitmap font is monospace, so width is simply
+///          `codepoints * 8 * scale`. Counting *codepoints* (not raw
+///          bytes) ensures non-ASCII glyphs and ASCII glyphs both
+///          contribute exactly one cell — `"héllo"` measures the same
+///          as `"hello"` regardless of UTF-8 byte length. Canvas text
+///          metrics in both graphics-enabled and graphics-disabled builds
+///          route through this helper.
+/// @param text Borrowed runtime string.
+/// @param scale Positive integer glyph scale.
+/// @return Saturating logical width, or `0` for invalid text/scale.
+static inline int64_t rt_canvas_text_codepoint_width(rt_string text, int64_t scale) {
+    if (!text || scale < 1)
+        return 0;
+
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!rt_canvas_text_bytes(text, &str, &byte_len) || byte_len == 0)
+        return 0;
+    size_t index = 0;
+    int64_t count = 0;
+    int codepoint = 0;
+    while (rt_canvas_next_codepoint(str, byte_len, &index, &codepoint))
+        count++;
+    return rtg_mul_sat64(rtg_mul_sat64(count, 8), scale);
+}
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_action.h"
@@ -430,8 +559,6 @@ static inline rt_canvas *rt_canvas_checked(void *canvas_ptr) {
     rt_canvas *canvas = (rt_canvas *)canvas_ptr;
     return canvas->magic == RT_CANVAS_MAGIC ? canvas : NULL;
 }
-
-#define RT_COLOR_EXPLICIT_ALPHA_FLAG ((int64_t)1 << 56)
 
 /// @brief Clamp a HiDPI scale factor to the sane range 1.0 through 16.0.
 /// @details Guards against zero, negative, non-finite, and absurd scales

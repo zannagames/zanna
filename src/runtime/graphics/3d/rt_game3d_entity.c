@@ -210,7 +210,7 @@ static int game3d_entity_collect_nodes(void *root, void ***nodes_out, size_t *co
     size_t capacity = 0;
     game3d_node_seen_set seen;
     if (!nodes_out || !count_out ||
-        !rt_obj_is_instance(root, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d)))
+        !rt_obj_is_instance(root, RT_G3D_SCENENODE3D_CLASS_ID, RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE))
         return 0;
     memset(&seen, 0, sizeof(seen));
     int inserted = 0;
@@ -223,7 +223,8 @@ static int game3d_entity_collect_nodes(void *root, void ***nodes_out, size_t *co
             goto fail;
         for (int64_t i = 0; i < child_count; ++i) {
             void *child = rt_scene_node3d_get_child(nodes[read], i);
-            if (!rt_obj_is_instance(child, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d)))
+            if (!rt_obj_is_instance(
+                    child, RT_G3D_SCENENODE3D_CLASS_ID, RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE))
                 goto fail;
             if (!game3d_node_seen_insert(&seen, child, &inserted))
                 goto fail;
@@ -371,12 +372,12 @@ void *rt_game3d_entity_new(void) {
 /// @param material Material3D to retain and mirror onto the new node, or NULL.
 /// @return A newly allocated Entity3D, or NULL when base entity allocation fails.
 void *rt_game3d_entity_of(void *mesh, void *material) {
-    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
+    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, RT_GAME3D_MESH3D_PAYLOAD_SIZE)) {
         rt_trap("Game3D.Entity3D.Of: mesh must be Mesh3D");
         return NULL;
     }
-    if (material &&
-        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
+    if (material && !rt_obj_is_instance(
+                        material, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE)) {
         rt_trap("Game3D.Entity3D.Of: material must be Material3D");
         return NULL;
     }
@@ -399,20 +400,21 @@ void *rt_game3d_entity_of(void *mesh, void *material) {
 /// @return Newly allocated group Entity3D owning @p root, or NULL after a runtime trap on invalid
 ///   input or allocation/preflight failure.
 void *rt_game3d_entity_from_node(void *root) {
-    rt_scene_node3d *node;
 #ifdef ZANNA_ENABLE_GRAPHICS
+    rt_scene_node3d *node;
     rt_scene3d *source_scene = NULL;
     rt_scene_node3d *replacement_root = NULL;
     scene_owner_transaction owner_transaction;
     int transfer_scene_root = 0;
     memset(&owner_transaction, 0, sizeof(owner_transaction));
 #endif
-    if (!rt_obj_is_instance(root, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))) {
+    if (!rt_obj_is_instance(
+            root, RT_G3D_SCENENODE3D_CLASS_ID, RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE)) {
         rt_trap("Game3D.Entity3D.FromNode: root must be a SceneNode3D");
         return NULL;
     }
-    node = (rt_scene_node3d *)root;
 #ifdef ZANNA_ENABLE_GRAPHICS
+    node = (rt_scene_node3d *)root;
     source_scene = scene3d_checked(node->owner_scene);
     transfer_scene_root = source_scene && scene_node3d_checked(source_scene->root) == node;
     if (transfer_scene_root) {
@@ -718,7 +720,7 @@ void *rt_game3d_entity_set_mesh(void *obj, void *mesh) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMesh: invalid entity");
     if (!entity)
         return obj;
-    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
+    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, RT_GAME3D_MESH3D_PAYLOAD_SIZE)) {
         rt_trap("Game3D.Entity3D.setMesh: mesh must be Mesh3D");
         return obj;
     }
@@ -741,8 +743,8 @@ void *rt_game3d_entity_set_material(void *obj, void *material) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMaterial: invalid entity");
     if (!entity)
         return obj;
-    if (material &&
-        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
+    if (material && !rt_obj_is_instance(
+                        material, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE)) {
         rt_trap("Game3D.Entity3D.setMaterial: material must be Material3D");
         return obj;
     }
@@ -816,7 +818,7 @@ void *rt_game3d_entity_set_mesh_recursive(void *obj, void *mesh) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMeshRecursive: invalid entity");
     if (!entity)
         return obj;
-    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
+    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, RT_GAME3D_MESH3D_PAYLOAD_SIZE)) {
         rt_trap("Game3D.Entity3D.setMeshRecursive: mesh must be Mesh3D");
         return obj;
     }
@@ -835,8 +837,8 @@ void *rt_game3d_entity_set_material_recursive(void *obj, void *material) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMaterialRecursive: invalid entity");
     if (!entity)
         return obj;
-    if (material &&
-        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
+    if (material && !rt_obj_is_instance(
+                        material, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE)) {
         rt_trap("Game3D.Entity3D.setMaterialRecursive: material must be Material3D");
         return obj;
     }

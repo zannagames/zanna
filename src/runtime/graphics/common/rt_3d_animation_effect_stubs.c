@@ -1139,3 +1139,330 @@ int64_t rt_particles3d_get_seed(void *obj) {
     (void)obj;
     return 0;
 }
+
+/* AnimController3D stubs */
+
+/// @brief Silent fallback stub for internal `rt_anim_controller3d_is_state_playing_cstr`
+/// (graphics-disabled build).
+/// @param controller AnimController3D to inspect (ignored).
+/// @param state_name Borrowed NUL-terminated state name (ignored).
+/// @return `0`.
+int8_t rt_anim_controller3d_is_state_playing_cstr(void *controller, const char *state_name) {
+    (void)controller;
+    (void)state_name;
+    return 0;
+}
+
+/// @brief Silent fallback stub for internal `rt_anim_controller3d_get_bone_pose` (graphics-disabled
+/// build).
+/// @param controller AnimController3D to inspect (ignored).
+/// @param bone_index Zero-based skeleton bone index (ignored).
+/// @param out_pos Writable array of at least three doubles (ignored).
+/// @param out_quat Writable array of at least four doubles in `(x,y,z,w)` order (ignored).
+/// @return `0`.
+int rt_anim_controller3d_get_bone_pose(void *controller,
+                                       int64_t bone_index,
+                                       double *out_pos,
+                                       double *out_quat) {
+    (void)controller;
+    (void)bone_index;
+    (void)out_pos;
+    (void)out_quat;
+    return 0;
+}
+
+/// @brief Silent fallback stub for internal `rt_anim_controller3d_get_skeleton` (graphics-disabled
+/// build).
+/// @param controller AnimController3D to inspect (ignored).
+/// @return `NULL`.
+void *rt_anim_controller3d_get_skeleton(void *controller) {
+    (void)controller;
+    return NULL;
+}
+
+/* Skeleton3D stubs */
+
+/// @brief Silent fallback stub for `Skeleton3D.GetBoneParent` (graphics-disabled build).
+/// @param skel Skeleton3D to inspect (ignored).
+/// @param index Zero-based bone index (ignored).
+/// @return `0`.
+int64_t rt_skeleton3d_get_bone_parent(void *skel, int64_t index) {
+    (void)skel;
+    (void)index;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Skeleton3D.GetBoneParent: graphics support not compiled in", 0);
+}
+
+/* Animation3D stubs */
+
+/// @brief Silent fallback stub for `Animation3D.StripRootMotion` (graphics-disabled build).
+/// @param anim Animation3D modified in place (use on retargeted copies, not shared clips)
+/// (ignored).
+/// @param bone_index Root/hips bone whose channel is pinned (ignored).
+/// @param keep_vertical Nonzero preserves vertical motion (crouches, slides) (ignored).
+/// @return `0`.
+int64_t rt_animation3d_strip_root_motion(void *anim, int64_t bone_index, int8_t keep_vertical) {
+    (void)anim;
+    (void)bone_index;
+    (void)keep_vertical;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Animation3D.StripRootMotion: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `Animation3D.ExtractRange` (graphics-disabled build).
+/// @param anim Animation3D handle (ignored).
+/// @param start_sec Start sec (ignored).
+/// @param end_sec End sec (ignored).
+/// @return `NULL`.
+void *rt_animation3d_extract_range(void *anim, double start_sec, double end_sec) {
+    (void)anim;
+    (void)start_sec;
+    (void)end_sec;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Animation3D.ExtractRange: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `Animation3D.Mirror` (graphics-disabled build).
+/// @param anim Source Animation3D (never modified) (ignored).
+/// @param skeleton Skeleton3D interpreting the channel bone indices (ignored).
+/// @return `NULL`.
+void *rt_animation3d_mirror(void *anim, void *skeleton) {
+    (void)anim;
+    (void)skeleton;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Animation3D.Mirror: graphics support not compiled in", NULL);
+}
+
+/* TextureAtlas3D stubs */
+
+/// @brief Silent fallback stub for `TextureAtlas3D.GetUvMin` (graphics-disabled build).
+/// @param atlas Candidate TextureAtlas3D instance (ignored).
+/// @param id Region identifier returned by `rt_texatlas3d_add` (ignored).
+/// @return `NULL`.
+void *rt_texatlas3d_get_uv_min(void *atlas, int64_t id) {
+    (void)atlas;
+    (void)id;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("TextureAtlas3D.GetUvMin: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `TextureAtlas3D.GetUvMax` (graphics-disabled build).
+/// @param atlas Candidate TextureAtlas3D instance (ignored).
+/// @param id Region identifier returned by `rt_texatlas3d_add` (ignored).
+/// @return `NULL`.
+void *rt_texatlas3d_get_uv_max(void *atlas, int64_t id) {
+    (void)atlas;
+    (void)id;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("TextureAtlas3D.GetUvMax: graphics support not compiled in",
+                                  NULL);
+}
+
+/* Particles3D stubs */
+
+/// @brief Silent fallback stub for `Particles3D.get_Additive` (graphics-disabled build).
+/// @param obj Particles3D receiver (ignored).
+/// @return `0`.
+int8_t rt_particles3d_get_additive(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Additive: graphics support not compiled in", 0);
+}
+
+/// @brief Silent no-op stub for `Particles3D.SetSoftness` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @param distance Nonnegative fade distance in world units (ignored).
+void rt_particles3d_set_softness(void *obj, double distance) {
+    (void)obj;
+    (void)distance;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID("Particles3D.SetSoftness: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Rate` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_rate(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Rate: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_LifetimeMin` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_lifetime_min(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_LifetimeMin: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_LifetimeMax` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_lifetime_max(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_LifetimeMax: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_SpeedMin` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_speed_min(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_SpeedMin: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_SpeedMax` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_speed_max(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_SpeedMax: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_SizeStart` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_size_start(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_SizeStart: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_SizeEnd` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_size_end(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_SizeEnd: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_AlphaStart` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_alpha_start(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_AlphaStart: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_AlphaEnd` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_alpha_end(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_AlphaEnd: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_ColorStart` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0`.
+int64_t rt_particles3d_get_color_start(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_ColorStart: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_ColorEnd` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0`.
+int64_t rt_particles3d_get_color_end(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_ColorEnd: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Gravity` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `NULL`.
+void *rt_particles3d_get_gravity(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Gravity: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Position` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `NULL`.
+void *rt_particles3d_get_position_vec3(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Position: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Direction` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `NULL`.
+void *rt_particles3d_get_direction(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Direction: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Spread` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_spread(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Spread: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_EmitterShape` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0`.
+int64_t rt_particles3d_get_emitter_shape(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_EmitterShape: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_EmitterSize` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `NULL`.
+void *rt_particles3d_get_emitter_size(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_EmitterSize: graphics support not compiled in",
+                                  NULL);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Stretch` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_stretch(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Stretch: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_TrailLifetime` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_trail_lifetime(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_TrailLifetime: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_TrailSegments` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0`.
+int64_t rt_particles3d_get_trail_segments(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_TrailSegments: graphics support not compiled in",
+                                  0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Softness` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `0.0`.
+double rt_particles3d_get_softness(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Softness: graphics support not compiled in",
+                                  0.0);
+}
+
+/// @brief Silent fallback stub for `Particles3D.get_Texture` (graphics-disabled build).
+/// @param obj Particles3D handle (ignored).
+/// @return `NULL`.
+void *rt_particles3d_get_texture(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Particles3D.get_Texture: graphics support not compiled in",
+                                  NULL);
+}

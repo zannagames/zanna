@@ -446,7 +446,7 @@ static int64_t game3d_sanitize_segments(int64_t segments, int64_t fallback) {
 /// @return Non-zero for NULL or Material3D; zero after recording a trap otherwise.
 static int game3d_prefab_material_is_valid(void *material) {
     if (!material ||
-        rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d)))
+        rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE))
         return 1;
     rt_trap("Game3D.Prefab: material must be Material3D");
     return 0;
@@ -460,13 +460,13 @@ static int game3d_prefab_material_is_valid(void *material) {
 /// @return New GC-managed Entity3D handle, or `NULL` on construction failure.
 static void *game3d_prefab_from_mesh(void *mesh, void *material, const char *name) {
     int owns_material = 0;
-    if (!rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
+    if (!rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, RT_GAME3D_MESH3D_PAYLOAD_SIZE)) {
         if (mesh)
             rt_trap("Game3D.Prefab: generated mesh is invalid");
         return NULL;
     }
-    if (material &&
-        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
+    if (material && !rt_obj_is_instance(
+                        material, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE)) {
         game3d_release_typed_ref(&mesh, RT_G3D_MESH3D_CLASS_ID);
         rt_trap("Game3D.Prefab: material must be Material3D");
         return NULL;

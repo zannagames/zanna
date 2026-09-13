@@ -282,27 +282,28 @@ static void game3d_thirdperson_forward(double yaw_deg, double pitch_deg, double 
 static void game3d_thirdperson_fade_entry_release(rt_game3d_tp_fade_entry *entry) {
     if (!entry)
         return;
-    void *node =
-        rt_obj_is_instance(entry->node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))
-            ? entry->node
-            : NULL;
+    void *node = rt_obj_is_instance(
+                     entry->node, RT_G3D_SCENENODE3D_CLASS_ID, RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE)
+                     ? entry->node
+                     : NULL;
     void *original = rt_obj_is_instance(entry->original_material,
                                         RT_G3D_MATERIAL3D_CLASS_ID,
-                                        sizeof(rt_material3d))
+                                        RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE)
                          ? entry->original_material
                          : NULL;
-    void *fade_material =
-        rt_obj_is_instance(entry->fade_material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))
-            ? entry->fade_material
-            : NULL;
+    void *fade_material = rt_obj_is_instance(entry->fade_material,
+                                             RT_G3D_MATERIAL3D_CLASS_ID,
+                                             RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE)
+                              ? entry->fade_material
+                              : NULL;
     if (node && original && fade_material && rt_scene_node3d_get_material(node) == fade_material)
         rt_scene_node3d_set_material(node, original);
     game3d_thirdperson_release_instance_ref(
-        &entry->node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d));
+        &entry->node, RT_G3D_SCENENODE3D_CLASS_ID, RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE);
     game3d_thirdperson_release_instance_ref(
-        &entry->original_material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d));
+        &entry->original_material, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE);
     game3d_thirdperson_release_instance_ref(
-        &entry->fade_material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d));
+        &entry->fade_material, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE);
     memset(entry, 0, sizeof(*entry));
 }
 
@@ -347,13 +348,14 @@ static int32_t game3d_thirdperson_fade_find(const rt_game3d_thirdperson_controll
 static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *controller,
                                              void *node) {
     if (!game3d_thirdperson_fade_storage_valid(controller) ||
-        !rt_obj_is_instance(node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d)))
+        !rt_obj_is_instance(node, RT_G3D_SCENENODE3D_CLASS_ID, RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE))
         return -1;
     void *original = rt_scene_node3d_get_material(node);
-    if (!rt_obj_is_instance(original, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d)))
+    if (!rt_obj_is_instance(
+            original, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE))
         return -1;
     void *clone = rt_material3d_make_instance(original);
-    if (!rt_obj_is_instance(clone, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d)))
+    if (!rt_obj_is_instance(clone, RT_G3D_MATERIAL3D_CLASS_ID, RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE))
         return -1;
     if (controller->fade_count >= controller->fade_capacity) {
         if (controller->fade_count == INT32_MAX) {
@@ -386,9 +388,11 @@ static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *c
     rt_game3d_tp_fade_entry *entry = &controller->fades[controller->fade_count];
     memset(entry, 0, sizeof(*entry));
     game3d_thirdperson_assign_instance_ref(
-        &entry->node, node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d));
-    game3d_thirdperson_assign_instance_ref(
-        &entry->original_material, original, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d));
+        &entry->node, node, RT_G3D_SCENENODE3D_CLASS_ID, RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE);
+    game3d_thirdperson_assign_instance_ref(&entry->original_material,
+                                           original,
+                                           RT_G3D_MATERIAL3D_CLASS_ID,
+                                           RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE);
     entry->fade_material = clone; /* transfer make_instance ownership */
     entry->original_alpha =
         game3d_clamp(game3d_finite_or(rt_material3d_get_alpha(original), 1.0), 0.0, 1.0);
@@ -458,10 +462,11 @@ static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *co
     int32_t write = 0;
     for (int32_t i = 0; i < controller->fade_count; ++i) {
         rt_game3d_tp_fade_entry *entry = &controller->fades[i];
-        void *node =
-            rt_obj_is_instance(entry->node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))
-                ? entry->node
-                : NULL;
+        void *node = rt_obj_is_instance(entry->node,
+                                        RT_G3D_SCENENODE3D_CLASS_ID,
+                                        RT_GAME3D_SCENE_NODE3D_PAYLOAD_SIZE)
+                         ? entry->node
+                         : NULL;
         if (!node) {
             /* Node died (despawn/world teardown): drop the clone without touching it. */
             game3d_thirdperson_fade_entry_release(entry);
@@ -469,7 +474,7 @@ static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *co
         }
         void *fade_material = rt_obj_is_instance(entry->fade_material,
                                                  RT_G3D_MATERIAL3D_CLASS_ID,
-                                                 sizeof(rt_material3d))
+                                                 RT_GAME3D_MATERIAL3D_PAYLOAD_SIZE)
                                   ? entry->fade_material
                                   : NULL;
         if (!fade_material) {

@@ -345,17 +345,15 @@ void rt_canvas_text_bg(void *canvas, int64_t x, int64_t y, rt_string text, int64
 ///        8x8 bitmap font.
 ///
 /// Unlike most stubs in this file, text *measurement* is intentionally still
-/// functional in graphics-disabled builds — see the file header. The font is
-/// fixed-width 8 pixels per glyph, so the answer is always
-/// `length(text) * 8` (or `0` for a NULL string).
+/// functional in graphics-disabled builds — see the file header. It shares
+/// rt_canvas_text_codepoint_width() with the graphics build, so the answer is
+/// always `codepoints(text) * 8` with saturation (or `0` for a NULL string).
 ///
 /// @param text Source string. NULL is treated as empty.
 ///
 /// @return Width in canvas pixels. `0` if `text` is NULL.
 int64_t rt_canvas_text_width(rt_string text) {
-    if (!text)
-        return 0;
-    return rt_str_len(text) * 8;
+    return rt_canvas_text_codepoint_width(text, 1);
 }
 
 /// @brief Return the row height of the built-in 8x8 bitmap font.
@@ -415,18 +413,17 @@ void rt_canvas_text_scaled_bg(
 /// @brief Compute the rendered width of `text` at the given integer scale
 ///        in the built-in 8x8 bitmap font.
 ///
-/// Real implementation (not a trap stub) — text metrics are backend-free.
-/// Returns `0` for NULL text or non-positive `scale` so callers can use this
-/// for layout math without first validating arguments.
+/// Real implementation (not a trap stub) — text metrics are backend-free and
+/// share rt_canvas_text_codepoint_width() with the graphics build. Returns `0`
+/// for NULL text or non-positive `scale` so callers can use this for layout
+/// math without first validating arguments.
 ///
 /// @param text  Source string. NULL is treated as empty.
 /// @param scale Integer pixel multiplier; values < 1 produce `0`.
 ///
-/// @return Width in canvas pixels: `length(text) * 8 * scale`, or `0`.
+/// @return Width in canvas pixels: `codepoints(text) * 8 * scale` with saturation, or `0`.
 int64_t rt_canvas_text_scaled_width(rt_string text, int64_t scale) {
-    if (!text || scale < 1)
-        return 0;
-    return rt_str_len(text) * 8 * scale;
+    return rt_canvas_text_codepoint_width(text, scale);
 }
 
 /// @brief Stub for `Canvas.TextCentered` — would normally horizontally
@@ -1450,4 +1447,114 @@ int64_t rt_canvas_get_monitor_width(void *canvas) {
 int64_t rt_canvas_get_monitor_height(void *canvas) {
     (void)canvas;
     RT_GRAPHICS_TRAP_RET("Canvas.GetMonitorHeight: graphics support not compiled in", 0);
+}
+
+/* Canvas stubs */
+
+/// @brief Trapping stub for `Canvas.SetIcon` (graphics-disabled build).
+/// @param canvas Canvas handle (ignored before trapping).
+/// @param pixels Pixels handle (0xRRGGBBAA words, at most 1024 x 1024) (ignored before trapping).
+void rt_canvas_set_icon(void *canvas, void *pixels) {
+    (void)canvas;
+    (void)pixels;
+    RT_GRAPHICS_TRAP_VOID("Canvas.SetIcon: graphics support not compiled in");
+}
+
+/// @brief No-op stub for internal `rt_canvas_blit_region_alpha` (graphics-disabled build).
+/// @param canvas_ptr Destination Canvas handle (ignored).
+/// @param dx Destination X coordinate (ignored).
+/// @param dy Destination Y coordinate (ignored).
+/// @param pixels_ptr Source Pixels handle (ignored).
+/// @param sx Source-region X coordinate (ignored).
+/// @param sy Source-region Y coordinate (ignored).
+/// @param w Source-region width (ignored).
+/// @param h Source-region height (ignored).
+void rt_canvas_blit_region_alpha(void *canvas_ptr,
+                                 int64_t dx,
+                                 int64_t dy,
+                                 void *pixels_ptr,
+                                 int64_t sx,
+                                 int64_t sy,
+                                 int64_t w,
+                                 int64_t h) {
+    (void)canvas_ptr;
+    (void)dx;
+    (void)dy;
+    (void)pixels_ptr;
+    (void)sx;
+    (void)sy;
+    (void)w;
+    (void)h;
+}
+
+/// @brief No-op stub for internal `rt_canvas_blit_regions_alpha` (graphics-disabled build).
+/// @param canvas_ptr Canvas handle (ignored).
+/// @param pixels_ptr Pixels handle (ignored).
+/// @param regions Regions (ignored).
+/// @param region_count Region count (ignored).
+void rt_canvas_blit_regions_alpha(void *canvas_ptr,
+                                  void *pixels_ptr,
+                                  const rt_canvas_alpha_region *regions,
+                                  size_t region_count) {
+    (void)canvas_ptr;
+    (void)pixels_ptr;
+    (void)regions;
+    (void)region_count;
+}
+
+/* TtfFont stubs */
+
+/// @brief Trapping stub for `TtfFont.Load` (graphics-disabled build).
+/// @param path Borrowed runtime string naming a .ttf file (UTF-8) (ignored before trapping).
+/// @return `NULL` after raising the graphics-unavailable trap.
+void *rt_ttf_font_load(rt_string path) {
+    (void)path;
+    RT_GRAPHICS_TRAP_RET("TtfFont.Load: graphics support not compiled in", NULL);
+}
+
+/// @brief Trapping stub for `TtfFont.LoadDefault` (graphics-disabled build).
+/// @return `NULL` after raising the graphics-unavailable trap.
+void *rt_ttf_font_load_default(void) {
+    RT_GRAPHICS_TRAP_RET("TtfFont.LoadDefault: graphics support not compiled in", NULL);
+}
+
+/// @brief Silent fallback stub for `TtfFont.MeasureWidth` (graphics-disabled build).
+/// @param obj Borrowed TtfFont handle (ignored).
+/// @param text Borrowed runtime string to measure (ignored).
+/// @param size_px Font size in pixels (clamped to a sane range) (ignored).
+/// @return `0.0`.
+double rt_ttf_font_measure_width(void *obj, rt_string text, double size_px) {
+    (void)obj;
+    (void)text;
+    (void)size_px;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("TtfFont.MeasureWidth: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `TtfFont.LineHeight` (graphics-disabled build).
+/// @param obj Borrowed TtfFont handle (ignored).
+/// @param size_px Font size in pixels (clamped to a sane range) (ignored).
+/// @return `0.0`.
+double rt_ttf_font_line_height(void *obj, double size_px) {
+    (void)obj;
+    (void)size_px;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("TtfFont.LineHeight: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `TtfFont.Ascent` (graphics-disabled build).
+/// @param obj Borrowed TtfFont handle (ignored).
+/// @param size_px Font size in pixels (clamped to a sane range) (ignored).
+/// @return `0.0`.
+double rt_ttf_font_ascent(void *obj, double size_px) {
+    (void)obj;
+    (void)size_px;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("TtfFont.Ascent: graphics support not compiled in", 0.0);
+}
+
+/// @brief Silent fallback stub for `TtfFont.get_Family` (graphics-disabled build).
+/// @param obj Borrowed TtfFont handle (ignored).
+/// @return An empty runtime string.
+rt_string rt_ttf_font_family(void *obj) {
+    (void)obj;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("TtfFont.get_Family: graphics support not compiled in",
+                                  rt_const_cstr(""));
 }

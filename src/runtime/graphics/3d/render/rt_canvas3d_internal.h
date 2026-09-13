@@ -2773,4 +2773,31 @@ void canvas3d_frame_arena_free(rt_canvas3d *c);
 }
 #endif
 
+#else /* !ZANNA_ENABLE_GRAPHICS */
+
+#include <stddef.h>
+
+/* Graphics-disabled builds still compile the backend-independent Game3D sources against the
+ * Graphics3D trap stubs. No Canvas3D or Camera3D object can be constructed there, so the payload
+ * types stay incomplete (any field access must sit behind ZANNA_ENABLE_GRAPHICS) and the checked
+ * casts keep their graphics-build signatures while failing closed. */
+typedef struct rt_canvas3d rt_canvas3d;
+typedef struct rt_camera3d rt_camera3d;
+
+/// @brief Graphics-disabled Canvas3D validation: no handle can be a Canvas3D.
+/// @param obj Borrowed candidate handle (ignored).
+/// @return Always `NULL`.
+static inline rt_canvas3d *rt_canvas3d_checked_or_stack(void *obj) {
+    (void)obj;
+    return NULL;
+}
+
+/// @brief Graphics-disabled Camera3D validation: no handle can be a Camera3D.
+/// @param obj Borrowed candidate handle (ignored).
+/// @return Always `NULL`.
+static inline rt_camera3d *rt_camera3d_checked_or_stack(void *obj) {
+    (void)obj;
+    return NULL;
+}
+
 #endif /* ZANNA_ENABLE_GRAPHICS */

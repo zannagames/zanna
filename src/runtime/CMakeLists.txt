@@ -433,7 +433,6 @@ set(RT_GRAPHICS_DISABLED_SOURCES
         graphics/gui/rt_gui_bars.c
         graphics/gui/rt_gui_system.c
         graphics/gui/rt_gui_widgets.c
-        graphics/gui/rt_gui_subhandle.c
         graphics/gui/rt_gui_layout.c
         graphics/gui/rt_gui_theme.c
         graphics/gui/rt_gui_widgets_complex.c
@@ -472,7 +471,6 @@ set(RT_GRAPHICS_DISABLED_SOURCES
         graphics/2d/rt_spritebatch.c
         graphics/2d/rt_texatlas.c
         graphics/text/rt_bitmapfont.c
-        graphics/text/rt_ttf_font.c
         graphics/2d/rt_graphics2d.c
         graphics/2d/rt_graphics2d_tilemap.c
         graphics/2d/rt_graphics2d_render.c
@@ -507,18 +505,19 @@ set(RT_GRAPHICS_DISABLED_SOURCES
         graphics/media/rt_theora.c
         graphics/media/rt_theora_recon.c
         graphics/media/rt_ycbcr.c
-        graphics/3d/backend/vgfx3d_backend_utils.c
+        graphics/2d/rt_color.c
         graphics/common/rt_canvas_stubs.c
-        graphics/common/rt_graphics_helper_stubs.c
         graphics/common/rt_canvas3d_stubs.c
         graphics/common/rt_embed_host.c
         graphics/common/rt_3d_asset_stubs.c
+        graphics/common/rt_3d_render_stubs.c
         graphics/common/rt_3d_animation_effect_stubs.c
         graphics/common/rt_3d_textureasset_stubs.c
         graphics/common/rt_3d_scene_stubs.c
         graphics/common/rt_3d_physics_stubs.c
         graphics/common/rt_3d_cloth_stubs.c
         graphics/common/rt_3d_world_stubs.c
+        graphics/common/rt_3d_game_stubs.c
         graphics/common/rt_graphics_media_stubs.c
         graphics/common/rt_disabled_runtime_stubs.c
 )
