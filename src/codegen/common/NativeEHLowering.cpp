@@ -21,6 +21,7 @@
 #include "il/core/Param.hpp"
 #include "il/core/Type.hpp"
 #include "il/core/Value.hpp"
+#include "il/utils/Utils.hpp"
 #include "il/verify/ControlFlowChecker.hpp"
 
 #include <algorithm>
@@ -37,15 +38,15 @@
 namespace zanna::codegen::common {
 namespace {
 
-using il::core::BasicBlock;
-using il::core::Extern;
-using il::core::Function;
-using il::core::Instr;
-using il::core::Module;
-using il::core::Opcode;
-using il::core::Param;
-using il::core::Type;
-using il::core::Value;
+using ::il::core::BasicBlock;
+using ::il::core::Extern;
+using ::il::core::Function;
+using ::il::core::Instr;
+using ::il::core::Module;
+using ::il::core::Opcode;
+using ::il::core::Param;
+using ::il::core::Type;
+using ::il::core::Value;
 
 constexpr const char *kFrameAlloc = "rt_native_eh_frame_alloc";
 constexpr const char *kFrameFree = "rt_native_eh_frame_free";
@@ -168,6 +169,8 @@ static bool externSignatureMatches(const Extern &ext,
 }
 
 /// @brief Reserve the next function value identifier and assign its debug name.
+/// @details rewriteFunction first extends the value-name table past every id in
+///          use; optimizer passes create ids beyond the table.
 /// @param[in,out] fn Function value-name table to extend.
 /// @param name Synthetic value name.
 /// @return Newly reserved temporary identifier.
@@ -563,6 +566,12 @@ static void propagateEntryStacks(const Function &fn,
 static RewrittenFunction rewriteFunction(Module &module, Function &fn, const char *setjmpSymbol) {
     RewrittenFunction rewritten{};
 
+    // IL passes allocate ids past the value-name table without naming them, so
+    // cover every id in use before reserveTemp hands out table-size ids.
+    const unsigned firstFreeId = zanna::il::nextTempId(fn);
+    if (fn.valueNames.size() < firstFreeId)
+        fn.valueNames.resize(firstFreeId);
+
     std::unordered_map<std::string, std::size_t> blockIndex;
     for (std::size_t i = 0; i < fn.blocks.size(); ++i)
         blockIndex.emplace(fn.blocks[i].label, i);
@@ -646,7 +655,7 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn, const cha
             const int scopeId = active.back();
             auto &scope = scopes[static_cast<std::size_t>(scopeId)];
             const int64_t siteId = nextSyntheticSiteId++;
-            const bool isTerm = il::verify::isTerminator(instr.op);
+            const bool isTerm = ::il::verify::isTerminator(instr.op);
             SiteInfo site;
             site.siteId = siteId;
             site.sameLabel = fn.name + ".__neh.site." + std::to_string(siteId);
@@ -686,7 +695,7 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn, const cha
     /// Finalize termination metadata and append one rebuilt block.
     auto appendBlock = [&](BasicBlock &&bb) {
         if (!bb.instructions.empty())
-            bb.terminated = il::verify::isTerminator(bb.instructions.back().op);
+            bb.terminated = ::il::verify::isTerminator(bb.instructions.back().op);
         rewritten.blocks.push_back(std::move(bb));
     };
 
@@ -914,7 +923,7 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn, const cha
                 const auto &site = siteForInstr.at(PushKey{bi, ii});
                 const int64_t siteId = site.siteId;
                 const std::string &siteLabel = site.sameLabel;
-                const bool isTerm = il::verify::isTerminator(instr.op);
+                const bool isTerm = ::il::verify::isTerminator(instr.op);
                 if (isTerm && ii + 1 != orig.instructions.size()) {
                     ZANNA_ICE(
                         "native EH lowering encountered terminator before the end of block '" +
@@ -996,7 +1005,7 @@ std::optional<std::string> findResidualStructuredEh(const Module &module) {
                 if (!isEhOpcode(instr.op))
                     continue;
                 return fn.name + ":" + bb.label + ": residual " +
-                       std::string(il::core::toString(instr.op)) + " after NativeEHLowering";
+                       std::string(::il::core::toString(instr.op)) + " after NativeEHLowering";
             }
         }
     }

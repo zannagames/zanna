@@ -9,9 +9,14 @@
 // Purpose: Implementation of assignment-related runtime statement lowering.
 //          Handles scalar slot assignments, array element assignments, and
 //          the common assignment coercion logic.
-// Key invariants: Maintains Lowerer's runtime lowering semantics exactly.
-// Ownership/Lifetime: Borrows Lowerer reference; coordinates with parent.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   - A string or object slot owns exactly one reference to its value; owned
+//     temporaries move in, borrowed values are retained (ADR 0147).
+//   - Array element stores leave element ownership to the runtime helpers.
+// Ownership/Lifetime:
+//   - Borrows the Lowerer reference; coordinates with the parent lowerer.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md,
+//        docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +33,7 @@
 #include "frontends/basic/LocationScope.hpp"
 #include "frontends/basic/NameMangler_OOP.hpp"
 #include "frontends/basic/StringUtils.hpp"
+#include "frontends/basic/lower/Emitter.hpp"
 #include "frontends/basic/lower/MemberArrayResolver.hpp"
 #include "il/runtime/RuntimeClassNames.hpp"
 
@@ -43,10 +49,11 @@ namespace il::frontends::basic {
 ///
 /// @details Handles boolean conversion, floating/integer promotion and
 ///          demotion, string retain/release, and object lifetime maintenance.
-///          Runtime string objects are treated as string slots. Object stores
-///          retain the incoming pointer, release the old pointer, conditionally
-///          invoke an available class destructor, free the final reference, and
-///          continue before storing the new pointer.
+///          Runtime string objects are treated as string slots. A string or
+///          object slot owns one reference: a temporary queued for statement
+///          cleanup moves into the slot, any other value is retained. The old
+///          value is then released (objects conditionally invoke an available
+///          class destructor and free the final reference) before the store.
 ///
 /// @param slotInfo Metadata describing the target slot's type and traits.
 /// @param slot     Value referencing the storage location.
@@ -81,9 +88,16 @@ void RuntimeStatementLowerer::assignScalarSlot(const Lowerer::SlotType &slotInfo
         value = lowerer_.coerceToBool(std::move(value), loc);
     }
 
+    // The slot owns one reference to its value (ADR 0147): an owned temporary moves
+    // in and leaves statement cleanup, and a borrowed value is retained.
+    const bool movesTemp =
+        (isStr || slotInfo.isObject) && lowerer_.emitter().takeDeferredTemp(value.value);
+
     if (isStr) {
-        lowerer_.requireStrRetainMaybe();
-        lowerer_.emitCall("rt_str_retain_maybe", {value.value});
+        if (!movesTemp) {
+            lowerer_.requireStrRetainMaybe();
+            lowerer_.emitCall("rt_str_retain_maybe", {value.value});
+        }
         lowerer_.requireStrReleaseMaybe();
         Value oldValue = lowerer_.emitLoad(targetTy, slot);
         lowerer_.emitCall("rt_str_release_maybe", {oldValue});
@@ -94,7 +108,8 @@ void RuntimeStatementLowerer::assignScalarSlot(const Lowerer::SlotType &slotInfo
         lowerer_.requestHelper(RuntimeFeature::ObjFree);
         lowerer_.requestHelper(RuntimeFeature::ObjRetainMaybe);
 
-        lowerer_.emitCall("rt_obj_retain_maybe", {value.value});
+        if (!movesTemp)
+            lowerer_.emitCall("rt_obj_retain_maybe", {value.value});
         Value oldValue = lowerer_.emitLoad(il::core::Type(il::core::Type::Kind::Ptr), slot);
         Value shouldDestroy =
             lowerer_.emitCallRet(lowerer_.ilBoolTy(), "rt_obj_release_check0", {oldValue});

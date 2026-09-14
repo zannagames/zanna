@@ -207,8 +207,8 @@ void RuntimeStatementLowerer::lowerLet(const LetStmt &stmt) {
 /// @param value The already-lowered right-hand value.
 /// @details Refreshes the variable's slot type, refines its object class from authoritative
 ///          sources (NEW/constructors override; inferred classes only fill generic OBJECT),
-///          stores into the slot (array vs scalar), and balances the creation reference of a
-///          user-class NEW temporary so its refcount settles with the variable as sole owner.
+///          and stores into the slot (array vs scalar). An owned temporary such as a NEW
+///          result moves into the variable.
 void RuntimeStatementLowerer::lowerLetToVar(const LetStmt &stmt,
                                             const VarExpr &varRef,
                                             Lowerer::RVal value) {
@@ -258,24 +258,8 @@ void RuntimeStatementLowerer::lowerLetToVar(const LetStmt &stmt,
         // to avoid stale kinds when crossing complex control flow (e.g., SELECT CASE). (BUG-076)
         Lowerer::SlotType slotInfo = lowerer_.getSlotType(var->name);
 
-        // Detect user-class NEW expressions — their temporary must be released
-        // after assignment to balance the refcount.  rt_obj_new_i64 returns with
-        // refcount 1 (creation ref).  assignScalarSlot retains (+1=2) for the
-        // variable's ownership.  Without this release the creation ref is
-        // never balanced and the object can never reach refcount 0.
-        //
-        // Only user-defined classes (present in the OOP index) go through
-        // rt_obj_new_i64.  Runtime classes (StringBuilder, String, File, etc.)
-        // use dedicated ctors with their own allocation and refcount semantics;
-        // releasing their return values would corrupt the heap.
-        bool isUserClassNew = false;
-        if (const auto *alloc = as<const NewExpr>(*stmt.expr)) {
-            std::string qname = lowerer_.qualify(alloc->className);
-            if (lowerer_.oopIndex_.findClass(qname))
-                isUserClassNew = true;
-        }
-        Lowerer::Value newTempValue = value.value; // save before move
-
+        // A NEW result is an owned temporary, so assignScalarSlot moves its creation
+        // reference into the variable.
         if (slotInfo.isArray) {
             lowerer_.storeArray(storage->pointer,
                                 value.value,
@@ -283,15 +267,6 @@ void RuntimeStatementLowerer::lowerLetToVar(const LetStmt &stmt,
                                 /*isObjectArray*/ slotInfo.isObject);
         } else {
             assignScalarSlot(slotInfo, storage->pointer, std::move(value), stmt.loc);
-        }
-
-        // Release the NEW temporary's creation reference.  After
-        // assignScalarSlot retained the value, refcount is 2.  This release
-        // drops it to 1 — the variable is the sole owner.
-        if (isUserClassNew && slotInfo.isObject) {
-            lowerer_.requestHelper(RuntimeFeature::ObjReleaseChk0);
-            lowerer_.curLoc = {};
-            lowerer_.emitCallRet(lowerer_.ilBoolTy(), "rt_obj_release_check0", {newTempValue});
         }
     }
 }
@@ -647,6 +622,46 @@ void RuntimeStatementLowerer::lowerLetToMember(const LetStmt &stmt,
                                                const MemberAccessExpr &memberRef,
                                                Lowerer::RVal value) {
     const MemberAccessExpr *member = &memberRef;
+
+    // Semantic analysis resolved `Class.member = value` as a static member store: a
+    // static field (searched through the class hierarchy) or a static setter.
+    if (!member->staticReceiverClass.empty()) {
+        const std::string &qname = member->staticReceiverClass;
+        auto &oop = lowerer_.oopIndex_;
+        for (const ClassInfo *cur = oop.findClass(qname); cur;
+             cur = cur->baseQualified.empty() ? nullptr : oop.findClass(cur->baseQualified)) {
+            for (const auto &sf : cur->staticFields) {
+                if (!string_utils::iequals(sf.name, member->member))
+                    continue;
+                Lowerer::Type ilTy = sf.objectClassName.empty()
+                                         ? type_conv::astToIlType(sf.type)
+                                         : Lowerer::Type(Lowerer::Type::Kind::Ptr);
+                lowerer_.curLoc = stmt.loc;
+                Lowerer::Value addr =
+                    lowerer_.emitStaticFieldAddress(cur->qualifiedName, sf.name, ilTy.kind);
+                Lowerer::SlotType slotInfo;
+                slotInfo.type = ilTy;
+                slotInfo.isBoolean = ilTy.kind == Lowerer::Type::Kind::I1;
+                slotInfo.isObject = !sf.objectClassName.empty();
+                if (slotInfo.isObject)
+                    slotInfo.objectClass = sf.objectClassName;
+                assignScalarSlot(slotInfo, addr, std::move(value), stmt.loc);
+                return;
+            }
+        }
+        if (const ClassInfo *ci = oop.findClass(qname)) {
+            const std::string setter = std::string("set_") + member->member;
+            auto it = ci->methods.find(setter);
+            if (it != ci->methods.end() && it->second.isStatic) {
+                if (!it->second.sig.paramTypes.empty())
+                    value = coerceToAstScalar(
+                        std::move(value), it->second.sig.paramTypes.front(), stmt.loc);
+                lowerer_.emitCall(mangleMethod(ci->qualifiedName, setter), {value.value});
+            }
+        }
+        return;
+    }
+
     {
         if (auto access = lowerer_.resolveMemberField(*member)) {
             Lowerer::SlotType slotInfo;
@@ -660,6 +675,37 @@ void RuntimeStatementLowerer::lowerLetToMember(const LetStmt &stmt,
             }
             assignScalarSlot(slotInfo, access->ptr, std::move(value), stmt.loc);
         } else {
+            // A static field stored through an instance uses the class's shared storage.
+            if (member->base) {
+                std::string instClass = lowerer_.resolveObjectClass(*member->base);
+                if (!instClass.empty()) {
+                    auto &oop = lowerer_.oopIndex_;
+                    for (const ClassInfo *cur = oop.findClass(
+                             lowerer_.resolveQualifiedClassCasing(lowerer_.qualify(instClass)));
+                         cur;
+                         cur = cur->baseQualified.empty() ? nullptr
+                                                          : oop.findClass(cur->baseQualified)) {
+                        for (const auto &sf : cur->staticFields) {
+                            if (!string_utils::iequals(sf.name, member->member))
+                                continue;
+                            Lowerer::Type ilTy = sf.objectClassName.empty()
+                                                     ? type_conv::astToIlType(sf.type)
+                                                     : Lowerer::Type(Lowerer::Type::Kind::Ptr);
+                            lowerer_.curLoc = stmt.loc;
+                            Lowerer::Value addr = lowerer_.emitStaticFieldAddress(
+                                cur->qualifiedName, sf.name, ilTy.kind);
+                            Lowerer::SlotType slotInfo;
+                            slotInfo.type = ilTy;
+                            slotInfo.isBoolean = ilTy.kind == Lowerer::Type::Kind::I1;
+                            slotInfo.isObject = !sf.objectClassName.empty();
+                            if (slotInfo.isObject)
+                                slotInfo.objectClass = sf.objectClassName;
+                            assignScalarSlot(slotInfo, addr, std::move(value), stmt.loc);
+                            return;
+                        }
+                    }
+                }
+            }
             // Runtime class property setter via catalog (e.g., Zanna.String)
             {
                 auto &pidx = runtimePropertyIndex();
@@ -844,18 +890,15 @@ void RuntimeStatementLowerer::lowerLetToMember(const LetStmt &stmt,
                         return;
                     }
 
-                    // Otherwise store into a static field global
+                    // Otherwise store into the static field's module storage
                     for (const auto &sf : ci->staticFields) {
-                        if (sf.name == member->member) {
+                        if (string_utils::iequals(sf.name, member->member)) {
                             Lowerer::Type ilTy = sf.objectClassName.empty()
                                                      ? type_conv::astToIlType(sf.type)
                                                      : Lowerer::Type(Lowerer::Type::Kind::Ptr);
                             lowerer_.curLoc = stmt.loc;
-                            std::string gname = ci->qualifiedName + "::" + member->member;
-                            Lowerer::Value addr =
-                                lowerer_.emitUnary(Lowerer::Opcode::AddrOf,
-                                                   Lowerer::Type(Lowerer::Type::Kind::Ptr),
-                                                   Lowerer::Value::global(gname));
+                            Lowerer::Value addr = lowerer_.emitStaticFieldAddress(
+                                ci->qualifiedName, sf.name, ilTy.kind);
                             // Coerce booleans when needed
                             Lowerer::RVal vcoerced = value;
                             if (ilTy.kind == Lowerer::Type::Kind::I1)

@@ -283,4 +283,12 @@ bool isSemanticArrayType(SemanticAnalyzer::Type type) noexcept;
 /// @return @c true when the value fits the result's category.
 bool functionResultAccepts(SemanticAnalyzer::Type result, SemanticAnalyzer::Type value) noexcept;
 
+/// @brief Tests whether a procedure or module body contains ON ERROR GOTO <label>.
+/// @details Searches every nested statement except the bodies of nested FUNCTION,
+///          SUB, CLASS, INTERFACE, and NAMESPACE declarations, which are analyzed as
+///          procedures of their own. ON ERROR GOTO 0 does not count.
+/// @param body Statements of the procedure or module body.
+/// @return @c true when a handler label is selected anywhere in @p body.
+bool containsOnErrorLabel(const std::vector<StmtPtr> &body);
+
 } // namespace il::frontends::basic::semantic_analyzer_detail

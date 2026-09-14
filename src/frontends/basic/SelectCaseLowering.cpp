@@ -96,7 +96,11 @@ void SelectCaseLowering::lower(const SelectCaseStmt &stmt) {
         return;
 
     const SelectModel &model = stmt.model;
-    Blocks blocks = prepareBlocks(stmt, model.hasCaseElse, model.hasNumericRanges);
+    // RESUME may enter an arm of a SELECT in a procedure that records resume sites, and
+    // from there reach the join without passing the selector. There every arm, including
+    // an empty CASE ELSE added for the no-match path, releases the selector on entry.
+    const bool releaseInArms = ctx.errorHandlers().siteTracking();
+    Blocks blocks = prepareBlocks(stmt, model.hasCaseElse || releaseInArms, model.hasNumericRanges);
 
     if (selectorIsString) {
         lowerStringArms(stmt, model, blocks, stringSelector);
@@ -106,29 +110,34 @@ void SelectCaseLowering::lower(const SelectCaseStmt &stmt) {
 
     // The selector's temporaries must outlive every CASE test but not be released by a statement
     // inside an arm (once per iteration of a loop there). Set them aside for the arm bodies and
-    // release them where the arms rejoin.
+    // release them where the arms rejoin, or on entry to each arm.
     auto selectorTemps = lowerer_.emitter().takeDeferredTemps();
+    const std::vector<lower::Emitter::TempRelease> *armReleases =
+        releaseInArms ? &selectorTemps : nullptr;
 
     // BUG-087 fix: Pass end block INDEX instead of pointer, since nested statements
     // (like IF) can cause func->blocks vector to reallocate, invalidating pointers.
     for (size_t i = 0; i < stmt.arms.size(); ++i) {
         func = ctx.function();
         auto *armBlk = &func->blocks[blocks.armIdx[i]];
-        emitArmBody(stmt.arms[i].body, armBlk, stmt.arms[i].range.begin, blocks.endIdx);
+        emitArmBody(
+            stmt.arms[i].body, armBlk, stmt.arms[i].range.begin, blocks.endIdx, armReleases);
     }
 
-    if (model.hasCaseElse) {
+    if (blocks.elseIdx) {
         func = ctx.function();
         auto *caseElseBlk = &func->blocks[*blocks.elseIdx];
-        emitArmBody(stmt.elseBody, caseElseBlk, stmt.range.end, blocks.endIdx);
+        emitArmBody(stmt.elseBody, caseElseBlk, stmt.range.end, blocks.endIdx, armReleases);
     }
 
     // BUG-087 fix: Refresh endBlk pointer after emitting arm bodies
     func = ctx.function();
     auto *endBlk = &func->blocks[blocks.endIdx];
     ctx.setCurrent(endBlk);
-    lowerer_.emitter().restoreDeferredTemps(std::move(selectorTemps));
-    lowerer_.releaseDeferredTemps();
+    if (!releaseInArms) {
+        lowerer_.emitter().restoreDeferredTemps(std::move(selectorTemps));
+        lowerer_.releaseDeferredTemps();
+    }
 }
 
 /// @brief Appends and indexes the block skeleton for one SELECT statement.
@@ -604,14 +613,22 @@ void SelectCaseLowering::emitSwitchJumpTable(const SelectCaseStmt &stmt,
 /// @param entry Initial insertion block; it must belong to the current function.
 /// @param loc Location assigned to a synthesized fall-through branch.
 /// @param endBlkIdx Stable index of the common SELECT exit.
+/// @param selectorReleases Selector temporaries to release on entry, or null when
+///        they are released at the common exit.
 /// @post The current block is either a terminated block produced by the body or
 ///       an arm tail terminated by a branch to @p endBlkIdx.
-void SelectCaseLowering::emitArmBody(const std::vector<StmtPtr> &body,
-                                     il::core::BasicBlock *entry,
-                                     il::support::SourceLoc loc,
-                                     size_t endBlkIdx) {
+void SelectCaseLowering::emitArmBody(
+    const std::vector<StmtPtr> &body,
+    il::core::BasicBlock *entry,
+    il::support::SourceLoc loc,
+    size_t endBlkIdx,
+    const std::vector<lower::Emitter::TempRelease> *selectorReleases) {
     auto &ctx = lowerer_.context();
     ctx.setCurrent(entry);
+    if (selectorReleases && !selectorReleases->empty()) {
+        lowerer_.emitter().restoreDeferredTemps(*selectorReleases);
+        lowerer_.releaseDeferredTemps();
+    }
     for (const auto &node : body) {
         if (!node)
             continue;

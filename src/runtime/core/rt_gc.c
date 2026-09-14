@@ -13,7 +13,7 @@
 //          then free confirmed cycles.
 //
 //          The tracked-object set is stored in an open-addressing hash table
-//          (power-of-two capacity, linear probing, tombstone deletion) for O(1)
+//          (power-of-two capacity, linear probing, backward-shift deletion) for O(1)
 //          lookup during the trial-decrement and restore phases.
 //
 // Key invariants:
@@ -84,11 +84,9 @@ const char *rt_trap_get_error(void);
 // Internal Data Structures
 //=============================================================================
 
-/// Sentinel values for the open-addressing hash table.
-/// GC_EMPTY marks a slot that has never been used (terminates probe chains).
-/// GC_TOMBSTONE marks a deleted slot (skipped during probing, reusable on insert).
+/// Empty sentinel for the open-addressing hash table.
+/// GC_EMPTY marks an unused slot (terminates probe chains).
 #define GC_EMPTY NULL
-#define GC_TOMBSTONE ((void *)(uintptr_t)1)
 
 /// Epoch tagging: objects that survive GC_PROMOTION_THRESHOLD consecutive
 /// collection passes are "promoted" and skipped in future trial-deletion
@@ -99,7 +97,7 @@ const char *rt_trap_get_error(void);
 
 /// Entry in the tracked-object hash table.
 typedef struct gc_entry {
-    void *obj; ///< Object pointer (NULL=empty, 1=tombstone, else live).
+    void *obj; ///< Object pointer (NULL=empty, else live).
     rt_gc_traverse_fn traverse;
     int64_t trial_rc;         ///< Temporary refcount for cycle detection.
     int8_t color;             ///< 0=white(unchecked), 1=gray(candidate), 2=black(reachable)
@@ -123,7 +121,7 @@ typedef struct weak_chain {
 /// Global GC state.
 static struct {
     gc_entry *entries; ///< Open-addressing hash table (power-of-two capacity).
-    int64_t count;     ///< Number of live entries (excludes tombstones).
+    int64_t count;     ///< Number of live entries.
     int64_t capacity;  ///< Table size (always a power of two, or 0).
 
     weak_chain *weak_buckets;
@@ -477,9 +475,9 @@ int8_t rt_gc_should_suppress_cycle_release(void *payload) {
 
 /// @brief Check if a hash table slot contains a live (tracked) entry.
 /// @param e Non-NULL table entry to inspect.
-/// @return 1 unless the slot contains the empty or tombstone sentinel.
+/// @return 1 unless the slot contains the empty sentinel.
 static int gc_slot_is_live(const gc_entry *e) {
-    return e->obj != GC_EMPTY && e->obj != GC_TOMBSTONE;
+    return e->obj != GC_EMPTY;
 }
 
 /// @brief Clear the in-progress-collection sentinel under the GC lock.
@@ -498,8 +496,8 @@ static void gc_clear_collecting_flag(void) {
 //=============================================================================
 
 /// @brief Find the slot index for @p obj in the hash table.
-/// @details Uses linear probing. Tombstones are skipped (do not terminate
-///          the probe chain); empty slots terminate it.
+/// @details Uses linear probing; empty slots terminate the probe chain.
+///          Deletion repairs chains so historical churn cannot lengthen misses.
 /// @param obj Exact tracked payload address to locate.
 /// @return Slot index if found, -1 otherwise. Caller must hold gc_lock.
 static int64_t find_entry(void *obj) {
@@ -513,7 +511,6 @@ static int64_t find_entry(void *obj) {
             return (int64_t)idx;
         if (e->obj == GC_EMPTY)
             return -1;
-        /* Tombstone — keep probing. */
         idx = (idx + 1) & mask;
     }
     return -1;
@@ -521,8 +518,7 @@ static int64_t find_entry(void *obj) {
 
 /// @brief Rehash all live entries into a new table of @p new_cap slots.
 /// @details Allocates a fresh zero-initialised table, re-inserts every live
-///          entry, and frees the old table. Tombstones are discarded. The
-///          caller must hold gc_lock.
+///          entry, and frees the old table. The caller must hold gc_lock.
 /// @param new_cap New table capacity (must be a power of two).
 /// @return 1 on success, or 0 for invalid sizing or allocation failure; the
 ///   existing table remains owned by the GC on failure.
@@ -554,6 +550,28 @@ static int gc_rehash(int64_t new_cap) {
     g_gc.count = live;
     free(old);
     return 1;
+}
+
+/// @brief Remove one live slot without leaving a tombstone or allocating memory.
+/// @details Move a following entry into the hole only when its circular probe
+///          path crosses the hole. Move the entire entry, including promotion
+///          and finalizer epochs. Historical allocations therefore never extend
+///          unsuccessful lookups (including untracking ordinary non-GC objects).
+///          The <5/8 live load guarantees an empty slot terminates this walk.
+/// @param idx Live slot to erase; caller holds gc_lock and adjusts count if needed.
+static void gc_erase_entry(int64_t idx) {
+    uint64_t mask = (uint64_t)(g_gc.capacity - 1);
+    uint64_t hole = (uint64_t)idx;
+    uint64_t slot = (hole + 1) & mask;
+    while (gc_slot_is_live(&g_gc.entries[slot])) {
+        uint64_t home = ptr_hash(g_gc.entries[slot].obj) & mask;
+        if (((hole - home) & mask) < ((slot - home) & mask)) {
+            g_gc.entries[hole] = g_gc.entries[slot];
+            hole = slot;
+        }
+        slot = (slot + 1) & mask;
+    }
+    memset(&g_gc.entries[hole], 0, sizeof(gc_entry));
 }
 
 /// @brief Internal outcomes from one tracking-table insertion attempt.
@@ -618,7 +636,7 @@ static gc_track_result gc_track_impl(void *obj, rt_gc_traverse_fn traverse) {
         }
     }
 
-    /* Insert at first empty or tombstone slot. */
+    /* Insert at first empty slot. */
     uint64_t mask = (uint64_t)(g_gc.capacity - 1);
     uint64_t slot = ptr_hash(obj) & mask;
     while (gc_slot_is_live(&g_gc.entries[slot]))
@@ -728,7 +746,7 @@ int8_t rt_gc_track_reference_array(void *array) {
 }
 
 /// @brief Remove an object from cycle tracking.
-/// @details Tombstones the hash table slot so probe chains remain intact. NULL
+/// @details Repairs the probe chain after removing the entry. NULL
 ///   and currently untracked payloads are no-ops; no object reference is released.
 /// @param obj Exact borrowed payload address to remove.
 void rt_gc_untrack(void *obj) {
@@ -740,9 +758,7 @@ void rt_gc_untrack(void *obj) {
 
     int64_t idx = find_entry(obj);
     if (idx >= 0) {
-        /* Mark slot as tombstone so probe chains are preserved. */
-        g_gc.entries[idx].obj = GC_TOMBSTONE;
-        g_gc.entries[idx].traverse = NULL;
+        gc_erase_entry(idx);
         g_gc.count--;
     }
 
@@ -767,8 +783,7 @@ void rt_gc_relocate_payload(void *old_payload, void *new_payload) {
     int64_t tracked_idx = find_entry(old_payload);
     if (tracked_idx >= 0) {
         gc_entry moved = g_gc.entries[tracked_idx];
-        g_gc.entries[tracked_idx].obj = GC_TOMBSTONE;
-        g_gc.entries[tracked_idx].traverse = NULL;
+        gc_erase_entry(tracked_idx);
         moved.obj = new_payload;
 
         uint64_t mask = (uint64_t)(g_gc.capacity - 1);

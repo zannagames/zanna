@@ -1,6 +1,6 @@
 ---
 status: active
-last-verified: 2026-09-01
+last-verified: 2026-09-13
 audience: public
 ---
 
@@ -182,54 +182,61 @@ complete `Error` payload.
 
 ## BASIC ↔ IL Handler Mapping
 
-The BASIC `ON ERROR` directive installs or clears a handler for the current
-procedure. Each variant lowers to explicit `eh.push`/`eh.pop` and `resume.*`
-operations.
+BASIC error handling is dynamic: `ON ERROR GOTO` can run anywhere, and the
+handler is ordinary code that ends in a `RESUME` form. The front end maps it onto
+the structured IL model with one dispatcher per procedure
+([ADR 0358](../adr/0358-basic-on-error-dispatcher-and-resume.md)).
 
-### Installing a Handler
+### The Dispatcher
 
-BASIC:
-
-```basic
-ON ERROR GOTO handler
-...
-handler:
-```
-
-Lowered IL (excerpt):
+A procedure (or the module body) that contains `ON ERROR GOTO <label>` pushes
+one handler, and only from its arm block. The entry, the handler entry, and every
+`RESUME` reach the arm with the handler removed, so the handler stack has the
+same depth on every path and every return pops it once.
 
 ```il
 entry:
-  eh.push ^handler
-  br ^body
-
-body:
-  ... instructions ...
-  eh.pop
-  ret
-
-handler(%err: Error, %tok: ResumeTok):
+  %selected = alloca 8            ; plus target, site, failed site, kind, code, line, running
   ...
+  br ^onerr_arm
+
+onerr_arm:
+  eh.push ^onerr_handler
+  %t = load i32, %target
+  switch.i32 %t, ^body, 1 -> ^handler_label, 2 -> ^resume_dispatch, ...
+
+handler ^onerr_handler(%err:Error, %tok:ResumeTok):
+  eh.entry
+  ; running or no label selected: raise the error again (dispatcher already removed)
+  cbr %running, ^onerr_rethrow(%err, %tok), ^onerr_select(%err, %tok)
+
+handler ^onerr_enter(%err:Error, %tok:ResumeTok):
+  eh.entry
+  ; store kind/code/line, set running, failed site = site, target = selected
+  resume.label %tok, ^onerr_arm
 ```
 
-### Clearing the Handler
+### Directives and Resume Forms
 
-BASIC `ON ERROR GOTO 0` lowers to a simple `eh.pop` in the current function to
-remove the active handler.
+| BASIC Statement    | Lowering                                                                  |
+|--------------------|---------------------------------------------------------------------------|
+| `ON ERROR GOTO L`  | store `L`'s arm target in `selected`                                      |
+| `ON ERROR GOTO 0`  | clear `selected`; inside a running handler, raise the handled error again |
+| `RESUME`           | clear `running`/`ERR`, target = start of the failed statement, `eh.pop`, branch to the arm |
+| `RESUME NEXT`      | same, target = block after the failed statement                           |
+| `RESUME label`     | same, target = `label`                                                    |
 
-### Resume Variants
+`RESUME` when no handler is running raises "RESUME without error", which the
+selected handler receives like any other error. An error raised while the
+handler runs, or with no label selected, is raised again with its kind, code,
+line, and standard message through `Zanna.Runtime.Unsafe.RaiseKind`, so it
+reaches the caller's handler or ends the program.
 
-| BASIC Statement | IL Equivalent               |
-|-----------------|-----------------------------|
-| `RESUME`        | `resume.same %tok`          |
-| `RESUME NEXT`   | `resume.next %tok`          |
-| `RESUME label`  | `resume.label %tok, ^label` |
-
-> **Not yet wired up.** The `resume.*` opcodes exist and are implemented, but the
-> BASIC front end does not emit them: all three `RESUME` forms currently lower to
-> a bare `trap` (see `src/tests/golden/eh_lowering/resume_forms.il`). The table
-> above describes the intended mapping. See
-> [defect audit #22](../defect-audit-2026-09-01.md).
+In a body that uses `RESUME` or `RESUME NEXT`, each statement stores its resume
+site before it runs; the dispatch blocks switch on the failed statement's site.
+Statements inside `TRY` and `USING` record no site (the `TRY` or `USING`
+statement is the site), because their bodies run with another handler installed
+or hold a resume token.
 
 The `%tok` value is always the resume token received by the handler block. Hand
 crafted IL must not forge resume tokens.
@@ -257,7 +264,8 @@ IL:
 ```
 
 - If `%index` is outside `[0, len)`, a `Bounds` trap is raised.
-- A BASIC program with `ON ERROR` can `RESUME label` that clamps the index.
+- A BASIC program with `ON ERROR` can fix the index and `RESUME`, or skip the
+  access with `RESUME NEXT`.
 
 ### Opening a missing file
 

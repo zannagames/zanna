@@ -54,6 +54,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -652,6 +653,17 @@ class Lowerer {
     /// @return Runtime helper symbol for that kind.
     [[nodiscard]] std::string selectModvarAddrHelper(il::core::Type::Kind kind);
 
+    /// @brief Emit the address of a class's static field.
+    /// @details Static fields live in the same runtime-managed module storage as
+    ///          module-level variables, keyed by "Class.__static.FIELD".
+    /// @param qualifiedClass Class declaring the field.
+    /// @param fieldName Field name as indexed.
+    /// @param kind IL kind of the stored value.
+    /// @return Pointer to the field's storage.
+    [[nodiscard]] Value emitStaticFieldAddress(const std::string &qualifiedClass,
+                                               const std::string &fieldName,
+                                               il::core::Type::Kind kind);
+
     /// @brief Lower statement pointers in order with optional termination stopping.
     /// @param stmts Non-owning statement pointers; null entries are skipped.
     /// @param stopOnTerminated Whether to stop after the current block terminates.
@@ -689,6 +701,7 @@ class Lowerer {
     /// @brief Configuration shared by FUNCTION and SUB lowering.
     struct ProcedureConfig {
         Type retType{Type(Type::Kind::Void)};  ///< IL return type for the procedure.
+        std::string resultName;                ///< FUNCTION result slot the final return takes.
         std::function<void()> postCollect;     ///< Hook after variable discovery.
         std::function<void()> emitEmptyBody;   ///< Emit return path for empty bodies.
         std::function<void()> emitFinalReturn; ///< Emit return in the synthetic exit block.
@@ -1369,9 +1382,27 @@ class Lowerer {
     /// @brief Release array handles materialized from parameters.
     /// @param paramNames Parameter names eligible for cleanup.
     void releaseArrayParams(const std::unordered_set<std::string> &paramNames);
-    /// @brief Release local object handles except named parameters.
-    /// @param paramNames Names excluded from local cleanup.
-    void releaseObjectLocals(const std::unordered_set<std::string> &paramNames);
+    /// @brief Release owned local object handles, BYVAL parameters included.
+    /// @param excluded Names excluded from cleanup, such as a returned result slot.
+    void releaseObjectLocals(const std::unordered_set<std::string> &excluded);
+    /// @brief Release owned local STRING slots, BYVAL parameters included.
+    /// @param excluded Names excluded from cleanup, such as a returned result slot.
+    void releaseStringLocals(const std::unordered_set<std::string> &excluded);
+    /// @brief Retain a BYVAL STRING or object parameter into its local slot.
+    /// @details The procedure owns one reference to each such parameter and releases
+    ///          it on every exit, so assigning to the parameter cannot release the
+    ///          caller's reference (ADR 0147).
+    /// @param incoming Incoming parameter value.
+    /// @param ilType IL type of the parameter.
+    /// @param isObject Whether the parameter is object-typed.
+    void retainOwnedParam(Value incoming, Type ilType, bool isObject);
+    /// @brief Move a STRING or object out of @p slot without releasing it.
+    /// @details Loads the handle and stores a raw null in its place, which native
+    ///          backends and the VM treat as an ownership move (ADR 0147).
+    /// @param slot Address of the owning slot.
+    /// @param ilType IL type of the handle.
+    /// @return The handle the slot owned.
+    Value takeOwnedSlot(Value slot, Type ilType);
     /// @brief Release object handles materialized from parameters.
     /// @param paramNames Parameter names eligible for cleanup.
     void releaseObjectParams(const std::unordered_set<std::string> &paramNames);
@@ -1411,8 +1442,6 @@ class Lowerer {
     void emitEhPop();
     /// @brief Pop handlers required before returning from the active procedure.
     void emitEhPopForReturn();
-    /// @brief Clear ON ERROR handler bookkeeping for the active procedure.
-    void clearActiveErrorHandler();
     /// @brief Find or build the handler block for a target line.
     /// @param targetLine BASIC line label.
     /// @return Borrowed block pointer in the active function.
@@ -1473,6 +1502,85 @@ class Lowerer {
     /// @brief Ensure fixed-depth GOSUB stack storage exists in the active function.
     void ensureGosubStack();
 
+    /// @brief Run @p emit with the active function's entry block as the insertion point.
+    /// @param emit Callback that emits into the entry block.
+    void emitInEntryBlock(const std::function<void()> &emit);
+
+    /// @brief Allocate an 8-byte stack slot in the active function's entry block.
+    /// @return Pointer to the slot.
+    Value emitEntryAlloca();
+
+    /// @brief Call the module finalizer, which runs static destructors, when the
+    ///        module has one.
+    void emitModuleFiniCall();
+
+    /// @brief Store "" in every STRING module variable recorded so far.
+    /// @details Runs at the start of `@main`, before the OOP module initializer, so
+    ///          globals, STATIC locals, and static fields read as "" until assigned.
+    void emitStringModvarInits();
+
+    /// @brief Allocate the ON ERROR dispatcher slots, zero-initialised, in the entry block.
+    /// @return The allocated slots.
+    ProcedureContext::ErrorHandlerState::DispatchSlots allocateDispatchSlots();
+
+    /// @brief Set up ON ERROR handling for a procedure body before its statements are lowered.
+    /// @details When the body contains ON ERROR GOTO <label>, creates the dispatcher:
+    ///          entry-block slots, the handler block, and the arm block that pushes the
+    ///          handler, which the current block branches to. When the body also
+    ///          contains RESUME or RESUME NEXT, statements record resume sites.
+    /// @param stmts Body statements.
+    /// @param bodyBlock Index of the block the body starts in.
+    /// @return True when the dispatcher was created and the current block already
+    ///         branches to the arm.
+    bool prepareErrorHandling(const std::vector<const Stmt *> &stmts, size_t bodyBlock);
+
+    /// @brief Complete the dispatcher once a procedure body has been lowered: the
+    ///        handler entry chain, the arm switch, and the RESUME dispatch blocks.
+    void finalizeErrorHandling();
+
+    /// @brief Start the resume site of @p stmt when its procedure records sites for RESUME.
+    /// @details The statement begins in a block of its own that first stores its
+    ///          site id, so RESUME can retry it.
+    /// @param stmt Statement about to be lowered.
+    /// @return Site id, or nothing when the statement records no site.
+    std::optional<unsigned> beginResumeSite(const Stmt &stmt);
+
+    /// @brief Close resume site @p site, recording where RESUME NEXT continues.
+    /// @param site Site id returned by @ref beginResumeSite.
+    void endResumeSite(unsigned site);
+
+    /// @brief Get or create the block that RESUME (@p next false) or RESUME NEXT
+    ///        continues at.
+    /// @param next True for RESUME NEXT.
+    /// @return Index of the dispatch block, filled in by @ref finalizeErrorHandling.
+    size_t resumeDispatchBlock(bool next);
+
+    /// @brief Append a labelled block to the active function, keeping the current block.
+    /// @param hint Label stem.
+    /// @return Index of the new block.
+    size_t addErrorBlock(const char *hint);
+
+    /// @brief Append a handler-shaped block, with error and resume-token parameters
+    ///        and `eh.entry`, keeping the current block.
+    /// @param hint Label stem.
+    /// @return Index of the new block.
+    size_t addErrorHandlerBlock(const char *hint);
+
+    /// @brief Emit a trap that reports @p message in the current block.
+    /// @param message Trap text.
+    void emitTrapWithMessage(const char *message);
+
+    /// @brief Raise an error with the given kind, code, and line, ending the current block.
+    /// @param kind i32 trap kind.
+    /// @param code i32 error code.
+    /// @param line i32 source line.
+    void emitRaiseError(Value kind, Value code, Value line);
+
+    /// @brief Continue at arm target @p targetId: remove the handler and branch to the
+    ///        arm, which re-installs it.
+    /// @param targetId Arm target id from ErrorHandlerState::armTarget.
+    void emitReenterArm(unsigned targetId);
+
     /// Program-level orchestration facade owned for this Lowerer's lifetime.
     std::unique_ptr<ProgramLowering> programLowering;
     /// Procedure-level orchestration facade owned for this Lowerer's lifetime.
@@ -1500,6 +1608,12 @@ class Lowerer {
     std::unordered_map<std::string, ProcedureSignature> procSignatures;
     /// Alternate source spellings mapped to emitted procedure names.
     std::unordered_map<std::string, std::string> procNameAliases;
+    /// Whether the module has static destructors and so a `__mod_fini$oop` finalizer.
+    bool hasModuleFini_{false};
+    /// Module-variable keys (globals, STATIC locals, static fields) holding STRING values.
+    /// @details The storage starts null; @ref emitStringModvarInits stores "" in each
+    ///          at the start of `@main`, so a STRING is never null.
+    std::set<std::string> stringModvarKeys_;
 
     /// Cached virtual line identifier for each borrowed statement node.
     std::unordered_map<const Stmt *, int> stmtVirtualLines_;
@@ -1777,6 +1891,13 @@ class Lowerer {
     /// @param name Identifier to check against the current field scope.
     /// @return True when the name matches a field in the active class layout.
     [[nodiscard]] bool isFieldInScope(std::string_view name) const;
+
+    /// @brief Find a static field named @p name in the class being lowered or its bases.
+    /// @param name Bare identifier used inside a class member.
+    /// @return Declaring class and field metadata, or nothing outside a class or when no
+    ///         static field has that name.
+    [[nodiscard]] std::optional<std::pair<std::string, const ClassInfo::FieldInfo *>>
+    findStaticFieldInScope(std::string_view name) const;
 
     /// @brief Push a new field scope for the given class during method lowering.
     /// @param className Fully-qualified class name whose fields become visible.

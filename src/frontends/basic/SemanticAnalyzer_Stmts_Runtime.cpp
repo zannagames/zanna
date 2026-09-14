@@ -96,8 +96,11 @@ void SemanticAnalyzer::analyzeCallStmt(CallStmt &stmt) {
                     // Only error if this looks like a namespace-qualified call.
                     // If it's a simple local variable name (not registered as a namespace),
                     // let the lowerer handle it - it might be an object instance.
-                    bool looksLikeNamespace =
-                        !isLocalVariable && oopIndex_.findClass(varExpr->name) != nullptr;
+                    // `Class.Method()` names a static method; the expression visit
+                    // resolves it (and reports a missing static method).
+                    bool looksLikeNamespace = !isLocalVariable &&
+                                              oopIndex_.findClass(varExpr->name) != nullptr &&
+                                              !classNameReceiver(*varExpr);
                     if (looksLikeNamespace) {
                         std::vector<std::string> segments;
                         segments.push_back(std::string{varExpr->name});
@@ -296,6 +299,16 @@ void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
         else if (itClass != objectClassTypes_.end())
             objectClassTypes_.erase(itClass);
     };
+
+    // A variable declared AS a class only takes objects of that class, a subclass, or a class that
+    // implements it; a runtime result of an unrelated class would otherwise trap at its first use.
+    if (auto declared = declaredObjectClasses_.find(v.name);
+        declared != declaredObjectClasses_.end() && assignedObjectClass &&
+        !objectClassAccepts(declared->second, *assignedObjectClass)) {
+        std::string msg = "cannot assign " + classDisplayName(*assignedObjectClass) + " to '" +
+                          v.name + "' declared AS " + classDisplayName(declared->second);
+        de.emit(il::support::Severity::Error, "B2001", l.loc, 1, std::move(msg));
+    }
 
     // A variable declared AS a class keeps that class whatever is assigned to it; only
     // variables without a declared class follow the class of their latest value.
@@ -724,6 +737,7 @@ void SemanticAnalyzer::analyzeRandomize(const RandomizeStmt &r) {
 void SemanticAnalyzer::analyzeDim(DimStmt &d) {
     ArrayMetadata metadata;
     checkClassTypeName(JoinDots(d.explicitClassQname), d.loc);
+    qualifyImportedClassName(d.explicitClassQname);
 
     if (d.isArray) {
         // Collect dimension expressions: check 'size' first (backward compat), then 'dimensions'
@@ -832,7 +846,7 @@ void SemanticAnalyzer::analyzeDim(DimStmt &d) {
         if (scopes_.isDeclaredInCurrentScope(d.name)) {
             std::string msg = "duplicate local '" + d.name + "'";
             de.emit(il::support::Severity::Error,
-                    "B1006",
+                    "B1013",
                     d.loc,
                     static_cast<uint32_t>(d.name.size()),
                     std::move(msg));
@@ -1009,30 +1023,35 @@ void SemanticAnalyzer::analyzeConst(ConstStmt &c) {
 
 /// @brief Analyze a STATIC statement declaring procedure-local persistent variables.
 /// @details STATIC variables are procedure-scoped like DIM, but their storage persists
-///          between calls. This routine only declares/uniquifies and records the
-///          symbol; it does not infer a type or visit an initializer here.
+///          between calls. This routine declares/uniquifies the symbol and records the
+///          type the parser took from the `AS` clause or the name suffix.
 /// @param s STATIC statement to validate and register.
 void SemanticAnalyzer::analyzeStatic(StaticStmt &s) {
     if (scopes_.hasScope()) {
         if (scopes_.isDeclaredInCurrentScope(s.name)) {
             std::string msg = "duplicate local '" + s.name + "'";
             de.emit(il::support::Severity::Error,
-                    "B1006",
+                    "B1013",
                     s.loc,
                     static_cast<uint32_t>(s.name.size()),
                     std::move(msg));
-        } else {
-            std::string unique = scopes_.declareLocal(s.name);
-            s.name = unique;
-            auto insertResult = symbols_.insert(unique);
-            if (insertResult.second && activeProcScope_)
-                activeProcScope_->noteSymbolInserted(unique);
+            return;
         }
-    } else {
-        auto insertResult = symbols_.insert(s.name);
-        if (insertResult.second && activeProcScope_)
-            activeProcScope_->noteSymbolInserted(s.name);
+        std::string unique = scopes_.declareLocal(s.name);
+        s.name = unique;
     }
+    auto insertResult = symbols_.insert(s.name);
+    if (insertResult.second && activeProcScope_)
+        activeProcScope_->noteSymbolInserted(s.name);
+
+    auto itType = varTypes_.find(s.name);
+    if (activeProcScope_) {
+        std::optional<Type> previous;
+        if (itType != varTypes_.end())
+            previous = itType->second;
+        activeProcScope_->noteVarTypeMutation(s.name, previous);
+    }
+    varTypes_[s.name] = astToSemanticType(s.type);
 }
 
 /// @brief Analyze a SHARED statement listing names that refer to module-level state.

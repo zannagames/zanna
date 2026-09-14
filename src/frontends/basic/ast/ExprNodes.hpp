@@ -514,6 +514,10 @@ struct BuiltinCallExpr : Expr {
         Argc,
         ArgGet,
         Command,
+        Hex,
+        Oct,
+        Space,
+        StringOf,
         Err
     } builtin{Builtin::Len};
 
@@ -600,6 +604,10 @@ struct MemberAccessExpr : Expr {
     /// Base expression evaluating to an object.
     ExprPtr base;
 
+    /// Qualified class named by @ref base when semantic analysis resolved it as a
+    /// class-name receiver (`Class.member`, a static member); empty otherwise.
+    std::string staticReceiverClass;
+
     /// Member field being accessed.
     std::string member;
 
@@ -619,6 +627,10 @@ struct MethodCallExpr : Expr {
 
     /// Base expression evaluating to the receiver instance.
     ExprPtr base;
+
+    /// Qualified class named by @ref base when semantic analysis resolved it as a
+    /// class-name receiver (`Class.Method(...)`, a static call); empty otherwise.
+    std::string staticReceiverClass;
 
     /// Method name to invoke.
     std::string method;

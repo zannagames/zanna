@@ -5,6 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/ASTUtils.hpp
+// Purpose: Discriminator-based casts, literal factories, and small AST queries
+//          shared by the BASIC parser, semantic analyzer, and lowerer.
+// Key invariants:
+//   - is/as/cast rely on each node's Kind matching its concrete type.
+//   - NOTHING is recognised the way the parser spells it (VarExpr "NOTHING").
+// Ownership/Lifetime:
+//   - Queries borrow nodes; factories return uniquely owned nodes.
+// Links: src/frontends/basic/ast/ExprNodes.hpp, docs/internals/codemap.md
+//
 // This file provides type-safe utilities for checking and casting BASIC AST
 // nodes, replacing dynamic_cast with efficient O(1) discriminator-based lookups.
 //
@@ -490,6 +500,22 @@ inline bool collectQualifiedSegments(const Expr &expr, std::vector<std::string> 
         qname += parts[i];
     }
     return qname;
+}
+
+/// @brief Test whether @p expr is the NOTHING literal.
+/// @details The parser represents NOTHING as a variable reference named "NOTHING".
+/// @param expr Expression to test.
+/// @return True for NOTHING.
+[[nodiscard]] inline bool isNothingExpr(const Expr &expr) noexcept {
+    const auto *var = as<const VarExpr>(expr);
+    return var && var->name == "NOTHING";
+}
+
+/// @brief Test whether an `IS` target names NOTHING.
+/// @param typeName Dotted type-name segments of the `IS` expression.
+/// @return True for a single segment spelling NOTHING in any case.
+[[nodiscard]] inline bool isNothingTypeName(const std::vector<std::string> &typeName) {
+    return typeName.size() == 1 && string_utils::iequals(typeName.front(), "NOTHING");
 }
 
 } // namespace il::frontends::basic

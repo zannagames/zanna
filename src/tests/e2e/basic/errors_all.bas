@@ -1,15 +1,16 @@
-ON ERROR GOTO H1
-x = 1 : y = 0 : PRINT x \ y : PRINT "unreached"
-H1:
-  PRINT "dz" : RESUME NEXT
-  PRINT "cont1"
-
-ON ERROR GOTO H2
+' One handler receives errors of several kinds; RESUME NEXT continues after each.
+DIM x AS INTEGER
+DIM y AS INTEGER
+DIM a(1) AS INTEGER
+ON ERROR GOTO Report
+x = 1
+PRINT x \ y
+PRINT "cont1"
 OPEN "missing.txt" FOR INPUT AS #1
-H2:
-  PRINT "fnf" : RESUME NEXT
-
-ON ERROR GOTO H3
-DIM a(1 TO 2) : PRINT a(3)
-H3:
-  PRINT "bounds" : RESUME NEXT
+PRINT "cont2"
+PRINT a(3)
+PRINT "cont3"
+END
+Report:
+  PRINT "error"; ERR()
+  RESUME NEXT

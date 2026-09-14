@@ -322,17 +322,30 @@ SemanticAnalyzer::Type semanticTypeFromOopField(const ClassInfo::FieldInfo &fiel
     return SemanticAnalyzer::Type::Unknown;
 }
 
-/// @brief Looks up an unqualified field on the active implicit instance.
+/// @brief Looks up an unqualified field of the class member being analyzed.
+/// @details An instance member sees instance and static fields of its class
+///          hierarchy; a static member sees only static fields.
 /// @param analyzer Analyzer supplying active receiver and OOP hierarchy state.
 /// @param name Field spelling to resolve through the hierarchy.
-/// @return Pointer to index-owned field metadata, or @c nullptr when no
-///         implicit receiver/field exists.
+/// @return Pointer to index-owned field metadata, or @c nullptr outside a class
+///         member or when no visible field has that name.
 const ClassInfo::FieldInfo *findActiveInstanceField(const SemanticAnalyzer &analyzer,
                                                     std::string_view name) {
-    auto className = analyzer.activeInstanceClassQName();
+    if (auto className = analyzer.activeInstanceClassQName())
+        return analyzer.oopIndex().findFieldInHierarchy(*className, name);
+    // A static member has no receiver but still sees its class's static fields.
+    auto className = analyzer.activeClassQName();
     if (!className)
         return nullptr;
-    return analyzer.oopIndex().findFieldInHierarchy(*className, name);
+    const OopIndex &index = analyzer.oopIndex();
+    for (const ClassInfo *cur = index.findClass(*className); cur;
+         cur = cur->baseQualified.empty() ? nullptr : index.findClass(cur->baseQualified)) {
+        for (const auto &field : cur->staticFields) {
+            if (string_utils::iequals(field.name, name))
+                return &field;
+        }
+    }
+    return nullptr;
 }
 
 /// @brief Resolves an expression to an indexed user-class qualified name.
@@ -571,6 +584,42 @@ static std::optional<SemanticAnalyzer::Type> resolveRuntimePropertyType(
 
 namespace il::frontends::basic {
 
+/// @brief Resolve a class name used as a member receiver.
+/// @param base Receiver expression.
+/// @return Qualified class name, or nothing when @p base is a value.
+std::optional<std::string> SemanticAnalyzer::classNameReceiver(const Expr &base) const {
+    const auto *var = as<const VarExpr>(base);
+    if (!var || var->name == "NOTHING")
+        return std::nullopt;
+    if (symbols_.count(var->name) != 0 || scopes_.resolve(var->name).has_value())
+        return std::nullopt;
+    if (semantic_analyzer_detail::findActiveInstanceField(*this, var->name))
+        return std::nullopt;
+
+    std::string ident = Canon(var->name);
+    if (ident.empty())
+        ident = var->name;
+    for (std::size_t n = nsStack_.size(); n > 0; --n) {
+        std::vector<std::string> parts;
+        for (std::size_t i = 0; i < n; ++i)
+            parts.push_back(Canon(nsStack_[i]));
+        parts.push_back(ident);
+        if (const ClassInfo *ci = oopIndex_.findClass(JoinDots(parts)))
+            return ci->qualifiedName;
+    }
+    if (const ClassInfo *ci = oopIndex_.findClass(ident))
+        return ci->qualifiedName;
+    if (const ClassInfo *ci = oopIndex_.findClass(var->name))
+        return ci->qualifiedName;
+    if (!usingStack_.empty()) {
+        for (const auto &ns : usingStack_.back().imports) {
+            if (const ClassInfo *ci = oopIndex_.findClass(ns + "." + ident))
+                return ci->qualifiedName;
+        }
+    }
+    return std::nullopt;
+}
+
 using semantic_analyzer_detail::astToSemanticType;
 using semantic_analyzer_detail::astTypeFromSemanticType;
 using semantic_analyzer_detail::emitNoSuchMethod;
@@ -774,10 +823,94 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         result_ = analyzer_.analyzeNew(expr);
     }
 
+    /// @brief Type of a static field or static property read through its class name.
+    /// @details Static fields are searched through the class hierarchy; otherwise a
+    ///          static `get_<member>` accessor supplies the type. Anything else
+    ///          emits `E_NO_SUCH_MEMBER` and produces unknown.
+    /// @param className Qualified receiver class.
+    /// @param member Member spelling.
+    /// @param loc Location for diagnostics.
+    /// @return Semantic type of the member.
+    SemanticAnalyzer::Type staticMemberType(const std::string &className,
+                                            const std::string &member,
+                                            il::support::SourceLoc loc) {
+        const OopIndex &index = analyzer_.oopIndex();
+        for (const ClassInfo *cur = index.findClass(className); cur;
+             cur = cur->baseQualified.empty() ? nullptr : index.findClass(cur->baseQualified)) {
+            for (const auto &field : cur->staticFields) {
+                if (string_utils::iequals(field.name, member))
+                    return semantic_analyzer_detail::semanticTypeFromOopField(field);
+            }
+        }
+        if (auto resolved = sem::resolveMethodOverload(index,
+                                                       className,
+                                                       "get_" + member,
+                                                       /*isStatic*/ true,
+                                                       {},
+                                                       "",
+                                                       nullptr,
+                                                       loc)) {
+            if (resolved->method && resolved->method->isStatic) {
+                if (!resolved->method->sig.returnClassName.empty())
+                    return SemanticAnalyzer::Type::Object;
+                if (resolved->method->sig.returnType)
+                    return astToSemanticType(*resolved->method->sig.returnType);
+            }
+        }
+        std::string msg = "no static member '" + member + "' on '" + className + "'";
+        analyzer_.de.emit(il::support::Severity::Error,
+                          "E_NO_SUCH_MEMBER",
+                          loc,
+                          static_cast<uint32_t>(member.size()),
+                          std::move(msg));
+        return SemanticAnalyzer::Type::Unknown;
+    }
+
+    /// @brief Result type of a static method called through its class name.
+    /// @details Arguments are analyzed first; the overload must be a static method,
+    ///          otherwise `E_NO_SUCH_METHOD` names the missing static method.
+    /// @param className Qualified receiver class.
+    /// @param expr Method call.
+    /// @return Semantic result type.
+    SemanticAnalyzer::Type staticMethodCallType(const std::string &className,
+                                                MethodCallExpr &expr) {
+        std::vector<::il::frontends::basic::Type> astArgTypes;
+        astArgTypes.reserve(expr.args.size());
+        for (auto &arg : expr.args) {
+            SemanticAnalyzer::Type ty =
+                arg ? analyzer_.visitExpr(*arg) : SemanticAnalyzer::Type::Unknown;
+            auto astTy = astTypeFromSemanticType(ty);
+            astArgTypes.push_back(astTy ? *astTy : ::il::frontends::basic::Type::I64);
+        }
+        auto resolved = sem::resolveMethodOverload(analyzer_.oopIndex(),
+                                                   className,
+                                                   expr.method,
+                                                   /*isStatic*/ true,
+                                                   astArgTypes,
+                                                   "",
+                                                   nullptr,
+                                                   expr.loc);
+        if (!resolved || !resolved->method || !resolved->method->isStatic) {
+            std::string msg = "no static method '" + expr.method + "' on '" + className + "'";
+            analyzer_.de.emit(il::support::Severity::Error,
+                              "E_NO_SUCH_METHOD",
+                              expr.loc,
+                              static_cast<uint32_t>(expr.method.size()),
+                              std::move(msg));
+            return SemanticAnalyzer::Type::Unknown;
+        }
+        if (!resolved->method->sig.returnClassName.empty())
+            return SemanticAnalyzer::Type::Object;
+        if (resolved->method->sig.returnType)
+            return astToSemanticType(*resolved->method->sig.returnType);
+        return SemanticAnalyzer::Type::Unknown;
+    }
+
     /// @brief Validates an implicit-instance `ME` reference.
     /// @details Produces object only while an instance member and non-empty
-    ///          active class are recorded; otherwise emits `B2130` and produces
-    ///          unknown.
+    ///          active class are recorded. Inside a static member the class index
+    ///          builder already reported the more specific B2103/B2106; anywhere
+    ///          else this emits `B2130`. Either way the result is unknown.
     /// @param expr Reference supplying the diagnostic location.
     void visit(MeExpr &expr) override {
         if (analyzer_.activeMemberHasMe_ && !analyzer_.activeClassQName_.empty()) {
@@ -785,11 +918,13 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
             return;
         }
 
-        analyzer_.de.emit(il::support::Severity::Error,
-                          "B2130",
-                          expr.loc,
-                          2,
-                          "ME can only be used inside an instance class member");
+        if (analyzer_.activeClassQName_.empty()) {
+            analyzer_.de.emit(il::support::Severity::Error,
+                              "B2130",
+                              expr.loc,
+                              2,
+                              "ME can only be used inside an instance class member");
+        }
         result_ = SemanticAnalyzer::Type::Unknown;
     }
 
@@ -800,6 +935,14 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
     ///          field. Failure is silent here and produces unknown.
     /// @param expr Mutable member access to resolve.
     void visit(MemberAccessExpr &expr) override {
+        // `Class.member` reads a static field or static property of a user class.
+        if (expr.base) {
+            if (auto className = analyzer_.classNameReceiver(*expr.base)) {
+                expr.staticReceiverClass = *className;
+                result_ = staticMemberType(*className, expr.member, expr.loc);
+                return;
+            }
+        }
         // Validate base expression (catches undefined variables like 'A' in 'A.B')
         if (expr.base && !isRuntimeNamespaceChain(*expr.base)) {
             analyzer_.visitExpr(*expr.base);
@@ -869,6 +1012,14 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
     ///          `E_NO_SUCH_METHOD`.
     /// @param expr Mutable method-call expression.
     void visit(MethodCallExpr &expr) override {
+        // `Class.Method(...)` calls a static method of a user class.
+        if (expr.base) {
+            if (auto className = analyzer_.classNameReceiver(*expr.base)) {
+                expr.staticReceiverClass = *className;
+                result_ = staticMethodCallType(*className, expr);
+                return;
+            }
+        }
         SemanticAnalyzer::Type baseType = SemanticAnalyzer::Type::Unknown;
         const bool runtimeNamespaceBase = expr.base && isRuntimeNamespaceChain(*expr.base);
         if (expr.base && !runtimeNamespaceBase)
@@ -1056,6 +1207,19 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
             return t == T::Int || t == T::Float || t == T::Bool || t == T::String ||
                    isSemanticArrayType(t);
         };
+
+        // `value IS NOTHING` tests for a null reference.
+        if (isNothingTypeName(expr.typeName)) {
+            if (isPrimitive(lhsType)) {
+                analyzer_.de.emit(il::support::Severity::Error,
+                                  "B2121",
+                                  expr.loc,
+                                  2,
+                                  "'IS' requires an object/interface value on the left");
+            }
+            result_ = SemanticAnalyzer::Type::Bool;
+            return;
+        }
 
         // Resolve right-hand dotted type to class or interface.
         /// @brief Tests an exact qualified name against interface and class indexes.
@@ -1356,6 +1520,10 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
     auto mapCanonicalToDeclared = [&](const std::string &qcanon) -> std::string {
         if (const ClassInfo *ci = oopIndex_.findClass(qcanon))
             return ci->qualifiedName;
+        if (qcanon.find('.') != std::string::npos) {
+            if (const auto *runtimeClass = il::runtime::findRuntimeClassByQName(qcanon))
+                return runtimeClass->qname;
+        }
         /// @brief Canonicalizes every segment of one dotted name.
         /// @param q Dotted qualified name.
         /// @return Canonical dotted spelling.
@@ -1396,14 +1564,18 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
     // If unqualified type, resolve using parent-walk then USING imports.
     if (expr.qualifiedType.empty()) {
         std::vector<std::string> attempts;
-        /// @brief Tests a canonical candidate against class and interface indexes.
+        /// @brief Tests a canonical candidate against class, interface, and runtime
+        ///        class indexes.
         /// @param q Canonical qualified name.
         /// @return `true` when a matching class or interface exists.
         auto existsQ = [&](const std::string &q) -> bool {
             std::string decl = mapCanonicalToDeclared(q);
             if (oopIndex_.findInterface(decl))
                 return true;
-            return oopIndex_.findClass(decl) != nullptr;
+            if (oopIndex_.findClass(decl) != nullptr)
+                return true;
+            return q.find('.') != std::string::npos &&
+                   il::runtime::findRuntimeClassByQName(q) != nullptr;
         };
 
         std::string ident = Canon(expr.className);

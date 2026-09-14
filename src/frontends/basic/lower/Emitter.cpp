@@ -7,11 +7,16 @@
 //
 // File: src/frontends/basic/lower/Emitter.cpp
 // Purpose: Implement the helper responsible for emitting IL for BASIC lowering.
-// Key invariants: Builders only append to the active block and honour Lowerer
-//                 location tracking when synthesising instructions.
-// Ownership/Lifetime: Emitter borrows the Lowerer context and never owns IR
-//                     functions, blocks, or runtime handles.
-// Links: docs/internals/codemap.md, docs/internals/architecture.md#cpp-overview
+// Key invariants:
+//   - Builders only append to the active block and honour Lowerer location
+//     tracking when synthesising instructions.
+//   - Procedure exits release every STRING and object slot the procedure owns,
+//     including BYVAL parameters, except a result slot the return takes over.
+// Ownership/Lifetime:
+//   - Emitter borrows the Lowerer context and never owns IR functions, blocks,
+//     or runtime handles.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md,
+//        docs/internals/codemap.md, docs/internals/architecture.md#cpp-overview
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,12 +29,15 @@
 #include "frontends/basic/NameMangler_OOP.hpp"
 #include "frontends/basic/StringUtils.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <iterator>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 using namespace il::core;
 
@@ -673,26 +681,45 @@ void Emitter::releaseObjectSlot(SymbolInfo &info) {
 }
 
 /// @brief Releases owned object locals at procedure exit.
-/// @details Visits referenced, non-array object symbols other than ME and
-///          excludes every name listed in @p paramNames. Each eligible symbol
-///          is processed through @ref releaseObjectSlot.
-/// @param paramNames Case-insensitive set of parameter names excluded from
-///        local cleanup.
-void Emitter::releaseObjectLocals(const std::unordered_set<std::string> &paramNames) {
+/// @details Visits referenced, non-array object symbols other than ME, BYREF
+///          parameters, and every name listed in @p excluded. BYVAL parameters
+///          are owned (retained on entry) and released here. Each eligible
+///          symbol is processed through @ref releaseObjectSlot.
+/// @param excluded Case-insensitive set of names excluded from cleanup.
+void Emitter::releaseObjectLocals(const std::unordered_set<std::string> &excluded) {
     for (auto &[name, info] : lowerer_.symbols) {
         if (!info.referenced || !info.isObject)
             continue;
         // BUG-086 fix: Object arrays have isObject=true but should be released
         // by releaseArrayLocals, not here. Skip arrays.
-        if (info.isArray)
+        if (info.isArray || info.isByRefParam)
             continue;
         if (string_utils::iequals(name, "ME"))
             continue;
-        if (containsBasicName(paramNames, name))
+        if (containsBasicName(excluded, name))
             continue;
         if (!info.slotId)
             continue;
         releaseObjectSlot(info);
+    }
+}
+
+/// @copydoc Emitter::releaseStringLocals()
+void Emitter::releaseStringLocals(const std::unordered_set<std::string> &excluded) {
+    std::vector<std::string> names;
+    for (const auto &[name, info] : lowerer_.symbols) {
+        if (!info.referenced || !info.slotId || info.isArray || info.isObject || info.isStatic ||
+            info.isByRefParam || info.type != AstType::Str)
+            continue;
+        if (!containsBasicName(excluded, name))
+            names.push_back(name);
+    }
+    std::sort(names.begin(), names.end());
+    for (const auto &name : names) {
+        const SymbolInfo &info = lowerer_.symbols.at(name);
+        Value value = emitLoad(Type(Type::Kind::Str), Value::temp(*info.slotId));
+        lowerer_.requireStrReleaseMaybe();
+        emitCall("rt_str_release_maybe", {value});
     }
 }
 
@@ -796,39 +823,24 @@ void Emitter::emitEhPop() {
     block->instructions.push_back(in);
 }
 
-/// @brief Pop any active handler before emitting a return.
+/// @brief Pop the ON ERROR dispatcher before emitting a return.
 ///
-/// @details Checks the lowering context to determine whether a handler is
-///          active.  When present the routine emits @ref emitEhPop so returns do
-///          not leak handler state.
+/// @details A procedure with ON ERROR GOTO keeps its dispatcher installed on every
+///          path through the body, so each return removes exactly that handler.
 void Emitter::emitEhPopForReturn() {
-    if (!lowerer_.context().errorHandlers().active())
+    if (!lowerer_.context().errorHandlers().hasDispatcher())
         return;
     emitEhPop();
 }
 
-/// @brief Clear the lowering bookkeeping for the active error handler.
-///
-/// @details Emits a pop instruction when necessary and resets the handler state
-///          tracked by @ref Lowerer::ErrorHandlers so subsequent statements do
-///          not assume a handler remains in effect.
-void Emitter::clearActiveErrorHandler() {
-    auto &ctx = lowerer_.context();
-    if (ctx.errorHandlers().active())
-        emitEhPop();
-    ctx.errorHandlers().setActive(false);
-    ctx.errorHandlers().setActiveIndex(std::nullopt);
-    ctx.errorHandlers().setActiveLine(std::nullopt);
-}
-
-/// @brief Retrieve or create the error handler block for a BASIC line.
+/// @brief Retrieve or create the TRY handler block keyed by a BASIC line.
 ///
 /// @details Looks up an existing block in the lowering context's handler map.
 ///          When absent, it synthesises a new block with `err` and `tok`
 ///          parameters, inserts the canonical `eh.entry` instruction, and
 ///          records the mapping so future lookups reuse the block.
 ///
-/// @param targetLine BASIC source line number associated with the handler.
+/// @param targetLine Line of the TRY statement's first body statement.
 /// @return Pointer to the handler block ready for use.
 Emitter::BasicBlock *Emitter::ensureErrorHandlerBlock(int targetLine) {
     auto &ctx = lowerer_.context();

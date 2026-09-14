@@ -476,13 +476,10 @@ void emitEhPush(BasicBlock *handler);
 /// @brief Pop the top error handler from the exception-handling stack.
 void emitEhPop();
 
-/// @brief Pop all error handlers before a return statement.
+/// @brief Pop the ON ERROR dispatcher before a return statement.
 /// @details Ensures the EH stack is balanced when returning from a procedure
-///          that installed error handlers.
+///          that uses ON ERROR GOTO.
 void emitEhPopForReturn();
-
-/// @brief Clear the currently active ON ERROR GOTO handler.
-void clearActiveErrorHandler();
 
 /// @brief Get or create the basic block for an error handler targeting a line label.
 /// @param targetLine The line number label that ON ERROR GOTO targets.

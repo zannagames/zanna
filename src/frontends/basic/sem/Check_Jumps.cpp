@@ -12,12 +12,14 @@
 // Key invariants:
 //   * Every referenced line label is recorded even when it is not yet known, so
 //     the analyzer retains complete cross-scope reference information.
-//   * ON ERROR and RESUME update or query the active handler state through the
-//     shared control-check context.
+//   * RESUME is accepted only in a procedure or module body that selects an
+//     ON ERROR handler label somewhere; the running handler is checked at run time.
 //   * RETURN is distinguished between procedure return and legacy GOSUB return
 //     before later lowering consumes the statement.
-// References: docs/tutorials/basic-tutorial.md#error-handling,
-//             docs/internals/codemap/basic.md#semantic-analyzer
+// Ownership/Lifetime:
+//   - Checks borrow the analyzer and AST; RETURN may be marked as a GOSUB return.
+// Links: docs/tutorials/basic-tutorial.md#error-handling,
+//        docs/internals/codemap/basic.md#semantic-analyzer
 //
 //===----------------------------------------------------------------------===//
 //
@@ -51,7 +53,7 @@ void emitUnknownLabel(ControlCheckContext &context,
                       int label,
                       const il::support::SourceLoc &loc,
                       uint32_t width) {
-    const std::string labelText = std::to_string(label);
+    const std::string labelText = context.labelText(label);
     context.diagnostics().emit(
         diag::BasicDiag::UnknownLineLabel,
         loc,
@@ -93,43 +95,40 @@ void analyzeGosub(SemanticAnalyzer &analyzer, const GosubStmt &stmt) {
         emitUnknownLabel(context, stmt.targetLine, stmt.loc, 5);
 }
 
-/// @brief Analyse an @c ON ERROR GOTO statement and update handler state.
+/// @brief Analyse an @c ON ERROR GOTO statement.
 ///
-/// @details When the statement clears the handler (`GOTO 0`) the active handler
-///          state is reset.  Otherwise the referenced label is recorded and
-///          validated just like a @c GOTO before installing it as the active
-///          error handler inside the control-flow context.
+/// @details `ON ERROR GOTO 0` needs no checks. Otherwise the referenced label is
+///          recorded and validated just like a @c GOTO. Which handler is selected
+///          is decided at run time, so no handler state is tracked here.
 ///
 /// @param analyzer Semantic analyzer providing procedure state.
 /// @param stmt     Parsed @c ON ERROR GOTO statement to analyse.
 void analyzeOnErrorGoto(SemanticAnalyzer &analyzer, const OnErrorGoto &stmt) {
     ControlCheckContext context(analyzer);
-    if (stmt.toZero) {
-        context.clearErrorHandler();
+    if (stmt.toZero)
         return;
-    }
 
     context.insertLabelReference(stmt.target);
     if (!context.hasKnownLabel(stmt.target))
         emitUnknownLabel(context, stmt.target, stmt.loc, 4);
-
-    context.installErrorHandler(stmt.target);
 }
 
-/// @brief Verify usage of a @c RESUME statement within an error handler.
+/// @brief Verify usage of a @c RESUME statement.
 ///
-/// @details Ensures a handler is currently active before allowing the resume;
-///          otherwise emits diagnostic B1012 describing the misuse.  When the
-///          statement resumes to a specific label, the label reference is
-///          recorded and validated using the shared helper so unresolved targets
-///          surface consistent diagnostics.
+/// @details RESUME returns from an ON ERROR handler of the same procedure, so a
+///          procedure (or the module body) that never selects a handler label
+///          cannot use it: diagnostic B1012. Whether a handler is running when
+///          RESUME executes is checked at run time. When the statement resumes
+///          to a specific label, the label reference is recorded and validated
+///          using the shared helper so unresolved targets surface consistent
+///          diagnostics.
 ///
 /// @param analyzer Semantic analyzer providing the execution context.
 /// @param stmt     Parsed @c RESUME statement to analyse.
 void analyzeResume(SemanticAnalyzer &analyzer, const Resume &stmt) {
     ControlCheckContext context(analyzer);
-    if (!context.hasActiveErrorHandler()) {
-        std::string msg = "RESUME requires an active error handler";
+    if (!context.procedureHasOnError()) {
+        std::string msg = "RESUME requires ON ERROR GOTO in the same procedure";
         context.diagnostics().emit(
             il::support::Severity::Error, "B1012", stmt.loc, 6, std::move(msg));
     }
@@ -147,8 +146,7 @@ void analyzeResume(SemanticAnalyzer &analyzer, const Resume &stmt) {
 /// @details Distinguishes between procedure returns and legacy GOSUB returns.
 ///          When used outside a procedure, @c RETURN is only legal without a
 ///          value, in which case it is converted into a GOSUB return.  Otherwise
-///          diagnostic B1008 is emitted.  The helper also clears any active error
-///          handler to match BASIC's unwinding semantics.
+///          diagnostic B1008 is emitted.
 ///
 /// @param analyzer Semantic analyzer providing access to control-flow state.
 /// @param stmt     Parsed @c RETURN statement to analyse; may be rewritten to
@@ -168,9 +166,6 @@ void analyzeReturn(SemanticAnalyzer &analyzer, ReturnStmt &stmt) {
                 il::support::Severity::Error, "B1008", stmt.loc, 6, std::move(msg));
         }
     }
-
-    if (context.hasActiveErrorHandler())
-        context.clearErrorHandler();
 }
 
 } // namespace il::frontends::basic::sem

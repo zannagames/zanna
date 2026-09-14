@@ -130,8 +130,10 @@ void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
     if (const ClassInfo *info = oopIndex_.findClass(classQName))
         classQName = info->qualifiedName;
 
-    for (const auto &field : decl.fields)
+    for (auto &field : decl.fields) {
         checkClassTypeName(field.objectClassName, decl.loc);
+        qualifyImportedClassName(field.objectClassName);
+    }
 
     /// Analyzes one class-member body with procedure-local rollback.
     /// The helper saves/restores the active class/receiver state, registers
@@ -153,6 +155,7 @@ void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
 
         for (const auto &p : params)
             registerProcedureParam(p);
+        procedureHasOnError_ = semantic_analyzer_detail::containsOnErrorLabel(body);
 
         for (const auto &st : body) {
             if (!st)
@@ -217,6 +220,7 @@ void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
             case Stmt::Kind::MethodDecl: {
                 auto &method = static_cast<MethodDecl &>(*member);
                 checkClassTypeName(JoinDots(method.explicitClassRetQname), method.loc);
+                qualifyImportedClassName(method.explicitClassRetQname);
                 analyzeMemberBody(method.params,
                                   method.body,
                                   !method.isStatic,
@@ -360,6 +364,78 @@ void SemanticAnalyzer::analyzeUsingDecl(UsingDecl &decl) {
     }
 }
 
+/// @brief Tests whether an object of one class may be stored where another is declared.
+/// @details The same class and the generic object classes are accepted. A user class is
+///          accepted where one of its ancestors or an implemented interface is declared, and a
+///          runtime class where its catalog base chain reaches the declared class. A declared or
+///          value class unknown to both the program and the runtime catalog is not judged.
+/// @param targetClass Class the destination declares.
+/// @param valueClass Class of the value being stored.
+/// @return False only when both classes are known and unrelated.
+bool SemanticAnalyzer::objectClassAccepts(const std::string &targetClass,
+                                          const std::string &valueClass) const {
+    if (targetClass.empty() || valueClass.empty() ||
+        string_utils::iequals(targetClass, valueClass) ||
+        string_utils::iequals(targetClass, "OBJECT") ||
+        string_utils::iequals(targetClass, il::runtime::RTCLASS_OBJECT) ||
+        string_utils::iequals(targetClass, il::runtime::RTCLASS_STRING) ||
+        string_utils::iequals(targetClass, "Zanna.System.String"))
+        return true;
+
+    const ClassInfo *targetUser = oopIndex_.findClass(targetClass);
+    const InterfaceInfo *targetIface = targetUser ? nullptr : oopIndex_.findInterface(targetClass);
+    const il::runtime::RuntimeClass *targetRuntime =
+        (targetUser || targetIface) ? nullptr : il::runtime::findRuntimeClassByQName(targetClass);
+    if (!targetUser && !targetIface && !targetRuntime)
+        return true;
+
+    constexpr int kMaxDepth = 64;
+    if (const ClassInfo *klass = oopIndex_.findClass(valueClass)) {
+        for (int depth = 0; klass && depth < kMaxDepth; ++depth) {
+            if (targetUser &&
+                string_utils::iequals(klass->qualifiedName, targetUser->qualifiedName))
+                return true;
+            if (targetIface) {
+                for (int id : klass->implementedInterfaces)
+                    if (id == targetIface->ifaceId)
+                        return true;
+                for (const auto &raw : klass->rawImplements)
+                    if (string_utils::iequals(raw, targetClass) ||
+                        string_utils::iequals(raw, targetIface->qualifiedName))
+                        return true;
+            }
+            if (klass->baseQualified.empty())
+                break;
+            klass = oopIndex_.findClass(klass->baseQualified);
+        }
+        return false;
+    }
+    if (const auto *runtimeClass = il::runtime::findRuntimeClassByQName(valueClass)) {
+        for (int depth = 0; runtimeClass && depth < kMaxDepth; ++depth) {
+            if (targetRuntime && string_utils::iequals(runtimeClass->qname, targetRuntime->qname))
+                return true;
+            if (!runtimeClass->baseQName || !*runtimeClass->baseQName)
+                break;
+            runtimeClass = il::runtime::findRuntimeClassByQName(runtimeClass->baseQName);
+        }
+        return false;
+    }
+    return true;
+}
+
+/// @brief Display spelling of a class name as its declaration or runtime row writes it.
+/// @param className Class name in any case.
+/// @return Declared or catalog spelling, or @p className when unknown.
+std::string SemanticAnalyzer::classDisplayName(const std::string &className) const {
+    if (const ClassInfo *klass = oopIndex_.findClass(className))
+        return klass->qualifiedName;
+    if (const InterfaceInfo *iface = oopIndex_.findInterface(className))
+        return iface->qualifiedName;
+    if (const auto *runtimeClass = il::runtime::findRuntimeClassByQName(className))
+        return runtimeClass->qname;
+    return className;
+}
+
 /// @brief Reports an `AS` clause naming a class that does not exist.
 /// @details `OBJECT`, the runtime object and string classes, user classes and
 ///          interfaces, and runtime classes are valid, whether named in full or
@@ -384,12 +460,56 @@ bool SemanticAnalyzer::checkClassTypeName(const std::string &typeName, il::suppo
         if (result.found || !result.contenders.empty())
             return true;
     }
+    if (resolveImportedClassName(typeName))
+        return true;
     de.emit(il::support::Severity::Error,
             "B2111",
             loc,
             static_cast<uint32_t>(typeName.size()),
             "unknown type '" + typeName + "'");
     return false;
+}
+
+/// @brief Resolves a simple class name through the innermost USING scope's imports.
+/// @details Covers namespace-scoped USING directives, which the file-level type
+///          resolver does not see. Both program classes and runtime classes count.
+/// @param typeName Class name as written.
+/// @return Declared qualified name for a unique match; empty otherwise.
+std::optional<std::string> SemanticAnalyzer::resolveImportedClassName(
+    const std::string &typeName) const {
+    if (typeName.empty() || typeName.find('.') != std::string::npos || usingStack_.empty())
+        return std::nullopt;
+    std::optional<std::string> found;
+    for (const auto &ns : usingStack_.back().imports) {
+        const std::string candidate = ns + "." + typeName;
+        std::string resolved;
+        if (const ClassInfo *klass = oopIndex_.findClass(candidate))
+            resolved = klass->qualifiedName;
+        else if (const auto *runtimeClass = il::runtime::findRuntimeClassByQName(candidate))
+            resolved = runtimeClass->qname;
+        if (resolved.empty())
+            continue;
+        if (found && !string_utils::iequals(*found, resolved))
+            return std::nullopt; // ambiguous; the resolver's diagnostics apply
+        found = std::move(resolved);
+    }
+    return found;
+}
+
+/// @copydoc SemanticAnalyzer::qualifyImportedClassName(std::string &) const
+void SemanticAnalyzer::qualifyImportedClassName(std::string &className) const {
+    if (nsStack_.empty())
+        return;
+    if (auto imported = resolveImportedClassName(className))
+        className = std::move(*imported);
+}
+
+/// @copydoc SemanticAnalyzer::qualifyImportedClassName(std::vector<std::string> &) const
+void SemanticAnalyzer::qualifyImportedClassName(std::vector<std::string> &classQname) const {
+    if (nsStack_.empty() || classQname.size() != 1)
+        return;
+    if (auto imported = resolveImportedClassName(classQname.front()))
+        classQname = SplitDots(*imported);
 }
 
 /// @brief Resolves a type reference and translates failures to diagnostics.

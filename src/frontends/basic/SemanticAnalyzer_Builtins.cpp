@@ -86,8 +86,9 @@ bool SemanticAnalyzer::checkArgCount(const BuiltinCallExpr &c,
 ///          explicitly accepts boolean in addition to signature metadata.
 ///          Otherwise exact enum membership is required. Failure emits `B2001`
 ///          at the argument location when present, falling back to the call.
-///          Diagnostic expectations collapse the allowed set to string,
-///          number, or general value wording.
+///          The message collapses the allowed set to "string", "number", or
+///          "number or string", and names the actual category (string,
+///          number, boolean, array, or object).
 /// @param c Call supplying builtin identity and argument locations.
 /// @param idx Zero-based source argument index.
 /// @param argTy Inferred actual type.
@@ -115,12 +116,31 @@ bool SemanticAnalyzer::checkArgType(const BuiltinCallExpr &c,
         if (t == Type::Int || t == Type::Float)
             wantNumber = true;
     }
-    const char *need = wantString ? (wantNumber ? "value" : "string") : "number";
+    const char *need = wantString ? (wantNumber ? "number or string" : "string") : "number";
     const char *got = "unknown";
-    if (argTy == Type::String)
-        got = "string";
-    else if (argTy == Type::Int || argTy == Type::Float)
-        got = "number";
+    switch (argTy) {
+        case Type::String:
+            got = "string";
+            break;
+        case Type::Int:
+        case Type::Float:
+            got = "number";
+            break;
+        case Type::Bool:
+            got = "boolean";
+            break;
+        case Type::ArrayInt:
+        case Type::ArrayFloat:
+        case Type::ArrayString:
+        case Type::ArrayObject:
+            got = "array";
+            break;
+        case Type::Object:
+            got = "object";
+            break;
+        case Type::Unknown:
+            break;
+    }
     std::ostringstream oss;
     oss << builtinName(c.builtin) << ": arg " << (idx + 1) << " must be " << need << " (got " << got
         << ')';
@@ -332,6 +352,8 @@ const SemanticAnalyzer::BuiltinSignature &SemanticAnalyzer::builtinSignature(
         static const SemanticAnalyzer::Type allowedString[] = {Type::String};
         static const SemanticAnalyzer::Type allowedBool[] = {Type::Bool};
         static const SemanticAnalyzer::Type allowedNumber[] = {Type::Int, Type::Float};
+        static const SemanticAnalyzer::Type allowedNumberOrString[] = {
+            Type::Int, Type::Float, Type::String};
         static const SemanticAnalyzer::Type allowedAny[] = {
             Type::Int, Type::Float, Type::String, Type::Bool};
 
@@ -352,6 +374,8 @@ const SemanticAnalyzer::BuiltinSignature &SemanticAnalyzer::builtinSignature(
                     return {allowedBool, 1};
                 case M::Number:
                     return {allowedNumber, 2};
+                case M::NumberOrString:
+                    return {allowedNumberOrString, 3};
                 case M::Any:
                     return {allowedAny, 4};
                 case M::None:

@@ -173,8 +173,16 @@ void Parser::parseClassFieldSection(ClassDecl &declRef, std::optional<Access> &c
             continue;
         }
 
-        // Single-use STATIC prefix for next field
+        // Single-use STATIC prefix for next field. Before a SUB, FUNCTION, PROPERTY,
+        // DESTRUCTOR, or member modifier it belongs to a member: leave it for the member
+        // section, which applies it.
         if (at(TokenKind::KeywordStatic)) {
+            const TokenKind next = peek(1).kind;
+            if (next == TokenKind::KeywordSub || next == TokenKind::KeywordFunction ||
+                next == TokenKind::KeywordProperty || next == TokenKind::KeywordDestructor ||
+                next == TokenKind::KeywordVirtual || next == TokenKind::KeywordOverride ||
+                next == TokenKind::KeywordAbstract || next == TokenKind::KeywordFinal)
+                break;
             consume();
             pendingStaticField = true;
             continue;
@@ -746,6 +754,7 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
             auto dtor = std::make_unique<DestructorDecl>();
             dtor->loc = dtorLoc;
             dtor->access = curAccess.value_or(Access::Public);
+            dtor->isStatic = pendingStaticMember;
             parseProcedureBody(TokenKind::KeywordDestructor, dtor->body);
             decl->members.push_back(std::move(dtor));
             curAccess.reset();

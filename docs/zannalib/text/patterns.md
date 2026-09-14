@@ -441,9 +441,9 @@ Stateful string scanner for lexing and parsing text. Maintains a position cursor
 - `PeekStr` and `ReadStr` return empty for `n <= 0`; `Skip` is a no-op for `n <= 0`. Positive
   lengths clamp at the end of the source.
 - `ReadIdent` recognizes ASCII letters/underscore followed by ASCII alphanumerics/underscore.
-  `ReadIntToken` accepts an optional sign followed by at least one digit. `ReadNumber` additionally
+  `ReadIntToken` accepts an optional sign followed by at least one digit. `ReadNumberToken` additionally
   accepts forms such as `.5`, `1.`, and `1.5e-2`; an incomplete exponent is left unconsumed.
-- `ReadIdent`, `ReadIntToken`, `ReadNumber`, and `ReadQuoted` return an empty string without advancing if
+- `ReadIdent`, `ReadIntToken`, `ReadNumberToken`, and `ReadQuoted` return an empty string without advancing if
   the current position does not start the requested token.
 - `ReadQuoted` decodes `\n`, `\t`, `\r`, `\\`, `\"`, and `\'`. For another escaped byte it drops
   the backslash and keeps that byte. An unterminated quoted string restores `Pos` and traps.

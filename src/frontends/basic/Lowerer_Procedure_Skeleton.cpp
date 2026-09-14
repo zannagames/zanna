@@ -10,14 +10,17 @@
 //
 // Phase: Block Scheduling (runs after metadata collection, before emission)
 //
-// Key Invariants:
+// Key invariants:
 // - Each unique source line gets a dedicated basic block
 // - Synthetic line numbers are assigned to unlabeled statements
 // - Entry block contains parameter materialization
 // - Exit block is reserved for cleanup and return
 // - Local slots are allocated in deterministic order (booleans, then others)
+// - Prologue slots (GOSUB stack, ON ERROR dispatcher) are appended to the entry
+//   block before its terminator
 //
 // Ownership/Lifetime: Operates on borrowed Lowerer instance.
+// Links: src/frontends/basic/lower/Lower_TryCatch.cpp, docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -354,6 +357,80 @@ void Lowerer::ensureGosubStack() {
 
     curLoc = savedLoc;
     ctx.setCurrent(savedBlock);
+}
+
+/// @brief Run @p emit with the active function's entry block as the insertion point.
+/// @details Like @ref ensureGosubStack it parks an existing entry terminator while
+///          @p emit appends instructions, then restores the terminator, the
+///          current block, and the source location.
+/// @param emit Callback that emits into the entry block.
+void Lowerer::emitInEntryBlock(const std::function<void()> &emit) {
+    ProcedureContext &ctx = context();
+    Function *func = ctx.function();
+    if (!func)
+        return;
+
+    BasicBlock *savedBlock = ctx.current();
+    BasicBlock *entry = &func->blocks.front();
+
+    auto savedLoc = curLoc;
+    curLoc = {};
+
+    Instr savedTerm;
+    const bool wasTerminated = entry->terminated;
+    if (wasTerminated && !entry->instructions.empty()) {
+        savedTerm = std::move(entry->instructions.back());
+        entry->instructions.pop_back();
+        entry->terminated = false;
+    }
+
+    ctx.setCurrent(entry);
+    emit();
+
+    if (wasTerminated) {
+        entry->instructions.push_back(std::move(savedTerm));
+        entry->terminated = true;
+    }
+
+    curLoc = savedLoc;
+    ctx.setCurrent(savedBlock);
+}
+
+/// @brief Allocate an 8-byte stack slot in the active function's entry block.
+/// @details The slot is allocated once per call and is available on every path
+///          through the body.
+/// @return Pointer to the slot, or a null value without an active function.
+Value Lowerer::emitEntryAlloca() {
+    Value slot = Value::null();
+    emitInEntryBlock([&]() { slot = emitAlloca(8); });
+    return slot;
+}
+
+/// @brief Allocate the ON ERROR dispatcher slots in the active function's entry block.
+/// @details Each slot is an 8-byte stack cell initialised to zero in the entry block:
+///          the selected and target arm ids, the executing and failed resume sites,
+///          the handled error's kind, code, and line (all i32), and the i64 flag
+///          that is set while the handler runs.
+/// @return The allocated slots.
+ProcedureContext::ErrorHandlerState::DispatchSlots Lowerer::allocateDispatchSlots() {
+    ProcedureContext::ErrorHandlerState::DispatchSlots slots;
+    emitInEntryBlock([&]() {
+        /// Allocate one slot and zero it as @p kind.
+        auto zeroedSlot = [&](Type::Kind kind) {
+            Value slot = emitAlloca(8);
+            emitStore(Type(kind), slot, Value::constInt(0));
+            return slot;
+        };
+        slots.selected = zeroedSlot(Type::Kind::I32);
+        slots.target = zeroedSlot(Type::Kind::I32);
+        slots.site = zeroedSlot(Type::Kind::I32);
+        slots.failedSite = zeroedSlot(Type::Kind::I32);
+        slots.kind = zeroedSlot(Type::Kind::I32);
+        slots.code = zeroedSlot(Type::Kind::I32);
+        slots.line = zeroedSlot(Type::Kind::I32);
+        slots.running = zeroedSlot(Type::Kind::I64);
+    });
+    return slots;
 }
 
 } // namespace il::frontends::basic

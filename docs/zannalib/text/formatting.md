@@ -25,7 +25,7 @@ Simple string templating with placeholder substitution.
 | `RenderSeq(template, values)`             | `String(String, Seq)`               | Replace `{{0}}`, `{{1}}` with Seq values          |
 | `RenderWith(template, values, pre, suf)`  | `String(String, Map, String, String)` | Use custom delimiters instead of `{{` `}}`      |
 | `Has(template, key)`                      | `Boolean(String, String)`           | Check if template contains placeholder for key   |
-| `Keys(template)`                          | Registry: `Seq<String>(String)`; runtime: `StringSet` | Extract all unique placeholder keys      |
+| `Keys(template)`                          | `StringSet(String)`                                     | Extract all unique placeholder keys      |
 | `Escape(text)`                            | `String(String)`                    | Escape `{{` and `}}` for literal output           |
 
 ### Placeholder Syntax

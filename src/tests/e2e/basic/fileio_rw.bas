@@ -1,16 +1,12 @@
-ON ERROR GOTO HandlePrint
+' Reading or writing a channel that was never opened raises an error the
+' handler receives; RESUME NEXT continues after the failed statement.
+DIM text AS STRING
+ON ERROR GOTO Handler
 PRINT #1, 42
-ON ERROR GOTO 0
-GOTO AfterPrint
-HandlePrint:
-  PRINT "caught"
-  RESUME NEXT
-AfterPrint:
-
-ON ERROR GOTO HandleLine
-LINE INPUT #1, A$
-ON ERROR GOTO 0
+PRINT "after print"
+LINE INPUT #1, text
+PRINT "after line input"
 END
-HandleLine:
-  PRINT "caught"
+Handler:
+  PRINT "caught"; ERR()
   RESUME NEXT

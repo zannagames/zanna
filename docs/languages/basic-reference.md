@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-09-13
+last-verified: 2026-09-14
 ---
 
 # Zanna BASIC — Reference
@@ -176,10 +176,20 @@ integer, `DOUBLE`, `FLOAT`, `SINGLE` or `F64` for the double, `STRING`, and
 parameters, fields, FUNCTION results). Any other name refers to a class: `OBJECT`,
 a class or interface declared in the program (found through enclosing namespaces
 and `USING` imports), or a runtime class. A name that is none of these is an
-error (`B2111 unknown type`).
+error (`B2111 unknown type`). A variable declared with a class takes objects of
+that class, of a subclass, or of a class implementing the declared interface;
+storing an object of an unrelated class is `B2001` (for example assigning the
+`Zanna.Collections.Map` that `Http.Head` returns to an `HttpRes` variable).
+`AS OBJECT` takes any object.
 
 An array keeps its element type: `DIM W(3) AS DOUBLE` (or `DIM W#(3)`) holds
 floats, so `W(1) = 2.5` stores 2.5 and `STR$(W(1))` is `"2.5"`.
+
+A STRING always holds a string. Every STRING starts as `""` until it is assigned:
+variables (in the main program, in procedures, `STATIC` locals, and module
+variables read from a SUB), array elements (including elements added by `REDIM`),
+and instance and `STATIC` fields. So `IF name$ = "" THEN` is true for a STRING
+that was never assigned.
 
 Object arrays use a class type in the `AS` clause. Element assignments must be
 object values, and `LBOUND`/`UBOUND` accept object arrays just like numeric and
@@ -210,7 +220,10 @@ LOOP UNTIL I = 0
 
 ### END
 
-Terminates program execution immediately.
+Terminates program execution. `END` in the main program releases its variables
+and runs static destructors, exactly like reaching the last statement. `END`
+inside a SUB, FUNCTION, or method ends the whole program the same way (static
+destructors run; the caller does not continue).
 
 ```basic
 PRINT "before end"
@@ -441,17 +454,32 @@ PRINT "Centered"
 
 ### ON ERROR GOTO
 
-Installs an error handler at a label.
+Selects the label that runs when an error occurs in the current SUB, FUNCTION,
+method, or module body. `ON ERROR GOTO 0` turns handling off again.
 
 ```basic
 ON ERROR GOTO ErrHandler
 OPEN "missing.txt" FOR INPUT AS #1
-PRINT "opened"
+PRINT "continues here"
 END
 ErrHandler:
-PRINT "failed to open"
-END
+PRINT "failed to open, ERR ="; ERR()
+RESUME NEXT
 ```
+
+Behavior:
+
+- The handler is ordinary code at the label. It ends with a `RESUME` form, `END`,
+  or `EXIT SUB`/`EXIT FUNCTION`; the handler stays selected after `RESUME`.
+- `ERR()` returns the handled error's code (for example 1 for a missing file,
+  8 for an invalid operation, 0 for division by zero), and 0 again after `RESUME`.
+- An error in a called SUB or FUNCTION that has no handler of its own reaches the
+  caller's handler; `RESUME NEXT` then continues after the call.
+- An error raised while the handler runs, or before any `ON ERROR GOTO` has run,
+  is not handled: it reaches the caller's handler or ends the program.
+- `ON ERROR GOTO 0` inside a running handler ends the program with the handled
+  error.
+- The label must be in the same procedure.
 
 ### TRY … CATCH
 
@@ -471,7 +499,8 @@ Behavior:
 
 - Errors raised in the TRY body transfer to the CATCH block.
 - After the CATCH block finishes, execution continues after `END TRY`.
-- `errVar` (optional) is a local INTEGER (i64) visible only within the CATCH block.
+- `errVar` (optional) is a local INTEGER (i64) visible only within the CATCH block (and a
+  FINALLY block). It holds the handled error's code, the value `ERR()` returns.
 - Inside CATCH, `ERR()` returns the error code (same meaning as in `ON ERROR` handlers).
 - Nested TRY/CATCH is allowed; handlers stack in last-in–first-out order.
 - Interaction with `ON ERROR GOTO`: a TRY installs a handler on top of any existing handler and pops it at `END TRY` (
@@ -585,16 +614,22 @@ Resumes execution after an error. Forms:
 
 There is no special "end the program" form; use `END` from inside the handler instead.
 
-> **Not implemented.** All three forms currently lower to a bare `trap`
-> instruction, so the handler runs and the program then ends instead of
-> resuming. Write handlers that finish the work themselves (or call `END`)
-> rather than relying on `RESUME`. See
-> [defect audit #22](../defect-audit-2026-09-01.md).
+`RESUME` works only while an `ON ERROR` handler of the same procedure runs.
+Reached any other way it raises "RESUME without error", which the selected
+handler receives. A procedure that contains `RESUME` but no `ON ERROR GOTO` is
+rejected with B1012. The failed statement is the innermost statement that
+failed, including one inside a `FOR`, `WHILE`, `DO`, `IF`, `SELECT CASE`, or
+`GOSUB` body; for an error inside a `TRY` or `USING` block it is the whole
+`TRY` or `USING` statement.
 
 ```basic
-ErrHandler:
-PRINT "failed to open"
-RESUME NEXT
+DIM divisor AS INTEGER
+ON ERROR GOTO Fix
+PRINT 12 \ divisor      ' prints 6 after the handler fixes divisor
+END
+Fix:
+divisor = 2
+RESUME
 ```
 
 ### RETURN
@@ -685,9 +720,18 @@ the class `Box`, and `MAKEBOX(3).V` reads a field of the result.
 
 A STRING or object result belongs to the caller. `RETURN` of a local, a
 parameter, a field or a temporary hands the caller its own reference and
-releases the procedure's other object and array locals on the way out, so a
-result lives exactly as long as the caller keeps it. Methods follow the same
-rule.
+releases the procedure's other STRING, object and array locals on the way out,
+so a result lives exactly as long as the caller keeps it. Methods follow the
+same rule.
+
+A procedure owns its STRING and object parameters (unless declared `BYREF`) the
+way it owns its locals: assigning a new value to a parameter changes only the
+procedure's copy and never releases the caller's value, and the procedure
+releases what it holds when it returns, whether by `END SUB`, `EXIT`, or
+`RETURN`. Temporaries such as a `NEW` object passed straight to a call
+(`Show(NEW Box())`), a string built by `UCASE$` or `+`, or an element read from
+an array live until the end of their statement unless an assignment or `RETURN`
+keeps them.
 
 ```basic
 CLASS Box
@@ -754,6 +798,8 @@ The following built-ins are available. Use them in expressions (e.g., `LET X = A
 | Name    | Args | Returns |
 |---------|------|---------|
 | ABS     | 1    | Numeric |
+| ARG$    | 1    | String  |
+| ARGC    | 0    | Integer |
 | ASC     | 1    | Integer |
 | ATN     | 1    | Float   |
 | CDBL    | 1    | Float   |
@@ -761,6 +807,7 @@ The following built-ins are available. Use them in expressions (e.g., `LET X = A
 | CHR$    | 1    | String  |
 | CINT    | 1    | Integer |
 | CLNG    | 1    | Integer |
+| COMMAND$ | 0   | String  |
 | COS     | 1    | Float   |
 | CSNG    | 1    | Float   |
 | EOF     | 1    | Integer |
@@ -769,6 +816,7 @@ The following built-ins are available. Use them in expressions (e.g., `LET X = A
 | FIX     | 1    | Numeric |
 | FLOOR   | 1    | Numeric |
 | GETKEY$ | 0    | String  |
+| HEX$    | 1    | String  |
 | INKEY$  | 0    | String  |
 | INSTR   | 2–3  | Integer |
 | INT     | 1    | Numeric |
@@ -780,6 +828,7 @@ The following built-ins are available. Use them in expressions (e.g., `LET X = A
 | LOG     | 1    | Float   |
 | LTRIM$  | 1    | String  |
 | MID$    | 2–3  | String  |
+| OCT$    | 1    | String  |
 | POW     | 2    | Numeric |
 | RIGHT$  | 2    | String  |
 | RND     | 0    | Float   |
@@ -787,8 +836,10 @@ The following built-ins are available. Use them in expressions (e.g., `LET X = A
 | RTRIM$  | 1    | String  |
 | SGN     | 1    | Integer |
 | SIN     | 1    | Float   |
+| SPACE$  | 1    | String  |
 | SQR     | 1    | Float   |
 | STR$    | 1    | String  |
+| STRING$ | 2    | String  |
 | TAN     | 1    | Float   |
 | TIMER   | 0    | Integer |
 | TRIM$   | 1    | String  |
@@ -834,7 +885,19 @@ PRINT UCASE$("hi")          ' "HI"
 PRINT LCASE$("HI")         ' "hi"
 PRINT CHR$(65)             ' "A"
 PRINT ASC("A")             ' 65
+PRINT HEX$(255)            ' "FF"
+PRINT OCT$(8)              ' "10"
+PRINT "[" + SPACE$(3) + "]"  ' "[   ]"
+PRINT STRING$(3, "*")      ' "***"
+PRINT STRING$(2, 65)       ' "AA"
 ```
+
+`HEX$` and `OCT$` format an integer without a prefix, `HEX$` in upper case. A
+floating-point argument rounds like `CINT`, and a negative value shows its 64-bit
+two's complement (`HEX$(-1)` is sixteen `F` digits). `SPACE$(n)` is `n` spaces.
+`STRING$(n, c)` repeats one character `n` times: the first byte of a string `c`,
+or the byte whose code is `c`. `SPACE$` and `STRING$` stop with an error for a
+negative count, `STRING$` also for an empty string or a code outside 0-255.
 
 **Conversion & random**
 
@@ -1019,28 +1082,38 @@ symbols under a different root.
 
 ## Namespaces & USING
 
-**IMPORTANT**: USING directives are **file-scoped only** and must appear at the top of the file before any declarations.
-USING directives cannot appear inside NAMESPACE, CLASS, or INTERFACE blocks.
-
-### Correct Usage
+`USING` imports a namespace or gives it an alias. At file scope it must come before
+any NAMESPACE, CLASS, or INTERFACE declaration. Inside a NAMESPACE block it applies
+to the whole block. USING cannot appear inside procedures, CLASS, or INTERFACE
+blocks.
 
 ```basic
-' ✓ CORRECT: USING at file scope, before declarations
-USING Zanna.Terminal
+USING Zanna.Terminal          ' import: PrintI64(99) finds Zanna.Terminal.PrintI64
+USING U = App.Utils           ' alias: U.Hello() calls App.Utils.Hello
+
+NAMESPACE App.Utils
+  SUB Hello()
+    PRINT "hello"
+  END SUB
+END NAMESPACE
 
 NAMESPACE App
+  USING Zanna.Text            ' applies inside NAMESPACE App only
   SUB Main()
-    ' Use imported namespace without qualification
+    DIM sb AS StringBuilder   ' Zanna.Text.StringBuilder
+    sb = NEW StringBuilder()
+    sb.Append("built")
     PrintI64(99)
-    ' Or fully qualified (always works)
-    Zanna.Terminal.PrintI64(99)
+    U.Hello()
   END SUB
 END NAMESPACE
 
 App.Main()
 ```
 
-### Incorrect Usage
+An import or alias resolves procedure calls (`PrintI64(7)`, `U.Hello()`) and class
+names (`DIM`, `NEW`, parameters, fields, and `AS` results). A fully qualified name,
+such as `Zanna.Terminal.PrintI64(99)`, always works.
 
 ```basic
 ' ✗ WRONG: USING after NAMESPACE declaration (Error: E_NS_005)
@@ -1052,33 +1125,21 @@ END NAMESPACE
 USING Zanna.Terminal  ' Error: USING must appear before all declarations
 ```
 
-```basic
-' ✗ WRONG: USING inside NAMESPACE block
-NAMESPACE App
-  USING Zanna.Terminal  ' accepted by default, but the import does not work
-  SUB Main()
-  END SUB
-END NAMESPACE
-```
-
-`E_NS_008` is only raised when runtime namespaces are disabled
-(`--no-runtime-namespaces`). In the default configuration the directive is
-accepted, has no effect, and the resulting module fails IL verification with
-`unknown callee`. Keep `USING` at file scope. See
-[defect audit #18](../defect-audit-2026-09-01.md).
+With `--no-runtime-namespaces`, USING inside a NAMESPACE block is rejected
+with `E_NS_008`.
 
 ### USING Rules
 
-1. **File scope only**: USING must be at file scope, not inside any block
-2. **Before declarations**: USING must appear before any NAMESPACE, CLASS, or INTERFACE declarations
-3. **File-scoped effect**: Each file's USING directives do not affect other compilation units
+1. **Placement**: at file scope, or inside a NAMESPACE block; never inside a procedure,
+   CLASS, or INTERFACE
+2. **Before declarations**: at file scope, USING must appear before any NAMESPACE, CLASS,
+   or INTERFACE declaration
+3. **Scoped effect**: file-scope USING directives apply to that file; a NAMESPACE block's
+   USING directives apply to that block
 4. **Two forms**:
     - Simple: `USING Zanna.Terminal` (imports all from namespace)
-    - Aliased: `USING VC = Zanna.Terminal` (creates shorthand alias). The alias
-      currently resolves **type** references only (`DIM w AS VC.Widget`,
-      `NEW VC.Widget()`); an alias-qualified *call* such as `VC.PrintI64(7)`
-      fails with `B1001: unknown variable 'VC'`. See
-      [defect audit #19](../defect-audit-2026-09-01.md).
+    - Aliased: `USING VC = Zanna.Terminal` (creates shorthand alias for calls and types:
+      `VC.PrintI64(7)`, `DIM w AS VC.Widget`)
 
 For complete namespace documentation, see [Namespace Reference](basic-namespaces.md).
 
@@ -1261,9 +1322,9 @@ TRY/CATCH composes with legacy `ON ERROR GOTO` as a nested handler:
 - Precedence: a TRY installs a fresh error handler on top of any active `ON ERROR GOTO` handler.
 - Restoration: when the TRY region finishes without error, the TRY handler is popped and the prior `ON ERROR GOTO`
   handler remains in effect.
-- Catch resumption: the CATCH body terminates by resuming to the first block after the TRY via a resume token. A
-  `RESUME` inside a CATCH is allowed but typically unnecessary because the compiler emits a `resume.label` to the join
-  point.
+- Catch resumption: the CATCH body terminates by resuming to the first block after the TRY via a resume token.
+- An error inside the CATCH body reaches the `ON ERROR GOTO` handler. There, `RESUME` retries the whole TRY statement
+  and `RESUME NEXT` continues after `END TRY`.
 
 Example:
 
@@ -1392,22 +1453,41 @@ RTTI operators:
 - `expr IS Interface` — true iff the dynamic type implements the interface.
 - `expr AS Class` — returns the object when IS succeeds; otherwise `NOTHING`.
 - `expr AS Interface` — returns the object when IS succeeds; otherwise `NOTHING`.
-  Test the result with `Zanna.Core.Object.RefEquals(x, NOTHING)`.
+- `expr IS NOTHING`, `expr = NOTHING`, and `expr <> NOTHING` test an object
+  reference for `NOTHING`.
+
+```basic
+DIM shape AS Shape
+shape = item AS Shape
+IF shape IS NOTHING THEN PRINT "not a shape"
+IF shape <> NOTHING THEN PRINT shape.Area()
+```
 
 ### Static members
 
-- `STATIC SUB NEW()` is intended to run once per class during module
-  initialization before user code.
-- Static fields are intended to lower to module-scope globals, with reads/writes
-  independent of any instance.
-- Static methods do not receive `ME`.
+- `STATIC SUB NEW()` runs once per class before the program's first statement,
+  in class declaration order.
+- `STATIC DESTRUCTOR` runs once per class when the program ends normally (the end
+  of the program or `END` anywhere), in class declaration order.
+- A `STATIC` field is one shared value for the whole program, independent of any
+  instance. Read and write it as `Class.field`, through an instance, or by its bare
+  name inside the class's own members.
+- Call a static method as `Class.Method(...)` (or through an instance).
+- Static methods, static constructors, and static destructors do not receive `ME`;
+  referencing it is an error (B2103/B2106).
 
-> **Static members are largely non-functional today.** A `STATIC` field fails to
-> compile (`global has malformed name @C::VALUE`); `STATIC SUB NEW()` never runs;
-> `STATIC DESTRUCTOR` never runs; a static method resolves only through an
-> instance receiver (`c.Ping()`, not `C.Ping()`); and referencing `ME` inside a
-> `STATIC SUB` is accepted rather than rejected. See
-> [defect audit](../defect-audit-2026-09-01.md) entries 1, 2, 3, 9, and 16.
+```basic
+CLASS Counter
+  STATIC total AS INTEGER
+  STATIC SUB Reset(value AS INTEGER)
+    total = value
+  END SUB
+END CLASS
+
+Counter.Reset(5)
+Counter.total = Counter.total + 1
+PRINT Counter.total   ' 6
+```
 
 ### Properties
 
@@ -1421,14 +1501,13 @@ Property sugar:
 
 - Chaining order: derived body runs first, then base, continuing up the chain.
 - One instance destructor per class; no parameters or return value.
-- `STATIC DESTRUCTOR` is intended to run at program shutdown in class
-  declaration order, but currently never runs — see the note under
-  [Static members](#static-members).
+- `STATIC DESTRUCTOR` runs when the program ends normally, in class declaration
+  order — see [Static members](#static-members).
 - `DELETE expr` invokes the derived→base destructor chain and releases storage when retain count drops to zero.
 - Deleting `NOTHING` (or an unassigned object variable) is a no-op; double-delete
   traps in debug builds. (The BASIC keyword is `DELETE`; there is no `DISPOSE`
-  keyword.) Note that `NOTHING` can only be *assigned* — comparing against it
-  requires `Zanna.Core.Object.RefEquals(obj, NOTHING)`.
+  keyword.) Compare a reference with `NOTHING` using `IS NOTHING`, `= NOTHING`, or
+  `<> NOTHING`.
 
 ### Overload resolution
 

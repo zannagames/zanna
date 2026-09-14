@@ -17,6 +17,7 @@
 #include "il/core/Module.hpp"
 #include "il/core/Opcode.hpp"
 
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -325,6 +326,47 @@ TEST(NativeEHLowering, HandlerHelperTrapFromErrUsesOuterNativeSite) {
     }
 
     EXPECT_TRUE(sawWrappedHelperTrap);
+}
+
+TEST(NativeEHLowering, NewTempsNeverReuseUnnamedValueIds) {
+    // Optimizer passes allocate ids past the end of the value-name table without
+    // naming them; the lowering's slot, frame, and site temps must not reuse them.
+    const std::string il = "il 0.1\n"
+                           "func @f(i64 %n) -> i64 {\n"
+                           "entry(%n0:i64):\n"
+                           "  eh.push ^handler\n"
+                           "  %q = sdiv.chk0 10, %n0\n"
+                           "  eh.pop\n"
+                           "  ret 42\n"
+                           "handler ^handler(%err:Error, %tok:ResumeTok):\n"
+                           "  eh.entry\n"
+                           "  resume.next %tok\n"
+                           "}\n";
+
+    il::core::Module mod = parseModule(il);
+    auto &fn = mod.functions.front();
+    fn.valueNames.resize(1);
+    ASSERT_TRUE(zanna::codegen::common::lowerNativeEh(mod));
+    auto verify = il::api::v2::verify_module_expected(mod);
+    ASSERT_TRUE(verify.hasValue());
+
+    std::set<unsigned> defined;
+    size_t definitions = 0;
+    auto define = [&](unsigned id) {
+        defined.insert(id);
+        ++definitions;
+    };
+    for (const auto &param : fn.params)
+        define(param.id);
+    for (const auto &block : fn.blocks) {
+        for (const auto &param : block.params)
+            define(param.id);
+        for (const auto &instr : block.instructions) {
+            if (instr.result)
+                define(*instr.result);
+        }
+    }
+    EXPECT_EQ(defined.size(), definitions);
 }
 
 int main(int argc, char **argv) {

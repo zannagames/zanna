@@ -501,8 +501,8 @@ CLOSE #1
 END
 
 ErrHandler:
-PRINT "Error: Could not open file"
-END
+PRINT "Error"; ERR(); ": could not open file"
+RESUME NEXT
 ```
 
 **Resume options:**
@@ -511,10 +511,8 @@ END
 - `RESUME NEXT` — Continue with the next statement
 - `RESUME <label>` — Resume execution at a specific line label
 
-> **`RESUME` is not implemented yet.** Every form lowers to a `trap`, so control
-> does not return to the protected code — the handler runs and the program ends.
-> Have the handler do the recovery work itself for now. See
-> [defect audit #22](../defect-audit-2026-09-01.md).
+The handler stays selected after `RESUME`, so later errors run it again. An error
+inside the handler itself is not handled again; it ends the program.
 
 To stop execution from a handler use `END` (or fall through). Zanna BASIC does **not** treat
 `RESUME 0` as "end the program"; it parses as a `RESUME <label>` jump to label `0`, which simply

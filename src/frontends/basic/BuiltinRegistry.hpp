@@ -271,13 +271,14 @@ BuiltinResultKind getBuiltinFixedResult(BuiltinCallExpr::Builtin b);
 
 /// @brief Bitmask describing which BASIC type categories are accepted for an argument.
 enum class BuiltinArgTypeMask : std::uint8_t {
-    None = 0,                          ///< No type accepted (sentinel).
-    Int = 1U << 0U,                    ///< Integer types (INTEGER, LONG).
-    Float = 1U << 1U,                  ///< Floating-point types (SINGLE, DOUBLE).
-    String = 1U << 2U,                 ///< String type.
-    Bool = 1U << 3U,                   ///< Boolean type.
-    Number = Int | Float,              ///< Any numeric type.
-    Any = Int | Float | String | Bool, ///< Any type.
+    None = 0,                              ///< No type accepted (sentinel).
+    Int = 1U << 0U,                        ///< Integer types (INTEGER, LONG).
+    Float = 1U << 1U,                      ///< Floating-point types (SINGLE, DOUBLE).
+    String = 1U << 2U,                     ///< String type.
+    Bool = 1U << 3U,                       ///< Boolean type.
+    Number = Int | Float,                  ///< Any numeric type.
+    NumberOrString = Int | Float | String, ///< A number or a string.
+    Any = Int | Float | String | Bool,     ///< Any type.
 };
 
 /// @brief Per-argument specification in a semantic signature view.
@@ -302,7 +303,8 @@ struct SemanticSignatureView {
 /// \brief Return a registry-backed semantic signature when available.
 /// \details For builtins that have per-argument typing metadata encoded, the
 ///          returned view describes allowed argument categories and arity.
-///          Currently ARGC, ARGGET, and COMMAND are covered.
+///          Currently ARGC, ARG$, COMMAND$, HEX$, OCT$, SPACE$, and STRING$ are
+///          covered.
 /// \param b Builtin enumerator to query.
 /// \return Pointer to static-lifetime signature data, or nullptr for builtins
 ///         not covered by this minimal view.

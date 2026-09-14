@@ -7,10 +7,15 @@
 //
 // File: src/frontends/basic/lower/oop/Lower_OOP_RuntimeHelpers.cpp
 // Purpose: Implementation of consolidated OOP runtime emission helpers.
-// Key invariants: Centralizes patterns for parameter initialization, array field
-//                 allocation, and method epilogue. (BUG-056, BUG-073, etc.)
-// Ownership/Lifetime: Operates on Lowerer state without owning AST or module.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   - Centralizes patterns for parameter initialization, array field
+//     allocation, and method epilogue. (BUG-056, BUG-073, etc.)
+//   - STRING and object parameters are retained on entry and released by the
+//     epilogue like locals (ADR 0147).
+// Ownership/Lifetime:
+//   - Operates on Lowerer state without owning the AST or the module.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md,
+//        docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -85,8 +90,11 @@ void OopEmitHelper::emitParamInit(const Param &param,
         // Object arrays require distinct runtime calls. (BUG-OOP-038)
         bool isObjectArray = !param.objectClass.empty();
         lowerer_.storeArray(slot, incoming, param.type, isObjectArray);
-    } else
+    } else {
         lowerer_.emitStore(ilParamTy, slot, incoming);
+        // The method owns its STRING and object parameters like locals.
+        lowerer_.retainOwnedParam(incoming, ilParamTy, !param.objectClass.empty());
+    }
 }
 
 /// @brief Emit parameter initialization for every parameter of a procedure/method.
@@ -164,24 +172,45 @@ void OopEmitHelper::emitArrayFieldInits(const ClassDecl &klass, unsigned selfSlo
     }
 }
 
+/// @copydoc OopEmitHelper::emitStringFieldInits()
+void OopEmitHelper::emitStringFieldInits(const ClassDecl &klass, unsigned selfSlotId) {
+    const ClassLayout *layout = lowerer_.findClassLayout(klass.name);
+    if (!layout)
+        return;
+    Value selfPtr;
+    bool loadedSelf = false;
+    for (const auto &field : layout->fields) {
+        if (field.isArray || !field.objectClassName.empty() || field.type != AstType::Str)
+            continue;
+        if (!loadedSelf) {
+            selfPtr = lowerer_.loadSelfPointer(selfSlotId);
+            loadedSelf = true;
+        }
+        Value empty = lowerer_.emitCallRet(IlType(IlType::Kind::Str), "rt_str_empty", {});
+        Value fieldPtr = lowerer_.emitBinary(Opcode::GEP,
+                                             IlType(IlType::Kind::Ptr),
+                                             selfPtr,
+                                             Value::constInt(static_cast<long long>(field.offset)));
+        lowerer_.emitStore(IlType(IlType::Kind::Str), fieldPtr, empty);
+    }
+}
+
 // -------------------------------------------------------------------------
 // Method Epilogue
 // -------------------------------------------------------------------------
 
 /// @brief Emit the method exit cleanup that releases owned locals.
-/// @param paramNames Borrowed parameter names — their arrays are not released (BUG-105).
-/// @param excludeFromObjRelease Object locals excluded from release (e.g. the returned value).
-/// @details Releases deferred temporaries, then object locals, then array locals; callers retain
-///          ownership of borrowed parameters.
-void OopEmitHelper::emitMethodEpilogue(
-    const std::unordered_set<std::string> &paramNames,
-    const std::unordered_set<std::string> &excludeFromObjRelease) {
+/// @param paramNames Parameter names; array parameters stay borrowed (BUG-105).
+/// @param kept Result slot the return takes over, left unreleased; may be empty.
+/// @details Releases deferred temporaries, then the STRING and object slots the
+///          method owns (its parameters included, which are retained on entry),
+///          then its local arrays.
+void OopEmitHelper::emitMethodEpilogue(const std::unordered_set<std::string> &paramNames,
+                                       const std::unordered_set<std::string> &kept) {
     lowerer_.curLoc = {};
     lowerer_.releaseDeferredTemps();
-    std::unordered_set<std::string> objectReleaseSkips = paramNames;
-    objectReleaseSkips.insert(excludeFromObjRelease.begin(), excludeFromObjRelease.end());
-    lowerer_.releaseObjectLocals(objectReleaseSkips);
-    // Borrowed parameters are not released; caller owns their lifetime. (BUG-105)
+    lowerer_.releaseStringLocals(kept);
+    lowerer_.releaseObjectLocals(kept);
     lowerer_.releaseArrayLocals(paramNames);
 }
 
@@ -205,7 +234,8 @@ void OopEmitHelper::emitBodyAndBranchToExit(const std::vector<const Stmt *> &bod
         il::core::BasicBlock *exitBlock = &func->blocks[exitIdx];
         lowerer_.emitBr(exitBlock);
     } else {
-        lowerer_.lowerStatementSequence(bodyStmts, /*stopOnTerminated=*/true);
+        // Statements after a jump are lowered too; they may be labelled.
+        lowerer_.lowerStatementSequence(bodyStmts, /*stopOnTerminated=*/false);
         if (ctx.current() && !ctx.current()->terminated) {
             il::core::Function *func = ctx.function();
             il::core::BasicBlock *exitBlock = &func->blocks[exitIdx];

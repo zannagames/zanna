@@ -94,6 +94,10 @@ L30:
   .loc 1 3 19
   call @Zanna.Terminal.PrintStr(%t11)
   .loc 1 3 4
+  call @rt_str_release_maybe(%t7)
+  .loc 1 3 4
+  call @rt_str_release_maybe(%t10)
+  .loc 1 3 4
   br L40
 L40:
   .loc 1 4 13
@@ -156,8 +160,10 @@ L80:
   br L90
 L90:
   .loc 1 9 4
-  ret 0
+  br exit
 exit:
+  %t29 = load str, %s$
+  call @rt_str_release_maybe(%t29)
   ret 0
 val_ok:
   .loc 1 5 14

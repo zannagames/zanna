@@ -1215,7 +1215,7 @@ Continue:
 END
 ```
 
-BASIC uses `ON ERROR GOTO` for older-style error handling. The `ERR` variable contains the error number, and `ERROR$` contains the message.
+BASIC uses `ON ERROR GOTO` for older-style error handling. `ERR()` returns the error code while the handler runs, and a `RESUME` form returns to the program: `RESUME` retries the failed statement, `RESUME NEXT` continues after it, and `RESUME <label>` continues at the label.
 
 ---
 

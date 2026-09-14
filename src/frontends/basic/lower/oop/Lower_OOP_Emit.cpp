@@ -308,6 +308,8 @@ void Lowerer::emitClassConstructor(const ClassDecl &klass, const ConstructorDecl
 
     // BUG-056, BUG-089: Initialize array fields declared with extents.
     helper.emitArrayFieldInits(klass, selfSlotId);
+    // STRING fields start as "", like STRING variables.
+    helper.emitStringFieldInits(klass, selfSlotId);
 
     // Do not cache pointers into blocks vector; later addBlock() may reallocate.
     const size_t exitIdx = ctx.exitIndex();
@@ -319,7 +321,7 @@ void Lowerer::emitClassConstructor(const ClassDecl &klass, const ConstructorDecl
     ctx.setCurrent(&func->blocks[exitIdx]);
 
     // Release resources using consolidated epilogue helper (BUG-105 fix)
-    helper.emitMethodEpilogue(metadata.paramNames, metadata.paramNames);
+    helper.emitMethodEpilogue(metadata.paramNames, {});
     curLoc = {};
     emitRetVoid();
     ctx.blockNames().resetNamer();
@@ -398,7 +400,7 @@ void Lowerer::emitClassDestructor(const ClassDecl &klass, const DestructorDecl *
     }
 
     // Release resources using consolidated epilogue helper (BUG-105 fix)
-    helper.emitMethodEpilogue(metadata.paramNames, metadata.paramNames);
+    helper.emitMethodEpilogue(metadata.paramNames, {});
     curLoc = {};
     emitRetVoid();
     ctx.blockNames().resetNamer();
@@ -505,13 +507,13 @@ void Lowerer::emitClassMethod(const ClassDecl &klass, const MethodDecl &method) 
     Function *func = ctx.function();
     ctx.setCurrent(&func->blocks[exitIdx]);
 
-    // BUG-099 fix: Exclude method name from release if it returns an object
-    std::unordered_set<std::string> excludeNames = metadata.paramNames;
-    if (returnsObject)
-        excludeNames.insert(method.name);
+    // The method-name result slot moves its reference to the caller (BUG-099).
+    std::unordered_set<std::string> kept;
+    if (returnsValue || returnsObject)
+        kept.insert(method.name);
 
     // Release resources using consolidated epilogue helper (BUG-105 fix)
-    helper.emitMethodEpilogue(metadata.paramNames, excludeNames);
+    helper.emitMethodEpilogue(metadata.paramNames, kept);
     curLoc = {};
     if (returnsValue) {
         Value retValue = Value::constInt(0);
@@ -521,7 +523,8 @@ void Lowerer::emitClassMethod(const ClassDecl &klass, const MethodDecl &method) 
             // Function name was assigned - load from that variable
             // BUG-099 fix: Use methodRetType which handles object returns correctly
             Value slot = Value::temp(*methodNameSym->slotId);
-            retValue = emitLoad(methodRetType, slot);
+            retValue = methodRetType.kind == Type::Kind::Str ? takeOwnedSlot(slot, methodRetType)
+                                                             : emitLoad(methodRetType, slot);
         } else if (returnsObject || !methodRetAst) {
             retValue = Value::null();
         } else {
@@ -633,20 +636,21 @@ void Lowerer::emitClassMethodWithBody(const ClassDecl &klass,
     Function *func = ctx.function();
     ctx.setCurrent(&func->blocks[exitIdx]);
 
-    // BUG-099 fix: Exclude method name from release if it returns an object
-    std::unordered_set<std::string> excludeNames = metadata.paramNames;
-    if (returnsObject)
-        excludeNames.insert(method.name);
+    // The method-name result slot moves its reference to the caller (BUG-099).
+    std::unordered_set<std::string> kept;
+    if (returnsValue || returnsObject)
+        kept.insert(method.name);
 
     // Release resources using consolidated epilogue helper (BUG-105 fix)
-    helper.emitMethodEpilogue(metadata.paramNames, excludeNames);
+    helper.emitMethodEpilogue(metadata.paramNames, kept);
     curLoc = {};
     if (returnsValue) {
         Value retValue = Value::constInt(0);
         auto methodNameSym = findSymbol(method.name);
         if (methodNameSym && methodNameSym->slotId.has_value()) {
             Value slot = Value::temp(*methodNameSym->slotId);
-            retValue = emitLoad(methodRetType, slot);
+            retValue = methodRetType.kind == Type::Kind::Str ? takeOwnedSlot(slot, methodRetType)
+                                                             : emitLoad(methodRetType, slot);
         } else if (methodRetAst) {
             switch (*methodRetAst) {
                 case ::il::frontends::basic::Type::I64:
@@ -682,22 +686,48 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
     if (!builder)
         return;
 
-    // Emit module-scope globals for static fields in all classes (once per module)
-    for (const auto &entry : oopIndex_.classes()) {
-        const ClassInfo &ci = entry.second;
-        for (const auto &sf : ci.staticFields) {
-            il::core::Global g;
-            // Use qualified class name to keep names unique and readable
-            g.name = ci.qualifiedName + "::" + sf.name;
-            // Object/static string fields are pointers/strings in IL
-            if (!sf.objectClassName.empty())
-                g.type = Type(Type::Kind::Ptr);
-            else
-                g.type = type_conv::astToIlType(sf.type);
-            g.init = std::string(); // zero-initialized by default
-            mod->globals.push_back(std::move(g));
+    // Static fields live in runtime module storage (see emitStaticFieldAddress), so
+    // they need no IL globals.
+
+    // Static constructors and destructors in class declaration order.
+    std::vector<std::string> staticCtorOrder;
+    std::vector<std::string> staticDtorOrder;
+
+    // Known before any body is lowered, so END anywhere can run the finalizer.
+    hasModuleFini_ = false;
+    for (const auto &entry : oopIndex_.classes())
+        hasModuleFini_ = hasModuleFini_ || entry.second.hasStaticDtor;
+
+    /// @brief Emit a parameterless static member body (static constructor or destructor).
+    /// @param klass Declaring class.
+    /// @param name Function symbol.
+    /// @param bodyNodes Body statements.
+    auto emitStaticThunk = [&](const ClassDecl &klass,
+                               const std::string &name,
+                               const std::vector<StmtPtr> &bodyNodes) {
+        resetLoweringState();
+        ClassContextGuard classGuard(*this, qualify(klass.name));
+        auto body = gatherBody(bodyNodes);
+        collectVars(body);
+        ProcedureMetadata metadata;
+        metadata.paramCount = 0;
+        metadata.bodyStmts = body;
+        Function &fn = builder->startFunction(name, Type(Type::Kind::Void), {});
+        context().setFunction(&fn);
+        context().setNextTemp(fn.valueNames.size());
+        buildProcedureSkeleton(fn, name, metadata);
+        context().setCurrent(&fn.blocks.front());
+        // Statements after a jump are lowered too; they may be labelled.
+        lowerStatementSequence(metadata.bodyStmts, /*stopOnTerminated=*/false);
+        if (context().current() && !context().current()->terminated) {
+            Function *func = context().function();
+            BasicBlock *exitBlock = &func->blocks[context().exitIndex()];
+            emitBr(exitBlock);
         }
-    }
+        Function *func = context().function();
+        context().setCurrent(&func->blocks[context().exitIndex()]);
+        emitRetVoid();
+    };
 
     // Walk the program and nested namespaces to emit class/interface members.
     std::function<void(const std::vector<StmtPtr> &)> scan;
@@ -723,6 +753,7 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
             const ConstructorDecl *ctor = nullptr;
             const ConstructorDecl *staticCtor = nullptr;
             const DestructorDecl *dtor = nullptr;
+            const DestructorDecl *staticDtor = nullptr;
             std::vector<const MethodDecl *> methods;
             methods.reserve(klass.members.size());
 
@@ -738,9 +769,14 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
                             ctor = c;
                         break;
                     }
-                    case Stmt::Kind::DestructorDecl:
-                        dtor = static_cast<const DestructorDecl *>(member.get());
+                    case Stmt::Kind::DestructorDecl: {
+                        auto *d = static_cast<const DestructorDecl *>(member.get());
+                        if (d->isStatic)
+                            staticDtor = d;
+                        else
+                            dtor = d;
                         break;
+                    }
                     case Stmt::Kind::MethodDecl:
                         methods.push_back(static_cast<const MethodDecl *>(member.get()));
                         break;
@@ -796,33 +832,17 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
             for (const auto *method : methods)
                 emitClassMethod(klass, *method);
 
-            // Emit static constructor thunk and register in module-init
+            // Emit the static constructor, which the module initializer calls, and the
+            // static destructor, which the module finalizer calls at program shutdown.
             if (staticCtor) {
-                resetLoweringState();
-                ClassContextGuard classGuard(*this, qualify(klass.name));
-                auto body = gatherBody(staticCtor->body);
-                collectVars(body);
-                ProcedureMetadata metadata;
-                metadata.paramCount = 0;
-                metadata.bodyStmts = body;
-                const std::string cctorName = mangleClassCtor(qualify(klass.name)) + "$static";
-                Function &fn = builder->startFunction(cctorName, Type(Type::Kind::Void), {});
-                context().setFunction(&fn);
-                context().setNextTemp(fn.valueNames.size());
-                buildProcedureSkeleton(fn, cctorName, metadata);
-                context().setCurrent(&fn.blocks.front());
-                // Lower static ctor body
-                lowerStatementSequence(metadata.bodyStmts, /*stopOnTerminated=*/true);
-                if (context().current() && !context().current()->terminated) {
-                    Function *func = context().function();
-                    BasicBlock *exitBlock = &func->blocks[context().exitIndex()];
-                    emitBr(exitBlock);
-                }
-                Function *func = context().function();
-                context().setCurrent(&func->blocks[context().exitIndex()]);
-                emitRetVoid();
-                // Mark for module init call
-                procNameAliases[cctorName] = "__static_ctor";
+                const std::string cctorName = mangleStaticCtor(qualify(klass.name));
+                emitStaticThunk(klass, cctorName, staticCtor->body);
+                staticCtorOrder.push_back(cctorName);
+            }
+            if (staticDtor) {
+                const std::string cdtorName = mangleStaticDtor(qualify(klass.name));
+                emitStaticThunk(klass, cdtorName, staticDtor->body);
+                staticDtorOrder.push_back(cdtorName);
             }
         }
     };
@@ -836,6 +856,7 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
 
     // 3) Module init that calls iface reg thunks, then bind thunks.
     const std::string initName = mangleOopModuleInit();
+    context().reset();
     Function &initF = builder->startFunction(initName, Type(Type::Kind::Void), {});
     context().setFunction(&initF);
     context().setNextTemp(initF.valueNames.size());
@@ -955,14 +976,23 @@ void Lowerer::emitOopDeclsAndBodies(const Program &prog) {
     for (const auto &fn : bindThunks)
         emitCall(fn, {});
     // Call per-class static constructors in class declaration order
-    for (const auto &entry : oopIndex_.classes()) {
-        const ClassInfo &ci = entry.second;
-        if (ci.hasStaticCtor) {
-            const std::string cctorName = mangleClassCtor(ci.qualifiedName) + "$static";
-            emitCall(cctorName, {});
-        }
-    }
+    for (const auto &cctorName : staticCtorOrder)
+        emitCall(cctorName, {});
     emitRetVoid();
+
+    // Module finalizer: static destructors in class declaration order, called when
+    // the program ends normally (see Lowerer::emitModuleFiniCall).
+    if (hasModuleFini_) {
+        context().reset();
+        Function &finiF = builder->startFunction(mangleOopModuleFini(), Type(Type::Kind::Void), {});
+        context().setFunction(&finiF);
+        context().setNextTemp(finiF.valueNames.size());
+        builder->addBlock(finiF, "entry");
+        context().setCurrent(&finiF.blocks.front());
+        for (const auto &cdtorName : staticDtorOrder)
+            emitCall(cdtorName, {});
+        emitRetVoid();
+    }
 
     // Call module init at the start of main by emitting a call in program emission.
     // Note: Program emission will run after this; ensure ProgramLowering invokes this init.
@@ -976,7 +1006,8 @@ std::vector<std::string> Lowerer::emitInterfaceRegThunks() {
         const InterfaceInfo &iface = p.second;
         const std::string fn = mangleIfaceRegThunk(qname);
         regThunks.push_back(fn);
-        // fn(): void
+        // fn(): void, lowered with clean procedure state.
+        context().reset();
         Function &f = builder->startFunction(fn, Type(Type::Kind::Void), {});
         context().setFunction(&f);
         context().setNextTemp(f.valueNames.size());
@@ -1018,6 +1049,7 @@ std::vector<std::string> Lowerer::emitInterfaceBindThunks() {
                 continue;
             const std::string thunk = mangleIfaceBindThunk(ci.qualifiedName, iface->qualifiedName);
             bindThunks.push_back(thunk);
+            context().reset();
             Function &fb = builder->startFunction(thunk, Type(Type::Kind::Void), {});
             context().setFunction(&fb);
             context().setNextTemp(fb.valueNames.size());

@@ -1,0 +1,9 @@
+Counter static constructor
+Log static constructor
+main starts: ready10
+after bumps121212
+twice24
+after reset7
+finishing
+Counter static destructor7
+Log static destructor

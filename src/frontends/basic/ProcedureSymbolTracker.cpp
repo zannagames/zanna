@@ -42,6 +42,9 @@ bool ProcedureSymbolTracker::shouldSkip(std::string_view name) const {
         return true;
     if (lowerer_.isFieldInScope(name))
         return true;
+    // A static field used by its bare name inside its class is not a local variable.
+    if (lowerer_.findStaticFieldInScope(name))
+        return true;
     return false;
 }
 

@@ -168,8 +168,10 @@ UL999999992:
   .loc 1 9 7
   cbr %t29, bc_oob1, bc_ok1
 exit:
-  %t32 = load ptr, %values
-  call @rt_arr_i64_release(%t32)
+  %t32 = load str, %message
+  call @rt_str_release_maybe(%t32)
+  %t33 = load ptr, %values
+  call @rt_arr_i64_release(%t33)
   store ptr, %values, null
   ret 0
 bc_ok0:

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-09-14
 ---
 
 # CODEMAP: BASIC Frontend
@@ -25,7 +25,6 @@ The BASIC frontend (`src/frontends/basic/`) compiles Zanna BASIC source to IL.
 | `BasicTypes.hpp`              | BASIC type definitions and mappings                    |
 | `Diag.cpp`                    | Diagnostic infrastructure implementation               |
 | `Diag.hpp`                    | Diagnostic infrastructure                              |
-| `DiagnosticCodes.hpp`         | Error and warning code definitions                     |
 | `DiagnosticEmitter.cpp`       | Diagnostic output implementation                       |
 | `DiagnosticEmitter.hpp`       | Diagnostic output and formatting                       |
 | `Options.cpp`                 | Compiler options implementation                        |

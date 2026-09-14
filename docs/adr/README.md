@@ -142,6 +142,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0353](0353-platform-services-player-features.md) — Platform Services Player Features (Achievements, Stats, Leaderboards, Presence, Overlay, Text Input, Cloud)
 - [ADR 0356](0356-runtime-object-results-declare-their-class.md) — Runtime Object Results Declare Their Class
 - [ADR 0357](0357-music-load-asset.md) — Music streams from the asset manager (`Music.LoadAsset`)
+- [ADR 0358](0358-basic-on-error-dispatcher-and-resume.md) — BASIC ON ERROR dispatcher and RESUME
+- [ADR 0359](0359-basic-managed-values-and-non-null-strings.md) — BASIC managed values follow ADR 0147, and a STRING is never null
 
 ## GUI & IDE
 

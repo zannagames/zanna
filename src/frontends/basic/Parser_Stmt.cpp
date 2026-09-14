@@ -275,6 +275,9 @@ StmtPtr Parser::parseUsingDecl() {
         Token aliasTok = consume();
         decl->alias = aliasTok.lexeme;
         consume(); // =
+        // An alias heads qualified calls like a namespace does: `U.Hello()`.
+        std::string aliasCanon = CanonicalizeIdent(decl->alias);
+        knownNamespaces_.insert(aliasCanon.empty() ? decl->alias : std::move(aliasCanon));
     }
 
     // Parse dotted namespace path: Identifier ('.' Identifier)*

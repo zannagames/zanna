@@ -4,6 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/basic/SemanticAnalyzer.cpp
+// Purpose: Core BASIC semantic-analyzer state, read-only queries, symbol
+//          resolution, and utilities shared by the split analysis passes.
+// Key invariants:
+//   - Shared helpers are pure functions of their arguments.
+//   - containsOnErrorLabel searches a body without entering nested declarations.
+// Ownership/Lifetime:
+//   - The analyzer borrows the Program; recorded types are owned by the analyzer.
+// Links: src/frontends/basic/SemanticAnalyzer.hpp, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
 /// @file SemanticAnalyzer.cpp
 /// @brief Implements core BASIC semantic-analyzer state and shared utilities.
@@ -76,6 +88,7 @@
 ///
 
 #include "frontends/basic/ASTUtils.hpp"
+#include "frontends/basic/AstWalker.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
 #include "frontends/basic/SemanticAnalyzer_Internal.hpp"
 
@@ -138,6 +151,14 @@ const ProcSignature *SemanticAnalyzer::lookupProcSignature(std::string_view name
 ///         implicit instance receiver is available.
 std::optional<std::string> SemanticAnalyzer::activeInstanceClassQName() const {
     if (activeMemberHasMe_ && !activeClassQName_.empty())
+        return activeClassQName_;
+    return std::nullopt;
+}
+
+/// @brief Reports the class whose member (instance or static) is being analyzed.
+/// @return Qualified class name by value, or @c std::nullopt outside a class member.
+std::optional<std::string> SemanticAnalyzer::activeClassQName() const {
+    if (!activeClassQName_.empty())
         return activeClassQName_;
     return std::nullopt;
 }
@@ -498,6 +519,56 @@ bool functionResultAccepts(SemanticAnalyzer::Type result, SemanticAnalyzer::Type
     if (!isNumericSemanticType(result) || !isNumericSemanticType(value))
         return false;
     return !(result == Type::Bool && value == Type::Float);
+}
+
+/// @brief Tests whether a procedure or module body contains ON ERROR GOTO <label>.
+/// @param body Statements of the procedure or module body.
+/// @return @c true when a handler label is selected anywhere in @p body.
+bool containsOnErrorLabel(const std::vector<StmtPtr> &body) {
+    /// Walks a body for ON ERROR GOTO <label>, skipping nested declarations.
+    struct Scan final : BasicAstWalker<Scan> {
+        /// True once a handler label is found.
+        bool found = false;
+
+        /// @brief Note an ON ERROR directive that selects a label.
+        void before(const OnErrorGoto &stmt) {
+            if (!stmt.toZero)
+                found = true;
+        }
+
+        /// @brief Skip a nested FUNCTION body.
+        bool shouldVisitChildren(const FunctionDecl &) {
+            return false;
+        }
+
+        /// @brief Skip a nested SUB body.
+        bool shouldVisitChildren(const SubDecl &) {
+            return false;
+        }
+
+        /// @brief Skip class members.
+        bool shouldVisitChildren(const ClassDecl &) {
+            return false;
+        }
+
+        /// @brief Skip interface members.
+        bool shouldVisitChildren(const InterfaceDecl &) {
+            return false;
+        }
+
+        /// @brief Skip namespace members.
+        bool shouldVisitChildren(const NamespaceDecl &) {
+            return false;
+        }
+    } scan;
+
+    for (const auto &stmt : body) {
+        if (stmt)
+            scan.walkStmt(*stmt);
+        if (scan.found)
+            return true;
+    }
+    return false;
 }
 
 } // namespace il::frontends::basic::semantic_analyzer_detail

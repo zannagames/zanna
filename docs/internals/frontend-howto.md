@@ -3470,7 +3470,9 @@ builder_.setInsertPoint(done);
 manually as `Instr` objects with `Opcode::EhPush` / `Opcode::EhPop`. The handler block must declare
 two parameters `(%err:Error, %tok:ResumeTok)` so the runtime can pass the active error/resume token.
 The BASIC frontend's helper at `src/frontends/basic/lower/Emit_Control.cpp` (`Lowerer::emitEhPush`)
-is a useful template.
+is a useful template. The sketch below shows the IL primitives only: BASIC's real `ON ERROR GOTO`
+uses one dispatcher per procedure so the handler stack depth is the same on every path (see
+`src/frontends/basic/lower/Lower_TryCatch.cpp` and ADR 0358).
 
 ```cpp
 // ON ERROR GOTO handler

@@ -102,7 +102,9 @@ L30:
   br L40
 L40:
   .loc 1 4 4
-  ret 0
+  br exit
 exit:
+  %t13 = load str, %a$
+  call @rt_str_release_maybe(%t13)
   ret 0
 }

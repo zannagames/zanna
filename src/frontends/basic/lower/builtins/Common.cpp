@@ -12,6 +12,7 @@
 //   - Registry variants are selected in declaration order.
 //   - Arguments are lowered lazily and cached once per call.
 //   - Coercion failures emit diagnostics and deterministic typed fallbacks.
+//   - String results of runtime calls are released at the statement boundary.
 // Ownership/Lifetime:
 //   - BuiltinLowerContext borrows the Lowerer, AST call, and registry entries.
 //   - Synthetic arguments are owned by the context for the duration of lowering.
@@ -699,7 +700,9 @@ il::core::Type BuiltinLowerContext::boolType() const {
 
 /// @brief Emit a runtime call returning @p type.
 /// @details Delegates to @ref Lowerer::emitCallRet, centralising all runtime
-///          invocations through the lowering context for easier testing.
+///          invocations through the lowering context for easier testing. A
+///          string result is queued for release at the statement boundary
+///          unless the runtime row declares it borrowed (ADR 0314).
 /// @param type Expected IL return type.
 /// @param runtime Name of the runtime helper to call.
 /// @param args Argument values to pass to the runtime function.
@@ -708,7 +711,10 @@ il::core::Value BuiltinLowerContext::emitCall(il::core::Type type,
                                               const char *runtime,
                                               const std::vector<il::core::Value> &args) {
     // Use lowerer_->emitCallRet to ensure runtime tracking happens
-    return lowerer_->emitCallRet(type, runtime, args);
+    il::core::Value result = lowerer_->emitCallRet(type, runtime, args);
+    if (type.kind == IlKind::Str)
+        lowerer_->deferReleaseRuntimeResult(result, type, runtime);
+    return result;
 }
 
 /// @brief Emit a unary IL instruction.

@@ -192,6 +192,58 @@ Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr) {
         }
     }
 
+    /// @brief Read a static field or static property of class @p qname.
+    /// @details A static field (searched through the class hierarchy) loads its module
+    ///          global; otherwise a static `get_<member>` accessor is called.
+    /// @return The value, or nothing when the class has no such static member.
+    auto lowerStaticMember = [&](const std::string &qname) -> std::optional<RVal> {
+        for (const ClassInfo *cur = oopIndex_.findClass(qname); cur;
+             cur = cur->baseQualified.empty() ? nullptr : oopIndex_.findClass(cur->baseQualified)) {
+            for (const auto &sf : cur->staticFields) {
+                if (!string_utils::iequals(sf.name, expr.member))
+                    continue;
+                Type ilTy = sf.objectClassName.empty() ? type_conv::astToIlType(sf.type)
+                                                       : Type(Type::Kind::Ptr);
+                curLoc = expr.loc;
+                Value addr = emitStaticFieldAddress(cur->qualifiedName, sf.name, ilTy.kind);
+                Value loaded = emitLoad(ilTy, addr);
+                return RVal{loaded, ilTy};
+            }
+        }
+        const ClassInfo *ci = oopIndex_.findClass(qname);
+        if (!ci)
+            return std::nullopt;
+        std::string getter = std::string("get_") + expr.member;
+        if (auto resolved = sem::resolveMethodOverload(oopIndex_,
+                                                       qname,
+                                                       expr.member,
+                                                       /*isStatic*/ true,
+                                                       /*args*/ {},
+                                                       currentClass(),
+                                                       nullptr,
+                                                       expr.loc))
+            getter = resolved->methodName;
+        auto it = ci->methods.find(getter);
+        if (it == ci->methods.end() || !it->second.isStatic)
+            return std::nullopt;
+        Type retTy = Type(Type::Kind::I64);
+        if (auto rt = findMethodReturnType(qname, getter))
+            retTy = type_conv::astToIlType(*rt);
+        curLoc = expr.loc;
+        std::string callee = mangleMethod(ci->qualifiedName, getter);
+        Value result = (retTy.kind == Type(Type::Kind::Void).kind)
+                           ? (emitCall(callee, {}), Value::constInt(0))
+                           : emitCallRet(retTy, callee, {});
+        return RVal{result, retTy};
+    };
+
+    // Semantic analysis resolved `Class.member` as a static member access.
+    if (!expr.staticReceiverClass.empty()) {
+        if (auto result = lowerStaticMember(expr.staticReceiverClass))
+            return *result;
+        return {Value::constInt(0), Type(Type::Kind::I64)};
+    }
+
     auto access = resolveMemberField(expr);
     if (!access) {
         if (expr.base) {
@@ -259,6 +311,10 @@ Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr) {
             std::string instClass = resolveObjectClass(*expr.base);
             if (!instClass.empty()) {
                 std::string qname = qualify(instClass);
+                // A static field or property read through an instance uses the class's
+                // shared storage.
+                if (auto result = lowerStaticMember(resolveQualifiedClassCasing(qname)))
+                    return *result;
                 std::string getter = std::string("get_") + expr.member;
                 // Overload resolution for property getter (0 user params)
                 std::string curClass = currentClass();
@@ -296,47 +352,8 @@ Lowerer::RVal Lowerer::lowerMemberAccessExpr(const MemberAccessExpr &expr) {
                     return {Value::null(), Type(Type::Kind::Ptr)};
                 }
                 // Attempt to resolve the class by current namespace context
-                std::string qname = resolveQualifiedClassCasing(qualify(v->name));
-                if (const ClassInfo *ci = oopIndex_.findClass(qname)) {
-                    // Prefer property getter sugar when present (resolve overloads)
-                    std::string getter = std::string("get_") + expr.member;
-                    if (auto resolved = sem::resolveMethodOverload(oopIndex_,
-                                                                   qname,
-                                                                   expr.member,
-                                                                   /*isStatic*/ true,
-                                                                   /*args*/ {},
-                                                                   currentClass(),
-                                                                   diagnosticEmitter(),
-                                                                   expr.loc))
-                        getter = resolved->methodName;
-                    else if (diagnosticEmitter())
-                        return {Value::constInt(0), Type(Type::Kind::I64)};
-                    auto it = ci->methods.find(getter);
-                    if (it != ci->methods.end() && it->second.isStatic) {
-                        Type retTy = Type(Type::Kind::I64);
-                        if (auto rt = findMethodReturnType(qname, getter))
-                            retTy = type_conv::astToIlType(*rt);
-                        std::string callee = mangleMethod(ci->qualifiedName, getter);
-                        Value result = (retTy.kind == Type(Type::Kind::Void).kind)
-                                           ? (emitCall(callee, {}), Value::constInt(0))
-                                           : emitCallRet(retTy, callee, {});
-                        return {result, retTy};
-                    }
-
-                    // Otherwise, try a static field load
-                    for (const auto &sf : ci->staticFields) {
-                        if (sf.name == expr.member) {
-                            Type ilTy = sf.objectClassName.empty() ? type_conv::astToIlType(sf.type)
-                                                                   : Type(Type::Kind::Ptr);
-                            curLoc = expr.loc;
-                            std::string gname = ci->qualifiedName + "::" + expr.member;
-                            Value addr = emitUnary(
-                                Opcode::AddrOf, Type(Type::Kind::Ptr), Value::global(gname));
-                            Value loaded = emitLoad(ilTy, addr);
-                            return {loaded, ilTy};
-                        }
-                    }
-                }
+                if (auto result = lowerStaticMember(resolveQualifiedClassCasing(qualify(v->name))))
+                    return *result;
             }
         }
 

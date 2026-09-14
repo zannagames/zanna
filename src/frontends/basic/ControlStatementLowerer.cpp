@@ -245,22 +245,23 @@ void ControlStatementLowerer::lowerGosubReturn(const ReturnStmt &stmt) {
 }
 
 /// @brief Lower the END statement, terminating program execution.
-/// @details Emits `ret 0` for any active function whose declared IL return type
-///          is i64. A void, floating, object, missing, or otherwise non-i64
-///          function context emits a trap instead.
+/// @details In `@main` END branches to the exit block, which releases main's locals,
+///          runs static destructors, and returns 0. Inside a SUB, FUNCTION, or method
+///          it runs static destructors and ends the whole program through
+///          `Zanna.System.Environment.Exit(0)`, which flushes output like a normal
+///          exit; the trap that follows is unreachable and only terminates the block.
 /// @param stmt END statement providing the source location.
 void ControlStatementLowerer::lowerEnd(const EndStmt &stmt) {
     LocationScope loc(lowerer_, stmt.loc);
-    // BUG-OOP-014 fix: Check if current function returns void (SUB) or i64 (main)
-    // END in main should return 0; END in SUB/FUNCTION should trap to terminate.
-    auto *func = lowerer_.context().function();
-    if (func && func->retType.kind == il::core::Type::Kind::I64) {
-        // In main() or FUNCTION returning INTEGER - return 0 for normal termination
-        lowerer_.emitRet(Lowerer::Value::constInt(0));
-    } else {
-        // In SUB (void) or other context - trap to terminate program
-        lowerer_.emitTrap();
+    auto &ctx = lowerer_.context();
+    auto *func = ctx.function();
+    if (func && func->name == "main") {
+        lowerer_.emitBr(&func->blocks[ctx.exitIndex()]);
+        return;
     }
+    lowerer_.emitModuleFiniCall();
+    lowerer_.emitCall("Zanna.System.Environment.Exit", {Lowerer::Value::constInt(0)});
+    lowerer_.emitTrap();
 }
 
 } // namespace il::frontends::basic

@@ -215,6 +215,9 @@ struct DestructorDecl : Stmt {
     /// Access specifier (PUBLIC/PRIVATE); defaults to PUBLIC.
     Access access{Access::Public};
 
+    /// True for `STATIC DESTRUCTOR`, which runs once at program shutdown.
+    bool isStatic{false};
+
     /// Statements forming the destructor body.
     std::vector<StmtPtr> body;
 

@@ -75,7 +75,7 @@ L20:
   cbr %t6, redim_len_fail, redim_len_cont(%t4)
 L30:
   .loc 1 3 4
-  ret 0
+  br exit
 exit:
   %t10 = load ptr, %a
   call @rt_arr_i64_release(%t10)

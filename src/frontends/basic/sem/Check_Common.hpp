@@ -5,6 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/sem/Check_Common.hpp
+// Purpose: Shared context wrappers for BASIC control-flow and expression checks.
+// Key invariants:
+//   - A control-check context asserts balanced loop and FOR stacks on exit.
+//   - Label lookups inside a procedure see only that procedure's labels.
+// Ownership/Lifetime:
+//   - Contexts borrow the analyzer for the duration of one check.
+// Links: src/frontends/basic/sem/Check_Jumps.cpp, docs/internals/codemap/basic.md
+//
 /// @file
 /// @brief Shared infrastructure for control-flow and expression semantic
 ///        checkers.
@@ -92,10 +101,25 @@ class ControlCheckContext {
         return stmtContext_;
     }
 
-    /// @brief Check whether a line-number label has been defined in the program.
-    /// @param label The integer line-number label to look up.
-    /// @return True if the label is in the defined-labels set.
+    /// @brief Text naming a line label in diagnostics.
+    /// @param label The integer line label.
+    /// @return The label's name for a named label, otherwise its number.
+    [[nodiscard]] std::string labelText(int label) const {
+        auto it = analyzer_->labelNames_.find(label);
+        if (it != analyzer_->labelNames_.end())
+            return it->second;
+        return std::to_string(label);
+    }
+
+    /// @brief Check whether a line label is defined where the jump is.
+    /// @details Inside a procedure only the procedure's own labels count: GOTO,
+    ///          GOSUB, ON ERROR GOTO, and RESUME cannot leave it. At module level
+    ///          the module's labels count.
+    /// @param label The integer line label to look up.
+    /// @return True if the label is defined in the current body.
     [[nodiscard]] bool hasKnownLabel(int label) const noexcept {
+        if (analyzer_->activeProcScope_)
+            return analyzer_->activeProcScope_->ownsLabel(label);
         return analyzer_->labels_.count(label) != 0;
     }
 
@@ -238,21 +262,10 @@ class ControlCheckContext {
         analyzer_->popForVariable();
     }
 
-    /// @brief Install an error handler targeting the given line label.
-    /// @param label The line-number label where ON ERROR GOTO branches.
-    void installErrorHandler(int label) {
-        analyzer_->installErrorHandler(label);
-    }
-
-    /// @brief Remove the currently active error handler.
-    void clearErrorHandler() {
-        analyzer_->clearErrorHandler();
-    }
-
-    /// @brief Check whether an ON ERROR GOTO handler is currently active.
-    /// @return True if an error handler has been installed and not yet cleared.
-    [[nodiscard]] bool hasActiveErrorHandler() const noexcept {
-        return analyzer_->hasActiveErrorHandler();
+    /// @brief Check whether the body being analyzed contains ON ERROR GOTO <label>.
+    /// @return True when the procedure or module body selects a handler anywhere.
+    [[nodiscard]] bool procedureHasOnError() const noexcept {
+        return analyzer_->procedureHasOnError();
     }
 
     /// @brief Check whether the analyzer is currently inside a SUB or FUNCTION body.

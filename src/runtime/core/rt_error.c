@@ -521,6 +521,36 @@ void rt_trap_raise_error(int32_t code) {
     rt_trap_raise_error_msg(code, NULL);
 }
 
+/// @brief Raise a trap with explicit kind/code/line classification and the kind's message.
+/// @details Used to raise again an error that generated code caught but did not
+///   handle. The text is the same one `Zanna.Error.Message` reports for the error:
+///   the retained thrown message for a runtime error that has one, otherwise the
+///   kind's default message. Thrown text is copied into bounded storage with
+///   control bytes replaced by '?'.
+/// @param kind Canonical trap classification; out-of-range values normalize.
+/// @param code Secondary runtime error code.
+/// @param line Source line, or -1 when unavailable.
+void rt_trap_raise_kind_nomsg(int32_t kind, int32_t code, int32_t line) {
+    char text[512];
+    const char *message = rt_trap_kind_default_message_cstr(kind);
+    if (kind == RT_TRAP_KIND_RUNTIME_ERROR && tls_throw_msg) {
+        const char *bytes = rt_string_cstr(tls_throw_msg);
+        int64_t length = rt_str_len(tls_throw_msg);
+        if (bytes && length > 0) {
+            size_t len = (size_t)length;
+            if (len > sizeof(text) - 1)
+                len = sizeof(text) - 1;
+            for (size_t i = 0; i < len; ++i) {
+                unsigned char ch = (unsigned char)bytes[i];
+                text[i] = (ch < 32 || ch == 127) ? '?' : (char)ch;
+            }
+            text[len] = '\0';
+            message = text;
+        }
+    }
+    rt_trap_raise_kind(kind, code, line, message);
+}
+
 #ifdef __cplusplus
 }
 #endif

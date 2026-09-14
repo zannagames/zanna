@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-09-13
+last-verified: 2026-09-14
 ---
 
 # Zanna Defect Audit — 2026-09-01
@@ -22,34 +22,34 @@ unreadable from their own class).
 
 | # | Area | Severity | Summary |
 |---|------|----------|---------|
-| 1 | BASIC frontend | High | `STATIC` field emits malformed IL global `@C::VALUE` |
-| 2 | BASIC frontend | High | `STATIC DESTRUCTOR` never runs |
-| 3 | BASIC frontend | High | `STATIC SUB NEW()` (static constructor) never runs |
-| 4 | BASIC frontend | High | No working way to compare an object reference to `NOTHING` |
+| 1 | BASIC frontend | High | `STATIC` field emits malformed IL global `@C::VALUE` — fixed 2026-09-13 |
+| 2 | BASIC frontend | High | `STATIC DESTRUCTOR` never runs — fixed 2026-09-13 |
+| 3 | BASIC frontend | High | `STATIC SUB NEW()` (static constructor) never runs — fixed 2026-09-13 |
+| 4 | BASIC frontend | High | No working way to compare an object reference to `NOTHING` — fixed 2026-09-13 |
 | 5 | Zia frontend | High | `Byte` fails IL verification in string concat and `as Byte` narrowing |
 | 6 | Driver (`zanna check`) | High | `check` passes code that `run`/`build` reject |
 | 7 | VM / driver | Medium | Breakpoint exit code `10` only produced when `@main` returns `i64` |
-| 8 | Test suite | Medium | `golden/oop/static_destructor` fixture is orphaned |
-| 9 | BASIC frontend | Low | Static methods resolve only through an instance receiver |
-| 10 | Diagnostics catalog | Low | `B1006` summary covers only one of its several uses |
+| 8 | Test suite | Medium | `golden/oop/static_destructor` fixture is orphaned — fixed 2026-09-13 |
+| 9 | BASIC frontend | Low | Static methods resolve only through an instance receiver — fixed 2026-09-13 |
+| 10 | Diagnostics catalog | Low | `B1006` summary covers only one of its several uses — fixed 2026-09-14 |
 | 11 | Zia frontend | Low | `foreign func` declaration emits a spurious unused-parameter warning |
 | 12 | Zia frontend | High | `Byte` is a 32-bit type, not 8-bit; `as Byte` does not narrow or trap |
 | 13 | Zia parser | Medium | A variable named `map` or `set` breaks `for x in <var> { ... }` |
 | 14 | Zia parser | Low | Documented `Error.type` accessor is unusable (`type` is a reserved word) |
 | 15 | Zia frontend | High | Static fields are unreadable from inside their own class (`V3000 ... reached lowering`) |
-| 16 | BASIC frontend | Low | `ME` is accepted inside a `STATIC SUB` instead of being rejected |
+| 16 | BASIC frontend | Low | `ME` is accepted inside a `STATIC SUB` instead of being rejected — fixed 2026-09-13 |
 | 17 | BASIC frontend | High | Fields on a class declared inside a `NAMESPACE` are inaccessible — fixed 2026-09-13 |
-| 18 | BASIC frontend | Medium | `USING` inside a `NAMESPACE` block is accepted but produces broken IL |
-| 19 | BASIC frontend | Medium | Aliased `USING X = Ns` works for types but not for procedure calls |
+| 18 | BASIC frontend | Medium | `USING` inside a `NAMESPACE` block is accepted but produces broken IL — fixed 2026-09-14 |
+| 19 | BASIC frontend | Medium | Aliased `USING X = Ns` works for types but not for procedure calls — fixed 2026-09-14 |
 | 20 | BASIC frontend | Medium | False-positive `B3001 index out of bounds` on the highest valid literal index — fixed 2026-09-13 |
 | 21 | BASIC frontend | High | A namespaced class gets no implicit default constructor — fixed 2026-09-13 |
-| 22 | BASIC frontend | High | `RESUME`, `RESUME NEXT`, and `RESUME <label>` are unimplemented (lower to `trap`) |
+| 22 | BASIC frontend | High | `RESUME`, `RESUME NEXT`, and `RESUME <label>` are unimplemented (lower to `trap`) — fixed 2026-09-13 |
 | 23 | IL verifier | Medium | Verifier accepts a function whose entry block omits the signature's parameters |
 | 24 | Zia lowering | High | Managed local + early `return` + `try`/`catch` emits IL that violates SSA dominance |
 | 25 | Zia lowering | High | `return null` from a `String?` function fails IL verification |
 | 26 | Zia lowering / VM | **Critical** | Calling a function through a `&function` reference SEGFAULTS |
-| 27 | BASIC completions | Low | Completion provider offers 4 builtins that do not exist |
-| 28 | BASIC frontend | Low | A trailing label with no following statement fails with a synthetic line number |
+| 27 | BASIC completions | Low | Completion provider offers 4 builtins that do not exist — fixed 2026-09-14 |
+| 28 | BASIC frontend | Low | A trailing label with no following statement fails with a synthetic line number — fixed 2026-09-13 |
 | 29 | Runtime doc fragments | Low | `@details` prose names classes `Physics3DBody` / `Physics3DWorld`; the registered names are `PhysicsBody3D` / `PhysicsWorld3D` |
 | 30 | Runtime (GC) | Medium | Cycle collection is opt-in and off by default, so cyclic graphs leak silently |
 | 31 | Runtime (Threads) | **Critical** | `Channel.Send` does not retain its payload — use-after-free across threads |
@@ -59,6 +59,12 @@ unreadable from their own class).
 ## 1. `STATIC` field emits a malformed IL global name
 
 **Severity:** High — a two-line class fails to compile.
+
+**Status:** Fixed 2026-09-13. Static fields no longer become IL globals: they live in
+the runtime module storage that module-level variables use, keyed by
+`Class.__static.FIELD`, and they no longer occupy space in every instance's layout.
+`Class.field`, `instance.field`, and the bare name inside the class's members all
+read and write the same value. Covered by `oop_static_members`.
 
 ```basic
 CLASS C
@@ -82,6 +88,13 @@ are documented in `docs/languages/basic-grammar.md`.
 
 **Severity:** High — documented cleanup mechanism silently does nothing.
 
+**Status:** Fixed 2026-09-13. The parser dropped `STATIC` before a destructor, so the
+body became the instance destructor. Static destructors now lower to
+`Class.__dtor$static`, which the module finalizer `__mod_fini$oop` calls in class
+declaration order when the program ends normally, including `END` in the main
+program (which now branches to main's exit block) and `END` inside a procedure.
+Covered by `oop_static_destructor` and `oop_static_members`.
+
 ```basic
 CLASS K
   STATIC DESTRUCTOR
@@ -104,6 +117,13 @@ shutdown.
 
 **Severity:** High — same class of gap as #2.
 
+**Status:** Fixed 2026-09-13. The class body's field parser consumed the `STATIC`
+keyword as a field modifier before the member parser saw `SUB`, so every static
+member (constructor, method, property) became an instance member. `STATIC` is now
+left for the member parser. Static constructors run from the module initializer in
+class declaration order (previously in hash-table order). Covered by
+`oop_static_members`.
+
 ```basic
 CLASS A
   STATIC SUB NEW()
@@ -122,6 +142,11 @@ constructor "is invoked by the module initializer before any user code runs".
 ## 4. No working way to compare an object reference to `NOTHING`
 
 **Severity:** High — there is no documented, working null test.
+
+**Status:** Fixed 2026-09-13. `obj IS NOTHING`, `obj = NOTHING`, `obj <> NOTHING`
+(either operand order) compile to `Zanna.Core.Object.IsNull`. Comparing a
+non-object with `NOTHING` is still B2001. Covered by `basic_nothing_compare` and
+`basic_error_nothing_compare_string`.
 
 ```basic
 DIM a AS SomeClass
@@ -218,6 +243,8 @@ clean run.
 
 **Severity:** Medium — this is why #2 went unnoticed.
 
+**Status:** Fixed 2026-09-13. Registered as `oop_static_destructor`.
+
 `src/tests/golden/oop/static_destructor.bas` and its `.out` (expecting `42`)
 exist, but `static_destructor` appears in no `CMakeLists.txt` or test
 registration. The fixture never runs.
@@ -229,6 +256,13 @@ Worth auditing `src/tests/golden/` for other unregistered fixtures.
 ## 9. Static methods resolve only through an instance receiver
 
 **Severity:** Low.
+
+**Status:** Fixed 2026-09-13. Semantic analysis resolves a bare name that is not a
+variable but names a class as a class-name receiver (`Class.Method(...)`,
+`Class.field`, `Class.Property`), records the class on the AST node, and the lowerer
+emits the static call or static storage access without treating the class name as a
+variable. The root cause was #3: the methods were never static. Covered by
+`oop_static_members`.
 
 ```basic
 CLASS C
@@ -246,6 +280,13 @@ C.Ping()   ' error[B1006]: unknown procedure 'c.ping'
 ## 10. `B1006` catalog summary covers only one of its uses
 
 **Severity:** Low.
+
+**Status:** Fixed 2026-09-14. Most BASIC semantic codes (B1001–B1012) carried summaries
+from an unused naming scheme (`DiagnosticCodes.hpp`, now deleted) rather than what
+they report. Each summary now describes its diagnostics: B1006 is "Call to an unknown
+procedure" and B1003 "GOTO, GOSUB, or RESUME names an unknown label". Duplicate
+local names moved to their own code, B1013. B1000 and B1009 were never emitted and
+are no longer cataloged, and no diagnostic ever used B1006 for an array dimension.
 
 `zanna explain B1006` reports "Array dimension is invalid", but `B1006` is also
 emitted for unknown procedures (`PRINT STR(42)` → "unknown procedure 'str'") and
@@ -412,6 +453,10 @@ analysis with a normal diagnostic code.
 
 **Severity:** Low.
 
+**Status:** Fixed 2026-09-13. The check existed (B2103) but never ran because of #3.
+With static members parsed as static, `ME` in a static method, constructor, or
+destructor is B2103/B2106.
+
 `docs/languages/basic-reference.md` states "Static methods do not receive `ME`;
 referencing `ME` in a static method is a semantic error". It is not diagnosed:
 
@@ -479,6 +524,14 @@ declares an explicit `SUB NEW()`.
 
 **Severity:** Medium.
 
+**Status:** Fixed 2026-09-14. Semantic analysis resolved names through the block's
+imports, but lowering runs after the block's USING scope has closed and only saw
+file-scope imports. Semantic analysis now records what it resolved: a call found
+through an import becomes its qualified name, and a class named in `DIM`, a
+parameter, a field, or an `AS` result becomes its qualified class. `NEW` also finds
+runtime classes through imports (`NEW StringBuilder()` with `USING Zanna.Text`
+failed at file scope too). Golden: `basic_runtime_ns_using_scoped_and_alias`.
+
 `SemanticAnalyzer_Namespace.cpp` rejects a scoped `USING` with `E_NS_008` only
 when runtime namespaces are disabled:
 
@@ -509,6 +562,11 @@ Scoped `USING` should either work or be rejected in the default configuration.
 ## 19. Aliased `USING X = Ns` does not resolve procedure calls
 
 **Severity:** Medium.
+
+**Status:** Fixed 2026-09-14. The parser only read `U.Hello()` as a qualified call
+when `U` was a declared namespace, so it became a method call on an unknown
+variable. A USING alias now counts as a namespace head, and semantic analysis
+replaces the alias with its target in the call.
 
 ```basic
 USING U = App.Utils
@@ -619,6 +677,17 @@ as a method-only type with a hand-written constructor.
 
 **Severity:** High — `ON ERROR` / `RESUME` is a headline BASIC feature and is
 documented in both the reference and the tutorial.
+
+**Status:** Fixed 2026-09-13 ([ADR 0358](adr/0358-basic-on-error-dispatcher-and-resume.md)).
+A procedure with `ON ERROR GOTO` now has one dispatcher handler, pushed only by an
+arm block that the entry, the handler entry, and every `RESUME` go through, so the
+IL verifier's stack and dominance rules hold. Statements record resume sites so
+`RESUME` retries the failed statement and `RESUME NEXT` continues after it, also
+inside loops, `SELECT CASE`, and `GOSUB` bodies. The same work fixed native
+`alloca` zero-initialisation, which made uninitialised `DIM` variables read stack
+garbage natively. Covered by `basic_runtime_test_basic_on_error_resume` (VM),
+`native_run_basic_on_error_resume_*` (native at `-O0` and default), the
+`basic_errors_*` e2e tests, and the `eh_lowering` IL goldens.
 
 ```basic
 ON ERROR GOTO H
@@ -864,6 +933,15 @@ Publish-Subscribe example stores handlers and invokes them.
 **Severity:** Low — but it actively misleads editors and AI assistants, which is
 the whole point of the completion surface.
 
+**Status:** Fixed 2026-09-14. `HEX$`, `OCT$`, `SPACE$`, and `STRING$` are now builtins,
+built on existing runtime helpers. `SPACE$` and `STRING$` trap on a negative count,
+and `STRING$` also on an empty string or a character code outside 0–255. The
+completion list also gained the builtins it omitted (`ARG$`, `ARGC`, `CDBL`, `CEIL`,
+`CINT`, `CLNG`, `COMMAND$`, `CSNG`, `EOF`, `ERR`, `FLOOR`, `GETKEY$`, `INKEY$`, `LOC`,
+`LOF`, `POW`, `ROUND`, `TRIM$`) and corrected `TIMER` (integer milliseconds).
+`BasicCompletion.BuiltinListMatchesRegistry` checks the list against the builtin
+registry in both directions.
+
 `src/frontends/basic/BasicCompletion.cpp` advertises 32 builtins. Four of them
 are rejected by the compiler:
 
@@ -888,6 +966,13 @@ Hex formatting is currently reachable only through the runtime:
 ## 28. A trailing label with no following statement is rejected
 
 **Severity:** Low — but the diagnostic exposes an internal synthetic line number.
+
+**Status:** Fixed 2026-09-13. The statement collector dropped a label that had no
+statement on its line, and a label stashed by the last line was lost at the end of
+the file. Both now produce a label statement, which also fixes labels on their own
+line inside SUB and FUNCTION bodies. Labels resolve only within their own
+procedure, and B1003 names the label (`unknown label done`) instead of its synthetic
+number.
 
 ```basic
 PRINT "a"

@@ -5,6 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/SemanticAnalyzer.hpp
+// Purpose: Declare the SemanticAnalyzer, which validates BASIC AST nodes and
+//          records the types and names later phases consume.
+// Key invariants:
+//   - Procedure-local state is rolled back by ProcedureScope when a procedure's
+//     analysis ends.
+//   - A body's ON ERROR use is known before its statements are visited.
+// Ownership/Lifetime:
+//   - Borrows the Program and diagnostic emitter for one analyze() run.
+// Links: src/frontends/basic/SemanticAnalyzer.cpp, docs/internals/codemap.md
+//
 // This file declares the SemanticAnalyzer class, which performs semantic
 // analysis and validation of BASIC AST nodes.
 //
@@ -236,6 +247,10 @@ class SemanticAnalyzer {
     ///         instance-member context.
     [[nodiscard]] std::optional<std::string> activeInstanceClassQName() const;
 
+    /// @brief Reports the class whose member (instance or static) is being analyzed.
+    /// @return Qualified class name by value, or @c std::nullopt outside a class member.
+    [[nodiscard]] std::optional<std::string> activeClassQName() const;
+
     /// @brief Records the reserved raw-pointer compatibility setting.
     /// @details The current safety checker does not consult this flag and
     ///          continues to enforce its typed callback-bridge allowlist. The
@@ -273,11 +288,15 @@ class SemanticAnalyzer {
     /// @param s Statement to inspect.
     void visit(const CursorStmt &s);
     /// @brief Validates TRY/CATCH structure and nested bodies.
+    /// @details Renames the CATCH variable to its scoped unique name, as references
+    ///          in the CATCH body are renamed.
     /// @param s Statement to inspect.
-    void visit(const TryCatchStmt &s);
+    void visit(TryCatchStmt &s);
     /// @brief Validates a runtime-resource `USING` statement and its body.
+    /// @details Renames the resource variable to its scoped unique name, as
+    ///          references in the body are renamed.
     /// @param s Statement to inspect.
-    void visit(const UsingStmt &s);
+    void visit(UsingStmt &s);
 
     /// @brief Analyzes each statement in a statement-list node.
     /// @param s List whose non-null children are visited in order.
@@ -430,11 +449,40 @@ class SemanticAnalyzer {
                                il::support::SourceLoc loc,
                                uint32_t length);
 
+    /// @brief Tests whether an object of one class may be stored where another is declared.
+    /// @param targetClass Class the destination declares.
+    /// @param valueClass Class of the value being stored.
+    /// @return True for the same class, a subclass, a class implementing a target
+    ///         interface, a generic object target, or classes this analyzer cannot judge.
+    [[nodiscard]] bool objectClassAccepts(const std::string &targetClass,
+                                          const std::string &valueClass) const;
+
+    /// @brief Display spelling of a class name as its declaration or runtime row writes it.
+    /// @param className Class name in any case.
+    /// @return Declared or catalog spelling, or @p className when unknown.
+    [[nodiscard]] std::string classDisplayName(const std::string &className) const;
+
     /// @brief Report an `AS` clause naming a class that does not exist (`B2111`).
     /// @param typeName Class name as written, simple or dotted.
     /// @param loc Location of the declaration.
     /// @return True when the name refers to a known type.
     bool checkClassTypeName(const std::string &typeName, il::support::SourceLoc loc);
+
+    /// @brief Resolve a simple class name through the innermost USING scope's imports.
+    /// @param typeName Class name as written.
+    /// @return Declared qualified name for a unique match; empty otherwise.
+    [[nodiscard]] std::optional<std::string> resolveImportedClassName(
+        const std::string &typeName) const;
+
+    /// @brief Replace a class named through a namespace-scoped USING with its
+    ///        qualified name.
+    /// @details Lowering sees only file-scope imports, so declarations inside a
+    ///          NAMESPACE record the class they resolved to.
+    /// @param className Class name to update in place.
+    void qualifyImportedClassName(std::string &className) const;
+
+    /// @copydoc qualifyImportedClassName(std::string &) const
+    void qualifyImportedClassName(std::vector<std::string> &classQname) const;
 
     /// @brief Validates assignment to a simple variable.
     /// @param v Mutable destination variable.
@@ -574,6 +622,11 @@ class SemanticAnalyzer {
         /// @param label Label to erase during rollback.
         void noteLabelInserted(int label);
 
+        /// @brief Whether @p label is defined in this procedure's body.
+        /// @param label Line label to look up.
+        /// @return True for a label this scope inserted.
+        [[nodiscard]] bool ownsLabel(int label) const noexcept;
+
         /// @brief Records a procedure-local label reference newly inserted.
         /// @param label Reference to erase during rollback.
         void noteLabelRefInserted(int label);
@@ -645,10 +698,8 @@ class SemanticAnalyzer {
         std::unordered_set<std::string> trackedArrays_;
         /// @brief Channels already represented in @ref channelDeltas_.
         std::unordered_set<long long> trackedChannels_;
-        /// @brief Error-handler active flag saved at entry.
-        bool previousHandlerActive_{false};
-        /// @brief Error-handler target saved at entry.
-        std::optional<int> previousHandlerTarget_;
+        /// @brief ON ERROR flag of the enclosing procedure saved at entry.
+        bool previousHasOnError_{false};
     };
 
     /// @brief Describes the caller's intent when resolving/tracking a name.
@@ -896,16 +947,19 @@ class SemanticAnalyzer {
     ///         assignment flow.
     bool mustReturn(const Stmt &s) const;
 
-    /// @brief Activates the current scope's error handler.
-    /// @param label Numeric target recorded for later RESUME/handler checks.
-    void installErrorHandler(int label);
+    /// @brief Reports whether the procedure being analyzed contains ON ERROR GOTO <label>.
+    /// @return Value of @ref procedureHasOnError_.
+    bool procedureHasOnError() const noexcept;
 
-    /// @brief Deactivates the current error handler and clears its target.
-    void clearErrorHandler();
-
-    /// @brief Reports current error-handler activation.
-    /// @return Value of @ref errorHandlerActive_.
-    bool hasActiveErrorHandler() const noexcept;
+    /// @brief Resolve a class name used as a member receiver, as in `Counter.total`
+    ///        or `Counter.Reset()`.
+    /// @details The receiver must be a bare name that is not a variable, parameter, or
+    ///          field in scope, and that names a user class: first qualified by the
+    ///          enclosing namespaces (innermost first), then as written, then under
+    ///          each USING import. The lowerer resolves the same receivers as static.
+    /// @param base Receiver expression.
+    /// @return Qualified class name, or nothing when @p base is a value.
+    [[nodiscard]] std::optional<std::string> classNameReceiver(const Expr &base) const;
 
     /// @brief Pushes an active construct for EXIT validation.
     /// @param kind Construct being entered.
@@ -1050,11 +1104,12 @@ class SemanticAnalyzer {
     /// @brief Innermost active procedure rollback scope, or null at module level.
     ProcedureScope *activeProcScope_{nullptr};
 
-    /// @brief Whether the current procedure/module error handler is active.
-    bool errorHandlerActive_{false};
+    /// @brief Whether the procedure or module body being analyzed contains
+    ///        ON ERROR GOTO <label> anywhere, which makes RESUME meaningful there.
+    bool procedureHasOnError_{false};
 
-    /// @brief Numeric target of the active error handler, when any.
-    std::optional<int> errorHandlerTarget_;
+    /// @brief Named-label spellings keyed by their parser-assigned line numbers.
+    std::unordered_map<int, std::string> labelNames_;
 
     /// @brief Whether the main module contains any GOSUB construct.
     bool mainHasGosub_{false};

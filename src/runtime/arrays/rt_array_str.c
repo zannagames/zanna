@@ -124,10 +124,13 @@ void rt_arr_str_release(rt_string *arr, size_t size) {
 
 /// @brief Read string element at index @p idx and return a retained handle.
 /// @details Returns the string at @p idx after incrementing its reference count.
-///          The caller must release the returned handle when done.
+///          The caller must release the returned handle when done. A slot that
+///          was never written reads as the immortal empty string, so a new or
+///          grown array compares equal to "" element by element.
 /// @param arr Array payload pointer; must be non-null.
 /// @param idx Zero-based index within the array length.
-/// @return String handle at @p idx (retained for caller), or NULL if slot is empty.
+/// @return String handle at @p idx (retained for caller), or NULL after a
+///         returning validation trap.
 rt_string rt_arr_str_get(rt_string *arr, size_t idx) {
     if (!arr)
         rt_trap("rt_arr_str_get: null array");
@@ -145,6 +148,8 @@ rt_string rt_arr_str_get(rt_string *arr, size_t idx) {
         return NULL;
 
     rt_string value = arr[idx];
+    if (!value)
+        return rt_str_empty();
 
     // Retain before returning to caller (transfer semantics)
     rt_str_retain_maybe(value);

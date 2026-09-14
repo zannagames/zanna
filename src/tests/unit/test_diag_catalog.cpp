@@ -5,11 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_diag_catalog.cpp
+// File: src/tests/unit/test_diag_catalog.cpp
 // Purpose: Unit tests for the diagnostic-code catalog backing `zanna explain`.
 // Key invariants:
 //   - Catalog entries are unique, non-empty, and cover the core code families.
 //   - Prefix-family fallback resolves every code family used in the tree.
+//   - BASIC semantic codes are summarized by what they actually report.
 // Ownership/Lifetime:
 //   - Test-only file
 // Links: support/diag_catalog.hpp
@@ -51,6 +52,17 @@ TEST(DiagCatalog, FindsCoreCodes) {
     EXPECT_TRUE(findDiagCode("B2001") != nullptr);
     EXPECT_TRUE(findDiagCode("V-IL-VERIFY") != nullptr);
     EXPECT_TRUE(findDiagCode("V-BC-UNSUPPORTED-OP") != nullptr);
+}
+
+TEST(DiagCatalog, BasicSemaCodesDescribeWhatTheyReport) {
+    /// Summary text for @p code, or empty when the code is not cataloged.
+    auto summary = [](const char *code) {
+        const auto *entry = findDiagCode(code);
+        return entry ? std::string(entry->summary) : std::string{};
+    };
+    EXPECT_EQ(summary("B1003"), std::string("GOTO, GOSUB, or RESUME names an unknown label"));
+    EXPECT_EQ(summary("B1006"), std::string("Call to an unknown procedure"));
+    EXPECT_EQ(summary("B1013"), std::string("Local name is already declared in this scope"));
 }
 
 TEST(DiagCatalog, UnknownCodeReturnsNull) {

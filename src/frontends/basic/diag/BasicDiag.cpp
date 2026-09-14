@@ -68,7 +68,7 @@ constexpr std::array<BasicDiagInfo, 22> kDiagTable = {
       "B0001",
       il::support::Severity::Error,
       "unexpected line number '{token}' before statement"},
-     {"BASIC_UNKNOWN_LINE_LABEL", "B1003", il::support::Severity::Error, "unknown line {label}"},
+     {"BASIC_UNKNOWN_LINE_LABEL", "B1003", il::support::Severity::Error, "unknown label {label}"},
      {"BASIC_IFACE_DUP_METHOD",
       "B2110",
       il::support::Severity::Error,

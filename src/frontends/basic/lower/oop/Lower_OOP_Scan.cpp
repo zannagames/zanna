@@ -161,8 +161,10 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
             offset += layout.fields.back().size;
         }
 
-        // Add this class's own fields
+        // Add this class's own instance fields; static fields live in module storage.
         for (const auto &field : decl.fields) {
+            if (field.isStatic)
+                continue;
             offset = alignTo(offset, kFieldAlignment);
             Lowerer::ClassLayout::Field info{};
             info.name = field.name;

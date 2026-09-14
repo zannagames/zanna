@@ -98,6 +98,8 @@ void ProgramLowering::run(const Program &prog, il::core::Module &module) {
     } bindingGuard{lowerer};
 
     lowerer.mangler = NameMangler();
+    lowerer.hasModuleFini_ = false;
+    lowerer.stringModvarKeys_.clear();
     auto &ctx = lowerer.context();
     ctx.reset();
     lowerer.symbolTable_.clear();

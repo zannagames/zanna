@@ -1,0 +1,11 @@
+unset = NOTHING
+unset IS NOTHING
+unset not <> NOTHING
+set <> NOTHING
+NOTHING <> set
+set not IS NOTHING
+object <> NOTHING
+made
+not made
+not made IS NOTHING
+-1

@@ -5,11 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_basic_lowerer_string_assignment.cpp
-// Purpose: Verify BASIC lowerer retains and releases strings on assignment.
-// Key invariants: String variables retain new values before releasing old ones.
-// Ownership/Lifetime: Test owns parser, lowerer, and resulting module.
-// Links: docs/internals/codemap.md
+// File: src/tests/unit/test_basic_lowerer_string_assignment.cpp
+// Purpose: Verify BASIC lowerer retains and releases strings on assignment and
+//          releases string variables when the program ends.
+// Key invariants:
+//   - Assigning a borrowed string retains the new value before releasing the
+//     old one.
+//   - The exit block releases each string variable once (ADR 0147).
+// Ownership/Lifetime:
+//   - Test owns the parser, lowerer, and resulting module.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -64,6 +69,7 @@ int main() {
     std::unordered_map<int, int> releaseCounts;
     std::unordered_map<int, int> retainCounts;
     std::unordered_set<int> assignmentLines;
+    int exitReleases = 0;
 
     for (const auto &block : mainFn->blocks) {
         for (const auto &instr : block.instructions) {
@@ -71,6 +77,11 @@ int main() {
                 continue;
             const int line = instr.loc.line;
             if (instr.callee == "rt_str_release_maybe") {
+                // Exit cleanup carries no source line.
+                if (line == 0) {
+                    ++exitReleases;
+                    continue;
+                }
                 assert(retainCounts[line] > 0);
                 ++releaseCounts[line];
                 assignmentLines.insert(line);
@@ -86,6 +97,7 @@ int main() {
         assert(releaseCounts[line] == 1);
         assert(retainCounts[line] == 1);
     }
+    assert(exitReleases == 1);
 
     return 0;
 }

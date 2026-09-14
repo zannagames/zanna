@@ -7,7 +7,7 @@
 //
 // File: src/tests/runtime/RTGCHashTableTests.cpp
 // Purpose: Validate the GC tracked-object hash table and deferred auto-trigger.
-// Key invariants: Tracking/removal remain correct across resize/tombstones and
+// Key invariants: Tracking/removal remain correct across resize/deletion and
 //                 allocator activity requests collection only at a safe point.
 // Ownership/Lifetime: Each case releases or explicitly collects all tracked
 //                     objects before resetting process-global GC test state.
@@ -32,6 +32,8 @@ void vm_trap(const char *msg) {
     rt_abort(msg);
 }
 }
+
+extern "C" int test_gc_churn(void);
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -109,7 +111,7 @@ static void test_track_many_objects() {
 }
 
 static void test_track_untrack_interleaved() {
-    // Track and untrack in an interleaved pattern to exercise tombstone handling
+    // Track and untrack in an interleaved pattern to exercise probe-chain repair
     const int N = 200;
     void *objs[200];
 
@@ -121,7 +123,7 @@ static void test_track_untrack_interleaved() {
         rt_gc_track(objs[i], test_node_traverse);
     }
 
-    // Untrack every other one (creates tombstones)
+    // Untrack every other one (repairs collision chains)
     for (int i = 0; i < N; i += 2) {
         rt_gc_untrack(objs[i]);
     }
@@ -135,7 +137,7 @@ static void test_track_untrack_interleaved() {
                "correct tracking state after interleaved ops");
     }
 
-    // Track some new objects (should reuse tombstone slots)
+    // Track some new objects (should reuse the emptied slots)
     void *extra[50];
     for (int i = 0; i < 50; i++) {
         extra[i] = make_node();
@@ -143,7 +145,7 @@ static void test_track_untrack_interleaved() {
     }
 
     ASSERT(rt_gc_tracked_count() == base + N / 2 + 50,
-           "count correct after inserting into tombstoned table");
+           "count correct after inserting into partially emptied table");
 
     // Clean up
     for (int i = 0; i < N; i++) {
@@ -321,6 +323,8 @@ static void test_threshold_disabled_no_auto_collect() {
 //=============================================================================
 
 int main() {
+    ASSERT(test_gc_churn() == 0, "GC lookup cost remains bounded after churn");
+
     // Hash table scalability
     test_track_many_objects();
     test_track_untrack_interleaved();

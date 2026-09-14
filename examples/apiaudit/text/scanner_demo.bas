@@ -2,7 +2,7 @@
 ' Tests: New, Pos, IsEnd, Remaining, Len, Reset, Peek, PeekAt, PeekStr,
 '        Read, ReadStr, ReadUntil, ReadUntilAny, Match, MatchStr,
 '        Accept, AcceptStr, AcceptAny, Skip, SkipWhitespace,
-'        ReadIdent, ReadInt, ReadNumber, ReadQuoted, ReadLine
+'        ReadIdent, ReadIntToken, ReadNumberToken, ReadQuoted, ReadLine
 
 PRINT "=== Scanner API Audit ==="
 
@@ -10,7 +10,7 @@ PRINT "=== Scanner API Audit ==="
 PRINT "--- New ---"
 DIM sc AS Zanna.Text.Scanner
 sc = Zanna.Text.Scanner.New("Hello, World! 42 3.14 ""quoted""")
-PRINT sc.Pos         ' 0
+PRINT sc.Position         ' 0
 PRINT sc.IsEnd       ' 0
 PRINT sc.Length         ' string length
 PRINT sc.Remaining   ' same as Len at start
@@ -31,60 +31,60 @@ PRINT sc.PeekStr(5)  ' Hello
 ' --- Read (consume one char, return char code) ---
 PRINT "--- Read ---"
 PRINT sc.Read()      ' 72 ('H')
-PRINT sc.Pos         ' 1
+PRINT sc.Position         ' 1
 PRINT sc.Read()      ' 101 ('e')
-PRINT sc.Pos         ' 2
+PRINT sc.Position         ' 2
 
 ' --- ReadStr (consume N chars as string) ---
 PRINT "--- ReadStr ---"
 PRINT sc.ReadStr(3)  ' llo
-PRINT sc.Pos         ' 5
+PRINT sc.Position         ' 5
 
 ' --- Match (check if current char matches, no consume) ---
 PRINT "--- Match ---"
 PRINT sc.Match(44)   ' 1 (44 = ',')
-PRINT sc.Pos         ' 5
+PRINT sc.Position         ' 5
 
 ' --- Accept (consume if matches) ---
 PRINT "--- Accept ---"
 PRINT sc.Accept(44)  ' 1 (consumed ',')
-PRINT sc.Pos         ' 6
+PRINT sc.Position         ' 6
 PRINT sc.Accept(44)  ' 0 (next is ' ', not ',')
 
 ' --- Skip ---
 PRINT "--- Skip ---"
 sc.Skip(1)           ' skip the space
-PRINT sc.Pos         ' 7
+PRINT sc.Position         ' 7
 
 ' --- MatchStr ---
 PRINT "--- MatchStr ---"
 PRINT sc.MatchStr("World")  ' 1
-PRINT sc.Pos                 ' 7
+PRINT sc.Position                 ' 7
 
 ' --- AcceptStr ---
 PRINT "--- AcceptStr ---"
 PRINT sc.AcceptStr("World") ' 1 (consumed)
-PRINT sc.Pos                 ' 12
+PRINT sc.Position                 ' 12
 
 ' --- AcceptAny (accept any char from set) ---
 PRINT "--- AcceptAny ---"
 PRINT sc.AcceptAny("!?")  ' 1 (consumed '!')
-PRINT sc.Pos               ' 13
+PRINT sc.Position               ' 13
 
 ' --- SkipWhitespace ---
 PRINT "--- SkipWhitespace ---"
 PRINT sc.SkipWhitespace()  ' number of whitespace chars skipped
 
-' --- ReadInt ---
-PRINT "--- ReadInt ---"
-PRINT sc.ReadInt()   ' 42
+' --- ReadIntToken ---
+PRINT "--- ReadIntToken ---"
+PRINT sc.ReadIntToken()   ' 42
 
 ' --- SkipWhitespace again ---
 sc.SkipWhitespace()
 
-' --- ReadNumber (reads float) ---
-PRINT "--- ReadNumber ---"
-PRINT sc.ReadNumber()  ' 3.14
+' --- ReadNumberToken (reads float) ---
+PRINT "--- ReadNumberToken ---"
+PRINT sc.ReadNumberToken()  ' 3.14
 
 ' --- SkipWhitespace ---
 sc.SkipWhitespace()
@@ -100,13 +100,13 @@ PRINT sc.IsEnd       ' 1
 ' --- Reset ---
 PRINT "--- Reset ---"
 sc.Reset()
-PRINT sc.Pos         ' 0
+PRINT sc.Position         ' 0
 PRINT sc.IsEnd       ' 0
 
 ' --- Pos (set) ---
 PRINT "--- Pos set ---"
-sc.Pos = 7
-PRINT sc.Pos         ' 7
+sc.Position = 7
+PRINT sc.Position         ' 7
 
 ' --- ReadUntil (read until char) ---
 PRINT "--- ReadUntil ---"

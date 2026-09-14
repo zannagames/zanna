@@ -210,8 +210,24 @@ class Emitter {
     void releaseArrayParams(const std::unordered_set<std::string> &paramNames);
 
     /// @brief Emit destructor calls for all local object variables at function exit.
-    /// @param paramNames Set of parameter names to exclude (they are not locals).
-    void releaseObjectLocals(const std::unordered_set<std::string> &paramNames);
+    /// @details BYVAL object parameters are owned locals (retained on entry) and are
+    ///          released like any other; BYREF parameters and ME are skipped.
+    /// @param excluded Names to leave unreleased, such as a returned result slot.
+    void releaseObjectLocals(const std::unordered_set<std::string> &excluded);
+
+    /// @brief Release the object held by one local slot and clear the slot.
+    /// @details Runs the class destructor and frees the object when this was its
+    ///          last reference.
+    /// @param info Mutable symbol metadata describing the object slot.
+    void releaseObjectSlot(SymbolInfo &info);
+
+    /// @brief Emit releases for every owned STRING local at a procedure exit.
+    /// @details Covers referenced scalar STRING slots, including BYVAL parameters,
+    ///          which a procedure retains on entry. BYREF parameters, STATIC
+    ///          variables, and names in @p excluded are skipped. Slots are visited
+    ///          in name order so the emitted IL is deterministic.
+    /// @param excluded Names to leave unreleased, such as a returned result slot.
+    void releaseStringLocals(const std::unordered_set<std::string> &excluded);
 
     /// @brief Emit destructor calls for object parameters at function exit.
     /// @param paramNames Set of parameter names to include for release.
@@ -279,11 +295,8 @@ class Emitter {
     /// @brief Pop the topmost exception handler from the EH stack.
     void emitEhPop();
 
-    /// @brief Pop the EH stack as part of a function return (cleans up all frames).
+    /// @brief Pop the ON ERROR dispatcher as part of a function return.
     void emitEhPopForReturn();
-
-    /// @brief Clear the currently active error handler tracking state.
-    void clearActiveErrorHandler();
 
     /// @brief Get or create the error handler basic block for a given BASIC line.
     /// @param targetLine The BASIC source line number for the ON ERROR GOTO target.
@@ -316,10 +329,6 @@ class Emitter {
     Lowerer &lowerer_;
     /// Shared primitive-emission helper bound to @ref lowerer_.
     common::CommonLowering common_;
-
-    /// @brief Release a single object slot, emitting destructor call if needed.
-    /// @param info Mutable symbol metadata describing the object slot.
-    void releaseObjectSlot(SymbolInfo &info);
 
     /// @brief State tracking for array release runtime helper requests.
     struct ArrayReleaseState {

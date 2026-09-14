@@ -150,10 +150,10 @@ struct Arity {
 /// @details One entry exists per @ref BuiltinCallExpr::Builtin enumerator, in
 ///          declaration order, so the enumerator value doubles as the index.
 struct BuiltinDescriptor {
-    const char *name{nullptr};                 ///< Canonical uppercase BASIC spelling.
-    B builtin{B::Len};                         ///< Enumerator this row describes.
-    Arity arity{};                             ///< Accepted argument-count range.
-    TypeMask typeMask{TypeMask::None};         ///< Possible result categories (see @ref TypeMask).
+    const char *name{nullptr};         ///< Canonical uppercase BASIC spelling.
+    B builtin{B::Len};                 ///< Enumerator this row describes.
+    Arity arity{};                     ///< Accepted argument-count range.
+    TypeMask typeMask{TypeMask::None}; ///< Possible result categories (see @ref TypeMask).
     SemanticAnalyzer::BuiltinAnalyzer analyze{}; ///< Optional semantic-analysis hook.
 };
 
@@ -384,6 +384,27 @@ static const SemanticSignatureView kCommandSemSig{/*min*/ 0,
                                                   /*args*/ nullptr,
                                                   /*count*/ 0,
                                                   /*result*/ BuiltinResultKind::String};
+/// One required numeric argument.
+static const SemanticArgSpecView kNumberArg[] = {
+    SemanticArgSpecView{false, BuiltinArgTypeMask::Number},
+};
+/// HEX$, OCT$, and SPACE$ semantic signature: one number, string result.
+static const SemanticSignatureView kNumberToStringSemSig{/*min*/ 1,
+                                                         /*max*/ 1,
+                                                         /*args*/ kNumberArg,
+                                                         /*count*/ 1,
+                                                         /*result*/ BuiltinResultKind::String};
+/// STRING$ arguments: a count, then a character code or a string.
+static const SemanticArgSpecView kStringOfArgs[] = {
+    SemanticArgSpecView{false, BuiltinArgTypeMask::Number},
+    SemanticArgSpecView{false, BuiltinArgTypeMask::NumberOrString},
+};
+/// STRING$ semantic signature: count and character, string result.
+static const SemanticSignatureView kStringOfSemSig{/*min*/ 2,
+                                                   /*max*/ 2,
+                                                   /*args*/ kStringOfArgs,
+                                                   /*count*/ 2,
+                                                   /*result*/ BuiltinResultKind::String};
 
 /// @copydoc getBuiltinSemanticSignature()
 const SemanticSignatureView *getBuiltinSemanticSignature(BuiltinCallExpr::Builtin b) {
@@ -395,6 +416,12 @@ const SemanticSignatureView *getBuiltinSemanticSignature(BuiltinCallExpr::Builti
             return &kArgGetSemSig;
         case E::Command:
             return &kCommandSemSig;
+        case E::Hex:
+        case E::Oct:
+        case E::Space:
+            return &kNumberToStringSemSig;
+        case E::StringOf:
+            return &kStringOfSemSig;
         default:
             return nullptr;
     }

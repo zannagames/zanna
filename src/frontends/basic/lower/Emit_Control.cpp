@@ -195,15 +195,6 @@ void Lowerer::emitEhPopForReturn() {
     emitter().emitEhPopForReturn();
 }
 
-/// @brief Clear any active error handler metadata from the lowering context.
-///
-/// @details Invoked when BASIC code disables @c ON @c ERROR or when a handler
-///          scope expires.  Ensures subsequent statements observe a clean error
-///          state.
-void Lowerer::clearActiveErrorHandler() {
-    emitter().clearActiveErrorHandler();
-}
-
 /// @brief Retrieve (or lazily create) the IL block backing a BASIC error handler.
 ///
 /// @details The emitter owns the cache mapping handler line numbers to IL

@@ -5,13 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_basic_diag_coverage.cpp
+// File: src/tests/unit/test_basic_diag_coverage.cpp
 // Purpose: Drift guard — assert every BASIC diagnostic code (Bxxxx) emitted in
 //          the frontend source has a catalog entry backing `zanna explain`.
 // Key invariants:
 //   - The frontend cannot emit a code that `zanna explain` does not understand.
 // Ownership/Lifetime: Standalone unit test; reads frontend sources at runtime.
-// Links: support/diag_catalog.hpp, frontends/basic/DiagnosticCodes.hpp
+// Links: src/support/diag_catalog.hpp, src/support/diag_catalog.def
 //
 //===----------------------------------------------------------------------===//
 
@@ -81,8 +81,9 @@ TEST(BasicDiagCoverage, EveryEmittedCodeIsCataloged) {
             missing.insert(code);
     }
     if (!missing.empty()) {
-        std::cerr << "BASIC frontend emits diagnostic codes with no diag_catalog.def entry "
-                     "(zanna explain would report 'unknown code'). Add a DIAG_CODE(...) for each:\n";
+        std::cerr
+            << "BASIC frontend emits diagnostic codes with no diag_catalog.def entry "
+               "(zanna explain would report 'unknown code'). Add a DIAG_CODE(...) for each:\n";
         for (const auto &code : missing)
             std::cerr << "  - " << code << "\n";
     }

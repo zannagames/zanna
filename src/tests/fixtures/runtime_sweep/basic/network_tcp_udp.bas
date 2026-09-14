@@ -111,7 +111,7 @@ DIM recvExact AS Zanna.Collections.Bytes
 recvExact = serverConn2.RecvExact(4)
 Zanna.Core.Diagnostics.AssertEq(recvExact.Length, 4, "tcp.recvexact")
 
-client2.SendStr("line\n")
+client2.SendStr("line" + CHR$(10))
 DIM line AS STRING
 line = serverConn2.RecvLine()
 Zanna.Core.Diagnostics.AssertEqStr(line, "line", "tcp.recvline")

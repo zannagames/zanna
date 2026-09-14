@@ -109,7 +109,7 @@ L30:
   cbr %t27, printch_fail4, printch_cont4
 L40:
   .loc 1 4 4
-  ret 0
+  br exit
 exit:
   ret 0
 printch_fail:

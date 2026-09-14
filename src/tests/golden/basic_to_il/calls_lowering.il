@@ -63,6 +63,7 @@ func @ID$(str %S$) -> str {
 entry_ID$(%S$:str):
   %t1 = alloca 8
   store str, %t1, %S$
+  call @rt_str_retain_maybe(%S$)
   br L-1000000000_ID$
 L-1000000000_ID$:
   .loc 1 5 8
@@ -70,10 +71,16 @@ L-1000000000_ID$:
   .loc 1 5 8
   call @rt_str_retain_maybe(%t2)
   .loc 1 5 8
+  %t3 = load str, %t1
+  .loc 1 5 8
+  call @rt_str_release_maybe(%t3)
+  .loc 1 5 8
   ret %t2
 ret_ID$:
-  %t3 = const_str @.L0
-  ret %t3
+  %t4 = load str, %t1
+  call @rt_str_release_maybe(%t4)
+  %t5 = const_str @.L0
+  ret %t5
 }
 func @FIRST#(i64 %N) -> f64 {
 entry_FIRST#(%N:i64):
@@ -210,7 +217,7 @@ L30:
   br L40
 L40:
   .loc 1 18 4
-  ret 0
+  br exit
 exit:
   ret 0
 }

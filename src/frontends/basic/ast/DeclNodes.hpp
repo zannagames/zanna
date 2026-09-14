@@ -25,6 +25,8 @@
 
 #include "frontends/basic/ast/StmtNodesAll.hpp"
 
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 /// @file
@@ -46,6 +48,10 @@ struct Program {
 
     /// Source location of the first token represented by the program.
     il::support::SourceLoc loc{};
+
+    /// Canonical name of each named label, keyed by the line number the parser
+    /// assigned it, so diagnostics can show the name instead of the number.
+    std::unordered_map<int, std::string> labelNames;
 };
 
 } // namespace il::frontends::basic

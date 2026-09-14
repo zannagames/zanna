@@ -32,8 +32,10 @@
 
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/AstWalker.hpp"
+#include "frontends/basic/ILTypeUtils.hpp"
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/LoweringPipeline.hpp"
+#include "frontends/basic/NameMangler_OOP.hpp"
 #include "frontends/basic/ProcedureSymbolTracker.hpp"
 #include "frontends/basic/SemanticAnalyzer.hpp"
 #include "frontends/basic/StringUtils.hpp"
@@ -71,6 +73,26 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     /// @param expr Scalar reference whose name is tracked.
     void after(const VarExpr &expr) {
         tracker_.trackScalar(expr.name);
+    }
+
+    /// @brief Skip a class-name receiver, which is not a variable.
+    /// @param expr Member access; its base is walked only when it is a value.
+    /// @return False for `Class.member`.
+    bool shouldVisitChildren(const MemberAccessExpr &expr) {
+        return expr.staticReceiverClass.empty();
+    }
+
+    /// @brief Skip a class-name receiver, which is not a variable, but walk the arguments.
+    /// @param expr Method call; its base is walked only when it is a value.
+    /// @return False for `Class.Method(...)`, whose arguments are walked here.
+    bool shouldVisitChildren(const MethodCallExpr &expr) {
+        if (expr.staticReceiverClass.empty())
+            return true;
+        for (const auto &arg : expr.args) {
+            if (arg)
+                walkExpr(*arg);
+        }
+        return false;
     }
 
     /// @brief Record usage of an array element expression.
@@ -448,6 +470,24 @@ std::optional<Lowerer::VariableStorage> Lowerer::resolveVariableStorage(
         }
     }
 
+    // Inside a class member, a static field of the class (or a base) named by its bare
+    // name lives in the class's shared module storage.
+    if (auto staticField = findStaticFieldInScope(name)) {
+        const ClassInfo::FieldInfo &sf = *staticField->second;
+        VariableStorage storage;
+        storage.slotInfo = slotInfo;
+        storage.slotInfo.isArray = false;
+        storage.slotInfo.isObject = !sf.objectClassName.empty();
+        storage.slotInfo.objectClass = sf.objectClassName;
+        storage.slotInfo.type =
+            storage.slotInfo.isObject ? Type(Type::Kind::Ptr) : type_conv::astToIlType(sf.type);
+        storage.slotInfo.isBoolean = !storage.slotInfo.isObject && sf.type == AstType::Bool;
+        storage.pointer =
+            emitStaticFieldAddress(staticField->first, sf.name, storage.slotInfo.type.kind);
+        storage.isField = false;
+        return storage;
+    }
+
     // Inside a class member, a field of the receiver hides a module-level variable of the
     // same name, as it does in semantic analysis; locals and parameters were handled above.
     if (auto field = resolveImplicitField(name, loc)) {
@@ -492,6 +532,8 @@ std::optional<Lowerer::VariableStorage> Lowerer::resolveStaticVariableStorage(
 
     // Choose runtime helper based on IL type
     std::string callee = selectModvarAddrHelper(slotInfo.type.kind);
+    if (slotInfo.type.kind == Type::Kind::Str)
+        stringModvarKeys_.insert(scopedName);
 
     // Emit scoped name constant and runtime call
     std::string label = getStringLabel(scopedName);
@@ -513,6 +555,8 @@ std::optional<Lowerer::VariableStorage> Lowerer::resolveStaticVariableStorage(
 std::optional<Lowerer::VariableStorage> Lowerer::resolveModuleLevelStorage(
     std::string_view name, const SlotType &slotInfo) {
     std::string callee = selectModvarAddrHelper(slotInfo.type.kind);
+    if (slotInfo.type.kind == Type::Kind::Str)
+        stringModvarKeys_.insert(std::string(name));
 
     std::string label = getStringLabel(std::string(name));
     Value nameStr = emitConstStr(label);
@@ -523,6 +567,22 @@ std::optional<Lowerer::VariableStorage> Lowerer::resolveModuleLevelStorage(
     storage.pointer = addr;
     storage.isField = false;
     return storage;
+}
+
+/// @brief Emit the address of a class's static field in runtime module storage.
+/// @param qualifiedClass Class declaring the field.
+/// @param fieldName Field name as indexed.
+/// @param kind IL kind of the stored value.
+/// @return Pointer to the field's storage.
+Lowerer::Value Lowerer::emitStaticFieldAddress(const std::string &qualifiedClass,
+                                               const std::string &fieldName,
+                                               Type::Kind kind) {
+    std::string callee = selectModvarAddrHelper(kind);
+    if (kind == Type::Kind::Str)
+        stringModvarKeys_.insert(mangleStaticField(qualifiedClass, fieldName));
+    std::string label = getStringLabel(mangleStaticField(qualifiedClass, fieldName));
+    Value nameStr = emitConstStr(label);
+    return emitCallRet(Type(Type::Kind::Ptr), callee, {nameStr});
 }
 
 /// @brief Select the appropriate rt_modvar_addr_* helper based on type kind.

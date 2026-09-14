@@ -5,11 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the lowering engine that translates BASIC builtin calls to IL.
-// The module consumes the declarative builtin registry, selects the correct
-// lowering variant, and emits control-flow or runtime helper invocations as
-// required.  String builtins are delegated to the specialised string lowering
-// context while other builtins fall back to rule-driven emission.
+// File: src/frontends/basic/LowerExprBuiltin.cpp
+// Purpose: Lower BASIC builtin calls to IL. The module consumes the declarative
+//          builtin registry, selects the lowering variant, and emits control flow
+//          or runtime helper invocations; string builtins go to the string
+//          lowering context and the rest use rule-driven emission.
+// Key invariants:
+//   - Every builtin kind maps to one emitter; unknown kinds report B4004.
+//   - ERR reads the handler block's error, then the ON ERROR dispatcher's code
+//     slot, and is 0 elsewhere.
+// Ownership/Lifetime:
+//   - Borrows the Lowerer; emitted values belong to the function being lowered.
+// Links: src/frontends/basic/lower/Lower_TryCatch.cpp, docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -384,10 +391,11 @@ Lowerer::RVal BuiltinExprLowering::emitLocBuiltin(Lowerer &lowerer, const Builti
 
 /// @brief Lower the ERR builtin that returns the current error code.
 ///
-/// @details When the current block's first parameter has Error type, ERR ensures
-///          that parameter has a serializable function value name, extracts its
-///          `i32` code, and manually sign-extends it to `i64`. A missing function,
-///          block, or leading Error parameter yields constant zero.
+/// @details When the current block's first parameter has Error type (a TRY
+///          handler), ERR ensures that parameter has a serializable function value
+///          name, extracts its `i32` code, and manually sign-extends it to `i64`.
+///          In a procedure with ON ERROR GOTO it reads the code the handler entry
+///          stored. Anywhere else it is constant zero.
 ///
 /// @param lowerer Borrowed lowering engine.
 /// @param expr AST node describing the builtin invocation.
@@ -433,6 +441,15 @@ Lowerer::RVal BuiltinExprLowering::emitErrBuiltin(Lowerer &lowerer, const Builti
         }
 
         return {code64, IlType(IlKind::I64)};
+    }
+
+    // In a procedure with ON ERROR GOTO the handler entry stored the error code in the
+    // dispatcher's slot; RESUME resets it to 0.
+    auto &errorState = ctx.errorHandlers();
+    if (errorState.hasDispatcher()) {
+        lowerer.curLoc = expr.loc;
+        Value code32 = lowerer.emitLoad(IlType(IlKind::I32), errorState.slots().code);
+        return lowerer.ensureI64(Lowerer::RVal{code32, IlType(IlKind::I32)}, expr.loc);
     }
 
     // Not in an error handler, return 0

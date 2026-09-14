@@ -4,14 +4,20 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
 // File: src/frontends/basic/lower/Lowerer_Stmt.cpp
 // Purpose: Provides the BASIC statement visitor wiring that forwards AST nodes
 //          into the shared Lowerer helpers.
-// Key invariants: Statement visitors honour the active Lowerer context and never
-//                 mutate AST ownership.
-// Ownership/Lifetime: Operates on a borrowed Lowerer instance while the caller
-//                     retains AST ownership.
-// Links: docs/internals/codemap.md, docs/tutorials/basic-tutorial.md
+// Key invariants:
+//   - Statement visitors honour the active Lowerer context and never mutate
+//     AST ownership.
+//   - Every RETURN releases the procedure's STRING, object, and array locals
+//     and hands a STRING or object result to the caller with one reference.
+// Ownership/Lifetime:
+//   - Operates on a borrowed Lowerer instance while the caller retains AST
+//     ownership.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md,
+//        docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -454,7 +460,9 @@ class LowererStmtVisitor final : public lower::AstVisitor, public StmtVisitor {
 
 /// @brief Lower a single BASIC statement into IL.
 /// @details Updates the active source location for diagnostics, instantiates a
-///          @ref LowererStmtVisitor, and lets it process the statement node.
+///          @ref LowererStmtVisitor, and lets it process the statement node. In a
+///          procedure that uses RESUME the statement is bracketed by a resume site
+///          (see @ref beginResumeSite).
 /// @param stmt Statement to lower.
 void Lowerer::lowerStmt(const Stmt &stmt) {
     if (++stmtLowerDepth_ > kMaxLowerDepth) {
@@ -470,6 +478,7 @@ void Lowerer::lowerStmt(const Stmt &stmt) {
         }
     } stmtGuard_{stmtLowerDepth_};
 
+    const std::optional<unsigned> resumeSite = beginResumeSite(stmt);
     curLoc = stmt.loc;
     LowererStmtVisitor visitor(*this);
     visitor.visitStmt(stmt);
@@ -479,6 +488,8 @@ void Lowerer::lowerStmt(const Stmt &stmt) {
     // loop-local and don't exist at function entry, so releasing them at function
     // exit would reference undefined values.
     releaseDeferredTemps();
+    if (resumeSite)
+        endResumeSite(*resumeSite);
 }
 
 /// @brief Lower a sequence of BASIC statements.
@@ -637,12 +648,12 @@ void Lowerer::lowerCallStmt(const CallStmt &stmt) {
 /// @brief Return a value from the middle of a FUNCTION or method body.
 /// @details RETURN leaves through the same cleanup as the procedure's exit block.
 ///          A STRING or object result is handed to the caller owned: an owned
-///          temporary queued for release (a call or concatenation result) is
-///          unqueued, a NEW result keeps its creation reference, and any other
-///          value is retained. Then this statement's remaining temporaries and
-///          the procedure's object and array locals are released. Returning a
-///          local, a field, a parameter or a temporary therefore always yields
-///          exactly one reference.
+///          temporary queued for release (a call, concatenation, or NEW result)
+///          is unqueued, and any other value is retained. Then this statement's
+///          remaining temporaries, the procedure's STRING and object slots
+///          (BYVAL parameters and the function-name slot included), and its
+///          local arrays are released. Returning a local, a field, a parameter
+///          or a temporary therefore always yields exactly one reference.
 /// @param value Result already converted to the function's return type.
 /// @param retKind IL kind of the enclosing function's return type.
 /// @param ownsReference Whether @p value already holds a reference for the caller.
@@ -660,7 +671,9 @@ void Lowerer::emitValueReturn(Value value, Type::Kind retKind, bool ownsReferenc
     releaseDeferredTemps();
     const std::unordered_set<std::string> params(currentProcParamNames_.begin(),
                                                  currentProcParamNames_.end());
-    releaseObjectLocals(params);
+    releaseStringLocals({});
+    releaseObjectLocals({});
+    // Array parameters stay borrowed from the caller (BUG-105).
     releaseArrayLocals(params);
     emitRet(value);
 }
@@ -669,8 +682,8 @@ void Lowerer::emitValueReturn(Value value, Type::Kind retKind, bool ownsReferenc
 /// @details Distinguishes between GOSUB returns—which route through
 ///          @ref lowerGosubReturn—and normal procedure returns. A value is
 ///          converted to the FUNCTION's result type and returned through
-///          @ref emitValueReturn; a bare RETURN in a FUNCTION jumps to the exit
-///          block, and elsewhere a void return is generated.
+///          @ref emitValueReturn; a bare RETURN jumps to the procedure's exit
+///          block so its locals are released.
 /// @param stmt RETURN statement node.
 void Lowerer::lowerReturn(const ReturnStmt &stmt) {
     if (stmt.isGosubReturn) {
@@ -720,20 +733,15 @@ void Lowerer::lowerReturn(const ReturnStmt &stmt) {
         }
         emitValueReturn(v->value, retKind, /*ownsReference=*/is<NewExpr>(*stmt.value));
     } else {
-        // BUG-107: In FUNCTIONs, a bare RETURN should jump to the unified
-        // epilogue so we return the implicit result (assignment to the
-        // function name) rather than emitting a void return which violates
-        // the IL verifier's return type.
-        if (il::core::Function *fn = context().function();
-            fn && fn->retType.kind != Type::Kind::Void) {
-            ProcedureContext &ctx = context();
-            Function *func = ctx.function();
-            if (func) {
-                emitBr(&func->blocks[ctx.exitIndex()]);
-                return;
-            }
+        // A bare RETURN leaves through the unified epilogue, which releases the
+        // procedure's locals and, in a FUNCTION, returns the implicit result
+        // assigned to the function name (BUG-107).
+        ProcedureContext &ctx = context();
+        if (Function *func = ctx.function(); func && ctx.exitIndex() < func->blocks.size()) {
+            emitBr(&func->blocks[ctx.exitIndex()]);
+            return;
         }
-        // SUB or unavailable context: fall back to void return.
+        // Unavailable context: fall back to void return.
         emitRetVoid();
     }
 }

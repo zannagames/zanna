@@ -40,12 +40,12 @@ PRINT "Has 'city': "; Zanna.Text.Template.Has(tpl, "city")
 
 ' --- Keys ---
 PRINT "--- Keys ---"
-DIM keys AS OBJECT
-keys = Zanna.Text.Template.Keys(tpl)
-PRINT "Key count: "; Zanna.Collections.Seq.get_Count(keys)
+DIM keys AS Zanna.Collections.Seq
+keys = Zanna.Collections.StringSet.ToSeq(Zanna.Text.Template.Keys(tpl))
+PRINT "Key count: "; keys.Count
 DIM ki AS INTEGER
-FOR ki = 0 TO Zanna.Collections.Seq.get_Count(keys) - 1
-    PRINT "Key: "; keys.Get(ki)
+FOR ki = 0 TO keys.Count - 1
+    PRINT "Key: "; Zanna.Core.Box.ToStr(keys.Get(ki))
 NEXT ki
 
 ' --- Escape ---

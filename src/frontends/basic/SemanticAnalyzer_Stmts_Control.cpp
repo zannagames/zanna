@@ -6,10 +6,13 @@
 // File: src/frontends/basic/SemanticAnalyzer_Stmts_Control.cpp
 // Purpose: Dispatch entry points for control-flow statement analysis in the
 //          BASIC semantic analyzer.
-// Key invariants: Each helper delegates to sem::check_* modules that maintain
-//                 loop/label stacks via ControlCheckContext and assert balance
-//                 on exit.
-// Ownership/Lifetime: Borrowed SemanticAnalyzer state only.
+// Key invariants:
+//   - Each helper delegates to sem::check_* modules that maintain loop/label
+//     stacks via ControlCheckContext and assert balance on exit.
+//   - CATCH and USING variables are renamed to their scoped unique names, the
+//     same names references in their bodies receive.
+// Ownership/Lifetime:
+//   - Borrowed SemanticAnalyzer state only.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
@@ -110,7 +113,7 @@ bool SemanticAnalyzer::validateSelectCaseNumericArm(const CaseArm &arm, SelectCa
 ///          catch scope and can resolve the catch binding. Lowering performs
 ///          catch-variable initialization.
 /// @param stmt Structured handler statement to analyze.
-void SemanticAnalyzer::visit(const TryCatchStmt &stmt) {
+void SemanticAnalyzer::visit(TryCatchStmt &stmt) {
     // Analyze TRY body under the existing scope.
     for (const auto &st : stmt.tryBody)
         if (st)
@@ -129,19 +132,21 @@ void SemanticAnalyzer::visit(const TryCatchStmt &stmt) {
     ScopeTracker::ScopedScope catchScope(scopes_);
 
     if (stmt.catchVar && !stmt.catchVar->empty()) {
-        const std::string &name = *stmt.catchVar;
+        const std::string name = *stmt.catchVar;
 
         // Forbid duplicate declaration in the same (catch) scope.
         if (scopes_.isDeclaredInCurrentScope(name)) {
             std::string msg = "duplicate local '" + name + "'";
             de.emit(il::support::Severity::Error,
-                    "B1006",
+                    "B1013",
                     stmt.header.end.isValid() ? stmt.header.end : stmt.header.begin,
                     static_cast<uint32_t>(name.size()),
                     std::move(msg));
         } else {
-            // Declare a local binding for the catch variable in this scope.
+            // Declare a local binding for the catch variable in this scope. Lowering
+            // binds the error code to the statement's name, which references share.
             std::string unique = scopes_.declareLocal(name);
+            stmt.catchVar = unique;
 
             // Track symbol and force INTEGER (i64) type; initialized during lowering.
             auto insertResult = symbols_.insert(unique);
@@ -178,24 +183,26 @@ void SemanticAnalyzer::visit(const TryCatchStmt &stmt) {
 ///          non-object initializer emits `B3204`; unknown is tolerated for
 ///          recovery. Same-scope duplicate names emit `B1006`.
 /// @param stmt Resource declaration, initializer, and body to analyze.
-void SemanticAnalyzer::visit(const UsingStmt &stmt) {
+void SemanticAnalyzer::visit(UsingStmt &stmt) {
     // Begin a new scope for the USING body; the resource variable is local to it.
     ScopeTracker::ScopedScope usingScope(scopes_);
 
     if (!stmt.varName.empty()) {
-        const std::string &name = stmt.varName;
+        const std::string name = stmt.varName;
 
         // Forbid duplicate declaration in the same scope.
         if (scopes_.isDeclaredInCurrentScope(name)) {
             std::string msg = "duplicate local '" + name + "'";
             de.emit(il::support::Severity::Error,
-                    "B1006",
+                    "B1013",
                     stmt.loc,
                     static_cast<uint32_t>(name.size()),
                     std::move(msg));
         } else {
-            // Declare a local binding for the resource variable in this scope.
+            // Declare a local binding for the resource variable in this scope. Lowering
+            // stores the resource under the statement's name, which references share.
             std::string unique = scopes_.declareLocal(name);
+            stmt.varName = unique;
 
             // Track symbol and set Object type for the resource.
             auto insertResult = symbols_.insert(unique);
@@ -332,24 +339,10 @@ void SemanticAnalyzer::analyzeEnd(const EndStmt &) {
     // nothing
 }
 
-/// @brief Activates an error handler and records its numeric target.
-/// @param label Numeric line label associated with the handler entry point.
-/// @post @ref hasActiveErrorHandler returns @c true and the target is @p label.
-void SemanticAnalyzer::installErrorHandler(int label) {
-    errorHandlerActive_ = true;
-    errorHandlerTarget_ = label;
-}
-
-/// @brief Deactivates the current error handler and removes its target.
-void SemanticAnalyzer::clearErrorHandler() {
-    errorHandlerActive_ = false;
-    errorHandlerTarget_.reset();
-}
-
-/// @brief Reports the current error-handler active flag.
-/// @return @c true after installation and before clearing/scope restoration.
-bool SemanticAnalyzer::hasActiveErrorHandler() const noexcept {
-    return errorHandlerActive_;
+/// @brief Reports whether the body being analyzed contains ON ERROR GOTO <label>.
+/// @return @c true when the procedure or module body selects a handler anywhere.
+bool SemanticAnalyzer::procedureHasOnError() const noexcept {
+    return procedureHasOnError_;
 }
 
 } // namespace il::frontends::basic

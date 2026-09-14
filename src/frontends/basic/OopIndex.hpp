@@ -109,6 +109,7 @@ struct ClassInfo {
     bool hasSynthCtor = false;           ///< True when lowering must synthesise a constructor.
     bool hasDestructor = false;          ///< True if CLASS declares a destructor.
     bool hasStaticCtor = false;          ///< True if CLASS declares a static constructor.
+    bool hasStaticDtor = false;          ///< True if CLASS declares a static destructor.
     std::vector<CtorParam> ctorParams;   ///< Constructor signature if declared.
 
     /// @brief Extended method metadata used for vtable construction and checks.

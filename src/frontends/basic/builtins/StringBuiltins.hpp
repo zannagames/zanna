@@ -5,13 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/builtins/StringBuiltins.hpp
+// File: src/frontends/basic/builtins/StringBuiltins.hpp
 // Purpose: Declares registry and lowering helpers for BASIC string built-ins.
-// Key invariants: Registry lookups return immutable metadata describing the
-//                 builtin's name, arity bounds, and lowering entry point.
-// Ownership/Lifetime: Functions operate on the lowering context supplied by the
-//                     caller; LowerCtx borrows the Lowerer and call AST node.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   - Registry lookups return immutable metadata describing the builtin's
+//     name, arity bounds, and lowering entry point.
+//   - String results of runtime calls emitted through LowerCtx are released at
+//     the statement boundary.
+// Ownership/Lifetime:
+//   - Functions operate on the lowering context supplied by the caller.
+//   - LowerCtx borrows the Lowerer and the call AST node.
+// Links: src/frontends/basic/builtins/StringBuiltins.cpp,
+//        docs/languages/basic-reference.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -171,6 +176,9 @@ class LowerCtx {
     void trackRuntime(il::runtime::RuntimeFeature feature);
 
     /// @brief Emit a runtime call returning a value.
+    /// @details A string result is released at the statement boundary as its
+    ///          runtime row declares (ADR 0314), so builtins may pass it on to
+    ///          further calls without releasing it themselves.
     /// @param ty Declared result type of the runtime helper.
     /// @param runtime Null-terminated runtime function name.
     /// @param args Ordered IL arguments passed to the helper.
@@ -180,6 +188,27 @@ class LowerCtx {
                       const char *runtime,
                       const std::vector<Value> &args,
                       il::support::SourceLoc loc);
+
+    /// @brief Emit a string literal.
+    /// @param text Literal text.
+    /// @return String constant value.
+    Value constString(const char *text);
+
+    /// @brief Emit an `i1` comparison of two `i64` values.
+    /// @param op Comparison opcode, for example `SCmpGE`.
+    /// @param lhs Left operand.
+    /// @param rhs Right operand.
+    /// @param loc Source location assigned to the comparison.
+    /// @return Comparison result.
+    Value compare(il::core::Opcode op, Value lhs, Value rhs, il::support::SourceLoc loc);
+
+    /// @brief Trap with @p message unless @p ok holds.
+    /// @details Splits the current block: lowering continues in a new block
+    ///          reached when @p ok is true, and a second new block traps.
+    /// @param ok `i1` condition that must hold.
+    /// @param message Trap message.
+    /// @param loc Source location assigned to the branch and the trap.
+    void trapUnless(Value ok, const char *message, il::support::SourceLoc loc);
 
   private:
     /// @brief Lazily lower argument @p idx, caching the result for reuse.

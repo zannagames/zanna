@@ -74,8 +74,10 @@ L30:
   br if_test_01
 L40:
   .loc 1 4 4
-  ret 0
+  br exit
 exit:
+  %t19 = load str, %a$
+  call @rt_str_release_maybe(%t19)
   ret 0
 if_test_0:
   .loc 1 2 7

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-09-01
+last-verified: 2026-09-14
 ---
 
 # Lifetime Model
@@ -11,8 +11,16 @@ model and best practices.
 
 ## Reference Counting (RC)
 
-- Objects are heap-allocated with a shared header that tracks a reference count.
-- Passing objects to procedures follows a borrow/return pattern; ownership is not implicitly transferred.
+- Objects and strings are heap-allocated with a shared header that tracks a reference count.
+- Every STRING or object variable, parameter, field, and array element holds one reference to its value.
+  Assigning a new value releases the old one.
+- A procedure holds its own reference to each STRING or object parameter (unless declared `BYREF`), so
+  assigning to a parameter never affects the caller. Parameters and locals are released when the
+  procedure returns, however it returns.
+- A FUNCTION's STRING or object result is handed to the caller with one reference.
+- Temporaries (a `NEW` object passed straight to a call, a string built by a built-in function or `+`,
+  an element read from an array) are released at the end of their statement unless an assignment or
+  `RETURN` keeps them.
 - When the last reference is released, storage is reclaimed; if a destructor exists, it runs before free.
 
 ## Explicit Disposal
@@ -30,13 +38,14 @@ model and best practices.
 
 ## Static Destructors
 
-- A `STATIC DESTRUCTOR` is intended to run once at program shutdown, for
+- A `STATIC DESTRUCTOR` runs once when the program ends normally, for
   module-level cleanup (e.g., releasing global resources), in class declaration
   order within the module.
-- **Not currently functional.** `STATIC DESTRUCTOR` parses and lowers to a
-  `@Class.__dtor` function, but nothing schedules that function at shutdown, so
-  the body never executes. Do not rely on it for cleanup; use an explicit
-  teardown call at the end of the program instead.
+- The program ends normally at its last statement or at `END` anywhere (in a SUB,
+  FUNCTION, or method too). The main program's variables are released first. A
+  program ended by an unhandled error does not run static destructors.
+- Static destructors lower to `Class.__dtor$static` functions that the module
+  finalizer `__mod_fini$oop` calls.
 
 ## Cyclic References
 
@@ -78,7 +87,7 @@ cleanup that clears cyclic references:
 ```basic
 ' Clean up a doubly-linked list
 DIM current AS Node = head
-WHILE NOT Zanna.Core.Object.RefEquals(current, NOTHING)
+WHILE current <> NOTHING
     DIM nxt AS Node = current.Next
     current.Prev = NOTHING
     current.Next = NOTHING
@@ -87,10 +96,8 @@ WHILE NOT Zanna.Core.Object.RefEquals(current, NOTHING)
 WEND
 ```
 
-> **Testing for null.** `NOTHING` can be *assigned* to an object variable, but it
-> cannot be compared with `=`, `<>`, or `IS` — those report
-> `B2001: operand type mismatch` and `B2111: unknown type 'nothing'`
-> respectively. Use `Zanna.Core.Object.RefEquals(obj, NOTHING)` for the test.
+> **Testing for null.** Compare an object reference with `NOTHING` using `=`, `<>`, or
+> `IS`: `IF obj = NOTHING THEN`, `WHILE obj <> NOTHING`, `IF obj IS NOTHING THEN`.
 
 ### Design Patterns to Avoid Cycles
 

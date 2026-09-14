@@ -1,146 +1,588 @@
 //===----------------------------------------------------------------------===//
 //
 // Part of the Zanna project, under the GNU GPL v3.
-// See LICENSE in the project root for license information.
+// See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/lower/Lower_TryCatch.cpp
-// Purpose: Lower BASIC ON ERROR and RESUME constructs by manipulating the
-//          lowerer's exception-handling stack.
-// Key invariants: Handler metadata in the procedure context reflects the most
-//                 recent ON ERROR directive; resume tokens are only materialised
-//                 when the target handler remains live.
-// Ownership/Lifetime: Routines borrow the @ref Lowerer state and update handler
-//                     caches owned by @ref ProcedureContext.
-// Links: docs/internals/codemap.md
+// Purpose: Lower BASIC ON ERROR, RESUME, TRY/CATCH, and USING constructs on the IL
+//          exception-handling model.
+// Key invariants:
+//   - A procedure with ON ERROR GOTO <label> has one dispatcher handler, pushed only
+//     by its arm block. The entry, the handler entry, and every RESUME reach the arm
+//     with the handler removed, so the handler stack has the same depth on every
+//     path through the body and the arm dominates all protected code.
+//   - ON ERROR GOTO only stores which label is selected; the handler entry records
+//     the error, consumes the resume token, and returns through the arm to that label.
+//   - An error raised while the handler runs, or with no label selected, is raised
+//     again with the dispatcher removed, so it reaches the caller unchanged.
+//   - Resume sites are recorded only where the arm may enter: never inside TRY or
+//     USING statements, whose bodies run with another handler or hold a token.
+//   - A USING variable owns one reference to its resource, released by the
+//     statement's cleanup on both the normal and the exception path.
+// Ownership/Lifetime:
+//   - Routines borrow the @ref Lowerer state and update handler state owned by
+//     @ref ProcedureContext.
+// Links: docs/specs/errors.md, docs/adr/0005-resume-token-provenance.md
 //
 //===----------------------------------------------------------------------===//
 
 /// @file
-/// @brief Implements ON ERROR/RESUME lowering for BASIC error-handling constructs.
-/// @details Helpers manipulate the Lowerer's exception-handling stack metadata,
-/// ensuring runtime handlers are installed and resumed according to the source
-/// semantics without leaking state between statements.
+/// @brief Implements ON ERROR/RESUME, TRY/CATCH, and USING lowering for BASIC.
+/// @details The ON ERROR dispatcher uses these blocks:
+/// @code
+/// entry:           slots zeroed; br ^onerr_arm
+/// onerr_arm:       eh.push ^onerr_handler; switch.i32 target -> body | chosen block
+/// onerr_handler:   running ? ^onerr_rethrow : ^onerr_select
+/// onerr_select:    selected == 0 ? ^onerr_rethrow : ^onerr_enter
+/// onerr_enter:     store kind/code/line, running = 1, failed site = site,
+///                  target = selected; resume.label %tok, ^onerr_arm
+/// onerr_rethrow:   Zanna.Runtime.Unsafe.RaiseKind(kind, code, line)
+/// RESUME:          running = 0; target = resume dispatch | label; eh.pop; br ^onerr_arm
+/// resume_dispatch: switch.i32 failed site -> statement start (or the block after it)
+/// @endcode
 
-#include "frontends/basic/Lowerer.hpp"
+#include "frontends/basic/AstWalker.hpp"
 #include "frontends/basic/DiagnosticEmitter.hpp"
+#include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/OopIndex.hpp"
 #include "frontends/basic/OopLoweringContext.hpp"
+#include "frontends/basic/lower/Emitter.hpp"
 
 using namespace il::core;
 
 namespace il::frontends::basic {
 
-/// @brief Lower an @c ON @c ERROR directive to push or clear runtime handlers.
+namespace {
+
+/// @brief Finds the ON ERROR and RESUME forms a procedure body uses.
+/// @details Nested procedure, class, interface, and namespace declarations are
+///          lowered as procedures of their own, so their bodies are not scanned.
+struct ErrorHandlingScan final : BasicAstWalker<ErrorHandlingScan> {
+    /// True when ON ERROR GOTO <label> occurs.
+    bool onErrorLabel = false;
+    /// True when RESUME or RESUME NEXT occurs.
+    bool resumeStatement = false;
+
+    /// @brief Note an ON ERROR directive.
+    /// @param stmt Directive being visited.
+    void before(const OnErrorGoto &stmt) {
+        if (!stmt.toZero)
+            onErrorLabel = true;
+    }
+
+    /// @brief Note a RESUME statement.
+    /// @param stmt Statement being visited.
+    void before(const Resume &stmt) {
+        if (stmt.mode != Resume::Mode::Label)
+            resumeStatement = true;
+    }
+
+    /// @brief Skip nested FUNCTION bodies.
+    bool shouldVisitChildren(const FunctionDecl &) {
+        return false;
+    }
+
+    /// @brief Skip nested SUB bodies.
+    bool shouldVisitChildren(const SubDecl &) {
+        return false;
+    }
+
+    /// @brief Skip class members.
+    bool shouldVisitChildren(const ClassDecl &) {
+        return false;
+    }
+
+    /// @brief Skip interface members.
+    bool shouldVisitChildren(const InterfaceDecl &) {
+        return false;
+    }
+
+    /// @brief Skip namespace members.
+    bool shouldVisitChildren(const NamespaceDecl &) {
+        return false;
+    }
+};
+
+/// @brief Error and resume-token parameters of a handler-shaped block as branch arguments.
+/// @param block Block whose first two parameters are the error and the token.
+/// @return Branch arguments forwarding both parameters.
+std::vector<Value> handlerArgs(const BasicBlock &block) {
+    return {Value::temp(block.params[0].id), Value::temp(block.params[1].id)};
+}
+
+/// @brief Terminate @p block with `switch.i32`.
+/// @param block Block receiving the terminator.
+/// @param scrutinee i32 value switched on.
+/// @param defaultLabel Label taken when no case matches.
+/// @param cases Case values and their target labels.
+void appendSwitch(BasicBlock &block,
+                  Value scrutinee,
+                  const std::string &defaultLabel,
+                  const std::vector<std::pair<unsigned, std::string>> &cases) {
+    Instr sw;
+    sw.op = Opcode::SwitchI32;
+    sw.type = il::core::Type(il::core::Type::Kind::Void);
+    sw.operands.push_back(scrutinee);
+    sw.addBranchTarget(defaultLabel);
+    for (const auto &[value, label] : cases) {
+        sw.operands.push_back(Value::constInt(static_cast<long long>(value)));
+        sw.addBranchTarget(label);
+    }
+    block.instructions.push_back(std::move(sw));
+    block.terminated = true;
+}
+
+} // namespace
+
+/// @brief Append a labelled block to the active function, keeping the current block.
+/// @param hint Label stem.
+/// @return Index of the new block.
+size_t Lowerer::addErrorBlock(const char *hint) {
+    auto &ctx = context();
+    Function *func = ctx.function();
+    const bool hasCurrent = ctx.current() != nullptr;
+    const size_t curIdx = hasCurrent ? ctx.currentIndex() : 0;
+    std::string label;
+    if (auto *blockNamer = ctx.blockNames().namer())
+        label = blockNamer->generic(hint);
+    else
+        label = mangler.block(hint);
+    const size_t idx = func->blocks.size();
+    builder->addBlock(*func, label);
+    if (hasCurrent)
+        ctx.setCurrentByIndex(curIdx);
+    return idx;
+}
+
+/// @brief Append a handler-shaped block, keeping the current block.
+/// @details The block takes `(%err:Error, %tok:ResumeTok)` and starts with
+///          `eh.entry`, so it may receive a forwarded resume token and use it.
+/// @param hint Label stem.
+/// @return Index of the new block.
+size_t Lowerer::addErrorHandlerBlock(const char *hint) {
+    auto &ctx = context();
+    Function *func = ctx.function();
+    const bool hasCurrent = ctx.current() != nullptr;
+    const size_t curIdx = hasCurrent ? ctx.currentIndex() : 0;
+    std::string label;
+    if (auto *blockNamer = ctx.blockNames().namer())
+        label = blockNamer->generic(hint);
+    else
+        label = mangler.block(hint);
+    const std::vector<il::core::Param> params = {{"err", Type(Type::Kind::Error)},
+                                                 {"tok", Type(Type::Kind::ResumeTok)}};
+    const size_t idx = func->blocks.size();
+    BasicBlock &block = builder->createBlock(*func, label, params);
+    Instr entry;
+    entry.op = Opcode::EhEntry;
+    entry.type = Type(Type::Kind::Void);
+    block.instructions.push_back(std::move(entry));
+    if (hasCurrent)
+        ctx.setCurrentByIndex(curIdx);
+    return idx;
+}
+
+/// @brief Emit a trap that reports @p message in the current block.
+/// @param message Trap text.
+void Lowerer::emitTrapWithMessage(const char *message) {
+    requireTrap();
+    Value text = emitConstStr(getStringLabel(message));
+    emitCall("rt_trap_string", {text});
+    emitTrap();
+}
+
+/// @brief Raise an error with the given kind, code, and line, ending the current block.
+/// @details The runtime supplies the kind's message, as `Zanna.Error.Message` reports it.
+/// @param kind i32 trap kind.
+/// @param code i32 error code.
+/// @param line i32 source line.
+void Lowerer::emitRaiseError(Value kind, Value code, Value line) {
+    emitCall("Zanna.Runtime.Unsafe.RaiseKind", {kind, code, line});
+    emitTrap();
+}
+
+/// @brief Continue at arm target @p targetId through the arm, which re-installs the handler.
+/// @param targetId Arm target id from ErrorHandlerState::armTarget.
+void Lowerer::emitReenterArm(unsigned targetId) {
+    ProcedureContext &ctx = context();
+    auto &state = ctx.errorHandlers();
+    emitStore(Type(Type::Kind::I32), state.slots().target, Value::constInt(targetId));
+    emitEhPop();
+    emitBr(&ctx.function()->blocks[state.armBlock()]);
+}
+
+/// @brief Set up ON ERROR handling before a procedure body is lowered.
+/// @details A body that contains ON ERROR GOTO <label> gets the dispatcher: its
+///          slots, its handler block, and the arm block that installs the handler.
+///          The current block branches to the arm, whose switch (emitted by
+///          @ref finalizeErrorHandling) continues at @p bodyBlock. A body that also
+///          contains RESUME or RESUME NEXT records a resume site for each statement.
+/// @param stmts Body statements.
+/// @param bodyBlock Index of the block the body starts in.
+/// @return True when the dispatcher was created.
+bool Lowerer::prepareErrorHandling(const std::vector<const Stmt *> &stmts, size_t bodyBlock) {
+    ProcedureContext &ctx = context();
+    auto &state = ctx.errorHandlers();
+    if (state.hasDispatcher() || !ctx.function() || !ctx.current() || ctx.current()->terminated)
+        return false;
+
+    ErrorHandlingScan scan;
+    for (const Stmt *stmt : stmts)
+        if (stmt)
+            scan.walkStmt(*stmt);
+    if (!scan.onErrorLabel)
+        return false;
+
+    const auto savedLoc = curLoc;
+    curLoc = {};
+    const auto slots = allocateDispatchSlots();
+    const size_t handlerIdx = addErrorHandlerBlock("onerr_handler");
+    const size_t armIdx = addErrorBlock("onerr_arm");
+    state.setDispatcher(slots, armIdx, handlerIdx, bodyBlock);
+    state.setSiteTracking(scan.resumeStatement);
+
+    emitBr(&ctx.function()->blocks[armIdx]);
+    ctx.setCurrentByIndex(armIdx);
+    emitEhPush(&ctx.function()->blocks[handlerIdx]);
+    curLoc = savedLoc;
+    return true;
+}
+
+/// @brief Complete the dispatcher once the procedure body has been lowered.
+/// @details Builds the handler entry chain, terminates the arm with its switch over
+///          the arm targets, and fills the RESUME and RESUME NEXT dispatch blocks,
+///          which switch on the failed statement's site.
+void Lowerer::finalizeErrorHandling() {
+    ProcedureContext &ctx = context();
+    auto &state = ctx.errorHandlers();
+    Function *func = ctx.function();
+    if (!func || !state.hasDispatcher())
+        return;
+    const size_t armIdx = state.armBlock();
+    const size_t handlerIdx = state.handlerBlock();
+    if (armIdx >= func->blocks.size() || func->blocks[armIdx].terminated)
+        return;
+
+    const bool hadCurrent = ctx.current() != nullptr;
+    const size_t savedIdx = hadCurrent ? ctx.currentIndex() : 0;
+    const auto savedLoc = curLoc;
+    curLoc = {};
+    const auto slots = state.slots();
+    const Type i32(Type::Kind::I32);
+    const Type i64(Type::Kind::I64);
+
+    const size_t selectIdx = addErrorHandlerBlock("onerr_select");
+    const size_t enterIdx = addErrorHandlerBlock("onerr_enter");
+    const size_t rethrowIdx = addErrorHandlerBlock("onerr_rethrow");
+
+    // An error raised while the handler runs is not handled again.
+    ctx.setCurrentByIndex(handlerIdx);
+    Value running = emitLoad(i64, slots.running);
+    Value busy = emitBinary(Opcode::ICmpNe, ilBoolTy(), running, Value::constInt(0));
+    func = ctx.function();
+    builder->setInsertPoint(func->blocks[handlerIdx]);
+    builder->cbr(busy,
+                 func->blocks[rethrowIdx],
+                 handlerArgs(func->blocks[handlerIdx]),
+                 func->blocks[selectIdx],
+                 handlerArgs(func->blocks[handlerIdx]));
+
+    // Without a selected label the error is not handled here.
+    ctx.setCurrentByIndex(selectIdx);
+    Value selected = emitLoad(i32, slots.selected);
+    func = ctx.function();
+    {
+        BasicBlock &select = func->blocks[selectIdx];
+        Instr sw;
+        sw.op = Opcode::SwitchI32;
+        sw.type = Type(Type::Kind::Void);
+        sw.operands.push_back(selected);
+        sw.addBranchTarget(func->blocks[enterIdx].label, handlerArgs(select));
+        sw.operands.push_back(Value::constInt(0));
+        sw.addBranchTarget(func->blocks[rethrowIdx].label, handlerArgs(select));
+        select.instructions.push_back(std::move(sw));
+        select.terminated = true;
+    }
+
+    // Record the error and the failed statement, then enter the selected label.
+    ctx.setCurrentByIndex(enterIdx);
+    func = ctx.function();
+    Value enterErr = Value::temp(func->blocks[enterIdx].params[0].id);
+    Value kind = emitUnary(Opcode::ErrGetKind, i32, enterErr);
+    emitStore(i32, slots.kind, kind);
+    Value code = emitUnary(Opcode::ErrGetCode, i32, enterErr);
+    emitStore(i32, slots.code, code);
+    Value line = emitUnary(Opcode::ErrGetLine, i32, enterErr);
+    emitStore(i32, slots.line, line);
+    emitStore(i64, slots.running, Value::constInt(1));
+    Value site = emitLoad(i32, slots.site);
+    emitStore(i32, slots.failedSite, site);
+    Value chosen = emitLoad(i32, slots.selected);
+    emitStore(i32, slots.target, chosen);
+    func = ctx.function();
+    builder->setInsertPoint(func->blocks[enterIdx]);
+    builder->emitResumeLabel(
+        Value::temp(func->blocks[enterIdx].params[1].id), func->blocks[armIdx], {});
+
+    // Raise the error again; the dispatcher is no longer installed.
+    ctx.setCurrentByIndex(rethrowIdx);
+    func = ctx.function();
+    Value rethrowErr = Value::temp(func->blocks[rethrowIdx].params[0].id);
+    Value rethrowKind = emitUnary(Opcode::ErrGetKind, i32, rethrowErr);
+    Value rethrowCode = emitUnary(Opcode::ErrGetCode, i32, rethrowErr);
+    Value rethrowLine = emitUnary(Opcode::ErrGetLine, i32, rethrowErr);
+    emitRaiseError(rethrowKind, rethrowCode, rethrowLine);
+
+    // RESUME and RESUME NEXT continue at the failed statement or the block after it.
+    for (const bool next : {false, true}) {
+        const auto dispatchIdx = state.dispatchBlock(next);
+        func = ctx.function();
+        if (!dispatchIdx || *dispatchIdx >= func->blocks.size() ||
+            func->blocks[*dispatchIdx].terminated)
+            continue;
+
+        const size_t invalidIdx = addErrorBlock(next ? "resume_next_invalid" : "resume_invalid");
+        ctx.setCurrentByIndex(invalidIdx);
+        emitTrapWithMessage(next ? "RESUME NEXT: no failed statement to continue after"
+                                 : "RESUME: no failed statement to retry");
+
+        ctx.setCurrentByIndex(*dispatchIdx);
+        Value failed = emitLoad(i32, slots.failedSite);
+        func = ctx.function();
+        std::vector<std::pair<unsigned, std::string>> cases;
+        const auto &sites = state.sites();
+        for (size_t i = 0; i < sites.size(); ++i) {
+            const std::optional<size_t> target =
+                next ? sites[i].nextBlock : std::optional<size_t>(sites[i].startBlock);
+            if (target && *target < func->blocks.size())
+                cases.emplace_back(static_cast<unsigned>(i + 1), func->blocks[*target].label);
+        }
+        appendSwitch(func->blocks[*dispatchIdx], failed, func->blocks[invalidIdx].label, cases);
+    }
+
+    // The arm continues at the chosen target, or starts the body.
+    ctx.setCurrentByIndex(armIdx);
+    Value target = emitLoad(i32, slots.target);
+    func = ctx.function();
+    std::vector<std::pair<unsigned, std::string>> armCases;
+    const auto &targets = state.armTargets();
+    for (size_t i = 0; i < targets.size(); ++i) {
+        if (targets[i] < func->blocks.size())
+            armCases.emplace_back(static_cast<unsigned>(i + 1), func->blocks[targets[i]].label);
+    }
+    appendSwitch(func->blocks[armIdx], target, func->blocks[state.bodyBlock()].label, armCases);
+
+    curLoc = savedLoc;
+    if (hadCurrent)
+        ctx.setCurrentByIndex(savedIdx);
+    else
+        ctx.setCurrent(nullptr);
+}
+
+/// @brief Lower an @c ON @c ERROR directive.
 ///
-/// @details Establishes the correct handler block when @p stmt targets a line
-///          number and clears state when @c ON @c ERROR @c GOTO @c 0 is
-///          encountered.  The helper ensures the procedure context records the
-///          active handler index and line for use by subsequent statements.
+/// @details `ON ERROR GOTO <label>` selects the label the dispatcher enters on the
+///          next error. `ON ERROR GOTO 0` clears the selection; inside a running
+///          handler it instead raises the error being handled, as BASIC reports it.
 /// @param stmt AST node describing the ON ERROR directive.
 void Lowerer::lowerOnErrorGoto(const OnErrorGoto &stmt) {
     ProcedureContext &ctx = context();
-    Function *func = ctx.function();
+    auto &state = ctx.errorHandlers();
     BasicBlock *current = ctx.current();
-    if (!func || !current)
+    if (!ctx.function() || !current || current->terminated || !state.hasDispatcher())
         return;
 
     curLoc = stmt.loc;
-
-    // NOTE: No-op here; curIdx tracking belongs in lowerTryCatch.
+    const auto slots = state.slots();
+    const Type i32(Type::Kind::I32);
 
     if (stmt.toZero) {
-        clearActiveErrorHandler();
+        const size_t reportIdx = addErrorBlock("onerr_report");
+        const size_t clearIdx = addErrorBlock("onerr_clear");
+        Value running = emitLoad(Type(Type::Kind::I64), slots.running);
+        Value busy = emitBinary(Opcode::ICmpNe, ilBoolTy(), running, Value::constInt(0));
+        emitCBr(busy, &ctx.function()->blocks[reportIdx], &ctx.function()->blocks[clearIdx]);
+
+        ctx.setCurrentByIndex(reportIdx);
+        Value kind = emitLoad(i32, slots.kind);
+        Value code = emitLoad(i32, slots.code);
+        Value line = emitLoad(i32, slots.line);
+        emitRaiseError(kind, code, line);
+
+        ctx.setCurrentByIndex(clearIdx);
+        emitStore(i32, slots.selected, Value::constInt(0));
         return;
     }
 
-    clearActiveErrorHandler();
-
-    BasicBlock *handler = ensureErrorHandlerBlock(stmt.target);
-    emitEhPush(handler);
-
-    size_t idx = ctx.blockIndex(handler);
-    ctx.errorHandlers().setActive(true);
-    ctx.errorHandlers().setActiveIndex(idx);
-    ctx.errorHandlers().setActiveLine(stmt.target);
+    auto &lineBlocks = ctx.blockNames().lineBlocks();
+    const auto targetIt = lineBlocks.find(stmt.target);
+    if (targetIt == lineBlocks.end()) {
+        emitTrapWithMessage("ON ERROR GOTO: unknown label");
+        return;
+    }
+    emitStore(i32, slots.selected, Value::constInt(state.armTarget(targetIt->second)));
 }
 
-/// @brief Lower a RESUME statement that unwinds to a stored handler.
+/// @brief Start the resume site of a statement in a procedure that uses RESUME.
+/// @details Declarations, labels, statement lists (their children record their own
+///          sites), ON ERROR, and control transfers that cannot fail record no site.
+///          Otherwise the statement begins in a block of its own, splitting the
+///          current block when it already holds code or parameters, and that block
+///          first stores the site id so the handler knows which statement failed.
+///          RESUME records one too: "RESUME without error" is an error of its own.
+/// @param stmt Statement about to be lowered.
+/// @return Site id, or nothing when no site is recorded.
+std::optional<unsigned> Lowerer::beginResumeSite(const Stmt &stmt) {
+    ProcedureContext &ctx = context();
+    auto &state = ctx.errorHandlers();
+    if (!state.hasDispatcher() || !state.siteTracking())
+        return std::nullopt;
+
+    switch (stmt.stmtKind()) {
+        case Stmt::Kind::Label:
+        case Stmt::Kind::Const:
+        case Stmt::Kind::Shared:
+        case Stmt::Kind::StmtList:
+        case Stmt::Kind::OnErrorGoto:
+        case Stmt::Kind::Exit:
+        case Stmt::Kind::Goto:
+        case Stmt::Kind::End:
+        case Stmt::Kind::Next:
+        case Stmt::Kind::FunctionDecl:
+        case Stmt::Kind::SubDecl:
+        case Stmt::Kind::ConstructorDecl:
+        case Stmt::Kind::DestructorDecl:
+        case Stmt::Kind::MethodDecl:
+        case Stmt::Kind::PropertyDecl:
+        case Stmt::Kind::ClassDecl:
+        case Stmt::Kind::TypeDecl:
+        case Stmt::Kind::EnumDecl:
+        case Stmt::Kind::InterfaceDecl:
+        case Stmt::Kind::NamespaceDecl:
+        case Stmt::Kind::UsingDecl:
+            return std::nullopt;
+        default:
+            break;
+    }
+
+    Function *func = ctx.function();
+    BasicBlock *current = ctx.current();
+    if (!func || !current || current->terminated)
+        return std::nullopt;
+
+    size_t startIdx = ctx.currentIndex();
+    if (!current->instructions.empty() || !current->params.empty()) {
+        const size_t idx = addErrorBlock("resume_site");
+        curLoc = {};
+        emitBr(&ctx.function()->blocks[idx]);
+        ctx.setCurrentByIndex(idx);
+        startIdx = idx;
+    }
+
+    const unsigned site = state.addSite(startIdx);
+    curLoc = stmt.loc;
+    emitStore(Type(Type::Kind::I32), state.slots().site, Value::constInt(site));
+    return site;
+}
+
+/// @brief Close a resume site, recording where RESUME NEXT continues.
+/// @details Lowering continues in a fresh block, which is the RESUME NEXT target. A
+///          statement that falls through branches to it; after one that ends its
+///          block (a RETURN, or RESUME itself) it is reached only by RESUME NEXT,
+///          which then goes on with the following statement.
+/// @param site Site id returned by @ref beginResumeSite.
+void Lowerer::endResumeSite(unsigned site) {
+    ProcedureContext &ctx = context();
+    BasicBlock *current = ctx.current();
+    if (!ctx.function() || !current)
+        return;
+
+    const size_t idx = addErrorBlock("resume_next");
+    if (!ctx.current()->terminated) {
+        curLoc = {};
+        emitBr(&ctx.function()->blocks[idx]);
+    }
+    ctx.setCurrentByIndex(idx);
+    ctx.errorHandlers().setSiteNext(site, idx);
+}
+
+/// @brief Get or create the block that RESUME or RESUME NEXT continues at.
+/// @param next True for RESUME NEXT.
+/// @return Index of the dispatch block, filled in by @ref finalizeErrorHandling.
+size_t Lowerer::resumeDispatchBlock(bool next) {
+    auto &state = context().errorHandlers();
+    if (auto existing = state.dispatchBlock(next))
+        return *existing;
+    const size_t idx = addErrorBlock(next ? "resume_next_dispatch" : "resume_dispatch");
+    state.setDispatchBlock(next, idx);
+    return idx;
+}
+
+/// @brief Lower a RESUME statement.
 ///
-/// @details Finds the appropriate handler block (either by explicit line or the
-///          currently active handler), materialises a resume token, and appends
-///          the matching opcode to the handler block.  The helper bails out if no
-///          live handler exists or if the block already terminated.
+/// @details RESUME is valid only while the ON ERROR handler runs; otherwise it
+///          raises "RESUME without error". It clears the running flag and ERR, then
+///          returns through the arm: `RESUME` to the start of the failed statement,
+///          `RESUME NEXT` to the block after it, and `RESUME <label>` to the label.
 /// @param stmt AST node describing the RESUME statement.
 void Lowerer::lowerResume(const Resume &stmt) {
     ProcedureContext &ctx = context();
-    Function *func = ctx.function();
-    if (!func)
+    BasicBlock *current = ctx.current();
+    if (!ctx.function() || !current || current->terminated)
         return;
 
-    std::optional<size_t> handlerIndex;
-
-    auto &handlersByLine = ctx.errorHandlers().blocks();
-    if (auto it = handlersByLine.find(stmt.target); it != handlersByLine.end()) {
-        handlerIndex = it->second;
-    } else if (auto active = ctx.errorHandlers().activeIndex()) {
-        handlerIndex = *active;
+    curLoc = stmt.loc;
+    auto &state = ctx.errorHandlers();
+    if (!state.hasDispatcher()) {
+        emitTrapWithMessage("RESUME without error");
+        return;
     }
+    const auto slots = state.slots();
 
-    if (!handlerIndex || *handlerIndex >= func->blocks.size())
-        return;
+    const size_t withoutIdx = addErrorBlock("resume_without_error");
+    const size_t okIdx = addErrorBlock("resume_ok");
+    Value running = emitLoad(Type(Type::Kind::I64), slots.running);
+    Value idle = emitBinary(Opcode::ICmpEq, ilBoolTy(), running, Value::constInt(0));
+    emitCBr(idle, &ctx.function()->blocks[withoutIdx], &ctx.function()->blocks[okIdx]);
 
-    BasicBlock &handlerBlock = func->blocks[*handlerIndex];
-    if (handlerBlock.terminated)
-        return;
+    ctx.setCurrentByIndex(withoutIdx);
+    emitTrapWithMessage("RESUME without error");
 
-    if (handlerBlock.params.size() < 2)
-        return;
+    ctx.setCurrentByIndex(okIdx);
+    emitStore(Type(Type::Kind::I64), slots.running, Value::constInt(0));
+    emitStore(Type(Type::Kind::I32), slots.code, Value::constInt(0));
 
-    // Retrieve the resume token via the builder to avoid manipulating
-    // function valueNames directly.
-    Value resumeTok = builder->blockParam(handlerBlock, 1);
-
-    Instr instr;
-    instr.type = Type(Type::Kind::Void);
-    instr.loc = curLoc;
-    instr.operands.push_back(resumeTok);
-
+    unsigned target = 0;
     switch (stmt.mode) {
-        case Resume::Mode::Same:
-            instr.op = Opcode::ResumeSame;
-            break;
-        case Resume::Mode::Next:
-            instr.op = Opcode::ResumeNext;
-            break;
         case Resume::Mode::Label: {
-            instr.op = Opcode::ResumeLabel;
             auto &lineBlocks = ctx.blockNames().lineBlocks();
-            auto targetIt = lineBlocks.find(stmt.target);
-            if (targetIt == lineBlocks.end())
+            const auto targetIt = lineBlocks.find(stmt.target);
+            if (targetIt == lineBlocks.end()) {
+                emitTrapWithMessage("RESUME: unknown label");
                 return;
-            size_t targetIdx = targetIt->second;
-            if (targetIdx >= func->blocks.size())
-                return;
-            instr.addBranchTarget(func->blocks[targetIdx].label);
+            }
+            target = state.armTarget(targetIt->second);
             break;
         }
+        case Resume::Mode::Same:
+        case Resume::Mode::Next:
+            target = state.armTarget(resumeDispatchBlock(stmt.mode == Resume::Mode::Next));
+            break;
     }
-
-    handlerBlock.instructions.push_back(std::move(instr));
-    handlerBlock.terminated = true;
+    emitReenterArm(target);
 }
 
 /// @brief Lower a TRY/CATCH/FINALLY statement using the runtime EH model.
 ///
-/// Interaction model with legacy ON ERROR/RESUME:
-/// - TRY installs a fresh handler using only `eh.push`/`eh.pop`, without mutating
-///   the Lowerer's ErrorHandlerState (active/line/index). This ensures a preexisting
-///   ON ERROR GOTO handler remains beneath the TRY handler on the runtime stack and
-///   is automatically restored when TRY exits (single `eh.pop`).
-/// - CATCH may include a RESUME statement. It is permitted but typically unnecessary,
-///   because the canonical endpoint of the handler uses `resume.label %tok, ^after_try`.
+/// Interaction with ON ERROR/RESUME:
+/// - TRY installs its own handler with `eh.push`/`eh.pop` on top of the procedure's
+///   ON ERROR dispatcher, which is restored when TRY exits (single `eh.pop`).
+/// - The TRY statement records one resume site; statements inside it record none,
+///   because the dispatcher's arm cannot enter a body that runs with the TRY handler
+///   installed or holds its resume token. A RESUME inside CATCH resumes the error the
+///   ON ERROR handler is running, like any other RESUME.
 ///
 /// Emission sequence (without FINALLY):
 /// - Emit `eh.push ^handler` before the try-body.
@@ -198,6 +640,10 @@ void Lowerer::lowerTryCatch(const TryCatchStmt &stmt) {
     // since appending to the function's block list may reallocate and
     // invalidate raw pointers stored in the context.
     const std::size_t curIdx = ctx.currentIndex();
+
+    // The TRY statement is the resume site; RESUME cannot enter its bodies, which run
+    // with the TRY handler installed or hold its resume token.
+    ctx.errorHandlers().suppressSites();
 
     // Create the post-try continuation block with a deterministic label.
     BlockNamer *blockNamer = ctx.blockNames().namer();
@@ -317,6 +763,17 @@ void Lowerer::lowerTryCatch(const TryCatchStmt &stmt) {
     BasicBlock *handlerBlock = ensureErrorHandlerBlock(handlerKey);
     ctx.setCurrent(handlerBlock);
 
+    // The optional CATCH variable holds the handled error's code, as ERR() reports it.
+    if (stmt.catchVar && !stmt.catchVar->empty()) {
+        if (auto storage = resolveVariableStorage(*stmt.catchVar, stmt.loc)) {
+            BuiltinCallExpr errCall;
+            errCall.builtin = BuiltinCallExpr::Builtin::Err;
+            errCall.loc = stmt.loc;
+            RVal code = coerceToI64(lowerBuiltinCall(errCall), stmt.loc);
+            emitStore(Type(Type::Kind::I64), storage->pointer, code.value);
+        }
+    }
+
     // Lower the catch body statements (if any).
     for (const auto &st : stmt.catchBody) {
         if (!st)
@@ -339,6 +796,8 @@ void Lowerer::lowerTryCatch(const TryCatchStmt &stmt) {
                 break;
         }
     }
+
+    ctx.errorHandlers().restoreSites();
 
     // Terminate handler with resume.label to after_try if not already terminated.
     handlerBlock = ctx.current();
@@ -398,6 +857,13 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
     if (stmt.initExpr) {
         RVal initVal = lowerExpr(*stmt.initExpr);
         objPtr = initVal.value;
+        // The variable owns one reference, which the cleanup below releases: an owned
+        // temporary such as a NEW result moves in (statements in the body must not
+        // release it), and a borrowed value is retained.
+        if (!emitter().takeDeferredTemp(objPtr)) {
+            requestHelper(RuntimeFeature::ObjRetainMaybe);
+            emitCall("rt_obj_retain_maybe", {objPtr});
+        }
     } else {
         // No initializer - use null pointer
         objPtr = Value::null();
@@ -625,7 +1091,9 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
             block->instructions.push_back(std::move(in));
     }
 
-    // Step 3: Lower body statements
+    // Step 3: Lower body statements. They run with the USING handler installed, so
+    // RESUME cannot enter them; the USING statement is their resume site.
+    ctx.errorHandlers().suppressSites();
     for (const auto &st : stmt.body) {
         if (!st)
             continue;
@@ -634,6 +1102,7 @@ void Lowerer::lowerUsingStmt(const UsingStmt &stmt) {
         if (!cur || cur->terminated)
             break;
     }
+    ctx.errorHandlers().restoreSites();
 
     std::size_t normalContIdx = 0;
     bool hasNormalCont = false;

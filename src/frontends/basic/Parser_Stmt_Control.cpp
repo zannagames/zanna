@@ -11,10 +11,14 @@
 //          callbacks; this file installs the callbacks that recognise branching
 //          and looping constructs so the parser can remain data-driven instead of
 //          hard-coding dispatch logic in a large conditional.
-// Key invariants: Registration order mirrors keyword definitions to keep error
-//                 messages deterministic.
-// Ownership/Lifetime: Registry entries borrow parser member functions; no
-//                     additional resources are owned.
+// Key invariants:
+//   - Registration order mirrors keyword definitions to keep error messages
+//     deterministic.
+//   - A CATCH variable keeps the lexer's canonical identifier spelling, as every
+//     reference to it does.
+// Ownership/Lifetime:
+//   - Registry entries borrow parser member functions; no additional resources
+//     are owned.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
@@ -27,7 +31,6 @@
 ///          parsing that statement. This translation unit also owns the
 ///          multi-phase TRY/CATCH/FINALLY collector.
 
-#include "frontends/basic/IdentifierUtil.hpp"
 #include "frontends/basic/Parser.hpp"
 #include "frontends/basic/Parser_Stmt_ControlHelpers.hpp"
 
@@ -117,9 +120,10 @@ StmtPtr Parser::parseTryCatchStatement() {
 
     // If we have CATCH, parse it
     if (term == Term::Catch) {
-        // Optional catch variable
+        // Optional catch variable, spelled as the lexer canonicalizes every identifier so
+        // references in the CATCH body resolve to it.
         if (at(TokenKind::Identifier)) {
-            node->catchVar = CanonicalizeIdent(peek().lexeme);
+            node->catchVar = peek().lexeme;
             consume();
         }
 

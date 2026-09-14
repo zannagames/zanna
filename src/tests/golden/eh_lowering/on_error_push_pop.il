@@ -36,6 +36,7 @@ extern @Zanna.Terminal.PrintF64(f64) -> void
 extern @Zanna.Terminal.PrintI64(i64) -> void
 extern @Zanna.Terminal.PrintStr(str) -> void
 extern @rt_str_empty() -> str
+extern @Zanna.Runtime.Unsafe.RaiseKind(i32, i32, i32) -> void
 global const str @.L0 = "\n"
 func @__mod_init$oop() -> void {
 entry:
@@ -44,47 +45,87 @@ entry:
 func @main() -> i64 {
 entry:
   call @__mod_init$oop()
-  br L10
+  %t0 = alloca 8
+  store i32, %t0, 0
+  %t1 = alloca 8
+  store i32, %t1, 0
+  %t2 = alloca 8
+  store i32, %t2, 0
+  %t3 = alloca 8
+  store i32, %t3, 0
+  %t4 = alloca 8
+  store i32, %t4, 0
+  %t5 = alloca 8
+  store i32, %t5, 0
+  %t6 = alloca 8
+  store i32, %t6, 0
+  %t7 = alloca 8
+  store i64, %t7, 0
+  br onerr_arm
 L10:
   .loc 1 1 4
-  eh.push ^handler_L100
+  store i32, %t0, 1
   .loc 1 1 4
   br L20
 L20:
   .loc 1 2 10
   call @Zanna.Terminal.PrintI64(1)
   .loc 1 2 10
-  %t2 = const_str @.L0
+  %t10 = const_str @.L0
   .loc 1 2 10
-  call @Zanna.Terminal.PrintStr(%t2)
+  call @Zanna.Terminal.PrintStr(%t10)
   .loc 1 2 4
   br L30
 L30:
   .loc 1 3 4
-  eh.pop
-  .loc 1 3 4
-  ret 0
+  br exit
 L100:
-  .loc 1 4 5
-  trap
-L110:
-  .loc 1 5 5
-  eh.pop
-  .loc 1 5 5
-  ret 0
-exit:
-  eh.pop
-  ret 0
-handler ^handler_L100(%err:Error, %tok:ResumeTok):
-  eh.entry
   .loc 1 4 11
   call @Zanna.Terminal.PrintI64(2)
   .loc 1 4 11
-  %t3 = const_str @.L0
+  %t11 = const_str @.L0
   .loc 1 4 11
-  call @Zanna.Terminal.PrintStr(%t3)
+  call @Zanna.Terminal.PrintStr(%t11)
   .loc 1 4 5
+  br L110
+L110:
+  .loc 1 5 5
+  br exit
+exit:
   eh.pop
-  .loc 1 4 5
   ret 0
+handler ^onerr_handler(%err:Error, %tok:ResumeTok):
+  eh.entry
+  %t18 = load i64, %t7
+  %t19 = icmp_ne %t18, 0
+  cbr %t19, onerr_rethrow(%err, %tok), onerr_select(%err, %tok)
+onerr_arm:
+  eh.push ^onerr_handler
+  %t29 = load i32, %t1
+  switch.i32 %t29, ^L10, 1 -> ^L100
+handler ^onerr_select(%err:Error, %tok:ResumeTok):
+  eh.entry
+  %t20 = load i32, %t0
+  switch.i32 %t20, ^onerr_enter(%err, %tok), 0 -> ^onerr_rethrow(%err, %tok)
+handler ^onerr_enter(%err:Error, %tok:ResumeTok):
+  eh.entry
+  %t21 = err.get_kind %err
+  store i32, %t4, %t21
+  %t22 = err.get_code %err
+  store i32, %t5, %t22
+  %t23 = err.get_line %err
+  store i32, %t6, %t23
+  store i64, %t7, 1
+  %t24 = load i32, %t2
+  store i32, %t3, %t24
+  %t25 = load i32, %t0
+  store i32, %t1, %t25
+  resume.label %tok, ^onerr_arm
+handler ^onerr_rethrow(%err:Error, %tok:ResumeTok):
+  eh.entry
+  %t26 = err.get_kind %err
+  %t27 = err.get_code %err
+  %t28 = err.get_line %err
+  call @Zanna.Runtime.Unsafe.RaiseKind(%t26, %t27, %t28)
+  trap
 }

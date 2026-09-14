@@ -123,6 +123,9 @@ function(zanna_add_golden_suite_tests)
     _golden_error(basic_error_func_result_assign_object_to_int ${_BE} func_result_assign_object_to_int)
     _golden_error(basic_error_dim_unknown_class ${_BE} dim_unknown_class)
     _golden_error(basic_error_param_unknown_class ${_BE} param_unknown_class)
+    _golden_error(basic_error_assign_unrelated_object_class ${_BE} assign_unrelated_object_class)
+    _golden_error(basic_error_nothing_compare_string ${_BE} nothing_compare_string)
+    _golden_error(basic_error_string_fill_arg_types ${_BE} string_fill_arg_types)
     _golden_error(basic_error_method_on_unknown_object_class ${_BE} method_on_unknown_object_class)
     _golden_error(basic_error_line_input_numeric_target ${_BE} line_input_numeric_target)
     _golden_error(basic_error_ts_float_divmod ${_BE} ts_float_divmod EXPECT_EXIT_ZERO)
@@ -170,6 +173,8 @@ function(zanna_add_golden_suite_tests)
     _golden_basic_run(oop_virtual_no_override ${_OOP} virtual_no_override virtual_no_override.stdout)
     _golden_basic_run(oop_interface_basic ${_OOP} interface_basic interface_basic.stdout)
     _golden_basic_run(oop_method_sub_call ${_OOP} method_sub_call method_sub_call.stdout)
+    _golden_basic_run(oop_static_destructor ${_OOP} static_destructor static_destructor.out)
+    _golden_basic_run(oop_static_members ${_OOP} static_members static_members.stdout)
     _golden_basic_run(oop_mutate_and_return ${_OOP} mutate_and_return mutate_and_return.stdout)
     _golden_basic_run(oop_array_of_objects ${_ZANNA_GOLDEN_DIR}/basic/oop array_of_objects array_of_objects.stdout)
     _golden_basic_run(basic_oop_function_returns_class ${_OOP} function_returns_class function_returns_class.stdout)
@@ -197,6 +202,9 @@ function(zanna_add_golden_suite_tests)
     _golden_basic_run(basic_declared_object_class_assignment ${_BAS} declared_object_class_assignment declared_object_class_assignment.stdout)
     _golden_basic_run(basic_param_shadows_module_variable ${_BAS} param_shadows_module_variable param_shadows_module_variable.stdout)
     _golden_basic_run(basic_field_hides_module_variable ${_BAS} field_hides_module_variable field_hides_module_variable.stdout)
+    _golden_basic_run(basic_object_class_assignment_compat ${_BAS} object_class_assignment_compat object_class_assignment_compat.stdout)
+    _golden_basic_run(basic_nothing_compare ${_BAS} nothing_compare nothing_compare.stdout)
+    _golden_basic_run(basic_string_fill_builtins ${_BAS} string_fill_builtins string_fill_builtins.stdout)
     _golden_basic_run(basic_int_truthy_condition ${_BAS} int_truthy int_truthy.stdout)
     _golden_basic_run(basic_shared_var ${_BAS} shared_var shared_var.stdout)
     _golden_basic_run(basic_not_eof_loop ${_BAS} not_eof_loop not_eof_loop.stdout)
@@ -211,6 +219,7 @@ function(zanna_add_golden_suite_tests)
     _golden_basic_run(basic_runtime_ns_print_using ${_BRN} print_using print_using.stdout)
     _golden_basic_run(basic_runtime_ns_print_qualified ${_BRN} print_qualified print_qualified.stdout)
     _golden_basic_run(basic_runtime_ns_using_in_namespace ${_BRN} using_in_namespace using_in_namespace.stdout)
+    _golden_basic_run(basic_runtime_ns_using_scoped_and_alias ${_BRN} using_scoped_and_alias using_scoped_and_alias.stdout)
     _golden_basic_run(basic_runtime_ns_strings_len ${_BRN} strings_len strings_len.stdout)
     _golden_basic_run(basic_runtime_ns_environment_variables ${_BRN} environment_variables environment_variables.stdout)
     _golden_basic_run(basic_runtime_ns_diagnostics_assert_success ${_BRN} diagnostics_assert_success diagnostics_assert_success.stdout)
@@ -225,6 +234,21 @@ function(zanna_add_golden_suite_tests)
             ${CMAKE_COMMAND} -DILC=${BASIC_ILC}
             -DBAS_FILE=${_BRN}/diagnostics_assert_trap_default.bas "-DEXPECT=Assertion failed"
             -P ${_ZANNA_GOLDEN_DIR}/basic_errors/check_basic_run_error.cmake)
+
+    # SPACE$ and STRING$ reject a negative count, an empty character string, and a
+    # character code outside 0-255.
+    foreach (_fill_case IN ITEMS
+            "space_negative_count|SPACE.: count must be >= 0"
+            "string_fill_empty_string|STRING.: character string is empty"
+            "string_fill_bad_code|STRING.: character code must be 0-255")
+        string(REPLACE "|" ";" _fill_parts "${_fill_case}")
+        list(GET _fill_parts 0 _fill_stem)
+        list(GET _fill_parts 1 _fill_expect)
+        zanna_add_ctest(basic_error_${_fill_stem}
+                ${CMAKE_COMMAND} -DILC=${BASIC_ILC}
+                -DBAS_FILE=${_BE}/${_fill_stem}.bas "-DEXPECT=${_fill_expect}"
+                -P ${_ZANNA_GOLDEN_DIR}/basic_errors/check_basic_run_error.cmake)
+    endforeach ()
 
     # ==================================================================
     # VM trap location tests (check_vm_trap_loc.cmake)

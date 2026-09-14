@@ -5,8 +5,12 @@
 //
 // File: src/frontends/basic/LowerEmit.cpp
 // Purpose: Implements program-level emission orchestration for BASIC lowering.
-// Key invariants: Block labels are deterministic via BlockNamer or mangler.
-// Ownership/Lifetime: Operates on Lowerer state without owning AST or module.
+// Key invariants:
+//   - Block labels are deterministic via BlockNamer or mangler.
+//   - `@main` stores "" in every STRING module variable before any user code
+//     runs, and releases its STRING, object, and array locals on exit.
+// Ownership/Lifetime:
+//   - Operates on Lowerer state without owning the AST or the module.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
@@ -23,6 +27,7 @@
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/LineUtils.hpp"
 #include "frontends/basic/Lowerer.hpp"
+#include "frontends/basic/NameMangler_OOP.hpp"
 #include "zanna/il/Module.hpp"
 
 #include <cassert>
@@ -89,7 +94,7 @@ Lowerer::ProgramEmitContext Lowerer::collectProgramDeclarations(const Program &p
 /// @brief Create the `@main` function shell and associated basic blocks.
 ///
 /// @details Steps performed:
-///          1. Reset per-procedure book-keeping (virtual lines, temporary IDs).
+///          1. Reset per-procedure book-keeping (virtual lines, procedure context).
 ///          2. Start a new function returning `I64` with the canonical `entry`
 ///             block.
 ///          3. Preallocate per-line blocks so statement lowering can jump
@@ -108,9 +113,11 @@ void Lowerer::buildMainFunctionSkeleton(ProgramEmitContext &state) {
     build::IRBuilder &b = *builder;
     ProcedureContext &ctx = context();
 
+    // Start from clean procedure state: line blocks, loops, ON ERROR, and GOSUB
+    // bookkeeping of a procedure lowered earlier must not reach @main.
     stmtVirtualLines_.clear();
     synthSeq_ = 0;
-    ctx.blockNames().lineBlocks().clear();
+    ctx.reset();
 
     Function &f = b.startFunction("main", Type(Type::Kind::I64), {});
     state.function = &f;
@@ -213,11 +220,32 @@ void Lowerer::emitMainBodyAndEpilogue(ProgramEmitContext &state) {
     ctx.setCurrent(&state.function->blocks[ctx.exitIndex()]);
     curLoc = {};
     releaseDeferredTemps();
+    releaseStringLocals(std::unordered_set<std::string>{});
     releaseObjectLocals(std::unordered_set<std::string>{});
     releaseArrayLocals(std::unordered_set<std::string>{});
     releaseArrayParams(std::unordered_set<std::string>{});
     curLoc = {};
+    emitModuleFiniCall();
     emitRet(Value::constInt(0));
+}
+
+/// @brief Call the module finalizer when the module declares static destructors.
+/// @details The program ends normally at the end of `@main`, at END in `@main`
+///          (which branches to the main exit block), and at END in a procedure.
+void Lowerer::emitModuleFiniCall() {
+    if (hasModuleFini_)
+        emitCall(mangleOopModuleFini(), {});
+}
+
+/// @copydoc Lowerer::emitStringModvarInits()
+void Lowerer::emitStringModvarInits() {
+    for (const auto &key : stringModvarKeys_) {
+        Value name = emitConstStr(getStringLabel(key));
+        Value addr =
+            emitCallRet(Type(Type::Kind::Ptr), selectModvarAddrHelper(Type::Kind::Str), {name});
+        Value empty = emitCallRet(Type(Type::Kind::Str), "rt_str_empty", {});
+        emitStore(Type(Type::Kind::Str), addr, empty);
+    }
 }
 
 /// @brief Execute the full lowering pipeline for a BASIC program.
@@ -239,9 +267,20 @@ void Lowerer::emitProgram(const Program &prog) {
     ProgramEmitContext state = collectProgramDeclarations(prog);
     buildMainFunctionSkeleton(state);
     collectMainVariables(state);
+    // Static STRING fields may be read first in @main; procedures and class members,
+    // already lowered, recorded the STRING module variables they use.
+    for (const auto &[key, klass] : oopIndex_.classes()) {
+        (void)key;
+        for (const auto &field : klass.staticFields) {
+            if (!field.isArray && field.objectClassName.empty() && field.type == AstType::Str)
+                stringModvarKeys_.insert(mangleStaticField(klass.qualifiedName, field.name));
+        }
+    }
     // Ensure OOP module init runs before main body (interfaces registered, bindings bound).
-    // Switch to main entry before invoking the module initializer.
+    // Switch to main entry before invoking the module initializer, which may already
+    // read STRING module variables.
     context().setCurrent(state.entry);
+    emitStringModvarInits();
     emitCall("__mod_init$oop", {});
     allocateMainLocals(state);
     emitMainBodyAndEpilogue(state);

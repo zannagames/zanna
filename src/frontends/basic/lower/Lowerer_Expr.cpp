@@ -7,11 +7,16 @@
 // File: src/frontends/basic/lower/Lowerer_Expr.cpp
 // Purpose: Implements the expression lowering visitor wiring that bridges BASIC
 //          AST nodes to the shared Lowerer helpers.
-// Key invariants: Expression visitors honour the Lowerer context and never
-//                 mutate ownership of AST nodes.
-// Ownership/Lifetime: Operates on a borrowed Lowerer instance; AST nodes remain
-//                     owned by the caller.
-// Links: docs/internals/codemap.md, docs/tutorials/basic-tutorial.md
+// Key invariants:
+//   - Expression visitors honour the Lowerer context and never mutate
+//     ownership of AST nodes.
+//   - String and object array element reads, and STRING or object call
+//     results, are owned temporaries queued for statement cleanup.
+// Ownership/Lifetime:
+//   - Operates on a borrowed Lowerer instance; AST nodes remain owned by the
+//     caller.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md,
+//        docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,6 +24,7 @@
 /// @brief Implements the expression visitor and scalar-entry points for BASIC
 ///        AST-to-IL lowering.
 
+#include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
 #include "frontends/basic/LowerExprBuiltin.hpp"
 #include "frontends/basic/LowerExprLogical.hpp"
@@ -152,15 +158,22 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
         if ((info && info->type == ::il::frontends::basic::Type::Str) ||
             (fieldInfo.isField && fieldInfo.elementAstType == ::il::frontends::basic::Type::Str) ||
             isModuleStrArray) {
-            // String array: use rt_arr_str_get (returns retained handle)
+            // String array: rt_arr_str_get returns a retained handle the statement owns.
             IlValue val = lowerer_.emitCallRet(
                 IlType(IlType::Kind::Str), "rt_arr_str_get", {access.base, access.index});
+            lowerer_.deferReleaseStr(val);
             result_ = Lowerer::RVal{val, IlType(IlType::Kind::Str)};
         } else if ((info && info->isObject) || fieldInfo.isObjectArray ||
                    !moduleObjectClass.empty()) {
-            // BUG-089/BUG-097 fix: Object array (member, non-member, or module-level)
+            // BUG-089/BUG-097 fix: Object array (member, non-member, or module-level).
+            // rt_arr_obj_get returns a retained reference the statement owns.
             IlValue val = lowerer_.emitCallRet(
                 IlType(IlType::Kind::Ptr), "rt_arr_obj_get", {access.base, access.index});
+            std::string elementClass = !moduleObjectClass.empty() ? moduleObjectClass
+                                       : fieldInfo.isObjectArray  ? fieldInfo.elementClassName
+                                       : info                     ? info->objectClass
+                                                                  : std::string{};
+            lowerer_.deferReleaseObj(val, elementClass);
             result_ = Lowerer::RVal{val, IlType(IlType::Kind::Ptr)};
         } else if ((info && info->type == ::il::frontends::basic::Type::F64) ||
                    (fieldInfo.isField &&
@@ -693,14 +706,14 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
                     }
 
                     // Select getter and result type based on field element type
+                    // Element reads return retained references the statement owns.
                     if (fld->type == ::il::frontends::basic::Type::Str) {
                         lowerer_.requireArrayStrGet();
-                        // BUG-071 fix: Don't defer release - consuming code handles lifetime
                         Lowerer::IlValue val =
                             lowerer_.emitCallRet(Lowerer::IlType(Lowerer::IlType::Kind::Str),
                                                  "rt_arr_str_get",
                                                  {arrHandle, indexVal});
-                        // Removed: lowerer_.deferReleaseStr(val);
+                        lowerer_.deferReleaseStr(val);
                         result_ = Lowerer::RVal{val, Lowerer::IlType(Lowerer::IlType::Kind::Str)};
                         return;
                     } else if (!fld->objectClassName.empty()) {
@@ -710,6 +723,7 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
                             lowerer_.emitCallRet(Lowerer::IlType(Lowerer::IlType::Kind::Ptr),
                                                  "rt_arr_obj_get",
                                                  {arrHandle, indexVal});
+                        lowerer_.deferReleaseObj(val, lowerer_.qualify(fld->objectClassName));
                         result_ = Lowerer::RVal{val, Lowerer::IlType(Lowerer::IlType::Kind::Ptr)};
                         return;
                     } else if (fld->type == ::il::frontends::basic::Type::F64) {
@@ -746,6 +760,14 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
         lowerer_.curLoc = expr.loc;
         // Lower left value to an object pointer
         Lowerer::RVal lhs = lowerer_.lowerExpr(*expr.value);
+        // `value IS NOTHING` tests for a null reference.
+        if (isNothingTypeName(expr.typeName)) {
+            lowerer_.curLoc = expr.loc;
+            Lowerer::Value isNull =
+                lowerer_.emitCallRet(lowerer_.ilBoolTy(), "Zanna.Core.Object.IsNull", {lhs.value});
+            result_ = Lowerer::RVal{isNull, lowerer_.ilBoolTy()};
+            return;
+        }
         // Build type/interface key from dotted name
         std::string dotted;
         for (size_t i = 0; i < expr.typeName.size(); ++i) {

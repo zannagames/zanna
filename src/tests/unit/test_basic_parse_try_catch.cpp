@@ -5,10 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_basic_parse_try_catch.cpp
+// File: src/tests/unit/test_basic_parse_try_catch.cpp
 // Purpose: Validate parsing and AST shape for TRY/CATCH in BASIC.
-// Key invariants: Parser produces a TryCatchStmt with optional catch variable
-// Ownership/Lifetime: Test constructs parser/source manager per case and inspects AST.
+// Key invariants:
+//   - Parser produces a TryCatchStmt with an optional catch variable.
+//   - The catch variable is spelled like every other identifier reference.
+// Ownership/Lifetime:
+//   - Test constructs parser/source manager per case and inspects AST.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
@@ -44,9 +47,9 @@ int main() {
 
         auto *tc = dynamic_cast<TryCatchStmt *>(prog->main[0].get());
         assert(tc && "first statement should be TryCatchStmt");
-        // Identifier canonicalization is lowercased
+        // The catch variable keeps the lexer's canonical spelling, as references do
         assert(tc->catchVar.has_value());
-        assert(*tc->catchVar == std::string("e"));
+        assert(*tc->catchVar == std::string("E"));
 
         // TRY body has one PRINT
         assert(tc->tryBody.size() == 1);

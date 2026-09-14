@@ -223,12 +223,9 @@ CLASS A
 END CLASS
 ```
 
-The static constructor is parameterless and is intended to be invoked by the module
-initializer before any user code runs.
-
-> **Not currently functional.** `STATIC SUB NEW()` parses, but the body does not
-> execute — the same gap that affects `STATIC DESTRUCTOR`. See
-> [Lifetime Model](lifetime.md#static-destructors).
+The static constructor is parameterless and runs once, before the program's first
+statement, in class declaration order. See [Lifetime Model](lifetime.md#static-destructors)
+for the matching `STATIC DESTRUCTOR`.
 
 ## Enum declarations
 

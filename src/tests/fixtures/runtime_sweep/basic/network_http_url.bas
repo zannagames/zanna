@@ -78,8 +78,14 @@ Zanna.Core.Diagnostics.Assert(Zanna.IO.File.SizeBytes(outPath) > 0, "http.downlo
 Zanna.IO.File.Delete(outPath)
 Zanna.IO.Dir.Remove(tmpDir)
 
+DIM headMap AS Zanna.Collections.Map
+headMap = Zanna.Network.Http.Head(baseUrl)
+Zanna.Core.Diagnostics.Assert(headMap.Count > 0, "http.head")
+
+DIM headReq AS Zanna.Network.HttpReq
+headReq = Zanna.Network.HttpReq.New("HEAD", baseUrl)
 DIM headRes AS Zanna.Network.HttpRes
-headRes = Zanna.Network.Http.Head(baseUrl)
+headRes = headReq.Send()
 Zanna.Core.Diagnostics.Assert(headRes.Status >= 200, "http.head.status")
 Zanna.Core.Diagnostics.Assert(LEN(headRes.StatusText) > 0, "http.head.statustext")
 Zanna.Core.Diagnostics.Assert(headRes.IsOk(), "http.head.isok")

@@ -185,6 +185,29 @@ function(zanna_add_e2e_vm_suite)
             -P ${_ZANNA_E2E_DIR}/test_basic_math_phase1.cmake)
     zanna_set_test_labels(basic_select_case_run vm)
 
+    # ON ERROR GOTO / RESUME: handled errors continue after RESUME NEXT.
+    foreach (_errors_case IN ITEMS errors_io errors_all fileio_rw)
+        zanna_add_ctest(basic_${_errors_case}
+                ${CMAKE_COMMAND}
+                -DILC=$<TARGET_FILE:zanna>
+                -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/basic/${_errors_case}.bas
+                -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/basic/${_errors_case}.bas.out
+                -P ${_ZANNA_E2E_DIR}/test_basic_math_phase1.cmake)
+        zanna_set_test_labels(basic_${_errors_case} vm basic)
+    endforeach ()
+
+    # Errors the ON ERROR handler does not take end the program with the original error.
+    foreach (_errors_case IN ITEMS errors_in_handler errors_before_on_error)
+        zanna_add_ctest(basic_${_errors_case}
+                ${CMAKE_COMMAND}
+                -DILC=$<TARGET_FILE:zanna>
+                -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/basic/${_errors_case}.bas
+                -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/basic/${_errors_case}.bas.out
+                -DEXPECT_SUBSTR=DivideByZero.*Division\ by\ zero
+                -P ${_ZANNA_E2E_DIR}/test_basic_numeric_overflow.cmake)
+        zanna_set_test_labels(basic_${_errors_case} vm basic)
+    endforeach ()
+
     zanna_add_ctest(basic_array_sum
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
@@ -599,7 +622,7 @@ endif ()
 #     undefined reference coalesces onto the data-section defined global.
 set(_ZANNA_DIFF_CORPUS
         ret_i64 arith_chain block_params_sum conditional_abs recursive_factorial
-        alloca_store_load gep_stack bitwise_shift unsigned_div_rem signed_div_rem
+        alloca_store_load alloca_zero_init gep_stack bitwise_shift unsigned_div_rem signed_div_rem
         fp_cast_round cast_round_to_even idxchk_normalize i1_bool_flow call_two_args
         string_print print_i64 branch_join_value i16_narrow_store unsigned_compare
         fcmp_ord_nan fcmp_uno_nan err_get_msg_exec switch_i32 eh_catch_return

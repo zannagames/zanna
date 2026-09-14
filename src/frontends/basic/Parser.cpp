@@ -8,6 +8,13 @@
 // File: src/frontends/basic/Parser.cpp
 // Purpose: Implement the façade that orchestrates BASIC parsing and routes work
 //          to specialised statement and expression modules.
+// Key invariants:
+//   - Procedure declarations go to Program::procs and other statements to
+//     Program::main, in source order.
+//   - Named labels map to unique synthetic line numbers; their names are kept in
+//     Program::labelNames for diagnostics.
+// Ownership/Lifetime:
+//   - The parser owns its token buffer; the returned Program owns every AST node.
 // Links: docs/tutorials/basic-tutorial.md#parser
 //
 //===----------------------------------------------------------------------===//
@@ -362,9 +369,10 @@ std::unique_ptr<Program> Parser::parseProgram() {
     auto prog = std::make_unique<Program>();
     prog->loc = peek().loc;
     auto seq = statementSequencer();
-    while (!at(TokenKind::EndOfFile)) {
+    // A label stashed by the last statement line is delivered as a line of its own.
+    while (!at(TokenKind::EndOfFile) || seq.hasPendingLine()) {
         seq.skipLineBreaks();
-        if (at(TokenKind::EndOfFile))
+        if (at(TokenKind::EndOfFile) && !seq.hasPendingLine())
             break;
         if (at(TokenKind::Number) && peek(1).kind == TokenKind::KeywordAddfile) {
             Token numberTok = consume();
@@ -388,6 +396,8 @@ std::unique_ptr<Program> Parser::parseProgram() {
             prog->main.push_back(std::move(root));
         }
     }
+    for (const auto &[name, entry] : namedLabels_)
+        prog->labelNames.emplace(entry.number, name);
     if (!suppressUndefinedNamedLabelCheck_) {
         bool hasUndefinedNamedLabel = false;
         for (const auto &[name, entry] : namedLabels_) {

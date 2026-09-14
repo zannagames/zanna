@@ -107,7 +107,7 @@ L60:
   br L70
 L70:
   .loc 1 7 4
-  ret 0
+  br exit
 L200:
   .loc 1 8 11
   %t20 = const_str @.L4

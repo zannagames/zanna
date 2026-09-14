@@ -19,6 +19,7 @@
 
 #include "frontends/basic/SelectModel.hpp"
 #include "frontends/basic/ast/StmtControl.hpp"
+#include "frontends/basic/lower/Emitter.hpp"
 
 #include "support/source_location.hpp"
 
@@ -80,17 +81,17 @@ class SelectCaseLowering {
     ///          block vector while nested statements are lowered.
     struct Blocks {
         /// @brief Block that was current when SELECT lowering began.
-        size_t currentIdx{};           ///< Index of the block active at SELECT entry.
+        size_t currentIdx{}; ///< Index of the block active at SELECT entry.
         /// @brief One entry block per explicit CASE arm, in AST order.
-        std::vector<size_t> armIdx;    ///< Indices of per-arm body blocks.
+        std::vector<size_t> armIdx; ///< Indices of per-arm body blocks.
         /// @brief Entry block for the non-empty CASE ELSE body, when present.
         std::optional<size_t> elseIdx; ///< Index of the CASE ELSE block, if present.
         /// @brief Block containing the discrete numeric switch.
         /// @details Equals @ref currentIdx when a separate dispatch block was
         ///          not requested.
-        size_t switchIdx{};            ///< Index of the dispatch/switch block.
+        size_t switchIdx{}; ///< Index of the dispatch/switch block.
         /// @brief Shared continuation reached by unterminated arm bodies.
-        size_t endIdx{};               ///< Index of the common exit block.
+        size_t endIdx{}; ///< Index of the common exit block.
     };
 
     /// @brief One ordered test or fallback in a comparison dispatch plan.
@@ -116,14 +117,14 @@ class SelectCaseLowering {
         std::pair<int32_t, int32_t> valueRange{0,
                                                0}; ///< Integer bounds for Range/relational entries.
         /// @brief Zero-based AST arm associated with a non-default entry.
-        size_t armIndex{};                         ///< Index into the arm body block vector.
+        size_t armIndex{}; ///< Index into the arm body block vector.
         /// @brief Stable destination block index, or `SIZE_MAX` while the
         ///        comparison-chain fallback still needs allocation.
-        size_t targetIdx{SIZE_MAX};                ///< Block index of the branch target.
+        size_t targetIdx{SIZE_MAX}; ///< Block index of the branch target.
         /// @brief Source position assigned to instructions emitted for the test.
-        il::support::SourceLoc loc{};              ///< Source location for diagnostics.
+        il::support::SourceLoc loc{}; ///< Source location for diagnostics.
         /// @brief Non-owning literal text used only by @ref Kind::StringLabel.
-        std::string_view strLiteral{};             ///< String literal for StringLabel entries.
+        std::string_view strLiteral{}; ///< String literal for StringLabel entries.
     };
 
     /// @brief Callable that emits the boolean condition for a non-default plan
@@ -218,10 +219,13 @@ class SelectCaseLowering {
     /// @param entry Initial insertion block for the arm.
     /// @param loc Location assigned to a synthesized exit branch.
     /// @param endBlkIdx Stable index of the shared exit block.
+    /// @param selectorReleases Selector temporaries released on entry to the arm, or
+    ///        null when they are released at the shared exit.
     void emitArmBody(const std::vector<StmtPtr> &body,
                      il::core::BasicBlock *entry,
                      il::support::SourceLoc loc,
-                     size_t endBlkIdx);
+                     size_t endBlkIdx,
+                     const std::vector<lower::Emitter::TempRelease> *selectorReleases);
 
     /// @brief Borrowed owner of all mutable lowering and IL-builder state.
     Lowerer &lowerer_; ///< Parent lowerer providing context and helpers.

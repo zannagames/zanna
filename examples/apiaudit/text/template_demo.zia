@@ -3,6 +3,7 @@ bind Zanna.Terminal;
 bind Zanna.Text.Template as Tpl;
 bind Zanna.Collections.Map as Map;
 bind Zanna.Collections.Seq as Seq;
+bind Zanna.Collections.StringSet as StringSet;
 bind Zanna.Core.Box as Box;
 bind Zanna.Core.Object as Obj;
 func start() {
@@ -40,7 +41,7 @@ func start() {
 
     // --- Keys ---
     Say("--- Keys ---");
-    var keys = Tpl.Keys(tpl);
+    var keys = StringSet.ToSeq(Tpl.Keys(tpl));
     SayInt(Seq.get_Count(keys));
     // Print keys (order may vary)
     var i = 0;

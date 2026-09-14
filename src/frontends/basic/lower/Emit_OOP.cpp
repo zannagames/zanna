@@ -6,10 +6,12 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/lower/Emit_OOP.cpp
-// Purpose: Forwards object-local and object-parameter cleanup requests from
-//          Lowerer to the shared Emitter.
+// Purpose: Forwards object and STRING local cleanup requests from Lowerer to
+//          the shared Emitter, and emits the parameter retain and slot move
+//          that complete a procedure's ownership of its managed locals.
 // Key invariants:
-//   - Local cleanup excludes names identified as parameters.
+//   - Local cleanup covers BYVAL parameters, which are retained on entry, and
+//     skips only the names the caller excludes.
 //   - Parameter cleanup considers only the caller-provided parameter set.
 //   - Destructor dispatch and reference releases remain centralized in Emitter.
 // Ownership/Lifetime:
@@ -48,9 +50,32 @@ namespace il::frontends::basic {
 ///          calls.  The wrapper exists to keep the @ref Lowerer API cohesive
 ///          while hiding the emitter type from most translation units.
 ///
-/// @param paramNames Set of local names that require release operations.
-void Lowerer::releaseObjectLocals(const std::unordered_set<std::string> &paramNames) {
-    emitter().releaseObjectLocals(paramNames);
+/// @param excluded Names excluded from cleanup, such as a returned result slot.
+void Lowerer::releaseObjectLocals(const std::unordered_set<std::string> &excluded) {
+    emitter().releaseObjectLocals(excluded);
+}
+
+/// @copydoc Lowerer::releaseStringLocals()
+void Lowerer::releaseStringLocals(const std::unordered_set<std::string> &excluded) {
+    emitter().releaseStringLocals(excluded);
+}
+
+/// @copydoc Lowerer::retainOwnedParam()
+void Lowerer::retainOwnedParam(Value incoming, Type ilType, bool isObject) {
+    if (isObject) {
+        requestHelper(RuntimeFeature::ObjRetainMaybe);
+        emitCall("rt_obj_retain_maybe", {incoming});
+    } else if (ilType.kind == Type::Kind::Str) {
+        requireStrRetainMaybe();
+        emitCall("rt_str_retain_maybe", {incoming});
+    }
+}
+
+/// @copydoc Lowerer::takeOwnedSlot()
+Value Lowerer::takeOwnedSlot(Value slot, Type ilType) {
+    Value value = emitLoad(ilType, slot);
+    emitStore(Type(Type::Kind::Ptr), slot, Value::null());
+    return value;
 }
 
 /// @brief Release object-typed parameters at the end of a procedure.

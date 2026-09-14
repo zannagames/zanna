@@ -54,6 +54,7 @@
 #include "codegen/aarch64/passes/RegAllocPass.hpp"
 #include "codegen/aarch64/passes/SchedulerPass.hpp"
 #include "codegen/common/LinkerSupport.hpp"
+#include "codegen/common/NativeAllocaZeroInit.hpp"
 #include "codegen/common/NativeEHLowering.hpp"
 #include "codegen/common/linker/NativeLinker.hpp"
 #include "codegen/common/objfile/ObjectFileWriter.hpp"
@@ -684,6 +685,8 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
         result.exit_code = 1;
         return finish();
     }
+    // Frame slots start uninitialised; IL defines alloca memory as zeroed.
+    zanna::codegen::common::zeroInitAllocas(mod);
 
     if (!opts_.skip_il_optimization && !runIlOptimizations(mod, opts_.optimize)) {
         err << "error: failed to run AArch64 IL optimization pipeline\n";

@@ -101,7 +101,7 @@ L60:
   br if_test_0
 L70:
   .loc 1 7 4
-  ret 0
+  br exit
 exit:
   ret 0
 if_test_0:

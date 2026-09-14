@@ -14,165 +14,165 @@ PRINT "Easing.Linear(1.0): "; Zanna.Math.Easing.Linear(1.0)
 
 ' --- InQuad ---
 PRINT "--- InQuad ---"
-PRINT "Easing.InQuad(0.0): "; Zanna.Math.Easing.InQuad(0.0)
-PRINT "Easing.InQuad(0.5): "; Zanna.Math.Easing.InQuad(0.5)
-PRINT "Easing.InQuad(1.0): "; Zanna.Math.Easing.InQuad(1.0)
+PRINT "Easing.EaseInQuad(0.0): "; Zanna.Math.Easing.EaseInQuad(0.0)
+PRINT "Easing.EaseInQuad(0.5): "; Zanna.Math.Easing.EaseInQuad(0.5)
+PRINT "Easing.EaseInQuad(1.0): "; Zanna.Math.Easing.EaseInQuad(1.0)
 
 ' --- OutQuad ---
 PRINT "--- OutQuad ---"
-PRINT "Easing.OutQuad(0.0): "; Zanna.Math.Easing.OutQuad(0.0)
-PRINT "Easing.OutQuad(0.5): "; Zanna.Math.Easing.OutQuad(0.5)
-PRINT "Easing.OutQuad(1.0): "; Zanna.Math.Easing.OutQuad(1.0)
+PRINT "Easing.EaseOutQuad(0.0): "; Zanna.Math.Easing.EaseOutQuad(0.0)
+PRINT "Easing.EaseOutQuad(0.5): "; Zanna.Math.Easing.EaseOutQuad(0.5)
+PRINT "Easing.EaseOutQuad(1.0): "; Zanna.Math.Easing.EaseOutQuad(1.0)
 
 ' --- InOutQuad ---
 PRINT "--- InOutQuad ---"
-PRINT "Easing.InOutQuad(0.0): "; Zanna.Math.Easing.InOutQuad(0.0)
-PRINT "Easing.InOutQuad(0.5): "; Zanna.Math.Easing.InOutQuad(0.5)
-PRINT "Easing.InOutQuad(1.0): "; Zanna.Math.Easing.InOutQuad(1.0)
+PRINT "Easing.EaseInOutQuad(0.0): "; Zanna.Math.Easing.EaseInOutQuad(0.0)
+PRINT "Easing.EaseInOutQuad(0.5): "; Zanna.Math.Easing.EaseInOutQuad(0.5)
+PRINT "Easing.EaseInOutQuad(1.0): "; Zanna.Math.Easing.EaseInOutQuad(1.0)
 
 ' --- InCubic ---
 PRINT "--- InCubic ---"
-PRINT "Easing.InCubic(0.0): "; Zanna.Math.Easing.InCubic(0.0)
-PRINT "Easing.InCubic(0.5): "; Zanna.Math.Easing.InCubic(0.5)
-PRINT "Easing.InCubic(1.0): "; Zanna.Math.Easing.InCubic(1.0)
+PRINT "Easing.EaseInCubic(0.0): "; Zanna.Math.Easing.EaseInCubic(0.0)
+PRINT "Easing.EaseInCubic(0.5): "; Zanna.Math.Easing.EaseInCubic(0.5)
+PRINT "Easing.EaseInCubic(1.0): "; Zanna.Math.Easing.EaseInCubic(1.0)
 
 ' --- OutCubic ---
 PRINT "--- OutCubic ---"
-PRINT "Easing.OutCubic(0.0): "; Zanna.Math.Easing.OutCubic(0.0)
-PRINT "Easing.OutCubic(0.5): "; Zanna.Math.Easing.OutCubic(0.5)
-PRINT "Easing.OutCubic(1.0): "; Zanna.Math.Easing.OutCubic(1.0)
+PRINT "Easing.EaseOutCubic(0.0): "; Zanna.Math.Easing.EaseOutCubic(0.0)
+PRINT "Easing.EaseOutCubic(0.5): "; Zanna.Math.Easing.EaseOutCubic(0.5)
+PRINT "Easing.EaseOutCubic(1.0): "; Zanna.Math.Easing.EaseOutCubic(1.0)
 
 ' --- InOutCubic ---
 PRINT "--- InOutCubic ---"
-PRINT "Easing.InOutCubic(0.0): "; Zanna.Math.Easing.InOutCubic(0.0)
-PRINT "Easing.InOutCubic(0.5): "; Zanna.Math.Easing.InOutCubic(0.5)
-PRINT "Easing.InOutCubic(1.0): "; Zanna.Math.Easing.InOutCubic(1.0)
+PRINT "Easing.EaseInOutCubic(0.0): "; Zanna.Math.Easing.EaseInOutCubic(0.0)
+PRINT "Easing.EaseInOutCubic(0.5): "; Zanna.Math.Easing.EaseInOutCubic(0.5)
+PRINT "Easing.EaseInOutCubic(1.0): "; Zanna.Math.Easing.EaseInOutCubic(1.0)
 
 ' --- InQuart ---
 PRINT "--- InQuart ---"
-PRINT "Easing.InQuart(0.0): "; Zanna.Math.Easing.InQuart(0.0)
-PRINT "Easing.InQuart(0.5): "; Zanna.Math.Easing.InQuart(0.5)
-PRINT "Easing.InQuart(1.0): "; Zanna.Math.Easing.InQuart(1.0)
+PRINT "Easing.EaseInQuart(0.0): "; Zanna.Math.Easing.EaseInQuart(0.0)
+PRINT "Easing.EaseInQuart(0.5): "; Zanna.Math.Easing.EaseInQuart(0.5)
+PRINT "Easing.EaseInQuart(1.0): "; Zanna.Math.Easing.EaseInQuart(1.0)
 
 ' --- OutQuart ---
 PRINT "--- OutQuart ---"
-PRINT "Easing.OutQuart(0.0): "; Zanna.Math.Easing.OutQuart(0.0)
-PRINT "Easing.OutQuart(0.5): "; Zanna.Math.Easing.OutQuart(0.5)
-PRINT "Easing.OutQuart(1.0): "; Zanna.Math.Easing.OutQuart(1.0)
+PRINT "Easing.EaseOutQuart(0.0): "; Zanna.Math.Easing.EaseOutQuart(0.0)
+PRINT "Easing.EaseOutQuart(0.5): "; Zanna.Math.Easing.EaseOutQuart(0.5)
+PRINT "Easing.EaseOutQuart(1.0): "; Zanna.Math.Easing.EaseOutQuart(1.0)
 
 ' --- InOutQuart ---
 PRINT "--- InOutQuart ---"
-PRINT "Easing.InOutQuart(0.0): "; Zanna.Math.Easing.InOutQuart(0.0)
-PRINT "Easing.InOutQuart(0.5): "; Zanna.Math.Easing.InOutQuart(0.5)
-PRINT "Easing.InOutQuart(1.0): "; Zanna.Math.Easing.InOutQuart(1.0)
+PRINT "Easing.EaseInOutQuart(0.0): "; Zanna.Math.Easing.EaseInOutQuart(0.0)
+PRINT "Easing.EaseInOutQuart(0.5): "; Zanna.Math.Easing.EaseInOutQuart(0.5)
+PRINT "Easing.EaseInOutQuart(1.0): "; Zanna.Math.Easing.EaseInOutQuart(1.0)
 
 ' --- InSine ---
 PRINT "--- InSine ---"
-PRINT "Easing.InSine(0.0): "; Zanna.Math.Easing.InSine(0.0)
-PRINT "Easing.InSine(0.5): "; Zanna.Math.Easing.InSine(0.5)
-PRINT "Easing.InSine(1.0): "; Zanna.Math.Easing.InSine(1.0)
+PRINT "Easing.EaseInSine(0.0): "; Zanna.Math.Easing.EaseInSine(0.0)
+PRINT "Easing.EaseInSine(0.5): "; Zanna.Math.Easing.EaseInSine(0.5)
+PRINT "Easing.EaseInSine(1.0): "; Zanna.Math.Easing.EaseInSine(1.0)
 
 ' --- OutSine ---
 PRINT "--- OutSine ---"
-PRINT "Easing.OutSine(0.0): "; Zanna.Math.Easing.OutSine(0.0)
-PRINT "Easing.OutSine(0.5): "; Zanna.Math.Easing.OutSine(0.5)
-PRINT "Easing.OutSine(1.0): "; Zanna.Math.Easing.OutSine(1.0)
+PRINT "Easing.EaseOutSine(0.0): "; Zanna.Math.Easing.EaseOutSine(0.0)
+PRINT "Easing.EaseOutSine(0.5): "; Zanna.Math.Easing.EaseOutSine(0.5)
+PRINT "Easing.EaseOutSine(1.0): "; Zanna.Math.Easing.EaseOutSine(1.0)
 
 ' --- InOutSine ---
 PRINT "--- InOutSine ---"
-PRINT "Easing.InOutSine(0.0): "; Zanna.Math.Easing.InOutSine(0.0)
-PRINT "Easing.InOutSine(0.5): "; Zanna.Math.Easing.InOutSine(0.5)
-PRINT "Easing.InOutSine(1.0): "; Zanna.Math.Easing.InOutSine(1.0)
+PRINT "Easing.EaseInOutSine(0.0): "; Zanna.Math.Easing.EaseInOutSine(0.0)
+PRINT "Easing.EaseInOutSine(0.5): "; Zanna.Math.Easing.EaseInOutSine(0.5)
+PRINT "Easing.EaseInOutSine(1.0): "; Zanna.Math.Easing.EaseInOutSine(1.0)
 
 ' --- InExpo ---
 PRINT "--- InExpo ---"
-PRINT "Easing.InExpo(0.0): "; Zanna.Math.Easing.InExpo(0.0)
-PRINT "Easing.InExpo(0.5): "; Zanna.Math.Easing.InExpo(0.5)
-PRINT "Easing.InExpo(1.0): "; Zanna.Math.Easing.InExpo(1.0)
+PRINT "Easing.EaseInExpo(0.0): "; Zanna.Math.Easing.EaseInExpo(0.0)
+PRINT "Easing.EaseInExpo(0.5): "; Zanna.Math.Easing.EaseInExpo(0.5)
+PRINT "Easing.EaseInExpo(1.0): "; Zanna.Math.Easing.EaseInExpo(1.0)
 
 ' --- OutExpo ---
 PRINT "--- OutExpo ---"
-PRINT "Easing.OutExpo(0.0): "; Zanna.Math.Easing.OutExpo(0.0)
-PRINT "Easing.OutExpo(0.5): "; Zanna.Math.Easing.OutExpo(0.5)
-PRINT "Easing.OutExpo(1.0): "; Zanna.Math.Easing.OutExpo(1.0)
+PRINT "Easing.EaseOutExpo(0.0): "; Zanna.Math.Easing.EaseOutExpo(0.0)
+PRINT "Easing.EaseOutExpo(0.5): "; Zanna.Math.Easing.EaseOutExpo(0.5)
+PRINT "Easing.EaseOutExpo(1.0): "; Zanna.Math.Easing.EaseOutExpo(1.0)
 
 ' --- InOutExpo ---
 PRINT "--- InOutExpo ---"
-PRINT "Easing.InOutExpo(0.0): "; Zanna.Math.Easing.InOutExpo(0.0)
-PRINT "Easing.InOutExpo(0.5): "; Zanna.Math.Easing.InOutExpo(0.5)
-PRINT "Easing.InOutExpo(1.0): "; Zanna.Math.Easing.InOutExpo(1.0)
+PRINT "Easing.EaseInOutExpo(0.0): "; Zanna.Math.Easing.EaseInOutExpo(0.0)
+PRINT "Easing.EaseInOutExpo(0.5): "; Zanna.Math.Easing.EaseInOutExpo(0.5)
+PRINT "Easing.EaseInOutExpo(1.0): "; Zanna.Math.Easing.EaseInOutExpo(1.0)
 
 ' --- InCirc ---
 PRINT "--- InCirc ---"
-PRINT "Easing.InCirc(0.0): "; Zanna.Math.Easing.InCirc(0.0)
-PRINT "Easing.InCirc(0.5): "; Zanna.Math.Easing.InCirc(0.5)
-PRINT "Easing.InCirc(1.0): "; Zanna.Math.Easing.InCirc(1.0)
+PRINT "Easing.EaseInCirc(0.0): "; Zanna.Math.Easing.EaseInCirc(0.0)
+PRINT "Easing.EaseInCirc(0.5): "; Zanna.Math.Easing.EaseInCirc(0.5)
+PRINT "Easing.EaseInCirc(1.0): "; Zanna.Math.Easing.EaseInCirc(1.0)
 
 ' --- OutCirc ---
 PRINT "--- OutCirc ---"
-PRINT "Easing.OutCirc(0.0): "; Zanna.Math.Easing.OutCirc(0.0)
-PRINT "Easing.OutCirc(0.5): "; Zanna.Math.Easing.OutCirc(0.5)
-PRINT "Easing.OutCirc(1.0): "; Zanna.Math.Easing.OutCirc(1.0)
+PRINT "Easing.EaseOutCirc(0.0): "; Zanna.Math.Easing.EaseOutCirc(0.0)
+PRINT "Easing.EaseOutCirc(0.5): "; Zanna.Math.Easing.EaseOutCirc(0.5)
+PRINT "Easing.EaseOutCirc(1.0): "; Zanna.Math.Easing.EaseOutCirc(1.0)
 
 ' --- InOutCirc ---
 PRINT "--- InOutCirc ---"
-PRINT "Easing.InOutCirc(0.0): "; Zanna.Math.Easing.InOutCirc(0.0)
-PRINT "Easing.InOutCirc(0.5): "; Zanna.Math.Easing.InOutCirc(0.5)
-PRINT "Easing.InOutCirc(1.0): "; Zanna.Math.Easing.InOutCirc(1.0)
+PRINT "Easing.EaseInOutCirc(0.0): "; Zanna.Math.Easing.EaseInOutCirc(0.0)
+PRINT "Easing.EaseInOutCirc(0.5): "; Zanna.Math.Easing.EaseInOutCirc(0.5)
+PRINT "Easing.EaseInOutCirc(1.0): "; Zanna.Math.Easing.EaseInOutCirc(1.0)
 
 ' --- InBack ---
 PRINT "--- InBack ---"
-PRINT "Easing.InBack(0.0): "; Zanna.Math.Easing.InBack(0.0)
-PRINT "Easing.InBack(0.5): "; Zanna.Math.Easing.InBack(0.5)
-PRINT "Easing.InBack(1.0): "; Zanna.Math.Easing.InBack(1.0)
+PRINT "Easing.EaseInBack(0.0): "; Zanna.Math.Easing.EaseInBack(0.0)
+PRINT "Easing.EaseInBack(0.5): "; Zanna.Math.Easing.EaseInBack(0.5)
+PRINT "Easing.EaseInBack(1.0): "; Zanna.Math.Easing.EaseInBack(1.0)
 
 ' --- OutBack ---
 PRINT "--- OutBack ---"
-PRINT "Easing.OutBack(0.0): "; Zanna.Math.Easing.OutBack(0.0)
-PRINT "Easing.OutBack(0.5): "; Zanna.Math.Easing.OutBack(0.5)
-PRINT "Easing.OutBack(1.0): "; Zanna.Math.Easing.OutBack(1.0)
+PRINT "Easing.EaseOutBack(0.0): "; Zanna.Math.Easing.EaseOutBack(0.0)
+PRINT "Easing.EaseOutBack(0.5): "; Zanna.Math.Easing.EaseOutBack(0.5)
+PRINT "Easing.EaseOutBack(1.0): "; Zanna.Math.Easing.EaseOutBack(1.0)
 
 ' --- InOutBack ---
 PRINT "--- InOutBack ---"
-PRINT "Easing.InOutBack(0.0): "; Zanna.Math.Easing.InOutBack(0.0)
-PRINT "Easing.InOutBack(0.5): "; Zanna.Math.Easing.InOutBack(0.5)
-PRINT "Easing.InOutBack(1.0): "; Zanna.Math.Easing.InOutBack(1.0)
+PRINT "Easing.EaseInOutBack(0.0): "; Zanna.Math.Easing.EaseInOutBack(0.0)
+PRINT "Easing.EaseInOutBack(0.5): "; Zanna.Math.Easing.EaseInOutBack(0.5)
+PRINT "Easing.EaseInOutBack(1.0): "; Zanna.Math.Easing.EaseInOutBack(1.0)
 
 ' --- InElastic ---
 PRINT "--- InElastic ---"
-PRINT "Easing.InElastic(0.0): "; Zanna.Math.Easing.InElastic(0.0)
-PRINT "Easing.InElastic(0.5): "; Zanna.Math.Easing.InElastic(0.5)
-PRINT "Easing.InElastic(1.0): "; Zanna.Math.Easing.InElastic(1.0)
+PRINT "Easing.EaseInElastic(0.0): "; Zanna.Math.Easing.EaseInElastic(0.0)
+PRINT "Easing.EaseInElastic(0.5): "; Zanna.Math.Easing.EaseInElastic(0.5)
+PRINT "Easing.EaseInElastic(1.0): "; Zanna.Math.Easing.EaseInElastic(1.0)
 
 ' --- OutElastic ---
 PRINT "--- OutElastic ---"
-PRINT "Easing.OutElastic(0.0): "; Zanna.Math.Easing.OutElastic(0.0)
-PRINT "Easing.OutElastic(0.5): "; Zanna.Math.Easing.OutElastic(0.5)
-PRINT "Easing.OutElastic(1.0): "; Zanna.Math.Easing.OutElastic(1.0)
+PRINT "Easing.EaseOutElastic(0.0): "; Zanna.Math.Easing.EaseOutElastic(0.0)
+PRINT "Easing.EaseOutElastic(0.5): "; Zanna.Math.Easing.EaseOutElastic(0.5)
+PRINT "Easing.EaseOutElastic(1.0): "; Zanna.Math.Easing.EaseOutElastic(1.0)
 
 ' --- InOutElastic ---
 PRINT "--- InOutElastic ---"
-PRINT "Easing.InOutElastic(0.0): "; Zanna.Math.Easing.InOutElastic(0.0)
-PRINT "Easing.InOutElastic(0.5): "; Zanna.Math.Easing.InOutElastic(0.5)
-PRINT "Easing.InOutElastic(1.0): "; Zanna.Math.Easing.InOutElastic(1.0)
+PRINT "Easing.EaseInOutElastic(0.0): "; Zanna.Math.Easing.EaseInOutElastic(0.0)
+PRINT "Easing.EaseInOutElastic(0.5): "; Zanna.Math.Easing.EaseInOutElastic(0.5)
+PRINT "Easing.EaseInOutElastic(1.0): "; Zanna.Math.Easing.EaseInOutElastic(1.0)
 
 ' --- InBounce ---
 PRINT "--- InBounce ---"
-PRINT "Easing.InBounce(0.0): "; Zanna.Math.Easing.InBounce(0.0)
-PRINT "Easing.InBounce(0.5): "; Zanna.Math.Easing.InBounce(0.5)
-PRINT "Easing.InBounce(1.0): "; Zanna.Math.Easing.InBounce(1.0)
+PRINT "Easing.EaseInBounce(0.0): "; Zanna.Math.Easing.EaseInBounce(0.0)
+PRINT "Easing.EaseInBounce(0.5): "; Zanna.Math.Easing.EaseInBounce(0.5)
+PRINT "Easing.EaseInBounce(1.0): "; Zanna.Math.Easing.EaseInBounce(1.0)
 
 ' --- OutBounce ---
 PRINT "--- OutBounce ---"
-PRINT "Easing.OutBounce(0.0): "; Zanna.Math.Easing.OutBounce(0.0)
-PRINT "Easing.OutBounce(0.5): "; Zanna.Math.Easing.OutBounce(0.5)
-PRINT "Easing.OutBounce(1.0): "; Zanna.Math.Easing.OutBounce(1.0)
+PRINT "Easing.EaseOutBounce(0.0): "; Zanna.Math.Easing.EaseOutBounce(0.0)
+PRINT "Easing.EaseOutBounce(0.5): "; Zanna.Math.Easing.EaseOutBounce(0.5)
+PRINT "Easing.EaseOutBounce(1.0): "; Zanna.Math.Easing.EaseOutBounce(1.0)
 
 ' --- InOutBounce ---
 PRINT "--- InOutBounce ---"
-PRINT "Easing.InOutBounce(0.0): "; Zanna.Math.Easing.InOutBounce(0.0)
-PRINT "Easing.InOutBounce(0.5): "; Zanna.Math.Easing.InOutBounce(0.5)
-PRINT "Easing.InOutBounce(1.0): "; Zanna.Math.Easing.InOutBounce(1.0)
+PRINT "Easing.EaseInOutBounce(0.0): "; Zanna.Math.Easing.EaseInOutBounce(0.0)
+PRINT "Easing.EaseInOutBounce(0.5): "; Zanna.Math.Easing.EaseInOutBounce(0.5)
+PRINT "Easing.EaseInOutBounce(1.0): "; Zanna.Math.Easing.EaseInOutBounce(1.0)
 
 PRINT "=== Easing Audit Complete ==="
 END

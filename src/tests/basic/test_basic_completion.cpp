@@ -5,11 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/basic/test_basic_completion.cpp
+// File: src/tests/basic/test_basic_completion.cpp
 // Purpose: Unit tests for the BasicCompletionEngine.
 // Key invariants:
 //   - Engine returns filtered/ranked CompletionItem results
 //   - Keywords, builtins, snippets, and scope symbols are all providers
+//   - The builtin list offers exactly the builtins the compiler accepts
 //   - Dot-trigger invokes member completion from OopIndex or runtime
 // Ownership/Lifetime:
 //   - Test-only file
@@ -18,11 +19,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "frontends/basic/BasicCompletion.hpp"
+#include "frontends/basic/BuiltinRegistry.hpp"
 #include "tests/TestHarness.hpp"
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 
 using namespace il::frontends::basic;
@@ -61,6 +64,36 @@ TEST(BasicCompletion, BuiltinFunctions) {
             foundLen = true;
     }
     EXPECT_TRUE(foundLen);
+}
+
+TEST(BasicCompletion, BuiltinListMatchesRegistry) {
+    BasicCompletionEngine engine;
+    const auto items = engine.complete("\n", 1, 1, "test.bas", 0);
+    std::set<std::string> labels;
+    for (const auto &item : items)
+        labels.insert(item.label);
+
+    // Every builtin the compiler accepts is offered.
+    using Builtin = BuiltinCallExpr::Builtin;
+    std::string missing;
+    for (std::size_t ordinal = 0; ordinal <= static_cast<std::size_t>(Builtin::Err); ++ordinal) {
+        const std::string name = getBuiltinInfo(static_cast<Builtin>(ordinal)).name;
+        if (!labels.contains(name))
+            missing += name + " ";
+    }
+    EXPECT_EQ(missing, std::string{});
+
+    // Every offered builtin function is accepted. Qualified names are runtime procedures,
+    // and LBOUND and UBOUND are keyword intrinsics.
+    std::string unknown;
+    for (const auto &item : items) {
+        if (item.kind != CompletionKind::Function || item.label.find('.') != std::string::npos ||
+            item.label == "LBOUND" || item.label == "UBOUND")
+            continue;
+        if (!lookupBuiltin(item.label))
+            unknown += item.label + " ";
+    }
+    EXPECT_EQ(unknown, std::string{});
 }
 
 // ===== Scope symbol completions =====

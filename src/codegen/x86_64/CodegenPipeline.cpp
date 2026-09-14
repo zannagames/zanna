@@ -30,6 +30,7 @@
 #include "codegen/x86_64/CodegenPipeline.hpp"
 
 #include "codegen/common/LinkerSupport.hpp"
+#include "codegen/common/NativeAllocaZeroInit.hpp"
 #include "codegen/common/NativeEHLowering.hpp"
 #include "codegen/common/linker/NativeLinker.hpp"
 #include "codegen/common/objfile/ObjectFileWriter.hpp"
@@ -566,6 +567,8 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
         result.exit_code = 1;
         return finish();
     }
+    // Frame slots start uninitialised; IL defines alloca memory as zeroed.
+    zanna::codegen::common::zeroInitAllocas(module);
 
     // Run the canonical IL optimization pipeline before lowering to MIR so native
     // backends stay aligned with frontend/VM optimization behavior.

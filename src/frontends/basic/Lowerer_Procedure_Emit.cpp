@@ -10,7 +10,7 @@
 //
 // Phase: Emission (final phase of procedure lowering)
 //
-// Key Invariants:
+// Key invariants:
 // - ProcedureLowering orchestrates the five-phase lowering pipeline:
 //   1. makeContext: Build context with all procedure references
 //   2. resetContext: Clear per-procedure state
@@ -18,10 +18,15 @@
 //   4. scheduleBlocks: Create IL function skeleton
 //   5. emitProcedureIL: Emit IL instructions for body
 // - Empty bodies use fast path via config.emitEmptyBody
-// - Exit block receives cleanup (deferred temps, object/array release)
-// - FUNCTION returns use VB-style implicit return via function name slot
+// - Exit block receives cleanup (deferred temps, STRING/object/array release)
+// - BYVAL STRING and object parameters are retained into their slots, so the
+//   procedure owns and releases them like locals (ADR 0147)
+// - FUNCTION returns use VB-style implicit return via function name slot, whose
+//   reference moves to the caller
+// - Statements after a jump are still lowered; a label may follow the jump
 //
 // Ownership/Lifetime: Operates on borrowed Lowerer instance.
+// Links: src/frontends/basic/Lowerer_Statement.cpp, docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -163,8 +168,9 @@ void ProcedureLowering::emitProcedureIL(LoweringContext &ctx) {
         return;
     }
 
-    // Lower the procedure body
-    lowerer.lowerStatementSequence(ctx.bodyStmts, /*stopOnTerminated=*/true);
+    // Lower the procedure body. Statements after a GOTO, RETURN, or EXIT are still
+    // lowered: a label or an ON ERROR handler may be reached there.
+    lowerer.lowerStatementSequence(ctx.bodyStmts, /*stopOnTerminated=*/false);
 
     // Patch any empty preallocated line blocks with branch to exit
     patchEmptyLineBlocks(ctx);
@@ -199,8 +205,11 @@ void ProcedureLowering::patchEmptyLineBlocks(LoweringContext &ctx) {
 }
 
 /// @brief Emit cleanup code in the procedure's exit block.
-/// @details Switches to exit block, releases deferred temps, objects, and arrays,
-///          then invokes the configured final return callback.
+/// @details Switches to the exit block and releases deferred temporaries, then
+///          every STRING and object slot the procedure owns (BYVAL parameters
+///          included, since they are retained on entry) and its local arrays.
+///          A FUNCTION's result slot is left for the final return callback,
+///          which moves its reference to the caller.
 /// @param ctx Lowering context for cleanup emission.
 void ProcedureLowering::emitProcedureCleanup(LoweringContext &ctx) {
     auto &procCtx = lowerer.context();
@@ -210,17 +219,13 @@ void ProcedureLowering::emitProcedureCleanup(LoweringContext &ctx) {
     lowerer.curLoc = {};
     lowerer.releaseDeferredTemps();
 
-    // BUG-OOP-035 fix: Exclude function name from release for object-returning functions
-    std::unordered_set<std::string> excludeFromRelease = ctx.paramNames;
-    if (config.retType.kind == il::core::Type::Kind::Ptr) {
-        excludeFromRelease.insert(ctx.name);
-    }
-
-    lowerer.releaseObjectLocals(excludeFromRelease);
-    // BUG-105 fix: Don't release object/array parameters - they are borrowed references from caller
-    // lowerer.releaseObjectParams(ctx.paramNames);  // REMOVED - params not owned by callee
+    std::unordered_set<std::string> kept;
+    if (!config.resultName.empty())
+        kept.insert(config.resultName);
+    lowerer.releaseStringLocals(kept);
+    lowerer.releaseObjectLocals(kept);
+    // Array parameters stay borrowed from the caller (BUG-105).
     lowerer.releaseArrayLocals(ctx.paramNames);
-    // lowerer.releaseArrayParams(ctx.paramNames);  // REMOVED - params not owned by callee
 
     lowerer.curLoc = {};
     config.emitFinalReturn();
@@ -313,6 +318,8 @@ void Lowerer::materializeParams(const std::vector<Param> &params) {
 }
 
 /// @brief Materialize a single parameter into a stack slot.
+/// @details A BYVAL STRING or object parameter is retained into its slot; a BYREF
+///          parameter uses the caller's storage directly.
 /// @param p Parameter to materialize.
 /// @param index Parameter index in declaration order.
 /// @param ilParamOffset Offset into IL function params.
@@ -357,6 +364,7 @@ void Lowerer::materializeSingleParam(const Param &p, size_t index, size_t ilPara
         storeArray(slot, incoming, p.type, isObjectArray);
     } else if (!byRef) {
         emitStore(ty, slot, incoming);
+        retainOwnedParam(incoming, ty, isObjectParam);
     }
 }
 
@@ -405,15 +413,18 @@ void Lowerer::lowerFunctionDecl(const FunctionDecl &decl) {
                 setSymbolType(decl.name, decl.ret);
         };
     }
+    config.resultName = decl.name;
     /// Return the declared default when the function has no statements.
     config.emitEmptyBody = [&]() { emitRet(defaultRet()); };
-    /// Load the VB-style function-name result slot or fall back to the default.
+    /// Return the VB-style function-name result slot or fall back to the default.
     config.emitFinalReturn = [&]() {
         // VB-style implicit return: check if function name was assigned
         if (auto storage = resolveVariableStorage(decl.name, {})) {
             const bool isClassReturn = !decl.explicitClassRetQname.empty();
             Type loadTy = isClassReturn ? Type(Type::Kind::Ptr) : storage->slotInfo.type;
-            Value val = emitLoad(loadTy, storage->pointer);
+            // The slot's reference moves to the caller.
+            Value val = loadTy.kind == Type::Kind::Str ? takeOwnedSlot(storage->pointer, loadTy)
+                                                       : emitLoad(loadTy, storage->pointer);
             emitRet(val);
         } else {
             emitRet(defaultRet());

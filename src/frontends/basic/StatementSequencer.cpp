@@ -268,9 +268,10 @@ StatementSequencer::TerminatorInfo StatementSequencer::collectStatements(
     std::vector<StmtPtr> &dst) {
     CollectionState state;
     skipLeadingSeparator();
-    while (!parser_.at(TokenKind::EndOfFile)) {
+    // A label stashed by the previous line still needs its statement at end of file.
+    while (!parser_.at(TokenKind::EndOfFile) || pendingLine_ >= 0) {
         skipLineBreaks();
-        if (parser_.at(TokenKind::EndOfFile))
+        if (parser_.at(TokenKind::EndOfFile) && pendingLine_ < 0)
             break;
 
         state.separatorBefore = lastSeparator_;
@@ -305,6 +306,13 @@ StatementSequencer::TerminatorInfo StatementSequencer::collectStatements(
                 stmt->line = line;
                 dst.push_back(std::move(stmt));
             }
+        } else if (hasUserLine(line)) {
+            // A label with no statement after it still names this position, e.g. a
+            // label on a line of its own in a procedure or at the end of the file.
+            auto label = std::make_unique<LabelStmt>();
+            label->line = line;
+            label->loc = lineLoc;
+            dst.push_back(std::move(label));
         }
 
         skipStatementSeparator();

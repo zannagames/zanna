@@ -25,19 +25,12 @@
 #include "rt.hpp"
 #include "rt_asset.h"
 #include "rt_path.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <string>
-
-#ifdef _WIN32
-#include <process.h>
-#define GETPID _getpid
-#else
-#include <unistd.h>
-#define GETPID getpid
-#endif
 
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg);
@@ -49,7 +42,7 @@ int main() {
         std::fprintf(stderr, "FAIL: executable directory is unavailable\n");
         return 1;
     }
-    const std::string pid = std::to_string(static_cast<long long>(GETPID()));
+    const std::string pid = std::to_string(static_cast<long long>(getpid()));
     const std::string packPath = std::string(exeDir) + "/zanna-asset-discovery-" + pid + ".zpak";
     std::free(exeDir);
     const std::string entryName = "discovery/" + pid + ".txt";

@@ -104,7 +104,7 @@ DIM linesPath AS STRING
 linesPath = Zanna.IO.Path.Join(base, "lines.txt")
 DIM writer AS Zanna.IO.LineWriter
 writer = Zanna.IO.LineWriter.Open(linesPath)
-writer.NewLine = "\n"
+writer.NewLine = CHR$(10)
 writer.Write("A")
 writer.WriteChar(66)
 writer.WriteLine("C")
@@ -121,6 +121,7 @@ ch = reader.ReadChar()
 Zanna.Core.Diagnostics.Assert(ch >= 0, "line.readchar")
 DIM line AS STRING
 line = reader.Read()
+Zanna.Core.Diagnostics.AssertEqStr(line, "BC", "line.read")
 DIM rest AS STRING
 rest = reader.ReadAll()
 reader.Close()

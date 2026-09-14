@@ -7,10 +7,15 @@
 //
 // File: src/frontends/basic/lower/oop/Lower_OOP_RuntimeHelpers.hpp
 // Purpose: Consolidated OOP runtime emission helpers for BASIC lowering.
-// Key invariants: Centralizes patterns for parameter initialization, array field
-//                 allocation, and method epilogue. (BUG-056, BUG-073, BUG-089, etc.)
-// Ownership/Lifetime: Non-owning references to Lowerer and OOP metadata.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   - Centralizes patterns for parameter initialization, array field
+//     allocation, and method epilogue. (BUG-056, BUG-073, BUG-089, etc.)
+//   - STRING and object parameters are retained on entry and released by the
+//     epilogue like locals (ADR 0147).
+// Ownership/Lifetime:
+//   - Non-owning references to Lowerer and OOP metadata.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md,
+//        docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -84,18 +89,27 @@ class OopEmitHelper {
     /// @param selfSlotId Stack slot ID holding the ME pointer.
     void emitArrayFieldInits(const ClassDecl &klass, unsigned selfSlotId);
 
+    /// @brief Initialize every scalar STRING field of a new object to "".
+    /// @details Object memory starts zeroed, and a null handle compares unequal
+    ///          to "", so a constructor stores the empty string in each STRING
+    ///          field of the layout (inherited fields included), as DIM does for
+    ///          STRING variables.
+    /// @param klass Class declaration whose layout is initialized.
+    /// @param selfSlotId Stack slot ID holding the ME pointer.
+    void emitStringFieldInits(const ClassDecl &klass, unsigned selfSlotId);
+
     // -------------------------------------------------------------------------
     // Method Epilogue
     // -------------------------------------------------------------------------
 
     /// @brief Emit the standard method/constructor epilogue.
-    /// @details Releases deferred temporaries, object locals, and array locals.
-    ///          Borrowed parameters are not released (passed by reference). (BUG-105)
-    /// @param paramNames Set of parameter names to exclude from local release.
-    /// @param excludeFromObjRelease Additional names to exclude (e.g., method name for object
-    /// returns).
+    /// @details Releases deferred temporaries, the STRING and object slots the
+    ///          method owns (parameters included, since they are retained on
+    ///          entry), and local arrays. Array parameters stay borrowed. (BUG-105)
+    /// @param paramNames Parameter names, whose arrays are not released.
+    /// @param kept Result slot the return takes over, left unreleased; may be empty.
     void emitMethodEpilogue(const std::unordered_set<std::string> &paramNames,
-                            const std::unordered_set<std::string> &excludeFromObjRelease);
+                            const std::unordered_set<std::string> &kept);
 
     // -------------------------------------------------------------------------
     // Body Statement Lowering

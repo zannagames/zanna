@@ -23,6 +23,7 @@
  */
 
 // Requires the consolidated Lowerer interface for expression lowering helpers.
+#include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/LocationScope.hpp"
 #include "frontends/basic/LowerExprBuiltin.hpp"
@@ -286,6 +287,24 @@ Lowerer::RVal Lowerer::lowerBinaryExpr(const BinaryExpr &b) {
     if (b.op == BinaryExpr::Op::LogicalAndShort || b.op == BinaryExpr::Op::LogicalOrShort ||
         b.op == BinaryExpr::Op::LogicalAnd || b.op == BinaryExpr::Op::LogicalOr)
         return lowerLogicalBinary(b);
+
+    // `obj = NOTHING` / `obj <> NOTHING`: a null-reference test on the other operand.
+    if ((b.op == BinaryExpr::Op::Eq || b.op == BinaryExpr::Op::Ne) && b.lhs && b.rhs &&
+        (isNothingExpr(*b.lhs) || isNothingExpr(*b.rhs))) {
+        LocationScope loc(*this, b.loc);
+        const bool equal = b.op == BinaryExpr::Op::Eq;
+        if (isNothingExpr(*b.lhs) && isNothingExpr(*b.rhs))
+            return {Value::constBool(equal), ilBoolTy()};
+        const Expr &object = isNothingExpr(*b.lhs) ? *b.rhs : *b.lhs;
+        RVal value = lowerExpr(object);
+        curLoc = b.loc;
+        Value isNull = emitCallRet(ilBoolTy(), "Zanna.Core.Object.IsNull", {value.value});
+        if (equal)
+            return {isNull, ilBoolTy()};
+        Value wide = emitUnary(Opcode::Zext1, Type(Type::Kind::I64), isNull);
+        Value notNull = emitBinary(Opcode::ICmpEq, ilBoolTy(), wide, Value::constInt(0));
+        return {notNull, ilBoolTy()};
+    }
     if (b.op == BinaryExpr::Op::IDiv || b.op == BinaryExpr::Op::Mod)
         return lowerDivOrMod(b);
 

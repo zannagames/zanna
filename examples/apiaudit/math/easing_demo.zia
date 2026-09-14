@@ -22,246 +22,246 @@ func start() {
 
     // --- InQuad ---
     Say("--- InQuad ---");
-    Say("Easing.InQuad(0.0):");
-    SayNum(Easing.InQuad(0.0));
-    Say("Easing.InQuad(0.5):");
-    SayNum(Easing.InQuad(0.5));
-    Say("Easing.InQuad(1.0):");
-    SayNum(Easing.InQuad(1.0));
+    Say("Easing.EaseInQuad(0.0):");
+    SayNum(Easing.EaseInQuad(0.0));
+    Say("Easing.EaseInQuad(0.5):");
+    SayNum(Easing.EaseInQuad(0.5));
+    Say("Easing.EaseInQuad(1.0):");
+    SayNum(Easing.EaseInQuad(1.0));
 
     // --- OutQuad ---
     Say("--- OutQuad ---");
-    Say("Easing.OutQuad(0.0):");
-    SayNum(Easing.OutQuad(0.0));
-    Say("Easing.OutQuad(0.5):");
-    SayNum(Easing.OutQuad(0.5));
-    Say("Easing.OutQuad(1.0):");
-    SayNum(Easing.OutQuad(1.0));
+    Say("Easing.EaseOutQuad(0.0):");
+    SayNum(Easing.EaseOutQuad(0.0));
+    Say("Easing.EaseOutQuad(0.5):");
+    SayNum(Easing.EaseOutQuad(0.5));
+    Say("Easing.EaseOutQuad(1.0):");
+    SayNum(Easing.EaseOutQuad(1.0));
 
     // --- InOutQuad ---
     Say("--- InOutQuad ---");
-    Say("Easing.InOutQuad(0.0):");
-    SayNum(Easing.InOutQuad(0.0));
-    Say("Easing.InOutQuad(0.5):");
-    SayNum(Easing.InOutQuad(0.5));
-    Say("Easing.InOutQuad(1.0):");
-    SayNum(Easing.InOutQuad(1.0));
+    Say("Easing.EaseInOutQuad(0.0):");
+    SayNum(Easing.EaseInOutQuad(0.0));
+    Say("Easing.EaseInOutQuad(0.5):");
+    SayNum(Easing.EaseInOutQuad(0.5));
+    Say("Easing.EaseInOutQuad(1.0):");
+    SayNum(Easing.EaseInOutQuad(1.0));
 
     // --- InCubic ---
     Say("--- InCubic ---");
-    Say("Easing.InCubic(0.0):");
-    SayNum(Easing.InCubic(0.0));
-    Say("Easing.InCubic(0.5):");
-    SayNum(Easing.InCubic(0.5));
-    Say("Easing.InCubic(1.0):");
-    SayNum(Easing.InCubic(1.0));
+    Say("Easing.EaseInCubic(0.0):");
+    SayNum(Easing.EaseInCubic(0.0));
+    Say("Easing.EaseInCubic(0.5):");
+    SayNum(Easing.EaseInCubic(0.5));
+    Say("Easing.EaseInCubic(1.0):");
+    SayNum(Easing.EaseInCubic(1.0));
 
     // --- OutCubic ---
     Say("--- OutCubic ---");
-    Say("Easing.OutCubic(0.0):");
-    SayNum(Easing.OutCubic(0.0));
-    Say("Easing.OutCubic(0.5):");
-    SayNum(Easing.OutCubic(0.5));
-    Say("Easing.OutCubic(1.0):");
-    SayNum(Easing.OutCubic(1.0));
+    Say("Easing.EaseOutCubic(0.0):");
+    SayNum(Easing.EaseOutCubic(0.0));
+    Say("Easing.EaseOutCubic(0.5):");
+    SayNum(Easing.EaseOutCubic(0.5));
+    Say("Easing.EaseOutCubic(1.0):");
+    SayNum(Easing.EaseOutCubic(1.0));
 
     // --- InOutCubic ---
     Say("--- InOutCubic ---");
-    Say("Easing.InOutCubic(0.0):");
-    SayNum(Easing.InOutCubic(0.0));
-    Say("Easing.InOutCubic(0.5):");
-    SayNum(Easing.InOutCubic(0.5));
-    Say("Easing.InOutCubic(1.0):");
-    SayNum(Easing.InOutCubic(1.0));
+    Say("Easing.EaseInOutCubic(0.0):");
+    SayNum(Easing.EaseInOutCubic(0.0));
+    Say("Easing.EaseInOutCubic(0.5):");
+    SayNum(Easing.EaseInOutCubic(0.5));
+    Say("Easing.EaseInOutCubic(1.0):");
+    SayNum(Easing.EaseInOutCubic(1.0));
 
     // --- InQuart ---
     Say("--- InQuart ---");
-    Say("Easing.InQuart(0.0):");
-    SayNum(Easing.InQuart(0.0));
-    Say("Easing.InQuart(0.5):");
-    SayNum(Easing.InQuart(0.5));
-    Say("Easing.InQuart(1.0):");
-    SayNum(Easing.InQuart(1.0));
+    Say("Easing.EaseInQuart(0.0):");
+    SayNum(Easing.EaseInQuart(0.0));
+    Say("Easing.EaseInQuart(0.5):");
+    SayNum(Easing.EaseInQuart(0.5));
+    Say("Easing.EaseInQuart(1.0):");
+    SayNum(Easing.EaseInQuart(1.0));
 
     // --- OutQuart ---
     Say("--- OutQuart ---");
-    Say("Easing.OutQuart(0.0):");
-    SayNum(Easing.OutQuart(0.0));
-    Say("Easing.OutQuart(0.5):");
-    SayNum(Easing.OutQuart(0.5));
-    Say("Easing.OutQuart(1.0):");
-    SayNum(Easing.OutQuart(1.0));
+    Say("Easing.EaseOutQuart(0.0):");
+    SayNum(Easing.EaseOutQuart(0.0));
+    Say("Easing.EaseOutQuart(0.5):");
+    SayNum(Easing.EaseOutQuart(0.5));
+    Say("Easing.EaseOutQuart(1.0):");
+    SayNum(Easing.EaseOutQuart(1.0));
 
     // --- InOutQuart ---
     Say("--- InOutQuart ---");
-    Say("Easing.InOutQuart(0.0):");
-    SayNum(Easing.InOutQuart(0.0));
-    Say("Easing.InOutQuart(0.5):");
-    SayNum(Easing.InOutQuart(0.5));
-    Say("Easing.InOutQuart(1.0):");
-    SayNum(Easing.InOutQuart(1.0));
+    Say("Easing.EaseInOutQuart(0.0):");
+    SayNum(Easing.EaseInOutQuart(0.0));
+    Say("Easing.EaseInOutQuart(0.5):");
+    SayNum(Easing.EaseInOutQuart(0.5));
+    Say("Easing.EaseInOutQuart(1.0):");
+    SayNum(Easing.EaseInOutQuart(1.0));
 
     // --- InSine ---
     Say("--- InSine ---");
-    Say("Easing.InSine(0.0):");
-    SayNum(Easing.InSine(0.0));
-    Say("Easing.InSine(0.5):");
-    SayNum(Easing.InSine(0.5));
-    Say("Easing.InSine(1.0):");
-    SayNum(Easing.InSine(1.0));
+    Say("Easing.EaseInSine(0.0):");
+    SayNum(Easing.EaseInSine(0.0));
+    Say("Easing.EaseInSine(0.5):");
+    SayNum(Easing.EaseInSine(0.5));
+    Say("Easing.EaseInSine(1.0):");
+    SayNum(Easing.EaseInSine(1.0));
 
     // --- OutSine ---
     Say("--- OutSine ---");
-    Say("Easing.OutSine(0.0):");
-    SayNum(Easing.OutSine(0.0));
-    Say("Easing.OutSine(0.5):");
-    SayNum(Easing.OutSine(0.5));
-    Say("Easing.OutSine(1.0):");
-    SayNum(Easing.OutSine(1.0));
+    Say("Easing.EaseOutSine(0.0):");
+    SayNum(Easing.EaseOutSine(0.0));
+    Say("Easing.EaseOutSine(0.5):");
+    SayNum(Easing.EaseOutSine(0.5));
+    Say("Easing.EaseOutSine(1.0):");
+    SayNum(Easing.EaseOutSine(1.0));
 
     // --- InOutSine ---
     Say("--- InOutSine ---");
-    Say("Easing.InOutSine(0.0):");
-    SayNum(Easing.InOutSine(0.0));
-    Say("Easing.InOutSine(0.5):");
-    SayNum(Easing.InOutSine(0.5));
-    Say("Easing.InOutSine(1.0):");
-    SayNum(Easing.InOutSine(1.0));
+    Say("Easing.EaseInOutSine(0.0):");
+    SayNum(Easing.EaseInOutSine(0.0));
+    Say("Easing.EaseInOutSine(0.5):");
+    SayNum(Easing.EaseInOutSine(0.5));
+    Say("Easing.EaseInOutSine(1.0):");
+    SayNum(Easing.EaseInOutSine(1.0));
 
     // --- InExpo ---
     Say("--- InExpo ---");
-    Say("Easing.InExpo(0.0):");
-    SayNum(Easing.InExpo(0.0));
-    Say("Easing.InExpo(0.5):");
-    SayNum(Easing.InExpo(0.5));
-    Say("Easing.InExpo(1.0):");
-    SayNum(Easing.InExpo(1.0));
+    Say("Easing.EaseInExpo(0.0):");
+    SayNum(Easing.EaseInExpo(0.0));
+    Say("Easing.EaseInExpo(0.5):");
+    SayNum(Easing.EaseInExpo(0.5));
+    Say("Easing.EaseInExpo(1.0):");
+    SayNum(Easing.EaseInExpo(1.0));
 
     // --- OutExpo ---
     Say("--- OutExpo ---");
-    Say("Easing.OutExpo(0.0):");
-    SayNum(Easing.OutExpo(0.0));
-    Say("Easing.OutExpo(0.5):");
-    SayNum(Easing.OutExpo(0.5));
-    Say("Easing.OutExpo(1.0):");
-    SayNum(Easing.OutExpo(1.0));
+    Say("Easing.EaseOutExpo(0.0):");
+    SayNum(Easing.EaseOutExpo(0.0));
+    Say("Easing.EaseOutExpo(0.5):");
+    SayNum(Easing.EaseOutExpo(0.5));
+    Say("Easing.EaseOutExpo(1.0):");
+    SayNum(Easing.EaseOutExpo(1.0));
 
     // --- InOutExpo ---
     Say("--- InOutExpo ---");
-    Say("Easing.InOutExpo(0.0):");
-    SayNum(Easing.InOutExpo(0.0));
-    Say("Easing.InOutExpo(0.5):");
-    SayNum(Easing.InOutExpo(0.5));
-    Say("Easing.InOutExpo(1.0):");
-    SayNum(Easing.InOutExpo(1.0));
+    Say("Easing.EaseInOutExpo(0.0):");
+    SayNum(Easing.EaseInOutExpo(0.0));
+    Say("Easing.EaseInOutExpo(0.5):");
+    SayNum(Easing.EaseInOutExpo(0.5));
+    Say("Easing.EaseInOutExpo(1.0):");
+    SayNum(Easing.EaseInOutExpo(1.0));
 
     // --- InCirc ---
     Say("--- InCirc ---");
-    Say("Easing.InCirc(0.0):");
-    SayNum(Easing.InCirc(0.0));
-    Say("Easing.InCirc(0.5):");
-    SayNum(Easing.InCirc(0.5));
-    Say("Easing.InCirc(1.0):");
-    SayNum(Easing.InCirc(1.0));
+    Say("Easing.EaseInCirc(0.0):");
+    SayNum(Easing.EaseInCirc(0.0));
+    Say("Easing.EaseInCirc(0.5):");
+    SayNum(Easing.EaseInCirc(0.5));
+    Say("Easing.EaseInCirc(1.0):");
+    SayNum(Easing.EaseInCirc(1.0));
 
     // --- OutCirc ---
     Say("--- OutCirc ---");
-    Say("Easing.OutCirc(0.0):");
-    SayNum(Easing.OutCirc(0.0));
-    Say("Easing.OutCirc(0.5):");
-    SayNum(Easing.OutCirc(0.5));
-    Say("Easing.OutCirc(1.0):");
-    SayNum(Easing.OutCirc(1.0));
+    Say("Easing.EaseOutCirc(0.0):");
+    SayNum(Easing.EaseOutCirc(0.0));
+    Say("Easing.EaseOutCirc(0.5):");
+    SayNum(Easing.EaseOutCirc(0.5));
+    Say("Easing.EaseOutCirc(1.0):");
+    SayNum(Easing.EaseOutCirc(1.0));
 
     // --- InOutCirc ---
     Say("--- InOutCirc ---");
-    Say("Easing.InOutCirc(0.0):");
-    SayNum(Easing.InOutCirc(0.0));
-    Say("Easing.InOutCirc(0.5):");
-    SayNum(Easing.InOutCirc(0.5));
-    Say("Easing.InOutCirc(1.0):");
-    SayNum(Easing.InOutCirc(1.0));
+    Say("Easing.EaseInOutCirc(0.0):");
+    SayNum(Easing.EaseInOutCirc(0.0));
+    Say("Easing.EaseInOutCirc(0.5):");
+    SayNum(Easing.EaseInOutCirc(0.5));
+    Say("Easing.EaseInOutCirc(1.0):");
+    SayNum(Easing.EaseInOutCirc(1.0));
 
     // --- InBack ---
     Say("--- InBack ---");
-    Say("Easing.InBack(0.0):");
-    SayNum(Easing.InBack(0.0));
-    Say("Easing.InBack(0.5):");
-    SayNum(Easing.InBack(0.5));
-    Say("Easing.InBack(1.0):");
-    SayNum(Easing.InBack(1.0));
+    Say("Easing.EaseInBack(0.0):");
+    SayNum(Easing.EaseInBack(0.0));
+    Say("Easing.EaseInBack(0.5):");
+    SayNum(Easing.EaseInBack(0.5));
+    Say("Easing.EaseInBack(1.0):");
+    SayNum(Easing.EaseInBack(1.0));
 
     // --- OutBack ---
     Say("--- OutBack ---");
-    Say("Easing.OutBack(0.0):");
-    SayNum(Easing.OutBack(0.0));
-    Say("Easing.OutBack(0.5):");
-    SayNum(Easing.OutBack(0.5));
-    Say("Easing.OutBack(1.0):");
-    SayNum(Easing.OutBack(1.0));
+    Say("Easing.EaseOutBack(0.0):");
+    SayNum(Easing.EaseOutBack(0.0));
+    Say("Easing.EaseOutBack(0.5):");
+    SayNum(Easing.EaseOutBack(0.5));
+    Say("Easing.EaseOutBack(1.0):");
+    SayNum(Easing.EaseOutBack(1.0));
 
     // --- InOutBack ---
     Say("--- InOutBack ---");
-    Say("Easing.InOutBack(0.0):");
-    SayNum(Easing.InOutBack(0.0));
-    Say("Easing.InOutBack(0.5):");
-    SayNum(Easing.InOutBack(0.5));
-    Say("Easing.InOutBack(1.0):");
-    SayNum(Easing.InOutBack(1.0));
+    Say("Easing.EaseInOutBack(0.0):");
+    SayNum(Easing.EaseInOutBack(0.0));
+    Say("Easing.EaseInOutBack(0.5):");
+    SayNum(Easing.EaseInOutBack(0.5));
+    Say("Easing.EaseInOutBack(1.0):");
+    SayNum(Easing.EaseInOutBack(1.0));
 
     // --- InElastic ---
     Say("--- InElastic ---");
-    Say("Easing.InElastic(0.0):");
-    SayNum(Easing.InElastic(0.0));
-    Say("Easing.InElastic(0.5):");
-    SayNum(Easing.InElastic(0.5));
-    Say("Easing.InElastic(1.0):");
-    SayNum(Easing.InElastic(1.0));
+    Say("Easing.EaseInElastic(0.0):");
+    SayNum(Easing.EaseInElastic(0.0));
+    Say("Easing.EaseInElastic(0.5):");
+    SayNum(Easing.EaseInElastic(0.5));
+    Say("Easing.EaseInElastic(1.0):");
+    SayNum(Easing.EaseInElastic(1.0));
 
     // --- OutElastic ---
     Say("--- OutElastic ---");
-    Say("Easing.OutElastic(0.0):");
-    SayNum(Easing.OutElastic(0.0));
-    Say("Easing.OutElastic(0.5):");
-    SayNum(Easing.OutElastic(0.5));
-    Say("Easing.OutElastic(1.0):");
-    SayNum(Easing.OutElastic(1.0));
+    Say("Easing.EaseOutElastic(0.0):");
+    SayNum(Easing.EaseOutElastic(0.0));
+    Say("Easing.EaseOutElastic(0.5):");
+    SayNum(Easing.EaseOutElastic(0.5));
+    Say("Easing.EaseOutElastic(1.0):");
+    SayNum(Easing.EaseOutElastic(1.0));
 
     // --- InOutElastic ---
     Say("--- InOutElastic ---");
-    Say("Easing.InOutElastic(0.0):");
-    SayNum(Easing.InOutElastic(0.0));
-    Say("Easing.InOutElastic(0.5):");
-    SayNum(Easing.InOutElastic(0.5));
-    Say("Easing.InOutElastic(1.0):");
-    SayNum(Easing.InOutElastic(1.0));
+    Say("Easing.EaseInOutElastic(0.0):");
+    SayNum(Easing.EaseInOutElastic(0.0));
+    Say("Easing.EaseInOutElastic(0.5):");
+    SayNum(Easing.EaseInOutElastic(0.5));
+    Say("Easing.EaseInOutElastic(1.0):");
+    SayNum(Easing.EaseInOutElastic(1.0));
 
     // --- InBounce ---
     Say("--- InBounce ---");
-    Say("Easing.InBounce(0.0):");
-    SayNum(Easing.InBounce(0.0));
-    Say("Easing.InBounce(0.5):");
-    SayNum(Easing.InBounce(0.5));
-    Say("Easing.InBounce(1.0):");
-    SayNum(Easing.InBounce(1.0));
+    Say("Easing.EaseInBounce(0.0):");
+    SayNum(Easing.EaseInBounce(0.0));
+    Say("Easing.EaseInBounce(0.5):");
+    SayNum(Easing.EaseInBounce(0.5));
+    Say("Easing.EaseInBounce(1.0):");
+    SayNum(Easing.EaseInBounce(1.0));
 
     // --- OutBounce ---
     Say("--- OutBounce ---");
-    Say("Easing.OutBounce(0.0):");
-    SayNum(Easing.OutBounce(0.0));
-    Say("Easing.OutBounce(0.5):");
-    SayNum(Easing.OutBounce(0.5));
-    Say("Easing.OutBounce(1.0):");
-    SayNum(Easing.OutBounce(1.0));
+    Say("Easing.EaseOutBounce(0.0):");
+    SayNum(Easing.EaseOutBounce(0.0));
+    Say("Easing.EaseOutBounce(0.5):");
+    SayNum(Easing.EaseOutBounce(0.5));
+    Say("Easing.EaseOutBounce(1.0):");
+    SayNum(Easing.EaseOutBounce(1.0));
 
     // --- InOutBounce ---
     Say("--- InOutBounce ---");
-    Say("Easing.InOutBounce(0.0):");
-    SayNum(Easing.InOutBounce(0.0));
-    Say("Easing.InOutBounce(0.5):");
-    SayNum(Easing.InOutBounce(0.5));
-    Say("Easing.InOutBounce(1.0):");
-    SayNum(Easing.InOutBounce(1.0));
+    Say("Easing.EaseInOutBounce(0.0):");
+    SayNum(Easing.EaseInOutBounce(0.0));
+    Say("Easing.EaseInOutBounce(0.5):");
+    SayNum(Easing.EaseInOutBounce(0.5));
+    Say("Easing.EaseInOutBounce(1.0):");
+    SayNum(Easing.EaseInOutBounce(1.0));
 
     Say("=== Easing Audit Complete ===");
 }

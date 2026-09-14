@@ -243,11 +243,12 @@ void *rt_trap_error_make(int32_t code, rt_string msg);
 ///   return if an embedder's hook permits it.
 void rt_trap_raise_kind(int32_t kind, int32_t code, int32_t line, const char *msg);
 
-/// @brief Raise a trap with explicit trap metadata and no message.
+/// @brief Raise a trap with explicit trap metadata and the kind's message.
 /// @param kind Canonical trap classification.
 /// @param code Secondary runtime error code (Err_* or 0).
 /// @param line Source line number (-1 if unknown).
-/// @note Equivalent to @ref rt_trap_raise_kind with a NULL message.
+/// @note The message is the retained thrown text of a runtime error, otherwise
+///   the kind's default message, matching `Zanna.Error.Message`.
 void rt_trap_raise_kind_nomsg(int32_t kind, int32_t code, int32_t line);
 
 /// @brief Raise a trap classified from a legacy Err_* code while preserving @p msg.

@@ -5,11 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/runtime/RTArrayStrTests.cpp
+// File: src/tests/runtime/RTArrayStrTests.cpp
 // Purpose: Verify basic behavior of the string runtime array helpers.
-// Key invariants: String elements are properly reference-counted on get/put/release.
-// Ownership/Lifetime: Tests own allocated arrays and release them via rt_arr_str_release().
-// Links: docs/runtime-vm.md#runtime-abi
+// Key invariants:
+//   - String elements are properly reference-counted on get/put/release.
+//   - An element that was never written reads as the empty string.
+// Ownership/Lifetime:
+//   - Tests own allocated arrays and release them via rt_arr_str_release().
+// Links: src/runtime/arrays/rt_array_str.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,11 +39,13 @@ int main() {
     assert(arr != nullptr);
     assert(rt_arr_str_len(arr) == 3);
 
-    // All slots should be initialized to NULL
+    // Slots that were never written read as the empty string
     for (size_t i = 0; i < 3; ++i) {
         rt_string s = rt_arr_str_get(arr, i);
-        assert(s == nullptr);
-        // Note: rt_arr_str_get retains, so we need to release even if NULL
+        assert(s != nullptr);
+        assert(rt_str_len(s) == 0);
+        assert(rt_str_eq(s, rt_str_empty()));
+        // rt_arr_str_get hands the caller a reference to release
         rt_str_release_maybe(s);
     }
 
@@ -85,10 +90,11 @@ int main() {
     assert(rt_str_len(check) == 7);
     rt_str_release_maybe(check);
 
-    // Test 6: Put NULL into a slot
+    // Test 6: Put NULL into a slot; it reads back as the empty string
     rt_arr_str_put(arr, 2, nullptr);
     rt_string null_check = rt_arr_str_get(arr, 2);
-    assert(null_check == nullptr);
+    assert(null_check != nullptr);
+    assert(rt_str_len(null_check) == 0);
     rt_str_release_maybe(null_check);
 
     // Test 7: Release array (should release all remaining strings)

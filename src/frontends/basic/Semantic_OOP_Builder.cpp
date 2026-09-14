@@ -338,8 +338,21 @@ void OopIndexBuilder::processClassDecl(const ClassDecl &classDecl) {
                                        classFieldNames);
                 break;
             case Stmt::Kind::DestructorDecl: {
-                info.hasDestructor = true;
                 const auto &dtor = static_cast<const DestructorDecl &>(*member);
+                if (dtor.isStatic) {
+                    if (info.hasStaticDtor && emitter_) {
+                        emitter_->emit(il::support::Severity::Error,
+                                       "B2104",
+                                       dtor.loc,
+                                       1,
+                                       "multiple static destructors not allowed");
+                    }
+                    info.hasStaticDtor = true;
+                    checkMeInStaticContext(
+                        dtor.body, emitter_, "B2106", "'ME' is not allowed in static destructor");
+                    break;
+                }
+                info.hasDestructor = true;
                 checkMemberShadowing(dtor.body, classDecl, classFieldNames, emitter_);
                 break;
             }

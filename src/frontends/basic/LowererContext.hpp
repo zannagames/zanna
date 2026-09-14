@@ -372,91 +372,232 @@ struct ProcedureContext {
         std::vector<bool> exitTaken_;
     };
 
-    /// @brief Tracks ON ERROR GOTO / RESUME state for structured error handling.
-    /// @details Maintains the currently active error handler block, a mapping from
-    ///          target lines to handler block indices, and reverse mappings for
-    ///          RESUME dispatch.
+    /// @brief Tracks ON ERROR GOTO / RESUME and TRY handler state for a procedure.
+    /// @details TRY handler blocks are keyed by the line of their first statement.
+    ///          A procedure that contains ON ERROR GOTO owns one dispatcher: a single
+    ///          handler block pushed by an arm block that every protected path enters
+    ///          through, so the handler stack has the same depth everywhere in the body.
+    ///          ON ERROR GOTO only records which label is selected; the handler entry
+    ///          and RESUME both return through the arm, which re-installs the handler
+    ///          and switches to the block they chose.
     struct ErrorHandlerState {
+        /// @brief One statement that RESUME can return to.
+        struct ResumeSite {
+            /// Block beginning the statement; RESUME retries it from here.
+            size_t startBlock{0};
+            /// Block after the statement, where RESUME NEXT continues; absent when
+            /// the statement never falls through.
+            std::optional<size_t> nextBlock{};
+        };
+
+        /// @brief Entry-block slots of a procedure that uses ON ERROR GOTO.
+        struct DispatchSlots {
+            /// i32 arm target id of the label selected by ON ERROR GOTO (0 = none).
+            Value selected{};
+            /// i32 arm target id the arm continues at.
+            Value target{};
+            /// i32 resume site id of the executing statement (0 = none).
+            Value site{};
+            /// i32 resume site id of the statement whose error is being handled.
+            Value failedSite{};
+            /// i32 trap kind of the handled error.
+            Value kind{};
+            /// i32 code of the handled error, read by ERR.
+            Value code{};
+            /// i32 source line of the handled error.
+            Value line{};
+            /// i64 flag that is nonzero while the handler runs.
+            Value running{};
+        };
+
         /// @brief Reset all error handler state for a new procedure.
         void reset() noexcept {
-            active_ = false;
-            activeIndex_.reset();
-            activeLine_.reset();
             blocks_.clear();
             handlerTargets_.clear();
+            hasDispatcher_ = false;
+            slots_ = DispatchSlots{};
+            armBlock_ = 0;
+            handlerBlock_ = 0;
+            bodyBlock_ = 0;
+            armTargets_.clear();
+            armTargetIds_.clear();
+            siteTracking_ = false;
+            siteSuppressDepth_ = 0;
+            sites_.clear();
+            sameDispatch_.reset();
+            nextDispatch_.reset();
         }
 
-        /// @brief Check if an error handler is currently active.
-        /// @return True when an ON ERROR GOTO handler is installed.
-        [[nodiscard]] bool active() const noexcept {
-            return active_;
+        /// @brief Whether the procedure has an ON ERROR dispatcher.
+        /// @return True after @ref setDispatcher.
+        [[nodiscard]] bool hasDispatcher() const noexcept {
+            return hasDispatcher_;
         }
 
-        /// @brief Set whether an error handler is active.
-        /// @param active True to mark a handler as active.
-        void setActive(bool active) noexcept {
-            active_ = active;
+        /// @brief Record the dispatcher created for the procedure body.
+        /// @param slots Entry-block state slots.
+        /// @param armBlock Block that pushes the handler and switches on the target slot.
+        /// @param handlerBlock Handler block the arm pushes.
+        /// @param bodyBlock Block the arm continues at when no target is set.
+        void setDispatcher(const DispatchSlots &slots,
+                           size_t armBlock,
+                           size_t handlerBlock,
+                           size_t bodyBlock) noexcept {
+            hasDispatcher_ = true;
+            slots_ = slots;
+            armBlock_ = armBlock;
+            handlerBlock_ = handlerBlock;
+            bodyBlock_ = bodyBlock;
         }
 
-        /// @brief Get the block index of the active error handler.
-        /// @return Block index, or nullopt when no handler is active.
-        [[nodiscard]] std::optional<size_t> activeIndex() const noexcept {
-            return activeIndex_;
+        /// @brief Entry-block state slots; valid only when @ref hasDispatcher.
+        [[nodiscard]] const DispatchSlots &slots() const noexcept {
+            return slots_;
         }
 
-        /// @brief Set the block index of the active error handler.
-        /// @param index Block index, or nullopt to clear.
-        void setActiveIndex(std::optional<size_t> index) noexcept {
-            activeIndex_ = index;
+        /// @brief Index of the arm block.
+        [[nodiscard]] size_t armBlock() const noexcept {
+            return armBlock_;
         }
 
-        /// @brief Get the source line targeted by the active ON ERROR GOTO.
-        /// @return Target line number, or nullopt when not set.
-        [[nodiscard]] std::optional<int> activeLine() const noexcept {
-            return activeLine_;
+        /// @brief Index of the dispatcher's handler block.
+        [[nodiscard]] size_t handlerBlock() const noexcept {
+            return handlerBlock_;
         }
 
-        /// @brief Set the source line targeted by the active ON ERROR GOTO.
-        /// @param line Target line number, or nullopt to clear.
-        void setActiveLine(std::optional<int> line) noexcept {
-            activeLine_ = line;
+        /// @brief Index of the block the arm enters when no target is set.
+        [[nodiscard]] size_t bodyBlock() const noexcept {
+            return bodyBlock_;
         }
 
-        /// @brief Access the mutable target-line to handler-block-index mapping.
+        /// @brief Get the arm target id of @p blockIndex, assigning one on first use.
+        /// @param blockIndex Block the arm may switch to.
+        /// @return One-based id stored in the selected or target slot.
+        unsigned armTarget(size_t blockIndex) {
+            auto it = armTargetIds_.find(blockIndex);
+            if (it != armTargetIds_.end())
+                return it->second;
+            armTargets_.push_back(blockIndex);
+            const auto id = static_cast<unsigned>(armTargets_.size());
+            armTargetIds_.emplace(blockIndex, id);
+            return id;
+        }
+
+        /// @brief Arm target blocks in id order (id = index + 1).
+        [[nodiscard]] const std::vector<size_t> &armTargets() const noexcept {
+            return armTargets_;
+        }
+
+        /// @brief Whether statements record resume sites.
+        /// @return True when RESUME or RESUME NEXT occurs in the body and the
+        ///         statement is not inside a TRY or USING statement.
+        [[nodiscard]] bool siteTracking() const noexcept {
+            return siteTracking_ && siteSuppressDepth_ == 0;
+        }
+
+        /// @brief Enable resume-site tracking for the procedure.
+        /// @param enabled True when the body contains RESUME or RESUME NEXT.
+        void setSiteTracking(bool enabled) noexcept {
+            siteTracking_ = enabled;
+        }
+
+        /// @brief Enter a statement whose nested statements record no resume sites.
+        /// @details TRY and USING bodies run with an extra handler installed, and a
+        ///          catch body holds a resume token, so the arm cannot enter them.
+        void suppressSites() noexcept {
+            ++siteSuppressDepth_;
+        }
+
+        /// @brief Leave a statement entered with @ref suppressSites.
+        void restoreSites() noexcept {
+            if (siteSuppressDepth_ > 0)
+                --siteSuppressDepth_;
+        }
+
+        /// @brief Register a resume site starting at @p startBlock.
+        /// @param startBlock Block index where the statement begins.
+        /// @return One-based site id stored in the site slot.
+        unsigned addSite(size_t startBlock) {
+            sites_.push_back(ResumeSite{startBlock, std::nullopt});
+            return static_cast<unsigned>(sites_.size());
+        }
+
+        /// @brief Record where RESUME NEXT continues after site @p id.
+        /// @param id One-based site id from @ref addSite.
+        /// @param nextBlock Block index following the statement.
+        void setSiteNext(unsigned id, size_t nextBlock) {
+            if (id >= 1 && id <= sites_.size())
+                sites_[id - 1].nextBlock = nextBlock;
+        }
+
+        /// @brief Registered resume sites in id order.
+        [[nodiscard]] const std::vector<ResumeSite> &sites() const noexcept {
+            return sites_;
+        }
+
+        /// @brief Block index of the RESUME (@p next false) or RESUME NEXT dispatch block.
+        [[nodiscard]] std::optional<size_t> dispatchBlock(bool next) const noexcept {
+            return next ? nextDispatch_ : sameDispatch_;
+        }
+
+        /// @brief Record the RESUME or RESUME NEXT dispatch block index.
+        void setDispatchBlock(bool next, size_t index) noexcept {
+            (next ? nextDispatch_ : sameDispatch_) = index;
+        }
+
+        /// @brief Access the mutable TRY key-line to handler-block-index mapping.
         /// @return Mutable reference to the map.
         [[nodiscard]] std::unordered_map<int, size_t> &blocks() noexcept {
             return blocks_;
         }
 
-        /// @brief Access the immutable target-line to handler-block-index mapping.
+        /// @brief Access the immutable TRY key-line to handler-block-index mapping.
         /// @return Const reference to the map.
         [[nodiscard]] const std::unordered_map<int, size_t> &blocks() const noexcept {
             return blocks_;
         }
 
-        /// @brief Access the mutable handler-block-index to target-line mapping.
+        /// @brief Access the mutable handler-block-index to key-line mapping.
         /// @return Mutable reference to the reverse map.
         [[nodiscard]] std::unordered_map<size_t, int> &handlerTargets() noexcept {
             return handlerTargets_;
         }
 
-        /// @brief Access the immutable handler-block-index to target-line mapping.
+        /// @brief Access the immutable handler-block-index to key-line mapping.
         /// @return Const reference to the reverse map.
         [[nodiscard]] const std::unordered_map<size_t, int> &handlerTargets() const noexcept {
             return handlerTargets_;
         }
 
       private:
-        /// Whether ON ERROR currently routes failures to a handler.
-        bool active_{false};
-        /// Stable index of the active handler block.
-        std::optional<size_t> activeIndex_{};
-        /// BASIC line targeted by the active handler.
-        std::optional<int> activeLine_{};
-        /// Target line to handler block index.
+        /// TRY key line to handler block index.
         std::unordered_map<int, size_t> blocks_;
-        /// Handler block index to target line.
+        /// Handler block index to TRY key line.
         std::unordered_map<size_t, int> handlerTargets_;
+        /// Whether the procedure owns an ON ERROR dispatcher.
+        bool hasDispatcher_{false};
+        /// Dispatcher state slots in the entry block.
+        DispatchSlots slots_{};
+        /// Arm block index.
+        size_t armBlock_{0};
+        /// Dispatcher handler block index.
+        size_t handlerBlock_{0};
+        /// First body block, the arm's default target.
+        size_t bodyBlock_{0};
+        /// Arm target blocks in id order.
+        std::vector<size_t> armTargets_;
+        /// Block index to arm target id.
+        std::unordered_map<size_t, unsigned> armTargetIds_;
+        /// Whether the body contains RESUME or RESUME NEXT.
+        bool siteTracking_{false};
+        /// Nesting of TRY and USING statements, whose bodies record no sites.
+        unsigned siteSuppressDepth_{0};
+        /// Resume sites in id order (id = index + 1).
+        std::vector<ResumeSite> sites_;
+        /// Block that RESUME continues at, switching on the failed-site slot.
+        std::optional<size_t> sameDispatch_{};
+        /// Block that RESUME NEXT continues at, switching on the failed-site slot.
+        std::optional<size_t> nextDispatch_{};
     };
 
     /// @brief Tracks GOSUB return-address stack state for a procedure.

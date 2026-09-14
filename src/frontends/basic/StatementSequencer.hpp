@@ -47,7 +47,7 @@ class StatementSequencer {
   public:
     /// @brief Aggregated information about a terminating keyword.
     struct TerminatorInfo {
-        int line = 0;                 ///< Optional line number preceding terminator.
+        int line = 0; ///< Optional line number preceding terminator.
 
         /// Location of the terminator token captured before its consumer runs.
         il::support::SourceLoc loc{}; ///< Location where terminator keyword appeared.
@@ -103,6 +103,12 @@ class StatementSequencer {
     /// @return Separator state retained by the most recent skip operation.
     SeparatorKind lastSeparator() const;
 
+    /// @brief Whether a line label is waiting for the next statement line.
+    /// @return True when a stashed label has not been delivered yet.
+    [[nodiscard]] bool hasPendingLine() const noexcept {
+        return pendingLine_ >= 0;
+    }
+
     /// @brief Populate @p dst with statements until @p isTerminator fires.
     /// @param isTerminator Predicate tested before parsing each statement.
     /// @param onTerminator Consumer invoked once for a recognized terminator.
@@ -154,10 +160,10 @@ class StatementSequencer {
                                   CollectionState &state);
 
     /// Non-owning parser providing token access and statement sub-parses.
-    Parser &parser_;                          ///< Underlying parser providing token access.
+    Parser &parser_; ///< Underlying parser providing token access.
 
     /// Deferred numeric line label, or @c -1 when none is pending.
-    int pendingLine_ = -1;                    ///< Deferred numeric line label for next statement.
+    int pendingLine_ = -1; ///< Deferred numeric line label for next statement.
 
     /// Source location paired with @ref pendingLine_.
     il::support::SourceLoc pendingLineLoc_{}; ///< Location of the deferred line label.

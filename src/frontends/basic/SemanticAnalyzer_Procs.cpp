@@ -42,6 +42,7 @@
 namespace il::frontends::basic {
 
 using semantic_analyzer_detail::astToSemanticType;
+using semantic_analyzer_detail::containsOnErrorLabel;
 
 /// @brief Enters a rollback transaction for procedure-local analyzer state.
 /// @details Saves the enclosing active scope and error handler, installs this
@@ -53,10 +54,8 @@ SemanticAnalyzer::ProcedureScope::ProcedureScope(SemanticAnalyzer &analyzer) noe
     : analyzer_(analyzer) {
     previous_ = analyzer_.activeProcScope_;
     analyzer_.activeProcScope_ = this;
-    previousHandlerActive_ = analyzer_.errorHandlerActive_;
-    previousHandlerTarget_ = analyzer_.errorHandlerTarget_;
-    analyzer_.errorHandlerActive_ = false;
-    analyzer_.errorHandlerTarget_.reset();
+    previousHasOnError_ = analyzer_.procedureHasOnError_;
+    analyzer_.procedureHasOnError_ = false;
     forStackDepth_ = analyzer_.forStack_.size();
     loopStackDepth_ = analyzer_.loopStack_.size();
     analyzer_.scopes_.pushScope();
@@ -70,8 +69,7 @@ SemanticAnalyzer::ProcedureScope::ProcedureScope(SemanticAnalyzer &analyzer) noe
 /// @post Module/enclosing-procedure state matches the recorded baselines.
 SemanticAnalyzer::ProcedureScope::~ProcedureScope() noexcept {
     analyzer_.activeProcScope_ = previous_;
-    analyzer_.errorHandlerActive_ = previousHandlerActive_;
-    analyzer_.errorHandlerTarget_ = previousHandlerTarget_;
+    analyzer_.procedureHasOnError_ = previousHasOnError_;
     for (const auto &label : newLabelRefs_)
         analyzer_.labelRefs_.erase(label);
     for (const auto &label : newLabels_)
@@ -177,6 +175,15 @@ void SemanticAnalyzer::ProcedureScope::noteLabelInserted(int label) {
     newLabels_.push_back(label);
 }
 
+/// @brief Tests whether a label belongs to this procedure's body.
+/// @details Line numbers and named labels are unique across a program, so the
+///          labels this scope inserted are exactly the procedure's own.
+/// @param label Line label to look up.
+/// @return True for a label this scope inserted.
+bool SemanticAnalyzer::ProcedureScope::ownsLabel(int label) const noexcept {
+    return std::find(newLabels_.begin(), newLabels_.end(), label) != newLabels_.end();
+}
+
 /// @brief Records a newly inserted procedure label reference for rollback.
 /// @param label Reference-set value.
 void SemanticAnalyzer::ProcedureScope::noteLabelRefInserted(int label) {
@@ -193,6 +200,7 @@ void SemanticAnalyzer::ProcedureScope::noteLabelRefInserted(int label) {
 /// @pre A lexical scope is active; normally a @ref ProcedureScope is active.
 void SemanticAnalyzer::registerProcedureParam(const Param &param) {
     checkClassTypeName(param.objectClass, param.loc);
+    qualifyImportedClassName(const_cast<Param &>(param).objectClass);
     scopes_.bind(param.name, param.name);
 
     std::string paramName = param.name;
@@ -290,6 +298,7 @@ void SemanticAnalyzer::analyzeProcedureCommon(const Proc &proc,
 
     for (const auto &p : proc.params)
         registerProcedureParam(p);
+    procedureHasOnError_ = containsOnErrorLabel(proc.body);
     for (const auto &st : proc.body)
         if (st && hasUserLine(st->line)) {
             auto insertResult = labels_.insert(st->line);
@@ -320,6 +329,7 @@ void SemanticAnalyzer::analyzeProcedureCommon(const Proc &proc,
 /// @param f Function declaration borrowed during analysis.
 void SemanticAnalyzer::analyzeProc(const FunctionDecl &f) {
     checkClassTypeName(JoinDots(f.explicitClassRetQname), f.loc);
+    qualifyImportedClassName(const_cast<FunctionDecl &>(f).explicitClassRetQname);
     // Preserve current namespace stack and establish the procedure's namespace context
     auto savedNs = nsStack_;
     if (!f.qualifiedName.empty()) {
@@ -563,8 +573,8 @@ ReturnFlow flowForTry(const TryCatchStmt &stmt,
 }
 
 /// @brief Classifies one statement for function-result flow.
-/// @details Handles statement lists, value/assigned RETURN, EXIT FUNCTION,
-///          function-name assignment, IF, SELECT, and TRY. Loops are
+/// @details Handles statement lists, value/assigned RETURN, END (which ends the
+///          program), EXIT FUNCTION, function-name assignment, IF, SELECT, and TRY. Loops are
 ///          conservatively treated as possibly unexecuted and do not establish
 ///          new guarantees; all other statements preserve incoming assignment.
 /// @param stmt Statement to inspect.
@@ -576,6 +586,9 @@ ReturnFlow flowForStmt(const Stmt &stmt, const FunctionDecl *activeFunction, boo
         return flowForStmtList(lst->stmts, activeFunction, assignedBefore);
     if (const auto *ret = as<const ReturnStmt>(stmt))
         return {ret->value != nullptr || assignedBefore, assignedBefore};
+    // END ends the program, so no result is needed after it.
+    if (is<EndStmt>(stmt))
+        return {true, assignedBefore};
     if (const auto *exitStmt = as<const ExitStmt>(stmt)) {
         if (exitStmt->kind == ExitStmt::LoopKind::Function)
             return {assignedBefore, assignedBefore};
@@ -698,8 +711,8 @@ void SemanticAnalyzer::analyze(const Program &prog) {
     objectClassTypes_.clear();
     arrays_.clear();
     openChannels_.clear();
-    errorHandlerActive_ = false;
-    errorHandlerTarget_.reset();
+    procedureHasOnError_ = false;
+    labelNames_ = prog.labelNames;
     mainHasGosub_ = false;
     activeClassQName_.clear();
     activeMemberHasMe_ = false;
@@ -774,6 +787,7 @@ void SemanticAnalyzer::analyze(const Program &prog) {
         if (stmt && hasUserLine(stmt->line))
             labels_.insert(stmt->line);
     mainHasGosub_ = containsGosubList(prog.main);
+    procedureHasOnError_ = containsOnErrorLabel(prog.main);
 
     // Analyze main module body so module-level variables are registered
     // in symbols_ before procedures are analyzed. This allows procedures to
@@ -852,9 +866,12 @@ void SemanticAnalyzer::analyze(const Program &prog) {
 ///          diagnostic with display-cased names. Failed qualified alias
 ///          expansion adds an alias note, while other failures report qualified
 ///          or attempted names. Functions are permitted where a SUB statement
-///          call is expected; a SUB in expression context emits `B2005`.
-/// @param c Call expression. Runtime alias fallback may update its callee fields
-///          through the mutable AST despite the const reference.
+///          call is expected; a SUB in expression context emits `B2005`. A call
+///          resolved through a USING alias or import is rewritten to its
+///          qualified name, since lowering runs after scoped USINGs close.
+/// @param c Call expression. Alias, import, and runtime alias resolution may
+///          update its callee fields through the mutable AST despite the const
+///          reference.
 /// @param expectedKind FUNCTION for expression calls or SUB for statement calls.
 /// @return Pointer to registry-owned signature, or @c nullptr after resolution,
 ///         ambiguity, or kind diagnostics.
@@ -971,6 +988,13 @@ const ProcSignature *SemanticAnalyzer::resolveCallee(const CallExpr &c,
             diagx::NoteAliasExpansion(de.emitter(), usedAliasName, usedAliasTarget);
             return nullptr;
         }
+        if (sig && usedAlias) {
+            // Record the expanded name: lowering runs after the USING scope that
+            // defined the alias has closed.
+            auto &mutableCall = const_cast<CallExpr &>(c);
+            mutableCall.calleeQualified = segs;
+            mutableCall.callee = q;
+        }
     } else {
         // Unqualified resolution: parent-walk, then USING imports.
         std::vector<std::string> prefixCanon;
@@ -1062,6 +1086,13 @@ const ProcSignature *SemanticAnalyzer::resolveCallee(const CallExpr &c,
             }
             if (importHits.size() == 1) {
                 sig = procReg_.lookup(importHits[0]);
+                if (sig) {
+                    // Record the qualified name: lowering runs after a namespace-scoped
+                    // USING has closed, so it cannot resolve the import itself.
+                    auto &mutableCall = const_cast<CallExpr &>(c);
+                    mutableCall.calleeQualified = SplitDots(importHits[0]);
+                    mutableCall.callee = importHits[0];
+                }
             } else if (importHits.size() > 1) {
                 // Remap matches to display case using namespace registry for the prefix
                 // and the original typed callee for the suffix.

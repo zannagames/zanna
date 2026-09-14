@@ -4,12 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
 // File: src/frontends/basic/lower/oop/Lower_OOP_Alloc.cpp
 // Purpose: Lower BASIC OOP allocation, construction, and destruction operations.
-// Key invariants: Object allocations route through runtime helpers; constructors
-//                 and destructors follow the recorded class layouts.
-// Ownership/Lifetime: Operates on Lowerer state without owning AST or module.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   - Object allocations route through runtime helpers; constructors and
+//     destructors follow the recorded class layouts.
+//   - A NEW result is an owned temporary queued for statement cleanup.
+// Ownership/Lifetime:
+//   - Operates on Lowerer state without owning the AST or the module.
+// Links: docs/adr/0147-managed-reference-lowering-and-native-retain-elision.md,
+//        docs/internals/codemap.md
+//
 //===----------------------------------------------------------------------===//
 
 /// @file
@@ -45,7 +51,9 @@ namespace il::frontends::basic {
 ///          and class identifier, requests the object-allocation runtime helper,
 ///          and emits the constructor call with the newly created object prepended
 ///          to the argument list.  The resulting pointer value is packaged in an
-///          @ref RVal ready for further lowering.
+///          @ref RVal ready for further lowering. The new object's creation
+///          reference (or a runtime constructor's owned result) is queued for
+///          statement cleanup, which an assignment or RETURN takes over.
 ///
 /// @param expr AST node representing the @c NEW expression.
 /// @return Runtime value describing the allocated object pointer.
@@ -89,6 +97,7 @@ Lowerer::RVal Lowerer::lowerNewExpr(const NewExpr &expr) {
                                            ? Type(Type::Kind::Str)
                                            : Type(Type::Kind::Ptr));
                 Value obj = emitCallRet(ret, c->ctor, args);
+                deferReleaseRuntimeResult(obj, ret, c->ctor);
                 return {obj, ret};
             }
         }
@@ -119,6 +128,7 @@ Lowerer::RVal Lowerer::lowerNewExpr(const NewExpr &expr) {
                 if (builder)
                     builder->addExtern(ctorCanonical, Type(Type::Kind::Ptr), {});
                 Value obj = emitCallRet(Type(Type::Kind::Ptr), ctorCanonical, {});
+                deferReleaseRuntimeResult(obj, Type(Type::Kind::Ptr), ctorCanonical);
                 return {obj, Type(Type::Kind::Ptr)};
             }
         }
@@ -184,6 +194,9 @@ Lowerer::RVal Lowerer::lowerNewExpr(const NewExpr &expr) {
 
     curLoc = expr.loc;
     emitCall(mangleClassCtor(expr.className), ctorArgs);
+    // The creation reference belongs to the statement: an assignment or RETURN moves it
+    // out, and otherwise statement cleanup releases it.
+    deferReleaseObj(obj, resolveQualifiedClassCasing(qualify(expr.className)));
     return {obj, Type(Type::Kind::Ptr)};
 }
 

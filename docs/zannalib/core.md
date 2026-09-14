@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-13
 ---
 
 # Core Types
@@ -102,21 +102,22 @@ Boxing helpers for storing primitive values in generic collections. Boxed values
 | `ToI64(box)`        | `Integer(Object)`         | Unbox integer (traps on wrong type)                    |
 | `ToF64(box)`        | `Double(Object)`          | Unbox double (traps on wrong type)                     |
 | `ToI1(box)`         | `Boolean(Object)`         | Unbox boolean (traps on wrong type)                    |
-| `ToStr(box)`        | `String(Object)`          | Unbox string as a retained result (traps on wrong type) |
+| `ToStr(box)`        | `String(Object)`          | Unbox string as a retained result; also accepts a string stored directly in an object slot (traps on wrong type) |
 | `ToI64Option(box)`  | `Option<Integer>(Object)` | Return `Some(integer)` or `None` on wrong type                    |
 | `ToF64Option(box)`  | `Option<Double>(Object)`  | Return `Some(double)` or `None` on wrong type                     |
 | `ToI1Option(box)`   | `Option<Boolean>(Object)` | Return `Some(boolean)` or `None` on wrong type                    |
-| `ToStrOption(box)`  | `Option<String>(Object)`  | Return `Some(string)` or `None` on wrong type                     |
+| `ToStrOption(box)`  | `Option<String>(Object)`  | Return `Some(string)` for a String box or a stored string, or `None` on wrong type |
 | `Type(box)`         | `Integer(Object)`         | Return type tag (0=i64, 1=f64, 2=i1, 3=str), or -1 for a non-box |
 | `EqI64(box,val)`    | `Boolean(Object,Integer)` | Compare boxed value to integer                         |
 | `EqF64(box,val)`    | `Boolean(Object,Double)`  | Compare boxed value to double                          |
-| `EqStr(box,val)`    | `Boolean(Object,String)`  | Compare boxed value to string                          |
+| `EqStr(box,val)`    | `Boolean(Object,String)`  | Compare a String box or a stored string to string      |
 
 ### Notes
 
 - Type tags: 0 = integer, 1 = double, 2 = boolean, 3 = string.
 - Unboxing with the wrong type traps with a runtime diagnostic.
 - `ToStr` returns an owned/retained string; generated code releases it like other string-returning runtime calls.
+- Strings in object slots are stored either boxed or as the string itself (for example the elements of `Zanna.String.Split` or a `Seq(String)`). `ToStr`, `ToStrOption` and `EqStr` accept both forms, as `Seq.GetStr` does.
 - String box helpers validate non-null string handles and trap invalid foreign pointers instead of retaining or comparing arbitrary memory.
 - The `To*Option` forms do not trap for type mismatch and return managed `Option` values, so Zia and BASIC never need output pointers.
 - Boxed values report `Zanna.Core.Box` through `Zanna.Core.Object.TypeName` and use value equality/hash semantics for `Object.Equals` and collection lookup.

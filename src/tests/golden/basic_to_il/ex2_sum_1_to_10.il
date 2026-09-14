@@ -88,7 +88,7 @@ L40:
   br L50
 L50:
   .loc 1 5 4
-  ret 0
+  br exit
 exit:
   ret 0
 }

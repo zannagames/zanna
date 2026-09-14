@@ -126,13 +126,19 @@ Lowerer::RVal lowerStringBuiltin(BuiltinLowerContext &ctx) {
 
 /// @brief Install specialised string builtin lowerers into the shared registry.
 /// @details Registers the string dispatcher for builtins that need custom
-///          procedural lowering. Builtins with straightforward declarative rules
-///          (LEN, MID$, LEFT$, RIGHT$, INSTR, LTRIM$, RTRIM$, TRIM$, UCASE$,
-///          LCASE$, CHR$, ASC) are handled by the generic rule-driven lowering
-///          path in Common.cpp using specifications from builtin_registry.inc.
+///          procedural lowering (STR$, HEX$, OCT$, SPACE$, STRING$). Builtins
+///          with straightforward declarative rules (LEN, MID$, LEFT$, RIGHT$,
+///          INSTR, LTRIM$, RTRIM$, TRIM$, UCASE$, LCASE$, CHR$, ASC) are
+///          handled by the generic rule-driven lowering path in Common.cpp
+///          using specifications from builtin_registry.inc.
 void registerStringBuiltins() {
     // STR$ requires type-based dispatch logic to select the right runtime helper
     register_builtin(getBuiltinInfo(Builtin::Str).name, &lowerStringBuiltin);
+    // HEX$ chains two runtime calls; SPACE$ and STRING$ check their arguments first.
+    register_builtin(getBuiltinInfo(Builtin::Hex).name, &lowerStringBuiltin);
+    register_builtin(getBuiltinInfo(Builtin::Oct).name, &lowerStringBuiltin);
+    register_builtin(getBuiltinInfo(Builtin::Space).name, &lowerStringBuiltin);
+    register_builtin(getBuiltinInfo(Builtin::StringOf).name, &lowerStringBuiltin);
     // INKEY$/GETKEY$ are registered for string dispatch but fall through to generic
     register_builtin(getBuiltinInfo(Builtin::InKey).name, &lowerStringBuiltin);
     register_builtin(getBuiltinInfo(Builtin::GetKey).name, &lowerStringBuiltin);

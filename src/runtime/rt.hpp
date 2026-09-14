@@ -63,7 +63,9 @@ void rt_trap_string(rt_string msg);
 /// @param msg Borrowed user-visible NUL-terminated message; may be @c NULL.
 void rt_trap_raise_kind(int32_t kind, int32_t code, int32_t line, const char *msg);
 
-/// @brief Raise a trap with explicit trap metadata and no message.
+/// @brief Raise a trap with explicit trap metadata and the kind's message.
+/// @details The message is the retained thrown text of a runtime error, otherwise
+///          the kind's default message, matching `Zanna.Error.Message`.
 /// @param kind Canonical trap classification; out-of-range values normalize to
 ///        runtime error.
 /// @param code Secondary runtime error code.

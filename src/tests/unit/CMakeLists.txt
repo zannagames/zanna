@@ -581,6 +581,14 @@ if (NOT TARGET test_native_eh_lowering)
     zanna_add_ctest(test_native_eh_lowering test_native_eh_lowering)
 endif ()
 
+if (NOT TARGET test_native_alloca_zero_init)
+    zanna_add_test(
+            test_native_alloca_zero_init
+            ${ZANNA_TESTS_DIR}/unit/test_native_alloca_zero_init.cpp)
+    target_link_libraries(test_native_alloca_zero_init PRIVATE zanna_codegen_common il_api)
+    zanna_add_ctest(test_native_alloca_zero_init test_native_alloca_zero_init)
+endif ()
+
 if (NOT TARGET test_codegen_x86_64_live_intervals)
     zanna_add_test(
             test_codegen_x86_64_live_intervals
@@ -2206,6 +2214,7 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_gc test_rt_gc)
 
     zanna_add_test(test_rt_gc_hash ${ZANNA_TESTS_DIR}/runtime/RTGCHashTableTests.cpp)
+    target_sources(test_rt_gc_hash PRIVATE ${ZANNA_TESTS_DIR}/runtime/RTGCChurnTests.c)
     target_link_libraries(test_rt_gc_hash PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_gc_hash test_rt_gc_hash)
 

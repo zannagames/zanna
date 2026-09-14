@@ -30,6 +30,7 @@
 
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/LoweringPipeline.hpp"
+#include "frontends/basic/StringUtils.hpp"
 #include "frontends/basic/lower/Emitter.hpp"
 
 #include "zanna/il/IRBuilder.hpp"
@@ -210,6 +211,25 @@ const Lowerer::FieldScope *Lowerer::activeFieldScope() const {
 /// @return True if the name matches a field in the active class layout.
 bool Lowerer::isFieldInScope(std::string_view name) const {
     return symbolTable_.isFieldInScope(name);
+}
+
+/// @brief Find a static field named @p name in the class being lowered or its bases.
+/// @param name Bare identifier used inside a class member.
+/// @return Declaring class and field metadata, or nothing outside a class or when no
+///         static field has that name.
+std::optional<std::pair<std::string, const ClassInfo::FieldInfo *>> Lowerer::findStaticFieldInScope(
+    std::string_view name) const {
+    const std::string cls = currentClass();
+    if (cls.empty() || name.empty())
+        return std::nullopt;
+    for (const ClassInfo *cur = oopIndex_.findClass(cls); cur;
+         cur = cur->baseQualified.empty() ? nullptr : oopIndex_.findClass(cur->baseQualified)) {
+        for (const auto &field : cur->staticFields) {
+            if (string_utils::iequals(field.name, name))
+                return std::make_pair(cur->qualifiedName, &field);
+        }
+    }
+    return std::nullopt;
 }
 
 /// @brief Reset symbol metadata between procedure lowering runs.

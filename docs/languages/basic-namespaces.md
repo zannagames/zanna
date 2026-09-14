@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-14
 ---
 
 # Zanna BASIC Namespaces — Reference
@@ -176,9 +176,12 @@ USING GFX = Graphics.Rendering
 
 **CRITICAL**: USING directives must satisfy strict placement constraints:
 
-1. **File scope only**: Cannot appear inside NAMESPACE, CLASS, or INTERFACE blocks
-2. **Before all declarations**: Must appear before any NAMESPACE, CLASS, or INTERFACE declarations
-3. **File-scoped effect**: Each file's USING directives do not affect other compilation units
+1. **File scope or NAMESPACE block**: Cannot appear inside procedures, CLASS, or INTERFACE blocks.
+   Inside a NAMESPACE block, a USING applies to that block only.
+2. **Before all declarations**: At file scope, must appear before any NAMESPACE, CLASS, or INTERFACE
+   declarations
+3. **Scoped effect**: A file's USING directives do not affect other compilation units, and a
+   NAMESPACE block's USING directives do not affect other blocks
 
 ```basic
 REM ✓ CORRECT: USING comes first
@@ -469,7 +472,9 @@ END NAMESPACE
 
 ### E_NS_008: USING Inside Namespace Block
 
-**Cause**: USING directive appears inside a NAMESPACE block.
+**Cause**: USING directive appears inside a NAMESPACE block while runtime namespaces are disabled
+(`--no-runtime-namespaces`). In the default configuration a NAMESPACE block may contain USING
+directives, which apply to that block.
 
 ```basic
 NAMESPACE App
@@ -484,7 +489,7 @@ END
 
 **Message**: `USING inside NAMESPACE block not allowed`
 
-**Fix**: Move USING to file scope before all NAMESPACE declarations.
+**Fix**: Move USING to file scope before all NAMESPACE declarations, or enable runtime namespaces.
 
 ---
 
@@ -570,17 +575,18 @@ END NAMESPACE
 
 ---
 
-### Pitfall 3: USING Inside Namespace
+### Pitfall 3: USING Inside Namespace Without Runtime Namespaces
 
-**Problem**: Attempting to scope USING to a specific namespace.
+**Problem**: Scoping USING to a namespace while runtime namespaces are disabled
+(`--no-runtime-namespaces`).
 
 ```basic
 NAMESPACE App
-  USING Collections    REM Error: E_NS_008
+  USING Collections    REM Error: E_NS_008 with --no-runtime-namespaces
 END NAMESPACE
 ```
 
-**Solution**: USING is always file-scoped. Put it at file scope:
+**Solution**: Put the USING at file scope, which works in every configuration:
 
 ```basic
 USING Collections

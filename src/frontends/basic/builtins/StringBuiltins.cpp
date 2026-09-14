@@ -5,10 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the lowering entry points for BASIC string builtins.  The helpers
-// contained here translate AST builtin invocations into IL sequences, request
-// runtime helpers, and normalise argument types so that string operations follow
-// the language's historical semantics.
+// File: src/frontends/basic/builtins/StringBuiltins.cpp
+// Purpose: Lower BASIC string builtins (LEN, MID$, STR$, HEX$, SPACE$,
+//          STRING$, ...) to runtime calls, normalising argument types so string
+//          operations follow the language's historical semantics.
+// Key invariants:
+//   - Arguments are lowered left to right before any validity check traps.
+//   - Every string a runtime call returns is released at the statement
+//     boundary; builtins never release their intermediate strings themselves.
+//   - SPACE$ and STRING$ trap on a negative count, STRING$ on an empty string
+//     or a character code outside 0-255.
+// Ownership/Lifetime:
+//   - The builtin table and lookup map live for the process lifetime.
+//   - LowerCtx borrows the Lowerer and the call node for one call's lowering.
+// Links: src/frontends/basic/builtins/StringBuiltins.hpp,
+//        src/frontends/basic/builtin_registry.inc,
+//        docs/languages/basic-reference.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <string>
 #include <unordered_map>
 
 namespace il::frontends::basic::builtins {
@@ -313,8 +326,100 @@ Value lowerAsc(LowerCtx &ctx, ArrayRef<Value> args) {
     return ctx.emitCallRet(Type(Type::Kind::I64), "rt_str_asc", callArgs, ctx.call().loc);
 }
 
+/// @brief Lower the HEX$ builtin that formats an integer in upper-case hexadecimal.
+///
+/// @details A floating-point argument rounds like CINT. Negative values show
+///          their 64-bit two's complement, so `HEX$(-1)` is sixteen `F` digits.
+///
+/// @param ctx Active lowering context.
+/// @param args Placeholder argument span; unused.
+/// @return Hexadecimal digits without a prefix.
+Value lowerHex(LowerCtx &ctx, ArrayRef<Value> args) {
+    (void)args;
+    const Type str(Type::Kind::Str);
+    ctx.setResultType(str);
+    ctx.ensureI64(0, ctx.argLoc(0));
+    const il::support::SourceLoc loc = ctx.call().loc;
+    Value digits = ctx.emitCallRet(str, "Zanna.Text.Fmt.Hex", {ctx.argValue(0)}, loc);
+    ctx.requestHelper(RuntimeFeature::Ucase);
+    return ctx.emitCallRet(str, "rt_str_ucase", {digits}, loc);
+}
+
+/// @brief Lower the OCT$ builtin that formats an integer in octal.
+///
+/// @details A floating-point argument rounds like CINT. Negative values show
+///          their 64-bit two's complement.
+///
+/// @param ctx Active lowering context.
+/// @param args Placeholder argument span; unused.
+/// @return Octal digits without a prefix.
+Value lowerOct(LowerCtx &ctx, ArrayRef<Value> args) {
+    (void)args;
+    const Type str(Type::Kind::Str);
+    ctx.setResultType(str);
+    ctx.ensureI64(0, ctx.argLoc(0));
+    return ctx.emitCallRet(str, "Zanna.Text.Fmt.Oct", {ctx.argValue(0)}, ctx.call().loc);
+}
+
+/// @brief Lower the SPACE$ builtin that builds a run of spaces.
+///
+/// @param ctx Active lowering context.
+/// @param args Placeholder argument span; unused.
+/// @return String of `count` spaces; a negative count traps.
+Value lowerSpace(LowerCtx &ctx, ArrayRef<Value> args) {
+    (void)args;
+    const Type str(Type::Kind::Str);
+    ctx.setResultType(str);
+    const il::support::SourceLoc loc = ctx.call().loc;
+    Value count = ctx.ensureI64(0, ctx.argLoc(0)).value;
+    ctx.trapUnless(ctx.compare(il::core::Opcode::SCmpGE, count, Value::constInt(0), loc),
+                   "SPACE$: count must be >= 0",
+                   loc);
+    return ctx.emitCallRet(str, "Zanna.String.Repeat", {ctx.constString(" "), count}, loc);
+}
+
+/// @brief Lower the STRING$ builtin that repeats one character.
+///
+/// @details The character is the first byte of a string argument, or the byte
+///          with a numeric argument's code. Both arguments are evaluated before
+///          the count, the string, or the code is checked.
+///
+/// @param ctx Active lowering context.
+/// @param args Placeholder argument span; unused.
+/// @return String of `count` copies of the character.
+Value lowerStringOf(LowerCtx &ctx, ArrayRef<Value> args) {
+    (void)args;
+    const Type str(Type::Kind::Str);
+    const Type i64(Type::Kind::I64);
+    ctx.setResultType(str);
+    const il::support::SourceLoc loc = ctx.call().loc;
+    Value count = ctx.ensureI64(0, ctx.argLoc(0)).value;
+    const bool fromString = ctx.arg(1).type.kind == Type::Kind::Str;
+    Value code = fromString ? ctx.argValue(1) : ctx.ensureI64(1, ctx.argLoc(1)).value;
+
+    ctx.trapUnless(ctx.compare(il::core::Opcode::SCmpGE, count, Value::constInt(0), loc),
+                   "STRING$: count must be >= 0",
+                   loc);
+    Value piece;
+    if (fromString) {
+        Value length = ctx.emitCallRet(i64, "rt_str_len", {code}, loc);
+        ctx.trapUnless(ctx.compare(il::core::Opcode::SCmpGT, length, Value::constInt(0), loc),
+                       "STRING$: character string is empty",
+                       loc);
+        ctx.requestHelper(RuntimeFeature::Left);
+        piece = ctx.emitCallRet(str, "rt_str_left", {code, Value::constInt(1)}, loc);
+    } else {
+        ctx.trapUnless(ctx.compare(il::core::Opcode::UCmpLE, code, Value::constInt(255), loc),
+                       "STRING$: character code must be 0-255",
+                       loc);
+        ctx.requestHelper(RuntimeFeature::Chr);
+        piece = ctx.emitCallRet(str, "rt_str_chr", {code}, loc);
+    }
+    return ctx.emitCallRet(str, "Zanna.String.Repeat", {piece, count}, loc);
+}
+
 // Note: not constexpr because std::string is not constexpr in MSVC's STL
-const std::array<BuiltinSpec, 13> kStringBuiltins = {{{"LEN", 1, 1, &lowerLen},
+const std::array<BuiltinSpec, 17> kStringBuiltins = {{{"LEN", 1, 1, &lowerLen},
                                                       {"MID$", 2, 3, &lowerMid},
                                                       {"LEFT$", 2, 2, &lowerLeft},
                                                       {"RIGHT$", 2, 2, &lowerRight},
@@ -326,7 +431,11 @@ const std::array<BuiltinSpec, 13> kStringBuiltins = {{{"LEN", 1, 1, &lowerLen},
                                                       {"UCASE$", 1, 1, &lowerUcase},
                                                       {"LCASE$", 1, 1, &lowerLcase},
                                                       {"CHR$", 1, 1, &lowerChr},
-                                                      {"ASC", 1, 1, &lowerAsc}}};
+                                                      {"ASC", 1, 1, &lowerAsc},
+                                                      {"HEX$", 1, 1, &lowerHex},
+                                                      {"OCT$", 1, 1, &lowerOct},
+                                                      {"SPACE$", 1, 1, &lowerSpace},
+                                                      {"STRING$", 2, 2, &lowerStringOf}}};
 
 } // namespace
 
@@ -618,7 +727,9 @@ void LowerCtx::trackRuntime(RuntimeFeature feature) {
 /// @brief Emit a runtime call returning a value of the specified type.
 ///
 /// @details Updates the lowerer's current location so diagnostics on the emitted
-///          instructions are attributed to the runtime helper call.
+///          instructions are attributed to the runtime helper call. A string
+///          result is queued for release at the statement boundary unless the
+///          runtime row declares it borrowed.
 ///
 /// @param ty Result type reported by the runtime helper.
 /// @param runtime Name of the runtime function to invoke.
@@ -630,7 +741,50 @@ Value LowerCtx::emitCallRet(Type ty,
                             const std::vector<Value> &args,
                             il::support::SourceLoc loc) {
     lowerer_.curLoc = loc;
-    return lowerer_.emitCallRet(ty, runtime, args);
+    Value result = lowerer_.emitCallRet(ty, runtime, args);
+    if (ty.kind == Type::Kind::Str)
+        lowerer_.deferReleaseRuntimeResult(result, ty, runtime);
+    return result;
+}
+
+/// @copydoc LowerCtx::constString()
+Value LowerCtx::constString(const char *text) {
+    return lowerer_.emitConstStr(lowerer_.getStringLabel(text));
+}
+
+/// @copydoc LowerCtx::compare()
+Value LowerCtx::compare(il::core::Opcode op, Value lhs, Value rhs, il::support::SourceLoc loc) {
+    lowerer_.curLoc = loc;
+    return lowerer_.emitBinary(op, lowerer_.ilBoolTy(), lhs, rhs);
+}
+
+/// @copydoc LowerCtx::trapUnless()
+void LowerCtx::trapUnless(Value ok, const char *message, il::support::SourceLoc loc) {
+    Lowerer::ProcedureContext &ctx = lowerer_.context();
+    il::core::Function *func = ctx.function();
+    il::core::BasicBlock *origin = ctx.current();
+    if (!func || !origin)
+        return;
+    const std::size_t originIdx = ctx.blockIndex(origin);
+    Lowerer::BlockNamer *namer = ctx.blockNames().namer();
+    const std::string failLabel =
+        namer ? namer->generic("strfn_err") : lowerer_.mangler.block("strfn_err");
+    const std::string contLabel =
+        namer ? namer->generic("strfn_cont") : lowerer_.mangler.block("strfn_cont");
+    const std::size_t failIdx = func->blocks.size();
+    lowerer_.builder->addBlock(*func, failLabel);
+    const std::size_t contIdx = func->blocks.size();
+    lowerer_.builder->addBlock(*func, contLabel);
+
+    ctx.setCurrent(&func->blocks[originIdx]);
+    lowerer_.curLoc = loc;
+    lowerer_.emitCBr(ok, &func->blocks[contIdx], &func->blocks[failIdx]);
+
+    ctx.setCurrent(&func->blocks[failIdx]);
+    lowerer_.curLoc = loc;
+    lowerer_.emitTrapWithMessage(message);
+
+    ctx.setCurrent(&func->blocks[contIdx]);
 }
 
 /// @brief Materialise the lowering result for an argument slot on demand.

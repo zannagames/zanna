@@ -1053,6 +1053,29 @@ set_tests_properties(basic_runtime_test_basic_class_lifetimes PROPERTIES
         LABELS "runtime;basic"
         TIMEOUT 30)
 
+# BASIC managed values (ADR 0147): statement temporaries, owned parameters and
+# locals, and STRING storage that is never null. The native twins live in
+# e2e/native_run_ownership.cmake.
+add_test(NAME basic_runtime_test_basic_managed_ownership
+        COMMAND $<TARGET_FILE:zbasic> "${ZIA_RUNTIME_TESTS_DIR}/test_basic_managed_ownership.bas"
+        WORKING_DIRECTORY "${ZIA_RUNTIME_TESTS_DIR}")
+set_tests_properties(basic_runtime_test_basic_managed_ownership PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Trap"
+        LABELS "runtime;basic"
+        TIMEOUT 30)
+
+# BASIC ON ERROR GOTO / RESUME semantics (ADR 0358). The native twin lives in
+# e2e/native_run_ownership.cmake.
+add_test(NAME basic_runtime_test_basic_on_error_resume
+        COMMAND $<TARGET_FILE:zbasic> "${ZIA_RUNTIME_TESTS_DIR}/test_basic_on_error_resume.bas"
+        WORKING_DIRECTORY "${ZIA_RUNTIME_TESTS_DIR}")
+set_tests_properties(basic_runtime_test_basic_on_error_resume PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Trap"
+        LABELS "runtime;basic"
+        TIMEOUT 30)
+
 # Platform services (ADR 0352): the Zia fixture runs on the VM against the fake
 # steam_api redistributable and against a missing one. Native twins live with
 # the other native_run lanes below.

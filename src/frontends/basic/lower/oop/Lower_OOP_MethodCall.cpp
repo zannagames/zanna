@@ -152,12 +152,15 @@ std::vector<::il::frontends::basic::Type> Lowerer::methodCallAstArgTypes(
 std::optional<Lowerer::RVal> Lowerer::tryLowerStaticMethodCall(const MethodCallExpr &expr) {
     // Static method calls: Class.Method(...)
     if (const auto *vb = as<const VarExpr>(*expr.base)) {
-        // If a symbol with this name exists (local/param/global), treat as instance, not static.
-        // Module-level variables do not have slots; rely on symbol presence alone.
-        if (const auto *sym = findSymbol(vb->name); sym) {
+        // Semantic analysis marks class-name receivers. Otherwise, if a symbol with this
+        // name exists (local/param/global), treat as instance, not static. Module-level
+        // variables do not have slots; rely on symbol presence alone.
+        if (const auto *sym = findSymbol(vb->name); sym && expr.staticReceiverClass.empty()) {
             // fall through to instance path below
         } else {
-            std::string qname = resolveQualifiedClassCasing(qualify(vb->name));
+            std::string qname = expr.staticReceiverClass.empty()
+                                    ? resolveQualifiedClassCasing(qualify(vb->name))
+                                    : expr.staticReceiverClass;
             if (const ClassInfo *ci = oopIndex_.findClass(qname)) {
                 // Overload resolution for static call
                 std::vector<::il::frontends::basic::Type> argAstTypes = methodCallAstArgTypes(expr);

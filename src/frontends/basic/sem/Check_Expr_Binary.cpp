@@ -276,10 +276,18 @@ void validateComparisonOperands(sem::ExprCheckContext &context,
     // All comparison operators support strings for lexicographic comparison
     const bool numericOk = isNumericType(lhs) && isNumericType(rhs);
     const bool stringOk = isStringType(lhs) && isStringType(rhs);
+    const bool equality = expr.op == BinaryExpr::Op::Eq || expr.op == BinaryExpr::Op::Ne;
     // Boolean equality/inequality comparisons (fixes BUG-012)
-    const bool booleanOk = (expr.op == BinaryExpr::Op::Eq || expr.op == BinaryExpr::Op::Ne) &&
-                           isBooleanType(lhs) && isBooleanType(rhs);
-    if (!numericOk && !stringOk && !booleanOk)
+    const bool booleanOk = equality && isBooleanType(lhs) && isBooleanType(rhs);
+    // `obj = NOTHING` and `obj <> NOTHING` test for a null reference. NOTHING has no
+    // type of its own, so the other side must be an object or NOTHING too.
+    /// Whether @p side is NOTHING and @p other may be compared with it.
+    auto nothingCompare = [](const ExprPtr &side, Type other) {
+        return side && isNothingExpr(*side) && (other == Type::Object || other == Type::Unknown);
+    };
+    const bool nothingOk =
+        equality && (nothingCompare(expr.lhs, rhs) || nothingCompare(expr.rhs, lhs));
+    if (!numericOk && !stringOk && !booleanOk && !nothingOk)
         sem::emitOperandTypeMismatch(context.diagnostics(), expr, diagId);
 }
 

@@ -2,7 +2,7 @@
 // Tests: New, Pos, IsEnd, Remaining, Len, Reset, Peek, PeekAt, PeekStr,
 //        Read, ReadStr, ReadUntil, ReadUntilAny, Match, MatchStr,
 //        Accept, AcceptStr, AcceptAny, Skip, SkipWhitespace,
-//        ReadIdent, ReadInt, ReadNumber, ReadQuoted, ReadLine
+//        ReadIdent, ReadIntToken, ReadNumberToken, ReadQuoted, ReadLine
 
 module ScannerDemo;
 
@@ -80,16 +80,16 @@ func start() {
     Say("--- SkipWhitespace ---");
     SayInt(sc.SkipWhitespace()); // number of whitespace chars skipped
 
-    // --- ReadInt ---
-    Say("--- ReadInt ---");
-    Say(sc.ReadInt());       // 42
+    // --- ReadIntToken ---
+    Say("--- ReadIntToken ---");
+    Say(sc.ReadIntToken());       // 42
 
     // --- SkipWhitespace again ---
     sc.SkipWhitespace();
 
-    // --- ReadNumber (reads float) ---
-    Say("--- ReadNumber ---");
-    Say(sc.ReadNumber());    // 3.14
+    // --- ReadNumberToken (reads float) ---
+    Say("--- ReadNumberToken ---");
+    Say(sc.ReadNumberToken());    // 3.14
 
     // --- SkipWhitespace ---
     sc.SkipWhitespace();

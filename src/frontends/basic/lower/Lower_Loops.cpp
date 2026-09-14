@@ -1,18 +1,21 @@
 //===----------------------------------------------------------------------===//
 //
 // Part of the Zanna project, under the GNU GPL v3.
-// See LICENSE in the project root for license information.
+// See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/lower/Lower_Loops.cpp
 // Purpose: Implement BASIC loop lowering helpers that materialise control-flow
 //          skeletons and bridge statement bodies into IL basic blocks.
-// Key invariants: Generated blocks always form a well-structured loop with
-//                 explicit back-edges, and loopState bookkeeping mirrors the
-//                 active nesting depth.
-// Ownership/Lifetime: Operates on Lowerer-owned ProcedureContext and does not
-//                     allocate persistent resources beyond IL instructions.
+// Key invariants:
+//   - Generated blocks always form a well-structured loop with explicit
+//     back-edges, and loopState bookkeeping mirrors the active nesting depth.
+//   - A FOR EACH element variable owns one reference to its STRING or object
+//     element; each iteration releases the previous element.
+// Ownership/Lifetime:
+//   - Operates on the Lowerer-owned ProcedureContext and does not allocate
+//     persistent resources beyond IL instructions.
 // Links: docs/internals/codemap.md, docs/tutorials/basic-tutorial.md
 //
 //===----------------------------------------------------------------------===//
@@ -29,6 +32,7 @@
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/LocationScope.hpp"
 #include "frontends/basic/Lowerer.hpp"
+#include "frontends/basic/lower/Emitter.hpp"
 #include "support/diagnostics.hpp"
 
 #include <cassert>
@@ -381,6 +385,20 @@ void Lowerer::lowerForConstStep(
 /// @param step Lowered step expression.
 void Lowerer::lowerForVarStep(const ForStmt &stmt, Value slot, RVal end, RVal step) {
     LocationScope loc(*this, stmt.loc);
+    const Type i64(Type::Kind::I64);
+    // RESUME may enter the body of a loop in a procedure that records resume sites,
+    // bypassing the loop entry, so there the bounds live in slots.
+    const bool spillBounds = context().errorHandlers().siteTracking();
+    Value endSlot;
+    Value stepSlot;
+    if (spillBounds) {
+        endSlot = emitEntryAlloca();
+        stepSlot = emitEntryAlloca();
+        emitStore(i64, endSlot, end.value);
+        emitStore(i64, stepSlot, step.value);
+    }
+    /// Loop end bound at the current insertion point.
+    auto endValue = [&]() { return spillBounds ? emitLoad(i64, endSlot) : end.value; };
     Value stepNonNeg =
         emitBinary(Opcode::SCmpGE, Type(Type::Kind::I1), step.value, Value::constInt(0));
     ForBlocks fb = setupForBlocks(true);
@@ -392,12 +410,12 @@ void Lowerer::lowerForVarStep(const ForStmt &stmt, Value slot, RVal end, RVal st
     ctx.loopState().push(done);
     emitCBr(stepNonNeg, &func->blocks[fb.headPosIdx], &func->blocks[fb.headNegIdx]);
     ctx.setCurrent(&func->blocks[fb.headPosIdx]);
-    Value curVal = emitLoad(Type(Type::Kind::I64), slot);
-    Value cmpPos = emitBinary(Opcode::SCmpLE, Type(Type::Kind::I1), curVal, end.value);
+    Value curVal = emitLoad(i64, slot);
+    Value cmpPos = emitBinary(Opcode::SCmpLE, Type(Type::Kind::I1), curVal, endValue());
     emitCBr(cmpPos, &func->blocks[fb.bodyIdx], &func->blocks[fb.doneIdx]);
     ctx.setCurrent(&func->blocks[fb.headNegIdx]);
-    curVal = emitLoad(Type(Type::Kind::I64), slot);
-    Value cmpNeg = emitBinary(Opcode::SCmpGE, Type(Type::Kind::I1), curVal, end.value);
+    curVal = emitLoad(i64, slot);
+    Value cmpNeg = emitBinary(Opcode::SCmpGE, Type(Type::Kind::I1), curVal, endValue());
     emitCBr(cmpNeg, &func->blocks[fb.bodyIdx], &func->blocks[fb.doneIdx]);
     ctx.setCurrent(&func->blocks[fb.bodyIdx]);
     lowerLoopBody(stmt.body);
@@ -405,10 +423,18 @@ void Lowerer::lowerForVarStep(const ForStmt &stmt, Value slot, RVal end, RVal st
     bool exitTaken = ctx.loopState().taken();
     bool term = current && current->terminated;
     if (!term) {
+        func = ctx.function();
         emitBr(&func->blocks[fb.incIdx]);
         ctx.setCurrent(&func->blocks[fb.incIdx]);
-        emitForStep(slot, step.value);
-        emitCBr(stepNonNeg, &func->blocks[fb.headPosIdx], &func->blocks[fb.headNegIdx]);
+        Value stepNow = step.value;
+        Value stepNowNonNeg = stepNonNeg;
+        if (spillBounds) {
+            stepNow = emitLoad(i64, stepSlot);
+            stepNowNonNeg =
+                emitBinary(Opcode::SCmpGE, Type(Type::Kind::I1), stepNow, Value::constInt(0));
+        }
+        emitForStep(slot, stepNow);
+        emitCBr(stepNowNonNeg, &func->blocks[fb.headPosIdx], &func->blocks[fb.headNegIdx]);
     }
     done = &func->blocks[doneIdx];
     ctx.loopState().refresh(done);
@@ -567,6 +593,9 @@ void Lowerer::lowerForEach(const ForEachStmt &stmt) {
     // Load the array base pointer
     Value arrSlot = Value::temp(*arrSym->slotId);
     Value arrBase = emitLoad(Type(Type::Kind::Ptr), arrSlot);
+    // RESUME may enter the body of a loop in a procedure that records resume sites,
+    // bypassing the loop entry, so there the array and its length live in slots.
+    const bool spillState = ctx.errorHandlers().siteTracking();
 
     // Get array length using appropriate runtime function
     Value length;
@@ -577,8 +606,17 @@ void Lowerer::lowerForEach(const ForEachStmt &stmt) {
     else
         length = emitCallRet(Type(Type::Kind::I64), "rt_arr_i64_len", {arrBase});
 
+    Value arrBaseSlot;
+    Value lengthSlot;
+    if (spillState) {
+        arrBaseSlot = emitEntryAlloca();
+        lengthSlot = emitEntryAlloca();
+        emitStore(Type(Type::Kind::Ptr), arrBaseSlot, arrBase);
+        emitStore(Type(Type::Kind::I64), lengthSlot, length);
+    }
+
     // Create a temporary index slot using alloca for 8-byte i64
-    Value indexSlot = emitAlloca(8);
+    Value indexSlot = spillState ? emitEntryAlloca() : emitAlloca(8);
     emitStore(Type(Type::Kind::I64), indexSlot, Value::constInt(0));
 
     // Get element slot
@@ -616,20 +654,28 @@ void Lowerer::lowerForEach(const ForEachStmt &stmt) {
     // Head block: check if index < length
     ctx.setCurrent(&func->blocks[headIdx]);
     Value curIndex = emitLoad(Type(Type::Kind::I64), indexSlot);
-    Value cond = emitBinary(Opcode::SCmpLT, Type(Type::Kind::I1), curIndex, length);
+    Value curLength = spillState ? emitLoad(Type(Type::Kind::I64), lengthSlot) : length;
+    Value cond = emitBinary(Opcode::SCmpLT, Type(Type::Kind::I1), curIndex, curLength);
     emitCBr(cond, &func->blocks[bodyIdx], &func->blocks[doneIdx]);
 
     // Body block: load element from array into element variable
     ctx.setCurrent(&func->blocks[bodyIdx]);
     curIndex = emitLoad(Type(Type::Kind::I64), indexSlot);
+    if (spillState)
+        arrBase = emitLoad(Type(Type::Kind::Ptr), arrBaseSlot);
 
     // Access array element and store to element variable
     // Use appropriate runtime function based on element type
     if (arrSym->type == AstType::Str) {
+        // The element variable owns one reference: the retained element moves in and
+        // the previous element is released.
         Value elem = emitCallRet(Type(Type::Kind::Str), "rt_arr_str_get", {arrBase, curIndex});
+        requireStrReleaseMaybe();
+        emitCall("rt_str_release_maybe", {emitLoad(Type(Type::Kind::Str), elemSlot)});
         emitStore(Type(Type::Kind::Str), elemSlot, elem);
     } else if (arrSym->isObject) {
         Value elem = emitCallRet(Type(Type::Kind::Ptr), "rt_arr_obj_get", {arrBase, curIndex});
+        emitter().releaseObjectSlot(ensureSymbol(stmt.elementVar));
         emitStore(Type(Type::Kind::Ptr), elemSlot, elem);
     } else if (arrSym->type == AstType::F64) {
         // Float arrays - use rt_arr_f64_get runtime function
