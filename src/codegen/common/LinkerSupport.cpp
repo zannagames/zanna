@@ -1195,7 +1195,7 @@ int invokeAssembler(const std::vector<std::string> &ccArgs,
 }
 
 /// @copydoc runExecutable
-int runExecutable(const std::string &exePath, std::ostream &out, std::ostream &err) {
+std::optional<int> runExecutable(const std::string &exePath, std::ostream &out, std::ostream &err) {
     /// @brief Normalize an executable path before passing it to the process runner.
     /// @details POSIX does not search the current directory for bare command
     ///          names. When a caller gives `foo` instead of `./foo`, prefix the
@@ -1214,16 +1214,23 @@ int runExecutable(const std::string &exePath, std::ostream &out, std::ostream &e
     };
 
     const RunResult rr = run_process({commandPath(exePath)});
-    if (rr.exit_code == -1) {
+    // RunResult::exit_code saturates Windows codes above INT_MAX, so a Windows
+    // child that ran reports through native_exit_code. POSIX uses -1 only when
+    // the child could not be reaped.
+    const bool ran =
+        rr.launched && !rr.launch_failed && (zanna::platform::kHostWindows || rr.exit_code != -1);
+    if (!ran) {
         err << "error: failed to execute '" << exePath << "'\n";
         if (!rr.err.empty())
             err << rr.err << '\n';
-        return -1;
+        return std::nullopt;
     }
     if (!rr.out.empty())
         out << rr.out;
     if (!rr.err.empty())
         err << rr.err;
+    if constexpr (zanna::platform::kHostWindows)
+        return static_cast<int>(rr.native_exit_code);
     return rr.exit_code;
 }
 

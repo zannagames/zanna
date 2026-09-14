@@ -19,12 +19,24 @@
 '     dropping the value leaves the entity's mesh alive.
 '   - Option.UnwrapStr on a temporary and Result.UnwrapStr after the Result
 '     dies both keep their text.
+'   - A borrowed string passed straight to a call is not released again when
+'     the FUNCTION that read it returns after its Option died.
 ' Ownership/Lifetime:
 '   - Every object is owned by module variables; WeakRefs only observe.
 ' Links: docs/adr/0314-declared-runtime-result-ownership.md,
 '        src/tests/fixtures/runtime/test_runtime_result_ownership.zia
 '
 ' ===----------------------------------------------------------------------===
+
+' The Option and its matched string die when this FUNCTION returns; the borrowed
+' UnwrapStr read is a call argument, never stored in a variable.
+FUNCTION BorrowedDigitCount(text AS STRING) AS INTEGER
+    DIM p AS OBJECT
+    p = Zanna.Text.CompiledPattern.New("[0-9]+")
+    DIM found AS OBJECT
+    found = p.Find(text)
+    BorrowedDigitCount = LEN(found.UnwrapStr())
+END FUNCTION
 
 DIM fails AS INTEGER
 fails = 0
@@ -118,6 +130,14 @@ IF text <> "hello world" THEN
     PRINT "FAIL: UnwrapStr after the Result died: "; text
     fails = fails + 1
 END IF
+
+' 7. A borrowed string used as a call temporary inside a FUNCTION.
+FOR i = 1 TO 3
+    IF BorrowedDigitCount("abc" + "4567" + "def") <> 4 THEN
+        PRINT "FAIL: borrowed call temporary in a FUNCTION"
+        fails = fails + 1
+    END IF
+NEXT i
 
 IF fails = 0 THEN
     PRINT "RESULT: ok"

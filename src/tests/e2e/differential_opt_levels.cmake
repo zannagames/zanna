@@ -19,17 +19,27 @@ endif ()
 if (NOT DEFINED ARCH)
     message(FATAL_ERROR "ARCH not set")
 endif ()
+if (NOT DEFINED OUT_BASE)
+    message(FATAL_ERROR "OUT_BASE not set")
+endif ()
+
+# Each optimization level links to a private path (see
+# _zanna_add_native_differential).
+get_filename_component(_out_dir "${OUT_BASE}" DIRECTORY)
+file(MAKE_DIRECTORY "${_out_dir}")
 
 # ERROR_QUIET drops the linker's "dead-strip: removed N sections" diagnostic so
 # only the program's own stdout is compared.
 execute_process(
     COMMAND ${ILC} codegen ${ARCH} ${IL_FILE} -run-native --verify-mir -O0
+            -o ${OUT_BASE}_O0${EXE_SUFFIX}
     OUTPUT_VARIABLE o0_out
     RESULT_VARIABLE o0_exit
     ERROR_QUIET)
 
 execute_process(
     COMMAND ${ILC} codegen ${ARCH} ${IL_FILE} -run-native --verify-mir -O2
+            -o ${OUT_BASE}_O2${EXE_SUFFIX}
     OUTPUT_VARIABLE o2_out
     RESULT_VARIABLE o2_exit
     ERROR_QUIET)

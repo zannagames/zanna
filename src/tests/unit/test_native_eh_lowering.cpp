@@ -5,8 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_native_eh_lowering.cpp
+// File: src/tests/unit/test_native_eh_lowering.cpp
 // Purpose: Verify the shared native EH rewrite before backend lowering.
+// Key invariants:
+//   - Lowered modules verify and keep no structured EH markers.
+//   - Each platform setjmp variant selects its symbol and argument list.
+// Ownership/Lifetime:
+//   - Each test parses and owns its own IL module.
+// Links: src/codegen/common/NativeEHLowering.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -149,7 +155,8 @@ TEST(NativeEHLowering, MaskFreeSetjmpTargetsUnderscoreSetjmp) {
                            "}\n";
 
     il::core::Module mod = parseModule(il);
-    ASSERT_TRUE(zanna::codegen::common::lowerNativeEh(mod, /*maskFreeSetjmp=*/true));
+    ASSERT_TRUE(zanna::codegen::common::lowerNativeEh(
+        mod, zanna::codegen::common::NativeSetjmpVariant::DarwinMaskFree));
     auto verify = il::api::v2::verify_module_expected(mod);
     ASSERT_TRUE(verify.hasValue());
 
@@ -170,6 +177,52 @@ TEST(NativeEHLowering, MaskFreeSetjmpTargetsUnderscoreSetjmp) {
     }
     EXPECT_EQ(maskFreeCalls, 1U);
     EXPECT_EQ(plainCalls, 0U);
+}
+
+TEST(NativeEHLowering, WindowsSetjmpPassesNullFrame) {
+    // The Windows CRT stores setjmp's second argument as the jump buffer frame
+    // and longjmp SEH-unwinds toward any non-null frame, so the lowering must
+    // pass an explicit null instead of leaving the register unset.
+    const std::string il = "il 0.1\n"
+                           "func @f() -> i64 {\n"
+                           "entry:\n"
+                           "  eh.push ^handler\n"
+                           "  %q = sdiv.chk0 10, 0\n"
+                           "  eh.pop\n"
+                           "  ret 42\n"
+                           "handler ^handler(%err:Error, %tok:ResumeTok):\n"
+                           "  eh.entry\n"
+                           "  resume.next %tok\n"
+                           "}\n";
+
+    il::core::Module mod = parseModule(il);
+    ASSERT_TRUE(zanna::codegen::common::lowerNativeEh(
+        mod, zanna::codegen::common::NativeSetjmpVariant::WindowsNullFrame));
+    auto verify = il::api::v2::verify_module_expected(mod);
+    ASSERT_TRUE(verify.hasValue());
+
+    const il::core::Extern *setjmpExtern = nullptr;
+    for (const auto &ext : mod.externs) {
+        if (ext.name == "setjmp")
+            setjmpExtern = &ext;
+    }
+    ASSERT_TRUE(setjmpExtern != nullptr);
+    ASSERT_EQ(setjmpExtern->params.size(), 2U);
+    EXPECT_EQ(setjmpExtern->params[0].kind, il::core::Type::Kind::Ptr);
+    EXPECT_EQ(setjmpExtern->params[1].kind, il::core::Type::Kind::Ptr);
+    EXPECT_FALSE(hasExtern(mod, "_setjmp"));
+
+    std::size_t setjmpCalls = 0;
+    for (const auto &bb : mod.functions.front().blocks) {
+        for (const auto &instr : bb.instructions) {
+            if (instr.op != il::core::Opcode::Call || instr.callee != "setjmp")
+                continue;
+            ++setjmpCalls;
+            ASSERT_EQ(instr.operands.size(), 2U);
+            EXPECT_EQ(instr.operands[1].kind, il::core::Value::Kind::NullPtr);
+        }
+    }
+    EXPECT_EQ(setjmpCalls, 1U);
 }
 
 TEST(NativeEHLowering, RewritesResumeSameIntoFaultSiteDispatch) {

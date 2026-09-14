@@ -3002,10 +3002,12 @@ foreach (test_name IN LISTS G3D_ZIA_TESTS)
         add_test(NAME g3d_${test_name}
                 COMMAND $<TARGET_FILE:zanna> run "${test_file}"
                 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        # These canvases use the host GPU backend. A Debug run that shares the
+        # GPU with the parallel scene suites needs well over 30 seconds.
         set_tests_properties(g3d_${test_name} PROPERTIES
                 PASS_REGULAR_EXPRESSION "PASS"
                 LABELS "runtime;graphics3d"
-                TIMEOUT 30)
+                TIMEOUT 60)
     endif ()
 endforeach ()
 

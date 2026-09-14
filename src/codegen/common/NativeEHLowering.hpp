@@ -7,7 +7,13 @@
 //
 // File: src/codegen/common/NativeEHLowering.hpp
 // Purpose: Lower IL EH markers into native-friendly control flow before backend
-// lowering.
+//          lowering.
+// Key invariants:
+//   - After lowering no structured EH marker or handler token block remains.
+//   - The setjmp call matches the target platform's C runtime convention.
+// Ownership/Lifetime:
+//   - Rewrites the caller-owned module in place; no state outlives a call.
+// Links: src/codegen/common/NativeEHLowering.cpp, src/runtime/core/rt_io.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,6 +29,21 @@
 
 namespace zanna::codegen::common {
 
+/// @brief The platform `setjmp` entry point native EH frames call.
+enum class NativeSetjmpVariant {
+    /// `setjmp(env)`: glibc never saves the signal mask.
+    Plain,
+    /// `_setjmp(env)` on Darwin. BSD `setjmp` saves the signal mask with a
+    /// `sigprocmask` syscall on every `try` entry; the runtime's
+    /// `rt_native_eh_*` helpers unwind with the matching `_longjmp` there.
+    DarwinMaskFree,
+    /// `setjmp(env, NULL)` on Windows. The CRT stores the second argument as the
+    /// jump buffer's frame, and `longjmp` runs an SEH unwind toward any non-null
+    /// frame. A null frame restores the saved context directly, as `longjmp`
+    /// does on the other platforms.
+    WindowsNullFrame,
+};
+
 /// @brief Rewrite structured EH into ordinary IL calls/branches for native codegen.
 ///
 /// Replaces `eh.push`/`eh.pop` with runtime frame management and `setjmp`,
@@ -32,15 +53,12 @@ namespace zanna::codegen::common {
 /// control flow. Required runtime externs are inserted with exact ABI checks.
 ///
 /// @param[in,out] module IL module whose functions and extern table may be rewritten.
-/// @param maskFreeSetjmp Target the mask-free `_setjmp` (Darwin) instead of
-///        `setjmp`. BSD `setjmp` saves the signal mask with a `sigprocmask`
-///        syscall on every `try` entry; the runtime's `rt_native_eh_*` helpers
-///        unwind with the matching `_longjmp` there. Linux/Windows `setjmp`
-///        never saves the mask, so they keep the plain symbol.
+/// @param setjmpVariant Platform `setjmp` symbol and argument convention.
 /// @return `true` when at least one function contained structured EH markers.
 /// @throws No C++ exception intentionally; malformed lowering invariants report
 ///         an internal compiler error and abort.
-bool lowerNativeEh(il::core::Module &module, bool maskFreeSetjmp = false);
+bool lowerNativeEh(il::core::Module &module,
+                   NativeSetjmpVariant setjmpVariant = NativeSetjmpVariant::Plain);
 
 /// @brief Report the first structured EH marker that survived native EH lowering.
 /// @details Native backends expect @ref lowerNativeEh to erase all structured EH

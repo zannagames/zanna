@@ -308,11 +308,12 @@ TEST(CfgExtract, X64MirCfgShapesMatchLivenessAndExposeFallthrough) {
                       makeLabelOperand("far"),
                       makeLabelOperand("trap")}),
     };
-    MBasicBlock far{};
-    far.label = "far";
-    far.instructions = {MInstr::make(MOpcode::RET)};
+    // `far` is a Windows SDK macro, so the block variable uses another name.
+    MBasicBlock farBlock{};
+    farBlock.label = "far";
+    farBlock.instructions = {MInstr::make(MOpcode::RET)};
 
-    fn.blocks = {entry, midJmp, trap, table, far};
+    fn.blocks = {entry, midJmp, trap, table, farBlock};
 
     const MirCfg cfg(fn);
     ra::LivenessAnalysis liveness;

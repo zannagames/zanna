@@ -58,7 +58,9 @@ else ()
     configure_file("${FAKE_STEAM_LIBRARY}" "${_sdk}/linuxarm64/libsteam_api.so" COPYONLY)
 endif ()
 
-file(WRITE "${_project}/packdata/level.txt" "level one\n")
+# No trailing newline: file(WRITE) emits CRLF on Windows, and the program below
+# checks the pack payload's exact byte count.
+file(WRITE "${_project}/packdata/level.txt" "level one")
 file(WRITE "${_project}/data/readme.txt" "hello\n")
 file(WRITE "${_project}/main.zia"
         "module main;
@@ -72,7 +74,7 @@ func start() {
         return;
     }
     var level = Assets.LoadBytes(\"packdata/level.txt\");
-    if level == null || level.Length != 10 || Assets.List().Count < 1 {
+    if level == null || level.Length != 9 || Assets.List().Count < 1 {
         Terminal.Say(\"pack group contents are wrong\");
         return;
     }

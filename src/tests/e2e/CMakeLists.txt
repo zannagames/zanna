@@ -647,6 +647,11 @@ set(_ZANNA_OPTDIFF_EXAMPLES
 function(_zanna_add_native_differential _arch _arch_label _vm_prefix)
     set(_e2e_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
     set(_corpus_dir ${CMAKE_SOURCE_DIR}/src/tests/shared_corpus/il)
+    # Each test links into its own build-tree path: the VM/native and -O0/-O2
+    # tests for one program run concurrently, and a shared executable next to
+    # the IL source cannot be replaced while another test is running it on
+    # Windows.
+    set(_out_dir ${CMAKE_CURRENT_BINARY_DIR}/native_differential)
     foreach (_prog IN LISTS _ZANNA_DIFF_CORPUS _ZANNA_DIFF_TRAP_CORPUS)
         if (_prog IN_LIST _ZANNA_DIFF_TRAP_CORPUS)
             set(_il ${_corpus_dir}/traps/${_prog}.il)
@@ -658,6 +663,8 @@ function(_zanna_add_native_differential _arch _arch_label _vm_prefix)
                 -DILC=$<TARGET_FILE:zanna>
                 -DARCH=${_arch}
                 -DIL_FILE=${_il}
+                -DOUT_BASE=${_out_dir}/${_vm_prefix}${_prog}
+                -DEXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
                 -P ${_e2e_dir}/differential_vm_native.cmake)
         zanna_set_test_labels(${_vm_prefix}${_prog} ${_arch_label} differential)
 
@@ -666,6 +673,8 @@ function(_zanna_add_native_differential _arch _arch_label _vm_prefix)
                 -DILC=$<TARGET_FILE:zanna>
                 -DARCH=${_arch}
                 -DIL_FILE=${_il}
+                -DOUT_BASE=${_out_dir}/optdiff_${_arch}_${_prog}
+                -DEXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
                 -P ${_e2e_dir}/differential_opt_levels.cmake)
         zanna_set_test_labels(optdiff_${_arch}_${_prog} ${_arch_label} differential codegen_optdiff)
     endforeach ()
@@ -675,6 +684,8 @@ function(_zanna_add_native_differential _arch _arch_label _vm_prefix)
                 -DILC=$<TARGET_FILE:zanna>
                 -DARCH=${_arch}
                 -DIL_FILE=${CMAKE_SOURCE_DIR}/examples/il/${_prog}.il
+                -DOUT_BASE=${_out_dir}/optdiff_${_arch}_example_${_prog}
+                -DEXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
                 -P ${_e2e_dir}/differential_opt_levels.cmake)
         zanna_set_test_labels(optdiff_${_arch}_example_${_prog} ${_arch_label} differential codegen_optdiff examples)
     endforeach ()

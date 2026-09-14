@@ -673,6 +673,28 @@ TEST(PlatformImportPlanners, WindowsGuiRuntimeSymbolsResolveToSystemDlls) {
     EXPECT_TRUE(importPlanDllHasFunction(plan, "ucrtbase.dll", "lround"));
 }
 
+TEST(PlatformImportPlanners, WindowsRuntimeCrtConversionSymbolsResolveToUcrt) {
+    // The software rasterizer rounds temporal weights with lroundf and the
+    // Steam services provider parses user ids with strtoull.
+    const std::unordered_set<std::string> syms = {"lroundf", "strtoull"};
+
+    for (const auto &sym : syms)
+        EXPECT_TRUE(isKnownDynamicSymbol(sym, LinkPlatform::Windows));
+
+    WindowsImportPlan plan;
+    std::ostringstream err;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, syms, false, plan, err));
+    EXPECT_TRUE(err.str().empty());
+    for (const auto &sym : syms)
+        EXPECT_TRUE(importPlanDllHasFunction(plan, "ucrtbase.dll", sym));
+
+    WindowsImportPlan debugPlan;
+    std::ostringstream debugErr;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, syms, true, debugPlan, debugErr));
+    for (const auto &sym : syms)
+        EXPECT_TRUE(importPlanDllHasFunction(debugPlan, "ucrtbased.dll", sym));
+}
+
 TEST(PlatformImportPlanners, WindowsReliabilityApisResolveToKernel32) {
     const std::unordered_set<std::string> syms = {
         "GetActiveProcessorCount", "GetWindowsDirectoryW", "GlobalSize"};

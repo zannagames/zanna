@@ -622,11 +622,12 @@ static std::string mapToCanonicalRuntime(std::string_view name) {
 } // namespace
 
 /// @brief Queues the statement-boundary release a runtime call result needs.
-/// @details Each runtime.def row declares who owns its result (ADR 0314). A string
-///          result is released unless the row declares it borrowed, and an object
-///          result is released only when the row declares it owned. A borrowed result
-///          is a view another runtime object still owns, so the slot, field or array
-///          element it is stored in takes its own retain and nothing releases it here.
+/// @details Each runtime.def row declares who owns its result (ADR 0314). An object
+///          result is released only when the row declares it owned. Every string
+///          result is released: a string the row declares borrowed is a view another
+///          runtime object still owns, so it is retained first. The VMs hold each
+///          string call result as one reference, and the owner can be released
+///          before the procedure that read the string returns.
 /// @param v Result of the runtime call.
 /// @param ty IL type of @p v.
 /// @param callee Runtime name or alias that produced @p v.
@@ -635,9 +636,12 @@ void Lowerer::deferReleaseRuntimeResult(Value v, Type ty, const std::string &cal
         return;
     const auto *descriptor = il::runtime::findRuntimeDescriptor(mapToCanonicalRuntime(callee));
     if (ty.kind == Type::Kind::Str) {
-        if (!descriptor ||
-            descriptor->signature.resultOwnership != il::runtime::RuntimeResultOwnership::Borrowed)
-            deferReleaseStr(v);
+        if (descriptor && descriptor->signature.resultOwnership ==
+                              il::runtime::RuntimeResultOwnership::Borrowed) {
+            requireStrRetainMaybe();
+            emitCall("rt_str_retain_maybe", {v});
+        }
+        deferReleaseStr(v);
         return;
     }
     if (descriptor && descriptor->signature.returnsOwned)

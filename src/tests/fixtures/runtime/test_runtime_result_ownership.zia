@@ -17,6 +17,8 @@
 //   - Reading a borrowed accessor (Entity3D.get_Mesh) and dropping the read
 //     value leaves the entity's mesh alive.
 //   - Result.UnwrapStr / UnwrapErrStr results survive the Result's death.
+//   - A borrowed string passed straight to a call is not released again when
+//     the function that read it returns after its Result died.
 // Ownership/Lifetime:
 //   - Every object is owned by locals of start(); WeakRefs only observe.
 // Links: docs/adr/0314-declared-runtime-result-ownership.md
@@ -34,6 +36,16 @@ bind Zanna.Text.TextWrapper as Wrap;
 
 func makeResult() -> Any { return Result.OkStr("hello world"); }
 func makeErr() -> Any { return Result.ErrStr("bad thing"); }
+
+// The Result and its runtime-built (not literal) string die at this function's
+// exit; the borrowed reads below are call temporaries, never stored in a slot.
+func borrowedTemporaries(n: Integer) -> Boolean {
+    var err: Any = Result.ErrStr("borrowed error " + Fmt.Int(n));
+    var ok: Any = Result.OkStr("borrowed value " + Fmt.Int(n));
+    var errMatches = Zanna.String.StartsWith(Result.UnwrapErrStr(err), "borrowed error ");
+    var okMatches = Zanna.String.EndsWith(Result.UnwrapStr(ok), "value " + Fmt.Int(n));
+    return errMatches && okMatches;
+}
 
 func start() {
     // 1. Owned constructors die with their owner.
@@ -80,6 +92,12 @@ func start() {
     if first != "one two" { Say("FAIL: element of a temporary sequence: " + first); return; }
     if acc != "ab cd;ef gh;" { Say("FAIL: iterating a temporary sequence: " + acc); return; }
     if Seq.get_Count(churn) < 1 || Seq.get_Count(churn2) < 1 { Say("FAIL: churn"); return; }
+
+    // 5. Borrowed strings used as call temporaries in a function whose Result
+    //    dies before it returns.
+    for i in 0..3 {
+        if !borrowedTemporaries(i + 7) { Say("FAIL: borrowed call temporaries"); return; }
+    }
 
     Say("RESULT: ok");
 }

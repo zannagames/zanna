@@ -72,6 +72,21 @@ function(zanna_add_isolated_runtime_test target)
             ${CMAKE_SOURCE_DIR}/src/runtime/threads
             ${CMAKE_SOURCE_DIR}/src/runtime/network)
     target_link_libraries(${target} PRIVATE zanna_common_opts)
+    if (MSVC)
+        # Visual Studio generators evaluate the global $<COMPILE_LANGUAGE:C>
+        # option by the target's C++ link language, so runtime C sources that
+        # use <stdatomic.h> need the C11 atomics switch per source here.
+        foreach (source IN LISTS ARGN)
+            if (NOT source MATCHES "\\.c$")
+                continue()
+            endif ()
+            get_property(source_options SOURCE ${source} PROPERTY COMPILE_OPTIONS)
+            if (NOT "/experimental:c11atomics" IN_LIST source_options)
+                set_property(SOURCE ${source} APPEND PROPERTY
+                        COMPILE_OPTIONS /experimental:c11atomics)
+            endif ()
+        endforeach ()
+    endif ()
     if (NOT WIN32)
         target_compile_definitions(${target} PRIVATE _POSIX_C_SOURCE=200809L)
         if (NOT APPLE)

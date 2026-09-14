@@ -4,6 +4,22 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/Lowerer_Emit.cpp
+// Purpose: Typed IL emission, representation conversion, aggregate storage,
+//          and managed-value ownership helpers for the Zia lowerer.
+// Key invariants:
+//   - Every string call result is an owned temporary; a borrowed runtime
+//     string result is retained at the call before it is queued for release.
+//   - Deferred ownership records hold only along the control-flow edge that
+//     produced their values.
+// Ownership/Lifetime:
+//   - Emitted instructions belong to the current builder function.
+//   - Managed temporaries are tracked until released or moved into an owner.
+// Links: src/frontends/zia/Lowerer.hpp,
+//        docs/adr/0314-declared-runtime-result-ownership.md
+//
+//===----------------------------------------------------------------------===//
 ///
 /// @file Lowerer_Emit.cpp
 /// @brief Implements typed IL emission, representation conversion, aggregate
@@ -369,16 +385,12 @@ LowerResult Lowerer::coerceValueToType(Value value,
 
 /// @brief Check if a string-returning call returns a borrowed reference.
 /// @param callee Canonical lowered callee name.
-/// @return False under the current runtime contract, where string-returning
-///         accessors return owned handles.
-/// @details Runtime string accessors should return owned handles. Keep this
-///          hook for future borrowed APIs, but default to the owned contract.
+/// @return True when the runtime.def row declares the string result borrowed.
 static bool isBorrowedStringCall(const std::string &callee) {
     // A runtime.def row declares whether its string result is owned by the
     // caller (the overwhelming convention) or borrowed from another runtime
     // object, such as `Result.UnwrapStr` handing back the string a Result
-    // still owns (ADR 0314). Borrowed results are never released here; the
-    // slot or field they land in takes its own retain.
+    // still owns (ADR 0314).
     if (const auto *descriptor = il::runtime::findRuntimeDescriptor(callee))
         return descriptor->signature.resultOwnership ==
                il::runtime::RuntimeResultOwnership::Borrowed;
@@ -421,9 +433,15 @@ Lowerer::Value Lowerer::emitCallRet(Type retTy,
     // boundary. Object results are tracked only when the runtime ownership
     // catalog explicitly marks the return as owned; unmarked object accessors
     // may be borrowed references into another runtime object.
-    if (retTy.kind == Type::Kind::Str && !isBorrowedStringCall(callee))
+    if (retTy.kind == Type::Kind::Str) {
+        // A borrowed string takes its own reference so the temporary is owned
+        // like every other string call result. The VMs hold each string call
+        // result as one reference, and the object that owns a borrowed string
+        // can be released before the function that read it returns.
+        if (isBorrowedStringCall(callee))
+            emitCall(runtime::kStrRetainMaybe, {result});
         deferRelease(result, /*isString=*/true);
-    else if (retTy.kind == Type::Kind::Ptr) {
+    } else if (retTy.kind == Type::Kind::Ptr) {
         const auto *descriptor = il::runtime::findRuntimeDescriptor(callee);
         const bool returnsOwned = descriptor && descriptor->signature.returnsOwned;
         if (returnsOwned)

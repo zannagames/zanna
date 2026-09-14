@@ -212,8 +212,9 @@ _Static_assert(sizeof(d3d_per_scene_t) % 16 == 0,
 typedef vgfx3d_d3d11_per_material_t d3d_per_material_t;
 
 /* 448 bytes through the UV transforms, plus the ADR 0312 decal block: three
- * float4 projector rows and one float4 of params. */
-_Static_assert(sizeof(d3d_per_material_t) == 512u,
+ * float4 projector rows and one float4 of params, followed by the ADR 0341
+ * temporal parameters. */
+_Static_assert(sizeof(d3d_per_material_t) == 528u,
                "D3D11 PerMaterial cbuffer must match its HLSL layout");
 
 /// @brief CPU mirror of one packed D3D11 light constant-buffer element.
@@ -1222,6 +1223,7 @@ static void d3d11_begin_frame_timing(d3d11_context_t *ctx);
 static void d3d11_end_frame_timing(d3d11_context_t *ctx);
 static void d3d11_release_texture_cache(d3d11_context_t *ctx);
 static void d3d11_prune_texture_cache(d3d11_context_t *ctx);
+static void d3d11_end_cut_budget_override(d3d11_context_t *ctx);
 static void d3d11_release_cubemap_cache(d3d11_context_t *ctx);
 static void d3d11_prune_cubemap_cache(d3d11_context_t *ctx);
 static float d3d11_cubemap_max_lod(const rt_cubemap3d *cubemap);

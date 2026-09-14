@@ -154,6 +154,9 @@ int main() {
 
     const ILModule module = makeProbeModule();
     CodegenOptions options{};
+    // Pin both the platform and the calling convention: TargetABI::Host would
+    // select Win64 lowering on Windows hosts.
+    options.targetABI = CodegenOptions::TargetABI::SysV;
     options.targetPlatform = CodegenOptions::TargetPlatform::Linux;
     const CodegenResult result = emitModuleToAssembly(module, options);
 

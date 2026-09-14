@@ -570,6 +570,7 @@ inline bool isKnownDynamicSymbol(const std::string &name, LinkPlatform platform)
         "trunc",
         "round",
         "lround",
+        "lroundf",
         "llround",
         "lrint",
         "lrintf",

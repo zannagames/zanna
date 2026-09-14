@@ -660,6 +660,9 @@ execute_process(
 if (NOT _steam_json_rv EQUAL 0)
     message(FATAL_ERROR "steam-linux JSON dry-run should succeed\nstdout:\n${_steam_json_out}\nstderr:\n${_steam_json_err}")
 endif ()
+# Depot plan paths use native separators; Windows hosts emit them JSON-escaped
+# (`\\`), so compare path suffixes against a forward-slash spelling.
+string(REPLACE "\\\\" "/" _steam_json_paths "${_steam_json_out}")
 foreach (_needle
         "\"target\": \"steam-linux\""
         "\"steam\": {"
@@ -673,7 +676,7 @@ foreach (_needle
         "scripts/app_build_480.vdf\""
         "manifests/linux.json\""
         "\"usesProvider\": null")
-    _expect_contains("${_steam_json_out}" "${_needle}" "steam-linux JSON dry-run")
+    _expect_contains("${_steam_json_paths}" "${_needle}" "steam-linux JSON dry-run")
 endforeach ()
 
 execute_process(

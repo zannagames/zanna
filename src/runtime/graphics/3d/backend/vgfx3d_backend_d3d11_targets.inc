@@ -514,10 +514,11 @@ static HRESULT d3d11_ensure_scene_targets(d3d11_context_t *ctx, int32_t width, i
                                    &new_color_srv);
     if (FAILED(hr))
         goto fail;
+    /* Signed RGBA16F motion vectors (ADR 0342); the helper takes the internal format class. */
     hr = d3d11_create_color_target(ctx,
                                    width,
                                    height,
-                                   DXGI_FORMAT_R16G16B16A16_FLOAT,
+                                   VGFX3D_D3D11_COLOR_FORMAT_HDR16F,
                                    &new_motion_tex,
                                    &new_motion_rtv,
                                    &new_motion_srv);

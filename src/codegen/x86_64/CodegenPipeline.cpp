@@ -346,8 +346,10 @@ int invokeAssembler(const std::filesystem::path &asmPath,
 /// @param exePath Path to the executable to run.
 /// @param out     Stream receiving program stdout.
 /// @param err     Stream receiving program stderr.
-/// @return Process exit code (-1 when the process could not be started).
-int runExecutable(const std::filesystem::path &exePath, std::ostream &out, std::ostream &err) {
+/// @return Process exit code, or `std::nullopt` when the process could not run.
+std::optional<int> runExecutable(const std::filesystem::path &exePath,
+                                 std::ostream &out,
+                                 std::ostream &err) {
     return common::runExecutable(toNativePath(exePath), out, err);
 }
 
@@ -560,8 +562,15 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
 
     // Darwin's setjmp saves the signal mask (a syscall per `try`); use the
     // mask-free `_setjmp` there, matching the runtime's RT_SETJMP/RT_LONGJMP.
-    zanna::codegen::common::lowerNativeEh(module,
-                                          effectiveTargetPlatform(opts_) == TargetPlatform::Darwin);
+    // The Windows CRT setjmp takes a frame argument that must be null so a
+    // trap's longjmp restores the context instead of running an SEH unwind.
+    using zanna::codegen::common::NativeSetjmpVariant;
+    const TargetPlatform ehPlatform = effectiveTargetPlatform(opts_);
+    zanna::codegen::common::lowerNativeEh(
+        module,
+        ehPlatform == TargetPlatform::Darwin    ? NativeSetjmpVariant::DarwinMaskFree
+        : ehPlatform == TargetPlatform::Windows ? NativeSetjmpVariant::WindowsNullFrame
+                                                : NativeSetjmpVariant::Plain);
     if (const auto residualEh = zanna::codegen::common::findResidualStructuredEh(module)) {
         err << "error: " << *residualEh << "\n";
         result.exit_code = 1;
@@ -852,8 +861,8 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
             return finish();
         }
 
-        const int runExit = runExecutable(exePath, out, err);
-        result.exit_code = (runExit == -1) ? 1 : runExit;
+        const std::optional<int> runExit = runExecutable(exePath, out, err);
+        result.exit_code = runExit.value_or(1);
         if (opts_.output_obj_path.empty()) {
             std::error_code ec;
             std::filesystem::remove(exePath, ec);
@@ -972,12 +981,8 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
         return finish();
     }
 
-    const int runExit = runExecutable(exePath, out, err);
-    if (runExit == -1) {
-        result.exit_code = 1;
-    } else {
-        result.exit_code = runExit;
-    }
+    const std::optional<int> runExit = runExecutable(exePath, out, err);
+    result.exit_code = runExit.value_or(1);
     if (opts_.output_obj_path.empty()) {
         std::error_code ec;
         std::filesystem::remove(exePath, ec);

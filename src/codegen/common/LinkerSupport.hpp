@@ -229,10 +229,14 @@ int invokeAssembler(const std::vector<std::string> &ccArgs,
                     std::ostream &err);
 
 /// @brief Execute a linked native binary and forward its stdout/stderr.
+/// @details Windows exit codes are 32-bit values, so the exact code is
+///          reinterpreted as a signed `int`: a program returning -6 reports -6,
+///          matching the VM, rather than a saturated value.
 /// @param exePath Path to the executable to run.
 /// @param out Standard output stream to forward the executable's stdout to.
 /// @param err Standard error stream to forward the executable's stderr to.
-/// @return The executable's exit code, or `-1` when process launch fails.
-int runExecutable(const std::string &exePath, std::ostream &out, std::ostream &err);
+/// @return The executable's exit code, or `std::nullopt` when the process could
+///         not be launched or reaped.
+std::optional<int> runExecutable(const std::string &exePath, std::ostream &out, std::ostream &err);
 
 } // namespace zanna::codegen::common

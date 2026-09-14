@@ -7,7 +7,14 @@
 //
 // File: src/codegen/common/NativeEHLowering.cpp
 // Purpose: Rewrite structured EH into setjmp-backed IL that native backends can
-// lower like ordinary control flow.
+//          lower like ordinary control flow.
+// Key invariants:
+//   - Injected runtime externs are declared with exact signatures.
+//   - Windows setjmp calls pass a null frame so longjmp restores the saved
+//     context without an SEH unwind.
+// Ownership/Lifetime:
+//   - Rewrites the caller-owned module in place; no state outlives a call.
+// Links: src/codegen/common/NativeEHLowering.hpp, src/runtime/core/rt_io.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -55,9 +62,16 @@ constexpr const char *kFramePop = "rt_native_eh_pop";
 constexpr const char *kFrameSetSite = "rt_native_eh_set_site";
 constexpr const char *kFrameGetSite = "rt_native_eh_get_site";
 constexpr const char *kSetjmpSymbol = "setjmp";
-/// Mask-free BSD variant selected for Darwin targets (see lowerNativeEh).
+/// Mask-free BSD variant selected for Darwin targets (see NativeSetjmpVariant).
 constexpr const char *kMaskFreeSetjmpSymbol = "_setjmp";
 constexpr int32_t kErrInvalidOperation = 8;
+
+/// @brief Resolved `setjmp` call shape for one lowering run.
+struct SetjmpCall {
+    const char *symbol = kSetjmpSymbol;
+    /// Pass an explicit null frame after the jump buffer (Windows CRT).
+    bool nullFrameArg = false;
+};
 
 /// @brief Identifies one `eh.push` by its original function position.
 struct PushKey {
@@ -256,14 +270,18 @@ static void ensureExtern(Module &module, std::string name, Type retType, std::ve
 
 /// @brief Ensure declarations for all runtime frame helpers and `setjmp`.
 /// @param[in,out] module Module extern table to extend.
-static void ensureRuntimeExterns(Module &module, const char *setjmpSymbol) {
+/// @param setjmpCall Platform `setjmp` symbol and argument convention.
+static void ensureRuntimeExterns(Module &module, const SetjmpCall &setjmpCall) {
     ensureExtern(module, kFrameAlloc, ptrTy(), {});
     ensureExtern(module, kFrameFree, voidTy(), {ptrTy()});
     ensureExtern(module, kFramePush, voidTy(), {ptrTy()});
     ensureExtern(module, kFramePop, voidTy(), {ptrTy()});
     ensureExtern(module, kFrameSetSite, voidTy(), {ptrTy(), i64Ty()});
     ensureExtern(module, kFrameGetSite, i64Ty(), {ptrTy()});
-    ensureExtern(module, setjmpSymbol, i64Ty(), {ptrTy()});
+    if (setjmpCall.nullFrameArg)
+        ensureExtern(module, setjmpCall.symbol, i64Ty(), {ptrTy(), ptrTy()});
+    else
+        ensureExtern(module, setjmpCall.symbol, i64Ty(), {ptrTy()});
 }
 
 /// @brief Build a direct void call to an injected helper.
@@ -562,8 +580,11 @@ static void propagateEntryStacks(const Function &fn,
 ///
 /// @param[in,out] module Owning module whose runtime externs may be inserted.
 /// @param[in,out] fn Function whose value names, parameters, and blocks may change.
+/// @param setjmpCall Platform `setjmp` symbol and argument convention.
 /// @return Replacement block snapshot and whether a rewrite occurred.
-static RewrittenFunction rewriteFunction(Module &module, Function &fn, const char *setjmpSymbol) {
+static RewrittenFunction rewriteFunction(Module &module,
+                                         Function &fn,
+                                         const SetjmpCall &setjmpCall) {
     RewrittenFunction rewritten{};
 
     // IL passes allocate ids past the value-name table without naming them, so
@@ -610,7 +631,7 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn, const cha
     if (!hasEh)
         return rewritten;
 
-    ensureRuntimeExterns(module, setjmpSymbol);
+    ensureRuntimeExterns(module, setjmpCall);
 
     std::vector<std::optional<std::vector<int>>> entryStacks(fn.blocks.size());
     std::deque<std::size_t> worklist;
@@ -742,8 +763,11 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn, const cha
                 current.instructions.push_back(
                     makeStore(Value::temp(scope.slotTemp), Value::temp(frameTemp)));
                 current.instructions.push_back(makeCallVoid(kFramePush, {Value::temp(frameTemp)}));
+                std::vector<Value> setjmpArgs{Value::temp(frameTemp)};
+                if (setjmpCall.nullFrameArg)
+                    setjmpArgs.push_back(Value::null());
                 current.instructions.push_back(
-                    makeCallResult(setjmpTemp, i64Ty(), setjmpSymbol, {Value::temp(frameTemp)}));
+                    makeCallResult(setjmpTemp, i64Ty(), setjmpCall.symbol, std::move(setjmpArgs)));
                 {
                     Instr cmp;
                     cmp.result = caughtTemp;
@@ -980,11 +1004,14 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn, const cha
 } // namespace
 
 /// @copydoc lowerNativeEh
-bool lowerNativeEh(Module &module, bool maskFreeSetjmp) {
-    const char *setjmpSymbol = maskFreeSetjmp ? kMaskFreeSetjmpSymbol : kSetjmpSymbol;
+bool lowerNativeEh(Module &module, NativeSetjmpVariant setjmpVariant) {
+    SetjmpCall setjmpCall{};
+    if (setjmpVariant == NativeSetjmpVariant::DarwinMaskFree)
+        setjmpCall.symbol = kMaskFreeSetjmpSymbol;
+    setjmpCall.nullFrameArg = setjmpVariant == NativeSetjmpVariant::WindowsNullFrame;
     bool changed = false;
     for (auto &fn : module.functions) {
-        auto rewritten = rewriteFunction(module, fn, setjmpSymbol);
+        auto rewritten = rewriteFunction(module, fn, setjmpCall);
         changed |= rewritten.changed;
     }
     return changed;

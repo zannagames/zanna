@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-09-13
+last-verified: 2026-09-14
 ---
 
 # ADR 0314: Declared result ownership for runtime functions
@@ -198,3 +198,24 @@ natively. Returning a field, a parameter, a local, a `NEW` object and a string
 parameter across repeated calls never frees what the callee still owns, and each
 result dies once its last caller-side owner drops it. The `calls_lowering` IL
 golden pins the retain on `RETURN S$` and the caller's release.
+
+## Amendment (2026-09-14): borrowed string results are retained at the call
+
+Both VMs hold every `str` call result as one reference: the register releases it
+when it is overwritten or when the frame returns. A borrowed string used directly
+as a call argument, for example `Say(result.UnwrapErrStr())`, therefore lost a
+reference it never had. When the `Result` that owned the string was released
+before the function returned, the frame's release freed the string a second time.
+The Windows debug heap reported this as `invalid runtime string handle`; other
+allocators left the freed header intact and hid it.
+
+Both lowerers now treat a string result declared `borrowed` like an owned one.
+They emit `rt_str_retain_maybe` right after the call and schedule the usual
+statement-boundary release. A slot, field or array element that stores the value
+takes that reference instead of adding its own. Object results are unchanged:
+they are still released only when the row declares them `owned`.
+
+Tests: `zia_runtime_test_runtime_result_ownership` and
+`basic_runtime_test_basic_runtime_result_ownership` (and their native lanes)
+read borrowed strings as call arguments inside a function whose `Result` or
+`Option` dies before the function returns.

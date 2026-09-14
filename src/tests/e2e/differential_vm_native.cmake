@@ -15,6 +15,14 @@ endif ()
 if (NOT DEFINED ARCH)
     message(FATAL_ERROR "ARCH not set")
 endif ()
+if (NOT DEFINED OUT_BASE)
+    message(FATAL_ERROR "OUT_BASE not set")
+endif ()
+
+# The native executable gets a private path (see _zanna_add_native_differential).
+get_filename_component(_out_dir "${OUT_BASE}" DIRECTORY)
+file(MAKE_DIRECTORY "${_out_dir}")
+set(nat_exe "${OUT_BASE}${EXE_SUFFIX}")
 
 execute_process(
     COMMAND ${ILC} -run ${IL_FILE}
@@ -24,7 +32,7 @@ execute_process(
 # ERROR_QUIET drops the linker's "dead-strip: removed N sections" diagnostic so
 # only the program's own stdout is compared.
 execute_process(
-    COMMAND ${ILC} codegen ${ARCH} ${IL_FILE} -run-native
+    COMMAND ${ILC} codegen ${ARCH} ${IL_FILE} -run-native -o ${nat_exe}
     OUTPUT_VARIABLE nat_out
     RESULT_VARIABLE nat_exit
     ERROR_QUIET)

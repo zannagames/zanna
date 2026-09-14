@@ -678,8 +678,15 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
 
     // Darwin's setjmp saves the signal mask (a syscall per `try`); use the
     // mask-free `_setjmp` there, matching the runtime's RT_SETJMP/RT_LONGJMP.
+    // The Windows CRT setjmp takes a frame argument that must be null so a
+    // trap's longjmp restores the context instead of running an SEH unwind.
+    using zanna::codegen::common::NativeSetjmpVariant;
+    const linker::LinkPlatform ehPlatform = targetLinkPlatform(opts_.target_platform);
     zanna::codegen::common::lowerNativeEh(
-        mod, targetLinkPlatform(opts_.target_platform) == linker::LinkPlatform::macOS);
+        mod,
+        ehPlatform == linker::LinkPlatform::macOS     ? NativeSetjmpVariant::DarwinMaskFree
+        : ehPlatform == linker::LinkPlatform::Windows ? NativeSetjmpVariant::WindowsNullFrame
+                                                      : NativeSetjmpVariant::Plain);
     if (const auto residualEh = zanna::codegen::common::findResidualStructuredEh(mod)) {
         err << "error: " << *residualEh << "\n";
         result.exit_code = 1;
@@ -941,8 +948,9 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
         }
 
         if (opts_.run_native) {
-            const int rc = zanna::codegen::common::runExecutable(common::pathToUtf8(exe), out, err);
-            result.exit_code = rc == -1 ? 1 : rc;
+            const std::optional<int> rc =
+                zanna::codegen::common::runExecutable(common::pathToUtf8(exe), out, err);
+            result.exit_code = rc.value_or(1);
             if (opts_.output_obj_path.empty()) {
                 std::error_code ec;
                 std::filesystem::remove(exe, ec);
@@ -1016,8 +1024,9 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
     }
 
     if (opts_.run_native) {
-        const int rc = zanna::codegen::common::runExecutable(common::pathToUtf8(exe), out, err);
-        result.exit_code = rc == -1 ? 1 : rc;
+        const std::optional<int> rc =
+            zanna::codegen::common::runExecutable(common::pathToUtf8(exe), out, err);
+        result.exit_code = rc.value_or(1);
         if (opts_.output_obj_path.empty()) {
             std::error_code ec;
             std::filesystem::remove(exe, ec);

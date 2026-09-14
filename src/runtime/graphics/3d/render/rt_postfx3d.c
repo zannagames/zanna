@@ -1239,8 +1239,8 @@ static int vgfx3d_postfx_fill_effect_snapshot(const rt_postfx3d *fx,
                 snapshot.color_lut_enabled = 1;
                 snapshot.color_lut_blend = e->p.color_lut.blend;
                 snapshot.color_lut_texels = lut->data;
-                snapshot.color_lut_width = lut->width;
-                snapshot.color_lut_height = lut->height;
+                snapshot.color_lut_width = (int32_t)lut->width;
+                snapshot.color_lut_height = (int32_t)lut->height;
                 snapshot.color_lut_revision = rt_pixels_generation(fx->lut_pixels);
             }
             break;

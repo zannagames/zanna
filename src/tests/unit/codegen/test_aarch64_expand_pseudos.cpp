@@ -261,9 +261,11 @@ TEST(AArch64ExpandPseudos, ScratchLiveAcrossTheExpansionIsSkipped) {
 }
 
 TEST(AArch64ExpandPseudos, PairOutsideImm7SplitsIntoScalars) {
-    MFunction far = fnOf({ins(MOpcode::LdpRegFpImm, {x(PhysReg::X0), x(PhysReg::X1), imm(-520)})});
-    EXPECT_EQ(expandPseudoInstructions(far), 3u);
-    expectLines(far,
+    // `far` is a Windows SDK macro, so the out-of-range pair uses another name.
+    MFunction distant =
+        fnOf({ins(MOpcode::LdpRegFpImm, {x(PhysReg::X0), x(PhysReg::X1), imm(-520)})});
+    EXPECT_EQ(expandPseudoInstructions(distant), 3u);
+    expectLines(distant,
                 {"MovRI @x9:gpr, #-520",
                  "AddRRR @x9:gpr, @x29:gpr, @x9:gpr",
                  "LdrRegBaseImm @x0:gpr, @x9:gpr, #0",
