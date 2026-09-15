@@ -1,0 +1,70 @@
+"Action Manifest"
+{
+	"actions"
+	{
+		"batting"
+		{
+			"title"	"#Set_Batting"
+			"StickPadGyro"
+			{
+				"aim"
+				{
+					"title"	"#Action_Aim"
+					"input_mode"	"joystick_move"
+				}
+			}
+			"Button"
+			{
+				"swing"	"#Action_Swing"
+				"pause"	"#Action_Pause"
+			}
+		}
+		"menu"
+		{
+			"title"	"#Set_Menu"
+			"StickPadGyro"
+			{
+				"cursor"
+				{
+					"title"	"#Action_Cursor"
+					"input_mode"	"absolute_mouse"
+				}
+			}
+			"Button"
+			{
+				"select"	"#Action_Select"
+				"back"	"#Action_Back"
+			}
+		}
+	}
+	"action_layers"
+	{
+		"bunt_layer"
+		{
+			"title"	"#Layer_Bunt"
+			"legacy_set"	"1"
+			"set_layer"	"1"
+			"parent_set_name"	"batting"
+			"Button"
+			{
+				"bunt"	"#Action_Bunt"
+			}
+		}
+	}
+	"localization"
+	{
+		"english"
+		{
+			"Set_Batting"	"Batting"
+			"Set_Menu"	"Menus"
+			"Layer_Bunt"	"Bunting"
+			"Action_Aim"	"Aim"
+			"Action_Swing"	"Swing"
+			"Action_Pause"	"Pause"
+			"Action_Cursor"	"Cursor"
+			"Action_Select"	"Select"
+			"Action_Back"	"Back"
+			"Action_Bunt"	"Bunt"
+		}
+	}
+}

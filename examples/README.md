@@ -23,6 +23,7 @@ Full-featured applications built with [Zia](../docs/languages/zia-reference.md).
 | Project | Description | Highlights |
 |---------|-------------|------------|
 | [Paint](apps/paint/) | Drawing application (MS Paint-style) | 8 tools, runtime actions, file dialogs, zoomable canvas, undo/redo, layers |
+| [steam-check](apps/steam-check/) | Checks `Zanna.Services` against a real Steam client | Every services class, read-only by default, account-restoring write checks, overlay window |
 
 More applications (ZannaSQL, WebServer, Varc, Telnet, asset demos) live in the
 [zannademos repository](https://github.com/zannagames/zannademos).

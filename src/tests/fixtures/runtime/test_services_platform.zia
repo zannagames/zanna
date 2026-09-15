@@ -9,9 +9,10 @@
 // Purpose: End-to-end check of Zanna.Services from Zia on the VM and in native
 //          binaries: the neutral Platform lifecycle, identity and licensing
 //          queries, event polling, non-blocking requests, the Steam extension
-//          class, the player features (achievements, stats, leaderboards,
-//          presence, overlay, text input, cloud), and the unavailable path
-//          when no redistributable exists.
+//          class, the player features (achievements with icons and global
+//          percentages, stats, leaderboards, presence, overlay, text input,
+//          cloud, timeline, app details, action input, Workshop), and the
+//          unavailable path when no redistributable exists.
 // Key invariants:
 //   - ZANNA_SERVICES_TEST_EXPECT selects the scenario: "available" runs
 //     against the fake steam_api library named by ZANNA_SERVICES_STEAM_LIBRARY;
@@ -22,8 +23,11 @@
 //   - Results, requests, and byte buffers are owned by function locals.
 // Links: docs/adr/0352-platform-services-runtime-loaded-providers.md,
 //        docs/adr/0353-platform-services-player-features.md,
+//        docs/adr/0364-platform-services-achievement-icons-and-percentages.md,
+//        docs/adr/0365-platform-services-action-input.md,
+//        docs/adr/0366-platform-services-workshop.md,
 //        src/tests/runtime/RTServicesFakeSteamApi.c,
-//        src/tests/e2e/test_zia_services_run.cmake
+//        src/tests/e2e/test_services_run.cmake
 //
 //===----------------------------------------------------------------------===//
 module test_services_platform;
@@ -32,6 +36,10 @@ bind Zanna.Text.Fmt as Fmt;
 bind Zanna.System.Environment as Env;
 bind Zanna.Services as Services;
 bind Zanna.Collections.Bytes as Bytes;
+bind Zanna.IO.File as File;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.IO.TempFile as TempFile;
 
 var fails: Integer = 0;
 
@@ -53,6 +61,30 @@ func checkNeutral(label: String) {
     check(Services.Steam.HardwareType == Services.SteamHardware.Unknown, label + ": hardware unknown");
     check(Services.Platform.EventTotal == 0, label + ": no event total");
     check(!Services.Platform.HasFeature(Services.Feature.Cloud), label + ": no Cloud feature");
+    check(!Services.Platform.HasFeature(Services.Feature.LaunchParameters), label + ": no LaunchParameters feature");
+    check(Services.Platform.LaunchCommandLine == "", label + ": no launch command line");
+    check(Services.Platform.LaunchParameter("team") == "", label + ": no launch parameter");
+    check(!Services.Platform.HasFeature(Services.Feature.Timeline), label + ": no Timeline feature");
+    check(Services.Platform.DlcCount == 0 && Services.Platform.DlcIdAt(0) == "", label + ": no DLC list");
+    check(Services.Platform.BuildId == 0 && Services.Platform.BranchName == "", label + ": no build details");
+    check(Services.Timeline.AddEvent("Home run", "", "", 1, 0.0, Services.TimelineClip.None) == "",
+          label + ": no timeline events");
+    check(!Services.Timeline.StartPhase(), label + ": no timeline phases");
+    check(!Services.Platform.HasFeature(Services.Feature.AchievementIcons), label + ": no AchievementIcons feature");
+    check(Services.Achievements.IconWidth("ACH_WIN_ONE_GAME") == 0 &&
+          Services.Achievements.IconRgba("ACH_WIN_ONE_GAME").Length == 0, label + ": no achievement icons");
+    check(Services.Achievements.GlobalPercent("ACH_WIN_ONE_GAME") == 0.0, label + ": no global percentages");
+    var percentages = Services.Achievements.RequestGlobalPercentages();
+    check(percentages.IsDone && !percentages.Succeeded, label + ": global percentages request must fail");
+    check(!Services.Platform.HasFeature(Services.Feature.ActionInput), label + ": no ActionInput feature");
+    check(!Services.ActionInput.Start("") && !Services.ActionInput.IsStarted, label + ": no action input");
+    check(Services.ActionInput.ControllerCount == 0 && !Services.ActionInput.IsPressed("", "swing"),
+          label + ": no controllers");
+    check(!Services.Platform.HasFeature(Services.Feature.Workshop), label + ": no Workshop feature");
+    check(Services.Workshop.SubscribedCount == 0 && !Services.Workshop.IsInstalled("3000000001"),
+          label + ": no Workshop items");
+    var browse = Services.Workshop.Query(Services.WorkshopQuery.Popular, 1, "", "");
+    check(browse.IsDone && !browse.Succeeded && browse.ItemCount == 0, label + ": Workshop query must fail");
     check(!Services.Achievements.Unlock("ACH_WIN_ONE_GAME"), label + ": no achievements");
     check(Services.Achievements.Count == 0, label + ": no achievement count");
     check(Services.Stats.GetInt("NumGames") == 0, label + ": no stats");
@@ -100,15 +132,31 @@ func runFeatures() {
     check(Zanna.Math.Abs(Services.Stats.GetFloat("FeetTraveled") - 12.5) < 0.001, "GetFloat");
     check(Services.Stats.Store(), "Store");
     Services.Platform.Update();
-    check(Services.Platform.PollEvent() == Services.EventKind.StatsStored, "StatsStored event");
-    check(Services.Platform.EventFlag, "stats stored successfully");
     check(Services.Platform.PollEvent() == Services.EventKind.AchievementStored, "AchievementStored event");
     check(Services.Platform.EventText == "ACH_WIN_ONE_GAME", "stored achievement id");
     check(Services.Platform.EventFlag, "stored achievement unlocked");
+    check(Services.Platform.PollEvent() == Services.EventKind.StatsStored, "StatsStored event");
+    check(Services.Platform.EventFlag, "stats stored successfully");
     check(Services.Achievements.IndicateProgress("ACH_TRAVEL_FAR", 10, 40), "progress notification");
     Services.Platform.Update();
     check(Services.Platform.PollEvent() == Services.EventKind.AchievementStored, "progress event");
     check(Services.Platform.EventValue == 10 && Services.Platform.EventTotal == 40, "progress payload");
+
+    check(Services.Platform.HasFeature(Services.Feature.AchievementIcons), "AchievementIcons feature");
+    check(Services.Achievements.IconWidth("ACH_WIN_ONE_GAME") == 0, "icon must load on demand");
+    Services.Platform.Update();
+    check(Services.Platform.PollEvent() == Services.EventKind.AchievementIconReady, "AchievementIconReady event");
+    check(Services.Platform.EventText == "ACH_WIN_ONE_GAME" && Services.Platform.EventFlag &&
+          Services.Platform.EventValue == 1, "icon ready payload");
+    check(Services.Achievements.IconWidth("ACH_WIN_ONE_GAME") == 2 &&
+          Services.Achievements.IconHeight("ACH_WIN_ONE_GAME") == 2, "icon size");
+    var icon = Services.Achievements.IconRgba("ACH_WIN_ONE_GAME");
+    check(icon.Length == 16 && icon.Get(0) == 32, "icon pixels");
+    check(Services.Platform.HasFeature(Services.Feature.AchievementPercentages), "AchievementPercentages feature");
+    var percentages = Services.Achievements.RequestGlobalPercentages();
+    check(percentages.Kind == Services.RequestKind.AchievementPercentages, "percentages kind");
+    check(pump(percentages) && percentages.Succeeded, "global percentages: " + percentages.Error);
+    check(Services.Achievements.GlobalPercent("ACH_HIT_FOR_CYCLE") == 3.25, "global percent");
 
     var upload = Services.Leaderboards.Upload("HOME_RUNS", 75, true);
     check(upload.Kind == Services.RequestKind.LeaderboardUpload, "upload kind");
@@ -157,6 +205,76 @@ func runFeatures() {
     check(Services.Cloud.Files().Count == 1, "cloud file list");
     check(Services.Cloud.Delete("league.sav") && !Services.Cloud.Exists("league.sav"), "cloud delete");
     check(Services.Cloud.Read("league.sav").IsErr, "deleted file read must fail");
+
+    check(Services.Platform.HasFeature(Services.Feature.Timeline), "Timeline feature");
+    check(Services.Timeline.SetGameMode(Services.TimelineMode.Playing), "timeline game mode");
+    check(Services.Timeline.StartPhase(), "timeline phase start");
+    check(Services.Timeline.SetPhaseId("game-1972-034"), "timeline phase id");
+    var homer = Services.Timeline.AddEvent("Home run", "Two-run shot", "steam_star", 900, -3.0,
+                                           Services.TimelineClip.Featured);
+    check(homer != "", "timeline event id");
+    var eventRecording = Services.Timeline.RequestEventRecording(homer);
+    check(pump(eventRecording) && eventRecording.Succeeded && eventRecording.Flag, "timeline event recording");
+    var phaseRecording = Services.Timeline.RequestPhaseRecording("game-1972-034");
+    check(pump(phaseRecording) && phaseRecording.Succeeded, "timeline phase recording: " + phaseRecording.Error);
+    check(phaseRecording.Value == 90000 && phaseRecording.DetailCount == 4, "timeline phase recording value");
+    if phaseRecording.DetailCount == 4 {
+        check(phaseRecording.Detail(2) == 2 && phaseRecording.Detail(3) == 1, "timeline clip and screenshot counts");
+    }
+    check(Services.Timeline.EndPhase(), "timeline phase end");
+
+    check(Services.Platform.HasFeature(Services.Feature.ActionInput), "ActionInput feature");
+    var manifestDir = TempFile.CreateDir();
+    var manifest = Path.Join(manifestDir, "input_manifest.vdf");
+    File.WriteAllText(manifest, "\"Action Manifest\"\n{\n}\n");
+    check(Services.ActionInput.Start(manifest), "action input start");
+    check(Services.ActionInput.ControllerCount == 2, "two controllers");
+    var pad = Services.ActionInput.ControllerIdAt(0);
+    check(pad == "18000000000000000001", "controller id " + pad);
+    check(Services.ActionInput.ControllerType(pad) == Services.ControllerType.XboxOne, "controller type");
+    Services.Platform.Update();
+    check(Services.Platform.PollEvent() == Services.EventKind.ControllerConnected, "ControllerConnected event");
+    check(Services.Platform.EventText == pad, "connected controller id");
+    check(Services.Platform.PollEvent() == Services.EventKind.ControllerConnected, "second ControllerConnected event");
+    check(Services.Platform.PollEvent() == Services.EventKind.ControllerConfigured, "ControllerConfigured event");
+    check(Services.Platform.EventFlag && Services.Platform.EventValue == 3, "configuration payload");
+    check(Services.Platform.PollEvent() == Services.EventKind.ControllerConfigured, "second ControllerConfigured event");
+    check(Services.ActionInput.ActivateActionSet("", "batting"), "activate action set");
+    check(Services.ActionInput.IsActionActive(pad, "swing") && !Services.ActionInput.IsPressed("", "swing"),
+          "swing active but not pressed");
+    check(Services.ActionInput.AnalogX(pad, "aim") == 0.0, "aim at rest");
+    check(Services.ActionInput.ActionLabel("aim") == "Aim", "action label");
+    check(Services.ActionInput.OriginCount(pad, "", "swing") == 1, "swing origin count");
+    var origin = Services.ActionInput.OriginAt(pad, "batting", "swing", 0);
+    check(Services.ActionInput.OriginLabel(origin) == "A Button", "origin label");
+    check(Services.ActionInput.OriginGlyphPath(origin, Services.GlyphSize.Small) != "", "origin glyph");
+    check(Services.ActionInput.Vibrate(pad, 0.5, 0.25), "vibrate");
+    check(Services.ActionInput.SetLedColor("", 0, 64, 255), "led color");
+    check(Services.ActionInput.Stop() && !Services.ActionInput.IsStarted, "action input stop");
+    Dir.RemoveAll(manifestDir);
+
+    check(Services.Platform.HasFeature(Services.Feature.Workshop), "Workshop feature");
+    check(Services.Workshop.SubscribedCount == 2, "two subscribed Workshop items");
+    var league = Services.Workshop.SubscribedIdAt(0);
+    check(Services.Workshop.IsInstalled(league) && Services.Workshop.InstallFolder(league) != "",
+          "installed Workshop item " + league);
+    var popular = Services.Workshop.Query(Services.WorkshopQuery.Popular, 1, "league", "");
+    check(popular.Kind == Services.RequestKind.WorkshopQuery, "Workshop query kind");
+    check(pump(popular) && popular.Succeeded && popular.ItemCount == 1, "Workshop query: " + popular.Error);
+    if popular.ItemCount == 1 {
+        var found = popular.ItemAt(0);
+        check(found.Title == "Boston 1972 League" && found.Score > 0.9 && found.VotesUp == 120,
+              "Workshop item details");
+        check(found.Visibility == Services.WorkshopVisibility.Public, "Workshop item visibility");
+    }
+    var created = Services.Workshop.CreateItem();
+    check(pump(created) && created.Succeeded && created.Flag, "Workshop create: " + created.Error);
+    var update = Services.Workshop.StartUpdate(created.Text);
+    check(update != "" && Services.Workshop.SetTitle(update, "Chicago 1972 League") &&
+          Services.Workshop.SetTags(update, "league,1972"), "Workshop update fields");
+    var submitted = Services.Workshop.SubmitUpdate(update, "First upload");
+    check(pump(submitted) && submitted.Succeeded && submitted.Text == created.Text,
+          "Workshop submit: " + submitted.Error);
 }
 
 func runMissing() {
@@ -202,6 +320,18 @@ func runAvailable() {
     check(Services.Platform.HasFeature(Services.Feature.PlayerCount), "PlayerCount feature");
     check(Services.Platform.IsDlcInstalled("1234567"), "DLC 1234567 must be installed");
     check(!Services.Platform.IsDlcInstalled("7"), "DLC 7 must not be installed");
+    check(Services.Platform.HasFeature(Services.Feature.LaunchParameters), "LaunchParameters feature");
+    check(Services.Platform.LaunchCommandLine == "+join 76561198000000002",
+          "unexpected LaunchCommandLine " + Services.Platform.LaunchCommandLine);
+    check(Services.Platform.LaunchParameter("team") == "boston", "launch parameter team");
+    check(Services.Platform.LaunchParameter("@reserved") == "", "reserved launch parameter");
+    check(Services.Platform.HasFeature(Services.Feature.AppDetails), "AppDetails feature");
+    check(Services.Platform.DlcCount == 2, "two DLC defined");
+    check(Services.Platform.DlcIdAt(1) == "7654321" && Services.Platform.DlcNameAt(1) == "Classic Uniforms",
+          "second DLC");
+    check(Services.Platform.DlcAvailableAt(0) && !Services.Platform.DlcAvailableAt(1), "DLC availability");
+    check(Services.Platform.BuildId == 21042026, "build id");
+    check(Services.Platform.BranchName == "public-beta", "branch name " + Services.Platform.BranchName);
 
     check(Services.Steam.IsActive, "Steam must be active");
     check(Services.Steam.SteamId == 76561198000000001, "unexpected SteamId");

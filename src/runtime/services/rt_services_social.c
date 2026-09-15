@@ -239,7 +239,7 @@ int8_t rt_services_on_screen_keyboard_dismiss_floating(void) {
 /// @brief Ask the user for text through full-screen text entry.
 /// @param prompt Description shown above the field.
 /// @param initial_text Starting text.
-/// @param max_length Maximum length in bytes.
+/// @param max_length Most characters the user may enter.
 /// @param mode TextInputMode value.
 /// @return Caller-owned request of kind TextInput.
 void *rt_services_on_screen_keyboard_request_text(rt_string prompt,

@@ -289,6 +289,83 @@ struct FakeSteam {
     void setCloudAccountEnabled(int enabled) const {
         fn<void (*)(int)>("ZannaFakeSteam_SetCloudAccountEnabled")(enabled);
     }
+
+    /// @brief Script the launch URL and queue NewUrlLaunchParameters_t.
+    void setLaunch(const char *command_line, const char *query) const {
+        fn<void (*)(const char *, const char *)>("ZannaFakeSteam_SetLaunch")(command_line, query);
+    }
+
+    /// @brief Number of GetAchievementIcon calls since the reset.
+    int iconRequestCount() const {
+        return fn<int (*)()>("ZannaFakeSteam_IconRequestCount")();
+    }
+
+    /// @brief Script the size ISteamUtils::GetImageSize reports for loaded icons.
+    void setIconSize(uint32_t width, uint32_t height) const {
+        fn<void (*)(uint32_t, uint32_t)>("ZannaFakeSteam_SetIconSize")(width, height);
+    }
+
+    /// @brief Connect or disconnect a modeled Steam Input controller.
+    void setControllerConnected(int index, int connected) const {
+        fn<void (*)(int, int)>("ZannaFakeSteam_SetControllerConnected")(index, connected);
+    }
+
+    /// @brief Script whether a digital action is held on a modeled controller.
+    void setDigitalAction(int index, const char *action, int pressed) const {
+        fn<void (*)(int, const char *, int)>("ZannaFakeSteam_SetDigitalAction")(
+            index, action, pressed);
+    }
+
+    /// @brief Script an analog action's values on a modeled controller.
+    void setAnalogAction(int index, const char *action, double x, double y) const {
+        fn<void (*)(int, const char *, double, double)>("ZannaFakeSteam_SetAnalogAction")(
+            index, action, x, y);
+    }
+
+    /// @brief Describe the last Workshop query the fake created.
+    std::string ugcLastQuery() const {
+        return fn<const char *(*)()>("ZannaFakeSteam_UgcLastQuery")();
+    }
+
+    /// @brief Count Workshop queries the fake still holds open.
+    int ugcOpenQueries() const {
+        return fn<int (*)()>("ZannaFakeSteam_UgcOpenQueries")();
+    }
+
+    /// @brief Describe the last Workshop update submitted to the fake.
+    std::string ugcLastUpdate() const {
+        return fn<const char *(*)()>("ZannaFakeSteam_UgcLastUpdate")();
+    }
+
+    /// @brief Give or take away the fake app's controller mapping (manifests need one).
+    void setInputMapping(int available) const {
+        fn<void (*)(int)>("ZannaFakeSteam_SetInputMapping")(available);
+    }
+
+    /// @brief Make ISteamInput::Init succeed or fail.
+    void setInputInitResult(int ok) const {
+        fn<void (*)(int)>("ZannaFakeSteam_SetInputInitResult")(ok);
+    }
+
+    /// @brief Read "initialized,explicit frames,device callbacks,frames" of the fake Steam Input.
+    std::string inputState() const {
+        return fn<const char *(*)()>("ZannaFakeSteam_InputState")();
+    }
+
+    /// @brief Read the manifest path the fake Steam Input accepted.
+    std::string inputManifestPath() const {
+        return fn<const char *(*)()>("ZannaFakeSteam_InputManifestPath")();
+    }
+
+    /// @brief Count Steam Input handle lookups since the reset.
+    int inputHandleLookups() const {
+        return fn<int (*)()>("ZannaFakeSteam_InputHandleLookups")();
+    }
+
+    /// @brief Set the EResult later global achievement percentage requests report.
+    void setGlobalPercentagesResult(int32_t result) const {
+        fn<void (*)(int32_t)>("ZannaFakeSteam_SetGlobalPercentagesResult")(result);
+    }
 };
 
 /// @brief Return the fake built for the SDK 1.65 accessor set.

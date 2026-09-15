@@ -1,3 +1,9 @@
+---
+status: complete
+audience: contributors
+last-verified: 2026-09-14
+---
+
 # GC lookup degradation during long sessions
 
 Investigated after Legacy Baseball's 3D broadcast was reported jerky when left

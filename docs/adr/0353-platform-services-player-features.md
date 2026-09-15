@@ -1,7 +1,7 @@
 ---
 status: accepted
 audience: contributors
-last-verified: 2026-09-13
+last-verified: 2026-09-14
 ---
 
 # ADR 0353: Platform Services Player Features (Achievements, Stats, Leaderboards, Presence, Overlay, Text Input, Cloud)
@@ -276,3 +276,12 @@ Steam diagnostics and request errors:
 - **Futures or callbacks for requests.** Rejected for the reasons in ADR 0352.
 - **Asynchronous cloud calls only.** Rejected for this phase: Steam's synchronous calls touch only
   the local cache and fit save and load paths; asynchronous kinds can be added later.
+
+## Amendment (2026-09-14): RequestText maxLength counts characters
+
+`OnScreenKeyboard.RequestText(prompt, initialText, maxLength, mode)` passes `maxLength` to
+`ShowGamepadTextInput` as `unCharMax`, which Steam treats as a character limit. The contract above
+said bytes. `maxLength` is the most characters the player may enter (still `1..4096`). The
+completed request's `Value` stays the submitted text's length in bytes, which exceeds the character
+count for non-ASCII text. The flat signatures used by this record were rechecked against the SDK
+1.61 and 1.65 headers and are unchanged.

@@ -84,6 +84,11 @@ const char *rt_services_internal_require_name(rt_string text, const char *member
 /// @return Caller-owned Zanna.Services.Request, or NULL after a trap.
 void *rt_services_internal_begin_request(const rt_services_request_args *args, const char *member);
 
+/// @brief Create a Zanna.Services.WorkshopItem from a provider record.
+/// @param item Borrowed item record; its strings are copied.
+/// @return New object with one reference, or NULL when allocation failed.
+void *rt_services_internal_workshop_item_new(const rt_services_workshop_item *item);
+
 /// @brief Build a caller-owned Err(string) Result.
 /// @param text Error message; NULL is empty.
 /// @return Caller-owned Zanna.Result.

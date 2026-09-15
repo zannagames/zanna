@@ -1,0 +1,909 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/apps/steam-check/main.zia
+// Purpose: Check Zanna.Services against a real Steam client and a real
+//          Steamworks redistributable. Every class is exercised and each
+//          check prints PASS, FAIL, SKIP, or INFO; the exit code is 1 when a
+//          check failed. Without Steam every check reports the neutral path.
+// Key invariants:
+//   - Read-only by default. --write enables checks that touch the signed-in
+//     account and put it back: an achievement unlock followed by a relock
+//     when it was locked, a stat commit that rewrites the current value
+//     (increment-only stats cannot be lowered again), rich presence, and a
+//     cloud file that is deleted again. A score upload runs only when
+//     --score is given and is not undone.
+//   - Platform.Init runs before any window is created so the overlay can attach.
+// Ownership/Lifetime:
+//   - Requests, results, and byte buffers are owned by function locals.
+// Links: docs/zannalib/services.md,
+//        docs/adr/0352-platform-services-runtime-loaded-providers.md,
+//        docs/adr/0353-platform-services-player-features.md
+//
+//===----------------------------------------------------------------------===//
+
+module main;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.System.Environment as Env;
+bind Zanna.Time.Clock as Clock;
+bind Zanna.Core.Parse as Parse;
+bind Zanna.Collections.Bytes as Bytes;
+bind Zanna.IO.File as File;
+bind Zanna.Services as Services;
+bind Zanna.Graphics3D;
+bind Zanna.Math;
+
+var passes: Integer = 0;
+var failures: Integer = 0;
+var skips: Integer = 0;
+var achievementStoredEvents: Integer = 0;
+var lastStoredAchievement: String = "";
+
+var appId: String = "480";
+var allowWrites: Boolean = false;
+var openWindow: Boolean = false;
+var tryKeyboards: Boolean = false;
+var restartCheck: Boolean = false;
+var boardName: String = "";
+var achievementId: String = "";
+var intStat: String = "";
+var uploadScore: Integer = 0;
+var hasScore: Boolean = false;
+var manifestPath: String = "examples/apps/steam-check/steam_input_manifest.vdf";
+
+//===----------------------------------------------------------------------===//
+// Reporting
+//===----------------------------------------------------------------------===//
+
+func report(status: String, name: String, detail: String) {
+    if detail == "" {
+        Terminal.Say(status + "  " + name);
+    } else {
+        Terminal.Say(status + "  " + name + "  " + detail);
+    }
+}
+
+func pass(name: String, detail: String) {
+    passes = passes + 1;
+    report("PASS", name, detail);
+}
+
+func fail(name: String, detail: String) {
+    failures = failures + 1;
+    report("FAIL", name, detail);
+}
+
+func skip(name: String, detail: String) {
+    skips = skips + 1;
+    report("SKIP", name, detail);
+}
+
+func info(name: String, detail: String) {
+    report("INFO", name, detail);
+}
+
+func expect(cond: Boolean, name: String, detail: String) {
+    if cond {
+        pass(name, detail);
+    } else {
+        fail(name, detail);
+    }
+}
+
+func quoted(text: String) -> String {
+    return "\"" + text + "\"";
+}
+
+func printDiagnostics() {
+    for message in Services.Platform.Diagnostics() {
+        info("diagnostic", message);
+    }
+}
+
+func printUsage() {
+    Terminal.Say("usage: steam-check [appId] [--write] [--window] [--keyboards] [--restart]");
+    Terminal.Say("                   [--board NAME] [--achievement ID] [--int-stat NAME] [--score N]");
+    Terminal.Say("                   [--manifest PATH]");
+    Terminal.Say("  appId           Steam app id (default 480, Spacewar)");
+    Terminal.Say("  --write         also run checks that change the signed-in account");
+    Terminal.Say("  --window        open a Canvas3D window for overlay and keyboard checks");
+    Terminal.Say("  --keyboards     request full-screen text entry (Steam Deck or Big Picture)");
+    Terminal.Say("  --restart       call Steam.RestartAppIfNecessary first (may relaunch)");
+    Terminal.Say("  --board NAME    leaderboard to find and download");
+    Terminal.Say("  --achievement   achievement to unlock and relock with --write");
+    Terminal.Say("  --int-stat      integer stat to read (and write and restore with --write)");
+    Terminal.Say("  --score N       upload N (keep best) to --board with --write");
+    Terminal.Say("  --manifest PATH Steam Input action manifest (default: the one beside this program)");
+    Terminal.Say("Point ZANNA_SERVICES_STEAM_LIBRARY at the redistributable under zanna run.");
+}
+
+func parseArguments() {
+    var count = Env.GetArgumentCount();
+    var i = 0;
+    // Native executables see their own path as argument 0.
+    if Env.IsNative() {
+        i = 1;
+    }
+    while i < count {
+        var arg = Env.GetArgument(i);
+        if arg == "--write" {
+            allowWrites = true;
+        } else if arg == "--window" {
+            openWindow = true;
+        } else if arg == "--keyboards" {
+            tryKeyboards = true;
+        } else if arg == "--restart" {
+            restartCheck = true;
+        } else if arg == "--board" && i + 1 < count {
+            i = i + 1;
+            boardName = Env.GetArgument(i);
+        } else if arg == "--achievement" && i + 1 < count {
+            i = i + 1;
+            achievementId = Env.GetArgument(i);
+        } else if arg == "--int-stat" && i + 1 < count {
+            i = i + 1;
+            intStat = Env.GetArgument(i);
+        } else if arg == "--score" && i + 1 < count {
+            i = i + 1;
+            uploadScore = Parse.IntOr(Env.GetArgument(i), 0);
+            hasScore = true;
+        } else if arg == "--manifest" && i + 1 < count {
+            i = i + 1;
+            manifestPath = Env.GetArgument(i);
+        } else if arg == "--help" || arg == "-h" {
+            printUsage();
+            Env.Exit(0);
+        } else if Parse.IsInt(arg) {
+            appId = arg;
+        } else {
+            Terminal.Say("unknown argument: " + arg);
+            printUsage();
+            Env.Exit(2);
+        }
+        i = i + 1;
+    }
+    // Spacewar (480) defines these for every Steam account.
+    if appId == "480" {
+        if boardName == "" {
+            boardName = "Feet Traveled";
+        }
+        if achievementId == "" {
+            achievementId = "ACH_WIN_ONE_GAME";
+        }
+        if intStat == "" {
+            intStat = "NumGames";
+        }
+    }
+}
+
+//===----------------------------------------------------------------------===//
+// Pumping and events
+//===----------------------------------------------------------------------===//
+
+func eventName(kind: Integer) -> String {
+    if kind == Services.EventKind.ServiceConnected { return "ServiceConnected"; }
+    if kind == Services.EventKind.ServiceDisconnected { return "ServiceDisconnected"; }
+    if kind == Services.EventKind.ConnectFailed { return "ConnectFailed"; }
+    if kind == Services.EventKind.OverlayChanged { return "OverlayChanged"; }
+    if kind == Services.EventKind.DlcInstalled { return "DlcInstalled"; }
+    if kind == Services.EventKind.LaunchParametersChanged { return "LaunchParametersChanged"; }
+    if kind == Services.EventKind.ServiceShutdown { return "ServiceShutdown"; }
+    if kind == Services.EventKind.StatsStored { return "StatsStored"; }
+    if kind == Services.EventKind.AchievementStored { return "AchievementStored"; }
+    if kind == Services.EventKind.TextInputDismissed { return "TextInputDismissed"; }
+    if kind == Services.EventKind.AchievementIconReady { return "AchievementIconReady"; }
+    if kind == Services.EventKind.ControllerConnected { return "ControllerConnected"; }
+    if kind == Services.EventKind.ControllerDisconnected { return "ControllerDisconnected"; }
+    if kind == Services.EventKind.ControllerConfigured { return "ControllerConfigured"; }
+    if kind == Services.EventKind.WorkshopItemInstalled { return "WorkshopItemInstalled"; }
+    if kind == Services.EventKind.WorkshopItemDownloaded { return "WorkshopItemDownloaded"; }
+    if kind == Services.EventKind.WorkshopSubscriptionChanged { return "WorkshopSubscriptionChanged"; }
+    return "Event" + Fmt.Int(kind);
+}
+
+func logEvent(kind: Integer) {
+    if kind == Services.EventKind.AchievementStored {
+        achievementStoredEvents = achievementStoredEvents + 1;
+        lastStoredAchievement = Services.Platform.EventText;
+    }
+    info("event",
+         eventName(kind) + " code=" + Fmt.Int(Services.Platform.EventResultCode) + " value=" +
+             Fmt.Int(Services.Platform.EventValue) + " total=" + Fmt.Int(Services.Platform.EventTotal) +
+             " flag=" + Fmt.Bool(Services.Platform.EventFlag) + " text=" + quoted(Services.Platform.EventText));
+}
+
+func drainEvents() {
+    var kind = Services.Platform.PollEvent();
+    while kind != Services.EventKind.None {
+        logEvent(kind);
+        kind = Services.Platform.PollEvent();
+    }
+}
+
+func pumpFor(milliseconds: Integer) {
+    var until = Clock.NowMs() + milliseconds;
+    while Clock.NowMs() < until {
+        Services.Platform.Update();
+        drainEvents();
+        Clock.Sleep(16);
+    }
+}
+
+func waitRequest(request: Services.Request, milliseconds: Integer) -> Boolean {
+    var until = Clock.NowMs() + milliseconds;
+    while !request.IsDone && Clock.NowMs() < until {
+        Services.Platform.Update();
+        drainEvents();
+        Clock.Sleep(16);
+    }
+    return request.IsDone;
+}
+
+// Pump until an event of `kind` arrives; every event is logged.
+func waitEvent(kind: Integer, milliseconds: Integer) -> Boolean {
+    var until = Clock.NowMs() + milliseconds;
+    while Clock.NowMs() < until {
+        Services.Platform.Update();
+        var next = Services.Platform.PollEvent();
+        while next != Services.EventKind.None {
+            logEvent(next);
+            if next == kind {
+                return true;
+            }
+            next = Services.Platform.PollEvent();
+        }
+        Clock.Sleep(16);
+    }
+    return false;
+}
+
+//===----------------------------------------------------------------------===//
+// Read-only checks
+//===----------------------------------------------------------------------===//
+
+func checkStart() -> Boolean {
+    expect(Services.Platform.HasProvider("steam"), "platform.has_provider", "steam");
+    expect(Services.Platform.Status == Services.Status.NotStarted, "platform.status_before_init", "");
+    info("steam.library_override", quoted(Env.GetVariable("ZANNA_SERVICES_STEAM_LIBRARY")));
+
+    if restartCheck {
+        if Services.Steam.RestartAppIfNecessary(Parse.IntOr(appId, 480)) {
+            info("steam.restart_app_if_necessary", "Steam is relaunching the game; exiting");
+            Env.Exit(0);
+        }
+        pass("steam.restart_app_if_necessary", "no relaunch needed");
+    }
+
+    var started = Services.Platform.Init("steam", appId);
+    if started.IsErr {
+        info("platform.init", started.UnwrapErrStr());
+        info("platform.status", Fmt.Int(Services.Platform.Status));
+        printDiagnostics();
+        return false;
+    }
+    pass("platform.init", "status=" + Fmt.Int(Services.Platform.Status));
+    expect(Services.Platform.IsAvailable, "platform.is_available", "");
+    expect(Services.Platform.Provider == "steam", "platform.provider", quoted(Services.Platform.Provider));
+    return true;
+}
+
+func checkNeutral() {
+    expect(!Services.Platform.IsAvailable, "neutral.is_available", "");
+    expect(Services.Platform.UserName == "", "neutral.user_name", "");
+    expect(!Services.Achievements.Unlock("ACH_WIN_ONE_GAME"), "neutral.achievements", "");
+    expect(Services.Stats.GetInt("NumGames") == 0, "neutral.stats", "");
+    var request = Services.Platform.RequestPlayerCount();
+    expect(request.IsDone && !request.Succeeded, "neutral.request", request.Error);
+    expect(Services.Cloud.Read("steam-check.txt").IsErr, "neutral.cloud_read", "");
+}
+
+func checkIdentity() {
+    var reported = Services.Platform.AppId;
+    expect(reported != "", "identity.app_id", quoted(reported));
+    if reported != appId {
+        info("identity.app_id_differs", "requested " + appId + "; Steam reports " + reported);
+    }
+    var userId = Services.Platform.UserId;
+    expect(userId != "" && Parse.IsInt(userId), "identity.user_id", quoted(userId));
+    expect(Services.Platform.UserName != "", "identity.user_name", quoted(Services.Platform.UserName));
+    expect(Services.Platform.Language != "", "identity.language", quoted(Services.Platform.Language));
+    expect(Services.Platform.IsLicensed, "identity.is_licensed", "");
+    info("identity.is_online", Fmt.Bool(Services.Platform.IsOnline));
+    expect(Fmt.Int(Services.Steam.SteamId) == userId, "steam.steam_id", Fmt.Int(Services.Steam.SteamId));
+    info("steam.hardware_type", Fmt.Int(Services.Steam.HardwareType));
+    info("steam.is_under_proton", Fmt.Bool(Services.Steam.IsUnderProton));
+    info("steam.is_big_picture", Fmt.Bool(Services.Steam.IsBigPicture));
+    info("steam.library_path", quoted(Services.Steam.LibraryPath));
+    info("platform.launch_command_line", quoted(Services.Platform.LaunchCommandLine));
+    info("platform.build_id", Fmt.Int(Services.Platform.BuildId));
+    info("platform.branch_name", quoted(Services.Platform.BranchName));
+    var dlcCount = Services.Platform.DlcCount;
+    info("platform.dlc_count", Fmt.Int(dlcCount));
+    var i = 0;
+    while i < dlcCount {
+        var dlcId = Services.Platform.DlcIdAt(i);
+        info("platform.dlc",
+             dlcId + " name=" + quoted(Services.Platform.DlcNameAt(i)) + " available=" +
+                 Fmt.Bool(Services.Platform.DlcAvailableAt(i)) + " installed=" +
+                 Fmt.Bool(Services.Platform.IsDlcInstalled(dlcId)));
+        i = i + 1;
+    }
+}
+
+func featureCheck(feature: Integer, name: String) {
+    expect(Services.Platform.HasFeature(feature), "feature." + name, "");
+}
+
+func checkFeatures() {
+    featureCheck(Services.Feature.Identity, "identity");
+    featureCheck(Services.Feature.Licensing, "licensing");
+    featureCheck(Services.Feature.Language, "language");
+    featureCheck(Services.Feature.PlayerCount, "player_count");
+    featureCheck(Services.Feature.Achievements, "achievements");
+    featureCheck(Services.Feature.Stats, "stats");
+    featureCheck(Services.Feature.Leaderboards, "leaderboards");
+    featureCheck(Services.Feature.Presence, "presence");
+    featureCheck(Services.Feature.Overlay, "overlay");
+    featureCheck(Services.Feature.TextInput, "text_input");
+    featureCheck(Services.Feature.Cloud, "cloud");
+    featureCheck(Services.Feature.LaunchParameters, "launch_parameters");
+    featureCheck(Services.Feature.Timeline, "timeline");
+    featureCheck(Services.Feature.AppDetails, "app_details");
+    featureCheck(Services.Feature.AchievementIcons, "achievement_icons");
+    featureCheck(Services.Feature.AchievementPercentages, "achievement_percentages");
+    featureCheck(Services.Feature.ActionInput, "action_input");
+    featureCheck(Services.Feature.Workshop, "workshop");
+    printDiagnostics();
+}
+
+func checkPlayerCount() {
+    var request = Services.Platform.RequestPlayerCount();
+    if !waitRequest(request, 15000) {
+        fail("player_count.request", "no completion within 15 s");
+        return;
+    }
+    expect(request.Succeeded, "player_count.request",
+           "players=" + Fmt.Int(request.Value) + " error=" + quoted(request.Error));
+}
+
+func checkAchievements() {
+    var count = Services.Achievements.Count;
+    expect(count > 0, "achievements.count", Fmt.Int(count));
+    var i = 0;
+    while i < count {
+        var id = Services.Achievements.IdAt(i);
+        info("achievements.item",
+             id + " name=" + quoted(Services.Achievements.DisplayName(id)) + " hidden=" +
+                 Fmt.Bool(Services.Achievements.IsHidden(id)) + " unlocked=" +
+                 Fmt.Bool(Services.Achievements.IsUnlocked(id)) + " time=" +
+                 Fmt.Int(Services.Achievements.UnlockTime(id)));
+        i = i + 1;
+    }
+    if count > 0 {
+        expect(Services.Achievements.IdAt(0) != "", "achievements.id_at", "");
+        expect(Services.Achievements.DisplayName(Services.Achievements.IdAt(0)) != "",
+               "achievements.display_name", "");
+    }
+}
+
+// Read the first achievement's icon, waiting for Steam to load it when needed.
+func checkAchievementIcon() {
+    if Services.Achievements.Count == 0 {
+        skip("achievements.icon", "the app defines no achievements");
+        return;
+    }
+    var id = Services.Achievements.IdAt(0);
+    var width = Services.Achievements.IconWidth(id);
+    if width == 0 {
+        info("achievements.icon_loading", id);
+        if !waitEvent(Services.EventKind.AchievementIconReady, 15000) {
+            fail("achievements.icon_ready", "no AchievementIconReady within 15 s");
+            return;
+        }
+        width = Services.Achievements.IconWidth(id);
+    }
+    var height = Services.Achievements.IconHeight(id);
+    var pixels = Services.Achievements.IconRgba(id);
+    expect(width > 0 && height > 0 && pixels.Length == width * height * 4, "achievements.icon",
+           id + " " + Fmt.Int(width) + "x" + Fmt.Int(height) + " bytes=" + Fmt.Int(pixels.Length));
+}
+
+func checkGlobalPercentages() {
+    var request = Services.Achievements.RequestGlobalPercentages();
+    if !waitRequest(request, 15000) {
+        fail("achievements.global_percentages", "no completion within 15 s");
+        return;
+    }
+    // EResult 2 (Fail) also means Steam has no percentages for the app; Spacewar (480) has none.
+    if !request.Succeeded && request.ResultCode == 2 {
+        skip("achievements.global_percentages", "Steam has no global percentages for app " + appId + " (EResult 2)");
+        return;
+    }
+    expect(request.Succeeded, "achievements.global_percentages",
+           "code=" + Fmt.Int(request.ResultCode) + " error=" + quoted(request.Error));
+    if !request.Succeeded {
+        return;
+    }
+    var count = Services.Achievements.Count;
+    var inRange = true;
+    var i = 0;
+    while i < count {
+        var id = Services.Achievements.IdAt(i);
+        var percent = Services.Achievements.GlobalPercent(id);
+        info("achievements.global_percent", id + "=" + Fmt.NumFixed(percent, 2));
+        if percent < 0.0 || percent > 100.0 {
+            inRange = false;
+        }
+        i = i + 1;
+    }
+    expect(inRange, "achievements.global_percent_range", "");
+}
+
+// Start Steam Input with the manifest, list controllers, and read origin labels and glyphs.
+func checkActionInput() {
+    if !File.Exists(manifestPath) {
+        skip("action_input", "no action manifest at " + quoted(manifestPath) + "; pass --manifest PATH");
+        return;
+    }
+    var accepted = Services.ActionInput.Start(manifestPath);
+    expect(Services.ActionInput.IsStarted, "action_input.start", "manifest accepted=" + Fmt.Bool(accepted));
+    if !Services.ActionInput.IsStarted {
+        printDiagnostics();
+        return;
+    }
+    if !accepted {
+        info("action_input.manifest",
+             "Steam refused the manifest; it accepts one after a controller is used with the app");
+    }
+    pumpFor(500);
+    var count = Services.ActionInput.ControllerCount;
+    info("action_input.controllers", Fmt.Int(count));
+    var i = 0;
+    while i < count {
+        var pad = Services.ActionInput.ControllerIdAt(i);
+        info("action_input.controller",
+             pad + " type=" + Fmt.Int(Services.ActionInput.ControllerType(pad)) + " gamepad=" +
+                 Fmt.Int(Services.ActionInput.GamepadIndex(pad)));
+        i = i + 1;
+    }
+    if accepted {
+        expect(Services.ActionInput.ActivateActionSet("", "batting"), "action_input.activate_set", "batting");
+        expect(Services.ActionInput.ActionLabel("swing") == "Swing", "action_input.action_label",
+               quoted(Services.ActionInput.ActionLabel("swing")));
+    } else {
+        skip("action_input.actions", "the manifest is not applied yet");
+    }
+    if count > 0 && accepted {
+        var origins = Services.ActionInput.OriginCount("", "batting", "swing");
+        info("action_input.swing_origins", Fmt.Int(origins));
+        if origins > 0 {
+            var origin = Services.ActionInput.OriginAt("", "batting", "swing", 0);
+            info("action_input.swing_origin",
+                 Fmt.Int(origin) + " " + quoted(Services.ActionInput.OriginLabel(origin)));
+        }
+        expect(Services.ActionInput.Vibrate("", 0.4, 0.4), "action_input.vibrate", "");
+        pumpFor(300);
+        Services.ActionInput.Vibrate("", 0.0, 0.0);
+    }
+    // 114 is Steam's origin for the Xbox One A button; labels and glyphs need no controller.
+    var label = Services.ActionInput.OriginLabel(114);
+    expect(label != "", "action_input.origin_label", quoted(label));
+    var glyph = Services.ActionInput.OriginGlyphPath(114, Services.GlyphSize.Small);
+    expect(glyph != "" && File.Exists(glyph), "action_input.origin_glyph", quoted(glyph));
+    expect(Services.ActionInput.Stop() && !Services.ActionInput.IsStarted, "action_input.stop", "");
+}
+
+// List subscribed items and read the first page of the app's Workshop and the player's uploads.
+func checkWorkshop() {
+    var subscribed = Services.Workshop.SubscribedCount;
+    info("workshop.subscribed", Fmt.Int(subscribed));
+    var i = 0;
+    while i < subscribed && i < 10 {
+        var id = Services.Workshop.SubscribedIdAt(i);
+        info("workshop.subscribed_item",
+             id + " installed=" + Fmt.Bool(Services.Workshop.IsInstalled(id)) + " needsUpdate=" +
+                 Fmt.Bool(Services.Workshop.NeedsUpdate(id)) + " folder=" + quoted(Services.Workshop.InstallFolder(id)));
+        i = i + 1;
+    }
+    var popular = Services.Workshop.Query(Services.WorkshopQuery.Popular, 1, "", "");
+    if !waitRequest(popular, 20000) {
+        fail("workshop.query", "no completion within 20 s");
+        return;
+    }
+    expect(popular.Succeeded, "workshop.query",
+           "items=" + Fmt.Int(popular.ItemCount) + " total=" + Fmt.Int(popular.Value) + " cached=" +
+               Fmt.Bool(popular.Flag) + " error=" + quoted(popular.Error));
+    if popular.ItemCount > 0 {
+        var first = popular.ItemAt(0);
+        expect(first.Id != "" && first.Title != "", "workshop.query_item",
+               first.Id + " " + quoted(first.Title) + " votes=" + Fmt.Int(first.VotesUp) + "/" +
+                   Fmt.Int(first.VotesDown) + " size=" + Fmt.Int(first.Size));
+        var details = Services.Workshop.QueryItems(first.Id);
+        if waitRequest(details, 20000) {
+            expect(details.Succeeded && details.ItemCount == 1, "workshop.query_items", quoted(details.Error));
+        } else {
+            fail("workshop.query_items", "no completion within 20 s");
+        }
+    }
+    var published = Services.Workshop.QueryUser(Services.WorkshopList.Published, 1);
+    if waitRequest(published, 20000) {
+        expect(published.Succeeded, "workshop.query_user",
+               "published=" + Fmt.Int(published.Value) + " error=" + quoted(published.Error));
+    } else {
+        fail("workshop.query_user", "no completion within 20 s");
+    }
+}
+
+func checkStats() {
+    if intStat == "" {
+        skip("stats.get_int", "pass --int-stat NAME");
+        return;
+    }
+    info("stats.get_int", intStat + "=" + Fmt.Int(Services.Stats.GetInt(intStat)));
+    printDiagnostics();
+}
+
+func printEntries(request: Services.Request, label: String) {
+    var i = 0;
+    while i < request.EntryCount {
+        info(label,
+             "rank=" + Fmt.Int(request.EntryRank(i)) + " score=" + Fmt.Int(request.EntryScore(i)) +
+                 " user=" + request.EntryUserId(i) + " name=" + quoted(request.EntryUserName(i)));
+        i = i + 1;
+    }
+}
+
+func checkLeaderboards() {
+    if boardName == "" {
+        skip("leaderboards", "pass --board NAME");
+        return;
+    }
+    var found = Services.Leaderboards.Find(boardName);
+    if !waitRequest(found, 15000) {
+        fail("leaderboards.find", "no completion within 15 s");
+        return;
+    }
+    expect(found.Succeeded, "leaderboards.find",
+           quoted(found.Text) + " entries=" + Fmt.Int(found.Value) + " error=" + quoted(found.Error));
+    if !found.Succeeded {
+        return;
+    }
+
+    var top = Services.Leaderboards.Download(boardName, Services.LeaderboardScope.Global, 1, 10);
+    if waitRequest(top, 15000) {
+        expect(top.Succeeded, "leaderboards.download_global",
+               "entries=" + Fmt.Int(top.EntryCount) + " error=" + quoted(top.Error));
+        // Names of strangers arrive a moment after the scores.
+        pumpFor(2000);
+        printEntries(top, "leaderboards.global_entry");
+    } else {
+        fail("leaderboards.download_global", "no completion within 15 s");
+    }
+
+    var around = Services.Leaderboards.Download(boardName, Services.LeaderboardScope.AroundUser, -2, 2);
+    if waitRequest(around, 15000) {
+        expect(around.Succeeded, "leaderboards.download_around_user",
+               "entries=" + Fmt.Int(around.EntryCount) + " error=" + quoted(around.Error));
+        printEntries(around, "leaderboards.around_entry");
+    } else {
+        fail("leaderboards.download_around_user", "no completion within 15 s");
+    }
+
+    var friends = Services.Leaderboards.Download(boardName, Services.LeaderboardScope.Friends, 0, 0);
+    if waitRequest(friends, 15000) {
+        expect(friends.Succeeded, "leaderboards.download_friends",
+               "entries=" + Fmt.Int(friends.EntryCount) + " error=" + quoted(friends.Error));
+    } else {
+        fail("leaderboards.download_friends", "no completion within 15 s");
+    }
+}
+
+func checkCloudRead() {
+    var enabled = Services.Cloud.IsEnabled;
+    info("cloud.is_enabled", Fmt.Bool(enabled));
+    info("cloud.quota",
+         "total=" + Fmt.Int(Services.Cloud.QuotaTotal) + " available=" + Fmt.Int(Services.Cloud.QuotaAvailable));
+    for name in Services.Cloud.Files() {
+        info("cloud.file", name + " size=" + Fmt.Int(Services.Cloud.Size(name)));
+    }
+}
+
+//===----------------------------------------------------------------------===//
+// Checks that change the account (--write)
+//===----------------------------------------------------------------------===//
+
+func checkAchievementWrite() {
+    if achievementId == "" {
+        skip("write.achievement", "pass --achievement ID");
+        return;
+    }
+    var wasUnlocked = Services.Achievements.IsUnlocked(achievementId);
+    var storedBefore = achievementStoredEvents;
+    expect(Services.Achievements.Unlock(achievementId), "write.achievement_unlock", achievementId);
+    expect(Services.Achievements.IsUnlocked(achievementId), "write.achievement_is_unlocked", "");
+    expect(Services.Stats.Store(), "write.stats_store", "");
+    // Steam delivers AchievementStored before StatsStored; waitEvent logs and counts both.
+    expect(waitEvent(Services.EventKind.StatsStored, 15000), "write.stats_stored_event", "");
+    expect(Services.Platform.EventFlag, "write.stats_stored_ok",
+           "code=" + Fmt.Int(Services.Platform.EventResultCode));
+    if !wasUnlocked {
+        expect(achievementStoredEvents > storedBefore && lastStoredAchievement == achievementId,
+               "write.achievement_stored_event", quoted(lastStoredAchievement));
+        // Steam reports a commit more than once (local, then server). A relock made before the
+        // server confirms the unlock can be undone, so let the commit settle first, and retry.
+        pumpFor(3000);
+        var attempts = 0;
+        var relocked = false;
+        while !relocked && attempts < 3 {
+            attempts = attempts + 1;
+            Services.Achievements.Clear(achievementId);
+            Services.Stats.Store();
+            waitEvent(Services.EventKind.StatsStored, 15000);
+            pumpFor(3000);
+            relocked = !Services.Achievements.IsUnlocked(achievementId);
+        }
+        expect(relocked, "write.achievement_relocked", "attempts=" + Fmt.Int(attempts));
+    } else {
+        info("write.achievement", achievementId + " was already unlocked; left unlocked");
+    }
+}
+
+func checkStatWrite() {
+    if intStat == "" {
+        skip("write.stat", "pass --int-stat NAME");
+        return;
+    }
+    // Increment-only stats reject a lower value, so a changed stat could never be put back.
+    // Write the current value instead: the set and commit paths still run end to end.
+    var original = Services.Stats.GetInt(intStat);
+    expect(Services.Stats.SetInt(intStat, original), "write.stat_set_same_value", intStat + "=" + Fmt.Int(original));
+    expect(Services.Stats.Store(), "write.stat_store", "");
+    expect(waitEvent(Services.EventKind.StatsStored, 15000), "write.stat_stored_event", "");
+    expect(Services.Platform.EventFlag, "write.stat_stored_ok", "code=" + Fmt.Int(Services.Platform.EventResultCode));
+    expect(Services.Stats.GetInt(intStat) == original, "write.stat_unchanged", Fmt.Int(Services.Stats.GetInt(intStat)));
+}
+
+func checkUpload() {
+    if boardName == "" {
+        skip("write.leaderboard", "pass --board NAME");
+        return;
+    }
+    // FindOrCreate creates a missing board, so it runs only with --write.
+    var board = Services.Leaderboards.FindOrCreate(boardName, Services.LeaderboardSort.Descending,
+                                                   Services.LeaderboardDisplay.Numeric);
+    if waitRequest(board, 15000) {
+        expect(board.Succeeded, "write.leaderboard_find_or_create",
+               quoted(board.Text) + " entries=" + Fmt.Int(board.Value) + " error=" + quoted(board.Error));
+    } else {
+        fail("write.leaderboard_find_or_create", "no completion within 15 s");
+    }
+    if !hasScore {
+        skip("write.leaderboard_upload", "pass --score N");
+        return;
+    }
+    var upload = Services.Leaderboards.Upload(boardName, uploadScore, true);
+    if !waitRequest(upload, 15000) {
+        fail("write.leaderboard_upload", "no completion within 15 s");
+        return;
+    }
+    expect(upload.Succeeded, "write.leaderboard_upload",
+           "rank=" + Fmt.Int(upload.Value) + " changed=" + Fmt.Bool(upload.Flag) + " error=" + quoted(upload.Error));
+}
+
+func checkPresence() {
+    expect(Services.Presence.Set("status", "Running Zanna steam-check"), "write.presence_set", "");
+    pumpFor(500);
+    Services.Presence.Clear();
+    pass("write.presence_clear", "");
+}
+
+func checkCloudWrite() {
+    if !Services.Cloud.IsEnabled {
+        skip("write.cloud", "Steam Cloud is disabled for this account or app");
+        return;
+    }
+    var name = "zanna_steam_check.txt";
+    expect(Services.Cloud.BeginBatch(), "write.cloud_begin_batch", "");
+    expect(Services.Cloud.Write(name, Bytes.FromStr("steam-check " + Fmt.Int(Clock.NowMs()))), "write.cloud_write", name);
+    expect(Services.Cloud.EndBatch(), "write.cloud_end_batch", "");
+    expect(Services.Cloud.Exists(name), "write.cloud_exists", "");
+    expect(Services.Cloud.Size(name) > 12, "write.cloud_size", Fmt.Int(Services.Cloud.Size(name)));
+    info("write.cloud_timestamp", Fmt.Int(Services.Cloud.Timestamp(name)));
+    var read = Services.Cloud.Read(name);
+    if read.IsOk {
+        var data = read.Unwrap() as Bytes;
+        expect(Zanna.String.StartsWith(data.ToStr(), "steam-check "), "write.cloud_read", quoted(data.ToStr()));
+    } else {
+        fail("write.cloud_read", read.UnwrapErrStr());
+    }
+    expect(Services.Cloud.Delete(name), "write.cloud_delete", "");
+    expect(!Services.Cloud.Exists(name), "write.cloud_deleted", "");
+}
+
+func checkTimeline() {
+    if !Services.Platform.HasFeature(Services.Feature.Timeline) {
+        skip("write.timeline", "the provider has no recording timeline");
+        return;
+    }
+    expect(Services.Timeline.SetGameMode(Services.TimelineMode.Playing), "write.timeline_game_mode", "");
+    expect(Services.Timeline.SetTooltip("steam-check running", 0.0), "write.timeline_tooltip", "");
+    expect(Services.Timeline.StartPhase(), "write.timeline_start_phase", "");
+    var phaseId = "steam-check-" + Fmt.Int(Clock.NowMs());
+    expect(Services.Timeline.SetPhaseId(phaseId), "write.timeline_phase_id", phaseId);
+    expect(Services.Timeline.AddPhaseTag("steam-check", "steam_checkmark", "Tool", 10), "write.timeline_phase_tag", "");
+    expect(Services.Timeline.SetPhaseAttribute("Checks", "running", 10), "write.timeline_phase_attribute", "");
+    var marker = Services.Timeline.AddEvent("steam-check", "Zanna timeline marker", "steam_checkmark", 10, 0.0,
+                                            Services.TimelineClip.None);
+    expect(marker != "", "write.timeline_add_event", marker);
+    var span = Services.Timeline.StartRangeEvent("steam-check span", "", "steam_flag", 10, 0.0, Services.TimelineClip.None);
+    expect(span != "", "write.timeline_start_range_event", span);
+    if span != "" {
+        expect(Services.Timeline.UpdateRangeEvent(span, "steam-check span", "updated", "steam_flag", -1,
+                                                  Services.TimelineClip.None),
+               "write.timeline_update_range_event", "");
+        expect(Services.Timeline.EndRangeEvent(span, 0.0), "write.timeline_end_range_event", "");
+    }
+    if marker != "" {
+        var recording = Services.Timeline.RequestEventRecording(marker);
+        if waitRequest(recording, 15000) {
+            expect(recording.Succeeded, "write.timeline_event_recording",
+                   "exists=" + Fmt.Bool(recording.Flag) + " error=" + quoted(recording.Error));
+        } else {
+            fail("write.timeline_event_recording", "no completion within 15 s");
+        }
+        expect(Services.Timeline.RemoveEvent(marker), "write.timeline_remove_event", "");
+    }
+    var phase = Services.Timeline.RequestPhaseRecording(phaseId);
+    if waitRequest(phase, 15000) {
+        var detail = "";
+        if phase.DetailCount == 4 {
+            detail = " recordedMs=" + Fmt.Int(phase.Detail(0)) + " longestClipMs=" + Fmt.Int(phase.Detail(1)) +
+                     " clips=" + Fmt.Int(phase.Detail(2)) + " screenshots=" + Fmt.Int(phase.Detail(3));
+        }
+        expect(phase.Succeeded && phase.DetailCount == 4, "write.timeline_phase_recording",
+               "recorded=" + Fmt.Bool(phase.Flag) + detail + " error=" + quoted(phase.Error));
+    } else {
+        fail("write.timeline_phase_recording", "no completion within 15 s");
+    }
+    expect(Services.Timeline.ClearTooltip(0.0), "write.timeline_clear_tooltip", "");
+    expect(Services.Timeline.EndPhase(), "write.timeline_end_phase", "");
+    expect(Services.Timeline.SetGameMode(Services.TimelineMode.Menus), "write.timeline_menus", "");
+}
+
+//===----------------------------------------------------------------------===//
+// Window checks (--window)
+//===----------------------------------------------------------------------===//
+
+func runWindow() {
+    var canvas = Canvas3D.New("Zanna steam-check", 960, 540);
+    var camera = Camera3D.New(60.0, 960.0 / 540.0, 0.1, 100.0);
+    Camera3D.LookAt(camera, new Vec3(0.0, 0.0, 5.0), new Vec3(0.0, 0.0, 0.0), new Vec3(0.0, 1.0, 0.0));
+    info("window.backend", Canvas3D.get_Backend(canvas));
+
+    var startedAt = Clock.NowMs();
+    var overlayOpened = false;
+    var overlayRequested = false;
+    var keyboardShown = false;
+    var textRequest: Any = null;
+    var sawOverlayEvent = false;
+    info("window", "rendering for up to 20 s; Shift+Tab should open the overlay when Steam launched the game");
+
+    while !Canvas3D.get_ShouldClose(canvas) && Clock.NowMs() - startedAt < 20000 {
+        Canvas3D.Poll(canvas);
+        var kind = Services.Platform.PollEvent();
+        while kind != Services.EventKind.None {
+            logEvent(kind);
+            if kind == Services.EventKind.OverlayChanged {
+                sawOverlayEvent = true;
+                overlayOpened = Services.Platform.EventFlag;
+            }
+            kind = Services.Platform.PollEvent();
+        }
+
+        var elapsed = Clock.NowMs() - startedAt;
+        if !overlayRequested && elapsed > 3000 {
+            overlayRequested = true;
+            info("window.overlay_is_enabled", Fmt.Bool(Services.Overlay.IsEnabled));
+            expect(Services.Overlay.SetNotificationPosition(Services.NotificationPosition.TopRight),
+                   "window.notification_position", "");
+            expect(Services.Overlay.Open(Services.OverlayPage.Achievements), "window.overlay_open", "");
+        }
+        if !keyboardShown && elapsed > 8000 {
+            keyboardShown = true;
+            if Services.Steam.IsBigPicture || Services.Steam.HardwareType == Services.SteamHardware.SteamDeck {
+                expect(Services.OnScreenKeyboard.ShowFloating(Services.TextInputMode.SingleLine, 40, 40, 400, 40),
+                       "window.floating_keyboard", "");
+            } else {
+                info("window.floating_keyboard",
+                     "returned " + Fmt.Bool(Services.OnScreenKeyboard.ShowFloating(Services.TextInputMode.SingleLine, 40, 40, 400, 40)) +
+                         " (needs Steam Deck or Big Picture)");
+            }
+            if tryKeyboards {
+                textRequest = Services.OnScreenKeyboard.RequestText("Team name", "Home Nine", 32, Services.TextInputMode.SingleLine);
+            }
+        }
+        if textRequest != null {
+            var pending = textRequest as Services.Request;
+            if pending.IsDone {
+                info("window.request_text",
+                     "succeeded=" + Fmt.Bool(pending.Succeeded) + " text=" + quoted(pending.Text) + " error=" + quoted(pending.Error));
+                textRequest = null;
+            }
+        }
+
+        Canvas3D.Clear(canvas, 0.08, 0.1, 0.16);
+        Canvas3D.Begin(canvas, camera);
+        Canvas3D.End(canvas);
+        Canvas3D.Flip(canvas);
+    }
+    info("window.overlay_event_seen", Fmt.Bool(sawOverlayEvent) + " open=" + Fmt.Bool(overlayOpened));
+}
+
+//===----------------------------------------------------------------------===//
+// Entry point
+//===----------------------------------------------------------------------===//
+
+func checkReinit() {
+    Services.Platform.Shutdown();
+    expect(Services.Platform.Status == Services.Status.NotStarted, "lifecycle.shutdown", "");
+    var again = Services.Platform.Init("steam", appId);
+    if again.IsErr {
+        fail("lifecycle.reinit", again.UnwrapErrStr());
+        return;
+    }
+    pass("lifecycle.reinit", "");
+    expect(Services.Platform.UserName != "", "lifecycle.reinit_identity", quoted(Services.Platform.UserName));
+    var request = Services.Platform.RequestPlayerCount();
+    expect(waitRequest(request, 15000) && request.Succeeded, "lifecycle.reinit_request", quoted(request.Error));
+}
+
+func start() {
+    parseArguments();
+    if allowWrites {
+        Terminal.Say("Zanna steam-check: app " + appId + " (checks may change the signed-in account)");
+    } else {
+        Terminal.Say("Zanna steam-check: app " + appId + " (read-only)");
+    }
+    if checkStart() {
+        pumpFor(1000);
+        checkIdentity();
+        checkFeatures();
+        checkPlayerCount();
+        checkAchievements();
+        checkAchievementIcon();
+        checkGlobalPercentages();
+        checkActionInput();
+        checkWorkshop();
+        checkStats();
+        checkLeaderboards();
+        checkCloudRead();
+        if allowWrites {
+            checkAchievementWrite();
+            checkStatWrite();
+            checkUpload();
+            checkPresence();
+            checkCloudWrite();
+            checkTimeline();
+        } else {
+            skip("write", "read-only run; pass --write to change the account");
+        }
+        if openWindow {
+            runWindow();
+        }
+        checkReinit();
+        Services.Platform.Shutdown();
+    } else {
+        checkNeutral();
+    }
+
+    Terminal.Say("RESULT: " + Fmt.Int(passes) + " passed, " + Fmt.Int(failures) + " failed, " + Fmt.Int(skips) + " skipped");
+    if failures > 0 {
+        Env.Exit(1);
+    }
+}

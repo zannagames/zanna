@@ -8,7 +8,8 @@
 // File: src/runtime/services/steam/rt_steam_user_stats.c
 // Purpose: Binds ISteamUserStats achievements, stats, and leaderboards for the
 //          Steam provider: the Zanna.Services operation tables, the stats
-//          callbacks, and the multi-call leaderboard request state machine.
+//          callbacks, the multi-call leaderboard request state machine,
+//          achievement icons, and global unlock percentages.
 // Key invariants:
 //   - Each feature group is usable only when every export it calls resolved
 //     (see rt_services_steam_bind_user_stats); otherwise it reports neutral
@@ -23,11 +24,14 @@
 //     every entry was fetched; at most RT_SERVICES_LEADERBOARD_ENTRY_CAPACITY
 //     are kept.
 // Ownership/Lifetime:
-//   - Strings returned through the operation tables are new references.
-//   - The leaderboard cache lives until the provider stops.
+//   - Strings and icon Bytes returned through the operation tables are new
+//     references.
+//   - The leaderboard cache and the list of unset icons live until the
+//     provider stops.
 // Links: src/runtime/services/steam/rt_steam_internal.h,
 //        src/runtime/services/rt_services_progress.h,
-//        docs/adr/0353-platform-services-player-features.md
+//        docs/adr/0353-platform-services-player-features.md,
+//        docs/adr/0364-platform-services-achievement-icons-and-percentages.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,6 +40,8 @@
  * @brief Implements Steam achievements, stats, and leaderboards.
  */
 
+#include "rt_bytes.h"
+#include "rt_object.h"
 #include "rt_platform.h"
 #include "rt_services.h"
 #include "rt_services_progress.h"
@@ -104,6 +110,37 @@ void rt_services_steam_bind_user_stats(void) {
     if (missing)
         rt_services_steam_report_missing(missing, "achievements");
 
+    // Icons read the achievement state to pick the variant and the image
+    // through ISteamUtils, so the group also needs those.
+    missing = NULL;
+    STEAM_BIND(api->achievement_icon,
+               rt_steam_self_str_int_fn,
+               RT_STEAM_SYMBOL_USER_STATS_ACHIEVEMENT_ICON,
+               missing);
+    STEAM_BIND(api->get_achievement,
+               rt_steam_get_achievement_fn,
+               RT_STEAM_SYMBOL_USER_STATS_GET_ACHIEVEMENT_TIME,
+               missing);
+    STEAM_BIND(api->image_size, rt_steam_image_size_fn, RT_STEAM_SYMBOL_UTILS_IMAGE_SIZE, missing);
+    STEAM_BIND(api->image_rgba, rt_steam_image_rgba_fn, RT_STEAM_SYMBOL_UTILS_IMAGE_RGBA, missing);
+    api->icons_ready = missing == NULL && g_steam.utils.self != NULL;
+    if (missing)
+        rt_services_steam_report_missing(missing, "achievement icons");
+
+    missing = NULL;
+    STEAM_BIND(api->request_global_percentages,
+               rt_steam_self_call_fn,
+               RT_STEAM_SYMBOL_USER_STATS_REQUEST_GLOBAL_PERCENTAGES,
+               missing);
+    STEAM_BIND(api->achieved_percent,
+               rt_steam_achieved_percent_fn,
+               RT_STEAM_SYMBOL_USER_STATS_ACHIEVED_PERCENT,
+               missing);
+    api->percentages_ready = missing == NULL;
+    api->percentages_loaded = 0;
+    if (missing)
+        rt_services_steam_report_missing(missing, "global achievement percentages");
+
     missing = NULL;
     STEAM_BIND(api->get_stat_int,
                rt_steam_get_stat_int_fn,
@@ -170,10 +207,14 @@ void rt_services_steam_bind_user_stats(void) {
 
 #undef STEAM_BIND
 
-/// @brief Forget the leaderboard cache.
+/// @brief Forget the leaderboard cache and the unset icon list.
 void rt_services_steam_reset_user_stats(void) {
     memset(g_steam.boards, 0, sizeof(g_steam.boards));
     g_steam.next_board_slot = 0;
+    free(g_steam.missing_icons);
+    g_steam.missing_icons = NULL;
+    g_steam.missing_icon_count = 0;
+    g_steam.missing_icon_capacity = 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -302,6 +343,131 @@ static rt_string steam_achievement_attribute(const char *id,
     return (value && *value) ? rt_const_cstr(value) : NULL;
 }
 
+/// @brief Largest icon side the binding reads, guarding against a corrupt image size.
+#define STEAM_MAX_ICON_SIDE 4096u
+
+/// @brief Find an icon variant Steam reported as unset.
+/// @param name Achievement API name.
+/// @param achieved Nonzero for the unlocked variant.
+/// @return Index into g_steam.missing_icons, or -1.
+static int steam_find_missing_icon(const char *name, int achieved) {
+    for (int i = 0; i < g_steam.missing_icon_count; ++i) {
+        const steam_missing_icon *entry = &g_steam.missing_icons[i];
+        if ((entry->achieved != 0) == (achieved != 0) && strcmp(entry->name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/// @brief Remember that Steam reported an icon variant as unset.
+/// @param name Achievement API name from the callback, NUL-terminated.
+/// @param achieved Nonzero for the unlocked variant.
+/// @return 1 when newly remembered (or it could not be stored), 0 when already known.
+static int steam_remember_missing_icon(const char *name, int achieved) {
+    if (steam_find_missing_icon(name, achieved) >= 0)
+        return 0;
+    if (g_steam.missing_icon_count == g_steam.missing_icon_capacity) {
+        const int capacity = g_steam.missing_icon_capacity ? g_steam.missing_icon_capacity * 2 : 8;
+        steam_missing_icon *grown = (steam_missing_icon *)realloc(
+            g_steam.missing_icons, (size_t)capacity * sizeof(steam_missing_icon));
+        if (!grown)
+            return 1;
+        g_steam.missing_icons = grown;
+        g_steam.missing_icon_capacity = capacity;
+    }
+    steam_missing_icon *entry = &g_steam.missing_icons[g_steam.missing_icon_count++];
+    snprintf(entry->name, sizeof(entry->name), "%s", name);
+    entry->achieved = achieved ? 1 : 0;
+    return 1;
+}
+
+/// @brief Read an achievement's icon for its current state.
+/// @param id Achievement API name.
+/// @param out_width Receives the width.
+/// @param out_height Receives the height.
+/// @param out_rgba Receives caller-owned RGBA Bytes, or NULL to read only the size.
+/// @return 1 when the icon is loaded and was read, otherwise 0 (Steam then
+///         posts UserAchievementIconFetched_t once it loads).
+static int8_t steam_achievement_icon(const char *id,
+                                     int64_t *out_width,
+                                     int64_t *out_height,
+                                     void **out_rgba) {
+    if (!g_steam.started || !g_steam.user_stats.icons_ready || !g_steam.utils.self)
+        return 0;
+    // GetAchievementIcon returns 0 for an unknown achievement too, and that never loads.
+    bool achieved = false;
+    uint32_t unlock_time = 0;
+    if (!g_steam.user_stats.get_achievement(g_steam.user_stats.self, id, &achieved, &unlock_time)) {
+        rt_services_provider_add_diagnostic(
+            "Steam: GetAchievementAndUnlockTime('%s') failed; check that the achievement is "
+            "defined for this app",
+            id);
+        return 0;
+    }
+    if (steam_find_missing_icon(id, achieved ? 1 : 0) >= 0)
+        return 0;
+    const int image = g_steam.user_stats.achievement_icon(g_steam.user_stats.self, id);
+    if (image == 0)
+        return 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!g_steam.user_stats.image_size(g_steam.utils.self, image, &width, &height) || width == 0 ||
+        height == 0)
+        return 0;
+    if (width > STEAM_MAX_ICON_SIDE || height > STEAM_MAX_ICON_SIDE) {
+        rt_services_provider_add_diagnostic(
+            "Steam: achievement '%s' icon is %ux%u pixels; the binding reads at most %ux%u",
+            id,
+            (unsigned)width,
+            (unsigned)height,
+            STEAM_MAX_ICON_SIDE,
+            STEAM_MAX_ICON_SIDE);
+        return 0;
+    }
+    *out_width = (int64_t)width;
+    *out_height = (int64_t)height;
+    if (!out_rgba)
+        return 1;
+    const int64_t size = (int64_t)width * (int64_t)height * 4;
+    void *bytes = rt_bytes_new(size);
+    if (!bytes)
+        return 0;
+    if (!g_steam.user_stats.image_rgba(
+            g_steam.utils.self, image, (uint8_t *)rt_bytes_data(bytes), (int)size)) {
+        if (rt_obj_release_check0(bytes))
+            rt_obj_free(bytes);
+        rt_services_provider_add_diagnostic("Steam: GetImageRGBA for achievement '%s' failed", id);
+        return 0;
+    }
+    *out_rgba = bytes;
+    return 1;
+}
+
+/// @brief Read an achievement's global unlock percentage.
+/// @param id Achievement API name.
+/// @param out_percent Receives 0..100.
+/// @return 1 when known, otherwise 0.
+static int8_t steam_achievement_global_percent(const char *id, double *out_percent) {
+    if (!g_steam.started || !g_steam.user_stats.percentages_ready)
+        return 0;
+    float percent = 0.0f;
+    if (g_steam.user_stats.achieved_percent(g_steam.user_stats.self, id, &percent)) {
+        *out_percent = (double)percent;
+        return 1;
+    }
+    if (!g_steam.user_stats.percentages_loaded) {
+        rt_services_provider_add_diagnostic(
+            "Steam: global achievement percentages are not loaded; call "
+            "Achievements.RequestGlobalPercentages first");
+    } else {
+        rt_services_provider_add_diagnostic(
+            "Steam: GetAchievementAchievedPercent('%s') failed; check that the achievement is "
+            "defined for this app",
+            id);
+    }
+    return 0;
+}
+
 /// @brief Steam achievements operations.
 const rt_services_achievement_ops rt_services_steam_achievement_ops = {
     .unlock = steam_achievement_unlock,
@@ -311,7 +477,73 @@ const rt_services_achievement_ops rt_services_steam_achievement_ops = {
     .count = steam_achievement_count,
     .id_at = steam_achievement_id_at,
     .attribute = steam_achievement_attribute,
+    .icon = steam_achievement_icon,
+    .global_percent = steam_achievement_global_percent,
 };
+
+/// @brief Start a global achievement percentage request.
+/// @param out_handle Receives the provider token.
+/// @param message Receives the failure message.
+/// @param message_capacity Size of @p message in bytes.
+/// @return 1 when started, otherwise 0.
+int8_t rt_services_steam_begin_achievement_percentages(uint64_t *out_handle,
+                                                       char *message,
+                                                       size_t message_capacity) {
+    if (!g_steam.started || !g_steam.user_stats.percentages_ready) {
+        snprintf(message,
+                 message_capacity,
+                 "Steam: global achievement percentages are unavailable (see "
+                 "Platform.Diagnostics)");
+        return 0;
+    }
+    steam_request_op *op = rt_services_steam_op_alloc(STEAM_OP_ACHIEVEMENT_PERCENTAGES);
+    if (!op) {
+        snprintf(message, message_capacity, "Steam: too many pending requests");
+        return 0;
+    }
+    rt_steam_api_call call = g_steam.user_stats.request_global_percentages(g_steam.user_stats.self);
+    if (call == 0) {
+        rt_services_steam_op_free(op);
+        snprintf(message,
+                 message_capacity,
+                 "Steam: RequestGlobalAchievementPercentages returned an invalid call handle");
+        return 0;
+    }
+    op->call = call;
+    *out_handle = op->token;
+    return 1;
+}
+
+/// @brief Complete a global achievement percentage request.
+/// @param op Operation in the achievement percentage stage.
+/// @param completed Decoded SteamAPICallCompleted_t.
+void rt_services_steam_achievement_percentages_completed(
+    steam_request_op *op, const rt_steam_api_call_completed *completed) {
+    rt_steam_global_achievement_percentages_ready ready;
+    char error[RT_SERVICES_MESSAGE_CAPACITY];
+    if (!rt_services_steam_fetch_call_result(completed,
+                                             RT_STEAM_CB_GLOBAL_ACHIEVEMENT_PERCENTAGES_READY,
+                                             &ready,
+                                             sizeof(ready),
+                                             "RequestGlobalAchievementPercentages",
+                                             error,
+                                             sizeof(error))) {
+        rt_services_steam_op_fail(op, error);
+        return;
+    }
+    if (ready.result != RT_STEAM_RESULT_OK) {
+        snprintf(error,
+                 sizeof(error),
+                 "Steam: global achievement percentages are unavailable (EResult %d)",
+                 (int)ready.result);
+        rt_services_provider_complete_request(op->token, 0, ready.result, 0, error);
+        rt_services_steam_op_free(op);
+        return;
+    }
+    g_steam.user_stats.percentages_loaded = 1;
+    rt_services_provider_complete_request(op->token, 1, RT_STEAM_RESULT_OK, 0, NULL);
+    rt_services_steam_op_free(op);
+}
 
 //===----------------------------------------------------------------------===//
 // Stats
@@ -482,6 +714,23 @@ int rt_services_steam_user_stats_callback(const rt_steam_callback_msg *msg) {
                                                 0,
                                                 payload.result == RT_STEAM_RESULT_OK ? 1 : 0,
                                                 NULL);
+            }
+            return 1;
+        }
+        case RT_STEAM_CB_USER_ACHIEVEMENT_ICON_FETCHED: {
+            rt_steam_user_achievement_icon_fetched payload;
+            if (rt_services_steam_payload_matches(msg, sizeof(payload))) {
+                memcpy(&payload, msg->param, sizeof(payload));
+                payload.achievement_name[sizeof(payload.achievement_name) - 1] = '\0';
+                // Steam repeats the report for an unset icon on every request; pass it on once.
+                if (payload.icon_handle == 0 &&
+                    !steam_remember_missing_icon(payload.achievement_name, payload.achieved))
+                    return 1;
+                rt_services_provider_emit_event(RT_SERVICES_EVENT_ACHIEVEMENT_ICON_READY,
+                                                0,
+                                                payload.icon_handle != 0 ? 1 : 0,
+                                                payload.achieved ? 1 : 0,
+                                                payload.achievement_name);
             }
             return 1;
         }
@@ -672,7 +921,7 @@ int8_t rt_services_steam_begin_leaderboard(const rt_services_request_args *args,
         snprintf(message, message_capacity, "Steam: too many pending requests");
         return 0;
     }
-    snprintf(op->board, sizeof(op->board), "%s", args->name);
+    snprintf(op->name, sizeof(op->name), "%s", args->name);
     op->score = (int32_t)args->score;
     op->keep_best = args->keep_best != 0;
     op->data_request = steam_data_request(args->scope);
@@ -733,12 +982,12 @@ static void steam_leaderboard_found(steam_request_op *op,
         return;
     }
     if (!found.found || found.leaderboard == 0) {
-        snprintf(error, sizeof(error), "Steam: leaderboard '%s' was not found", op->board);
+        snprintf(error, sizeof(error), "Steam: leaderboard '%s' was not found", op->name);
         rt_services_steam_op_fail(op, error);
         return;
     }
     op->leaderboard = found.leaderboard;
-    steam_board_remember(op->board, found.leaderboard);
+    steam_board_remember(op->name, found.leaderboard);
 
     if (op->stage == STEAM_OP_FIND) {
         const char *reported =
@@ -749,8 +998,8 @@ static void steam_leaderboard_found(steam_request_op *op,
         result.result_code = RT_STEAM_RESULT_OK;
         result.value =
             g_steam.user_stats.leaderboard_entry_count(g_steam.user_stats.self, found.leaderboard);
-        result.text = (reported && *reported) ? reported : op->board;
-        // Finish before freeing the slot: result.text may point into op->board.
+        result.text = (reported && *reported) ? reported : op->name;
+        // Finish before freeing the slot: result.text may point into op->name.
         rt_services_provider_finish_request(op->token, &result);
         rt_services_steam_op_free(op);
         return;
@@ -787,7 +1036,7 @@ static void steam_leaderboard_uploaded(steam_request_op *op,
         return;
     }
     if (uploaded.success != 1) {
-        snprintf(error, sizeof(error), "Steam: score upload to leaderboard '%s' failed", op->board);
+        snprintf(error, sizeof(error), "Steam: score upload to leaderboard '%s' failed", op->name);
         rt_services_steam_op_fail(op, error);
         return;
     }
@@ -797,8 +1046,8 @@ static void steam_leaderboard_uploaded(steam_request_op *op,
     result.result_code = RT_STEAM_RESULT_OK;
     result.value = uploaded.global_rank_new;
     result.flag = uploaded.score_changed ? 1 : 0;
-    result.text = op->board;
-    // Finish before freeing the slot: result.text points into op->board.
+    result.text = op->name;
+    // Finish before freeing the slot: result.text points into op->name.
     rt_services_provider_finish_request(op->token, &result);
     rt_services_steam_op_free(op);
 }
@@ -852,7 +1101,7 @@ static void steam_leaderboard_downloaded(steam_request_op *op,
     if (total > keep) {
         rt_services_provider_add_diagnostic(
             "Steam: leaderboard '%s' download returned %d entries; kept the first %d",
-            op->board,
+            op->name,
             total,
             keep);
     }
@@ -862,10 +1111,10 @@ static void steam_leaderboard_downloaded(steam_request_op *op,
     result.result_code = RT_STEAM_RESULT_OK;
     result.value =
         g_steam.user_stats.leaderboard_entry_count(g_steam.user_stats.self, downloaded.leaderboard);
-    result.text = op->board;
+    result.text = op->name;
     result.entries = entries;
     result.entry_count = stored;
-    // Finish before freeing the slot: result.text points into op->board.
+    // Finish before freeing the slot: result.text points into op->name.
     rt_services_provider_finish_request(op->token, &result);
     rt_services_steam_op_free(op);
     free(entries);

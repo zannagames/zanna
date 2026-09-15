@@ -24,7 +24,8 @@
 // Links: src/runtime/services/rt_services_progress.c,
 //        src/runtime/services/rt_services.h,
 //        docs/zannalib/services.md,
-//        docs/adr/0353-platform-services-player-features.md
+//        docs/adr/0353-platform-services-player-features.md,
+//        docs/adr/0364-platform-services-achievement-icons-and-percentages.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -127,6 +128,34 @@ rt_string rt_services_achievements_description(rt_string id);
 /// @param id Achievement API id; empty traps.
 /// @return 1 when hidden, otherwise 0.
 int8_t rt_services_achievements_is_hidden(rt_string id);
+
+/// @brief Read the width of an achievement's icon for its current state.
+/// @details Platforms load icons on demand: while an icon loads this returns 0
+///          and EventKind.AchievementIconReady reports when to ask again.
+/// @param id Achievement API id; empty traps.
+/// @return Width in pixels, or 0 while loading or unavailable.
+int64_t rt_services_achievements_icon_width(rt_string id);
+
+/// @brief Read the height of an achievement's icon for its current state.
+/// @param id Achievement API id; empty traps.
+/// @return Height in pixels, or 0 while loading or unavailable.
+int64_t rt_services_achievements_icon_height(rt_string id);
+
+/// @brief Read an achievement's icon for its current state as RGBA bytes.
+/// @details The bytes hold IconWidth*IconHeight*4 values in row order, ready
+///          for Zanna.Graphics.Pixels.FromBytes.
+/// @param id Achievement API id; empty traps.
+/// @return Caller-owned Zanna.Collections.Bytes; empty while loading or unavailable.
+void *rt_services_achievements_icon_rgba(rt_string id);
+
+/// @brief Ask the platform for every achievement's global unlock percentage.
+/// @return Caller-owned Zanna.Services.Request of kind AchievementPercentages.
+void *rt_services_achievements_request_global_percentages(void);
+
+/// @brief Read the share of players who unlocked an achievement.
+/// @param id Achievement API id; empty traps.
+/// @return Percentage in 0..100, or 0 before RequestGlobalPercentages succeeded.
+double rt_services_achievements_global_percent(rt_string id);
 
 //===----------------------------------------------------------------------===//
 // Zanna.Services.Stats

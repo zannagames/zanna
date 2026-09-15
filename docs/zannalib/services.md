@@ -1,14 +1,15 @@
 ---
 status: active
 audience: public
-last-verified: 2026-09-13
+last-verified: 2026-09-15
 ---
 
 # Platform Services
 
 > Distribution-platform services behind one provider-neutral API: user identity, licensing, DLC,
-> platform events, achievements, stats, leaderboards, rich presence, overlay control, on-screen
-> keyboards, and cloud files. Steam is the first provider.
+> platform events, achievements (with icons and global unlock percentages), stats, leaderboards,
+> rich presence, overlay control, on-screen keyboards, cloud files, recording timeline markers,
+> action-based controller input, and Workshop content. Steam is the first provider.
 
 **Part of the [Zanna Runtime Library](README.md)**
 
@@ -25,6 +26,10 @@ last-verified: 2026-09-13
 - [Zanna.Services.Overlay](#zannaservicesoverlay)
 - [Zanna.Services.OnScreenKeyboard](#zannaservicesonscreenkeyboard)
 - [Zanna.Services.Cloud](#zannaservicescloud)
+- [Zanna.Services.Timeline](#zannaservicestimeline)
+- [Zanna.Services.ActionInput](#zannaservicesactioninput)
+- [Zanna.Services.Workshop](#zannaservicesworkshop)
+- [Zanna.Services.WorkshopItem](#zannaservicesworkshopitem)
 - [Zanna.Services.Steam](#zannaservicessteam)
 - [Constants](#constants)
 - [Shipping with the Steam Provider](#shipping-with-the-steam-provider)
@@ -34,8 +39,14 @@ last-verified: 2026-09-13
 For exact signatures, see the generated [Services reference](../generated/runtime/services.md).
 The design is recorded in
 [ADR 0352](../adr/0352-platform-services-runtime-loaded-providers.md) (platform, requests, Steam
-provider), [ADR 0353](../adr/0353-platform-services-player-features.md) (player features), and
-[ADR 0354](../adr/0354-store-depot-packaging.md) (store depot packaging).
+provider), [ADR 0353](../adr/0353-platform-services-player-features.md) (player features),
+[ADR 0354](../adr/0354-store-depot-packaging.md) (store depot packaging),
+[ADR 0362](../adr/0362-platform-services-timeline.md) (recording timeline),
+[ADR 0363](../adr/0363-platform-services-app-details.md) (DLC list, build id, branch),
+[ADR 0364](../adr/0364-platform-services-achievement-icons-and-percentages.md) (achievement icons
+and global unlock percentages),
+[ADR 0365](../adr/0365-platform-services-action-input.md) (action input), and
+[ADR 0366](../adr/0366-platform-services-workshop.md) (Workshop).
 
 ---
 
@@ -45,9 +56,12 @@ provider), [ADR 0353](../adr/0353-platform-services-player-features.md) (player 
 
 - **Neutral classes** work the same for every provider: `Platform` (lifecycle, identity, licensing,
   events, requests), `Request`, the player features `Achievements`, `Stats`, `Leaderboards`,
-  `Presence`, `Overlay`, `OnScreenKeyboard`, and `Cloud`, and the constant classes `Status`, `EventKind`,
+  `Presence`, `Overlay`, `OnScreenKeyboard`, `Cloud`, `Timeline`, `ActionInput`, and
+  `Workshop` (with its `WorkshopItem` objects), and the constant classes `Status`, `EventKind`,
   `Feature`, `RequestKind`, `LeaderboardScope`, `LeaderboardSort`, `LeaderboardDisplay`,
-  `OverlayPage`, `NotificationPosition`, and `TextInputMode`.
+  `OverlayPage`, `NotificationPosition`, `TextInputMode`, `TimelineMode`, `TimelineClip`,
+  `ControllerType`, `GlyphSize`, `WorkshopQuery`, `WorkshopList`, `WorkshopVisibility`, and
+  `WorkshopUpdateStatus`.
 - **Provider extension classes** expose what only one store offers. `Zanna.Services.Steam` and its
   `SteamHardware` constants are the first.
 
@@ -152,6 +166,10 @@ Provider-neutral lifecycle, identity, licensing, events, and requests.
 | `IsDlcInstalled(dlcId)` | `Boolean(String)`          | Whether a DLC is owned and installed (id format is provider-defined)         |
 | `RequestPlayerCount()`  | `Request()`                | Starts a non-blocking request for the number of players currently in game    |
 | `Diagnostics()`         | `Seq()`                    | Up to 32 most recent non-fatal diagnostic messages, oldest first             |
+| `LaunchParameter(key)`  | `String(String)`           | A parameter the platform's launch URL passed, or `""`                        |
+| `DlcIdAt(index)`        | `String(Integer)`          | Id of the DLC at `index`, or `""`                                            |
+| `DlcNameAt(index)`      | `String(Integer)`          | Display name of the DLC at `index`, or `""`                                  |
+| `DlcAvailableAt(index)` | `Boolean(Integer)`         | Whether the DLC at `index` can be bought now                                 |
 
 ### Properties
 
@@ -166,6 +184,10 @@ Provider-neutral lifecycle, identity, licensing, events, and requests.
 | `Language`        | `String` (read-only)  | User's game language code (Steam: `"english"`, `"german"`, ...), or `""` |
 | `IsLicensed`      | `Boolean` (read-only) | Whether the user holds a license for the running game                    |
 | `IsOnline`        | `Boolean` (read-only) | Whether the platform client is connected to its online service           |
+| `LaunchCommandLine` | `String` (read-only) | Command line the platform's launch URL passed, or `""`                  |
+| `DlcCount`        | `Integer` (read-only) | DLC the game defines, owned or not, or `0`                               |
+| `BuildId`         | `Integer` (read-only) | Installed build id; `0` when the build did not come from the platform    |
+| `BranchName`      | `String` (read-only)  | Branch of the installed build (Steam beta name), or `""` on the default branch |
 | `EventResultCode` | `Integer` (read-only) | Provider result code of the last polled event (Steam: `EResult`), or `0` |
 | `EventText`       | `String` (read-only)  | Text payload of the last polled event, or `""`                           |
 | `EventValue`      | `Integer` (read-only) | Integer payload of the last polled event, or `0`                         |
@@ -178,6 +200,24 @@ Provider-neutral lifecycle, identity, licensing, events, and requests.
 - **Status transitions.** `Status` starts as `NotStarted`. A successful `Init` makes it `Ok`. A
   failed `Init` leaves no provider started and records why (`LibraryNotFound`,
   `ClientNotRunning`, and so on). `Shutdown` returns it to `NotStarted`.
+- **Steam not running.** `ClientNotRunning` means the Steam client is not running, including when
+  it is not installed. A running client that nobody is signed in to reports `InitFailed` with
+  Steam's reason in the `Err` message (for example `ConnectToGlobalUser failed.`). When `Init`
+  fails, Valve's library also prints `[S_API]` lines to the console; they come from the
+  redistributable and cannot be turned off.
+- **Launch parameters.** When a player launches or rejoins the game through a platform URL, such as
+  joining a friend through rich presence, the platform passes a command line and named
+  parameters (Steam: `steam://run/<appid>//<command line>/` and
+  `steam://run/<appid>//?team=boston&season=1972`). `LaunchCommandLine` and
+  `LaunchParameter(key)` read them. This is not the operating system command line (use
+  `Zanna.System.Environment` for that). If the game is already running, `EventKind.LaunchParametersChanged`
+  fires; read both again. An empty key traps. On Steam, names starting with `@` are reserved and
+  read as `""`, and the command line is read into a 4096-byte buffer.
+- **DLC list and build.** `DlcCount` with `DlcIdAt`, `DlcNameAt`, and `DlcAvailableAt` lists every
+  DLC the game defines (Steam reports at most 64). Pair it with `IsDlcInstalled(DlcIdAt(i))`
+  for a store screen. Indexes outside the range return `""` and `FALSE`. `BuildId` and
+  `BranchName` identify the installed build for support reports; a build Steam did not install
+  reports `0` and `""`.
 - **Repeated `Init`.** Starting the already-active provider again returns `Ok` without restarting
   it. Starting a different provider while one is active returns
   `Err("Services: provider 'steam' is already active; call Platform.Shutdown() before starting '<name>'")`
@@ -271,6 +311,8 @@ A non-blocking platform request.
 | `Text`       | `String` (read-only)  | Kind-specific text result (see below), or `""`                        |
 | `Error`      | `String` (read-only)  | Failure message, or `""`                                              |
 | `EntryCount` | `Integer` (read-only) | Leaderboard entries held (downloads only, at most 100), or `0`        |
+| `DetailCount` | `Integer` (read-only) | Kind-specific integer details held (at most 8), or `0`               |
+| `ItemCount`  | `Integer` (read-only) | Workshop items held by a completed Workshop query (at most 100), or `0` |
 
 ### Methods
 
@@ -280,6 +322,8 @@ A non-blocking platform request.
 | `EntryScore(index)`  | `Integer(Integer)` | Score of the entry at `index`                                      |
 | `EntryUserId(index)` | `String(Integer)`  | Provider user id of the entry (decimal SteamID64 on Steam)         |
 | `EntryUserName(index)` | `String(Integer)` | Display name of the entry's user, or `""` while it is unknown     |
+| `Detail(index)`      | `Integer(Integer)` | Kind-specific integer detail at `index` (see below)               |
+| `ItemAt(index)`      | `WorkshopItem(Integer)` | Workshop item at `index` of a completed Workshop query        |
 
 ### Results by kind
 
@@ -290,6 +334,16 @@ A non-blocking platform request.
 | `LeaderboardUpload`   | The player's new global rank | The stored score changed   | Leaderboard name    |
 | `LeaderboardDownload` | Entries on the board         | —                          | Leaderboard name    |
 | `TextInput`           | Length of the text in bytes  | —                          | The submitted text  |
+| `TimelineEventRecording` | —                         | A recording covers the event | The event id      |
+| `TimelinePhaseRecording` | Recorded milliseconds     | Anything was recorded      | The phase id        |
+| `AchievementPercentages` | —                         | —                          | —                   |
+| `WorkshopQuery`       | Matching items on every page | Answered from the local cache | —                |
+| `WorkshopSubscribe`, `WorkshopUnsubscribe`, `WorkshopDelete` | — | —            | The item id         |
+| `WorkshopCreate`, `WorkshopSubmit` | —               | The player must accept the Workshop agreement | The item id |
+
+`TimelinePhaseRecording` also holds four details: `Detail(0)` recorded milliseconds, `Detail(1)`
+longest clip milliseconds, `Detail(2)` clip count, and `Detail(3)` screenshot count. Other kinds
+hold none.
 
 ### Behavior Notes
 
@@ -303,6 +357,8 @@ A non-blocking platform request.
   `Services: request cancelled by Platform.Shutdown()` and `ResultCode` `0`.
 - Entry indexes outside `0..EntryCount-1` trap, for example
   `Services.Request.EntryRank: index 3 is outside 0..2`. Loop with `while i < request.EntryCount`.
+  Detail indexes outside `0..DetailCount-1` trap the same way
+  (`Services.Request.Detail: index 4 is outside 0..3`).
 - `EntryUserName` asks the provider for the current name while it is still active, because
   platforms often learn the names of strangers a moment after the scores arrive: an entry that
   reads `""` right after the download usually has its name a few frames later. After `Shutdown`
@@ -330,6 +386,11 @@ Unlocks and inspects the game's achievements, addressed by the API id defined wi
 | `DisplayName(id)`                       | `String(String)`                   | Localized name, or `""`                                            |
 | `Description(id)`                       | `String(String)`                   | Localized description, or `""`                                     |
 | `IsHidden(id)`                          | `Boolean(String)`                  | Whether the achievement stays hidden until unlocked                |
+| `IconWidth(id)`                         | `Integer(String)`                  | Width of the icon for the current state, or `0` while it loads     |
+| `IconHeight(id)`                        | `Integer(String)`                  | Height of the icon for the current state, or `0` while it loads    |
+| `IconRgba(id)`                          | `Bytes(String)`                    | `IconWidth * IconHeight * 4` RGBA bytes, or empty `Bytes` while it loads |
+| `RequestGlobalPercentages()`            | `Request()`                        | Downloads the share of players who unlocked each achievement       |
+| `GlobalPercent(id)`                     | `Float(String)`                    | Share of players who unlocked the achievement (0 to 100), or `0`   |
 
 ### Properties
 
@@ -341,7 +402,9 @@ Unlocks and inspects the game's achievements, addressed by the API id defined wi
 
 - `Unlock` only changes local state. Call `Stats.Store()` soon after an unlock (at the end of the
   game, for example) to commit it; the unlock notification appears then, and
-  `EventKind.AchievementStored` with `EventFlag` `TRUE` confirms each stored unlock.
+  `EventKind.AchievementStored` with `EventFlag` `TRUE` confirms each stored unlock. Steam
+  delivers the `AchievementStored` events of a commit before its `StatsStored` event, so handle
+  events by kind rather than by position.
 - `IndicateProgress` shows "10 / 40"-style notifications. It does not store progress (keep that
   in a stat) and does not unlock. `current` and `maximum` must satisfy
   `0 <= current <= maximum` with `maximum > 0`; Steam additionally rejects `0` and
@@ -349,6 +412,21 @@ Unlocks and inspects the game's achievements, addressed by the API id defined wi
 - A rejected call returns `FALSE` and records a diagnostic such as
   `Steam: SetAchievement('ACH_WIN') failed; check that the achievement is defined for this app`.
 - An empty id traps: `Services.Achievements.Unlock: achievement id must not be empty`.
+- **Icons.** `IconWidth`, `IconHeight`, and `IconRgba` read the icon for the achievement's current
+  state, so unlocking switches to the other icon. Platforms load icons on demand: the first read
+  of an icon that is not loaded yet returns `0` (or empty `Bytes`) and starts the load, and
+  `EventKind.AchievementIconReady` names the achievement when it finishes. Read the icon again
+  then. `EventValue` is `0` when the achievement has no icon for that state; that report comes
+  once per session, and later reads return `0` without asking again. Steam icons are 64 by 64
+  pixels, rows top to bottom, ready for `Pixels.FromBytes(width, height, bytes)`. The Steam
+  client keeps loaded icons, so later runs usually read them at once. Icons larger than 4096 by
+  4096 pixels are refused with a diagnostic.
+- **Global percentages.** `RequestGlobalPercentages` downloads every achievement's global unlock
+  share at once; after it succeeds, `GlobalPercent(id)` returns the share (for example `3.25`
+  for a rare achievement) until `Shutdown`. Before that, `GlobalPercent` returns `0` and records
+  `Steam: global achievement percentages are not loaded; call Achievements.RequestGlobalPercentages first`.
+  On Steam, a failed request with `ResultCode` `2` also means Steam has no percentages for the
+  app yet; Spacewar (480) has none.
 
 ### Zia Example
 
@@ -400,6 +478,67 @@ func start() {
 }
 ```
 
+### Zia Example: an achievement list
+
+```zia
+module AchievementScreen;
+
+bind Zanna.Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Time.Clock as Clock;
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Services as Services;
+
+// Saves the icon for the achievement's current state; returns false while it is still loading.
+func saveIcon(id: String) -> Boolean {
+    var width = Services.Achievements.IconWidth(id);
+    if width == 0 {
+        return false;
+    }
+    var icon = Pixels.FromBytes(width, Services.Achievements.IconHeight(id), Services.Achievements.IconRgba(id));
+    Pixels.SavePng(icon, id + ".png");
+    return true;
+}
+
+func start() {
+    if Services.Platform.Init("steam", "480").IsErr {
+        return;
+    }
+    var rates = Services.Achievements.RequestGlobalPercentages();
+    var i = 0;
+    while i < Services.Achievements.Count {
+        saveIcon(Services.Achievements.IdAt(i));
+        i = i + 1;
+    }
+
+    // A game pumps from its frame loop instead; this sketch pumps for three seconds.
+    var until = Clock.NowMs() + 3000;
+    while Clock.NowMs() < until {
+        Services.Platform.Update();
+        var kind = Services.Platform.PollEvent();
+        while kind != Services.EventKind.None {
+            if kind == Services.EventKind.AchievementIconReady && Services.Platform.EventValue == 1 {
+                saveIcon(Services.Platform.EventText);
+            }
+            kind = Services.Platform.PollEvent();
+        }
+        Clock.Sleep(16);
+    }
+
+    i = 0;
+    while i < Services.Achievements.Count {
+        var id = Services.Achievements.IdAt(i);
+        var line = Services.Achievements.DisplayName(id);
+        if rates.Succeeded {
+            line = line + ": " + Fmt.NumFixed(Services.Achievements.GlobalPercent(id), 1) + "% of players";
+        }
+        Say(line);
+        i = i + 1;
+    }
+    Services.Platform.Shutdown();
+}
+```
+
 ---
 
 ## Zanna.Services.Stats
@@ -427,6 +566,11 @@ platform.
   achievement unlocks. `Store` returning `TRUE` means the commit started; the result arrives as
   `EventKind.StatsStored` (`EventFlag` `TRUE` on success, `EventResultCode` the provider result).
   Steam also commits unsent changes when the game exits normally.
+- **One commit, several events.** Steam often reports one `Store` twice: once when the client
+  commits locally and again when its server confirms. A change to the same stat or achievement
+  made between the two can be overwritten by the confirmation. For example, `Achievements.Clear`
+  right after storing an unlock may be undone. Let a commit settle for a few seconds before
+  changing the same values again.
 - **Rate limits.** Steam limits how often `Store` may be called (on the order of minutes). Commit
   at natural break points such as the end of a game or season, never every frame.
 - **Rejected values.** Steam integer stats are 32-bit and floating-point stats are single
@@ -434,10 +578,10 @@ platform.
   `Steam: stat 'Hits' value 3000000000 is outside the int32 range`; non-finite floats return
   `FALSE` with `Services: Stats.SetFloat('<name>') rejected a non-finite value`. A stat of the wrong
   type, one the client may not write, or one outside its configured limits returns `FALSE` with a
-  diagnostic naming the stat.
-- **Reverted stats.** When Steam rejects part of a commit (for example an increment-only stat
-  that decreased), `StatsStored` carries result code `8`, Steam restores the stored values, and
-  `Diagnostics()` records
+  diagnostic naming the stat. An increment-only stat rejects a lower value the same way, so
+  "set it back" never undoes an increase; only `ResetAll` lowers it again.
+- **Reverted stats.** When the server rejects part of a commit, `StatsStored` carries result code
+  `8`, Steam restores the stored values, and `Diagnostics()` records
   `Steam: StoreStats rejected one or more stats (EResult 8); Steam reverted them to the stored values`.
 - **Average rates.** `UpdateAverageRate("FeetPerSecond", 5280.0, 120.0)` adds 5280 feet over a
   120-second session; the platform keeps the rolling average. The session length must be positive.
@@ -630,7 +774,9 @@ On-screen keyboards for devices without a physical keyboard, such as Steam Deck.
   closes it. Show it when a text field gains focus on a controller-only device.
 - **Full-screen entry.** `RequestText` returns a `Request` of kind `TextInput` that completes when
   the player submits (`Succeeded`, `Text`) or cancels (fails with `Steam: text input was cancelled`).
-  Only one can be pending at a time. `maxLength` must be in `1..4096` and traps otherwise.
+  Only one can be pending at a time. `maxLength` is the most characters the player may enter; it
+  must be in `1..4096` and traps otherwise. `Value` holds the submitted text's length in bytes,
+  which exceeds the character count for non-ASCII text.
 - **Availability.** On Steam both keyboards need Steam Deck or Big Picture mode: elsewhere
   `ShowFloating` returns `FALSE` with a diagnostic and `RequestText` fails. Players with a physical
   keyboard type normally, so treat `FALSE` as "no on-screen keyboard needed".
@@ -773,6 +919,424 @@ func start() {
 
 ---
 
+## Zanna.Services.Timeline
+
+Marks the platform's background gameplay recording (Steam game recording) so players can find
+and clip moments later.
+
+**Type:** Static utility class
+
+### Methods
+
+| Method | Signature | Description |
+|---|---|---|
+| `SetGameMode(mode)` | `Boolean(Integer)` | Colors the timeline bar with a `TimelineMode` |
+| `SetTooltip(text, offsetSeconds)` | `Boolean(String, Float)` | Describes the current state, such as the score |
+| `ClearTooltip(offsetSeconds)` | `Boolean(Float)` | Removes the state description |
+| `AddEvent(title, description, icon, priority, offsetSeconds, clip)` | `String(String, String, String, Integer, Float, Integer)` | Marks a moment; returns its event id, or `""` |
+| `AddRangeEvent(title, description, icon, priority, offsetSeconds, durationSeconds, clip)` | `String(String, String, String, Integer, Float, Float, Integer)` | Marks a span that is already over; returns its event id, or `""` |
+| `StartRangeEvent(title, description, icon, priority, offsetSeconds, clip)` | `String(String, String, String, Integer, Float, Integer)` | Starts a span; returns its event id, or `""` |
+| `UpdateRangeEvent(eventId, title, description, icon, priority, clip)` | `Boolean(String, String, String, String, Integer, Integer)` | Changes an open span (`priority` `-1` keeps the current one) |
+| `EndRangeEvent(eventId, offsetSeconds)` | `Boolean(String, Float)` | Closes an open span |
+| `RemoveEvent(eventId)` | `Boolean(String)` | Deletes an event this process added |
+| `RequestEventRecording(eventId)` | `Request(String)` | Asks whether the recording still covers an event |
+| `StartPhase()` | `Boolean()` | Starts a phase (a game, a chapter), ending the current one |
+| `EndPhase()` | `Boolean()` | Ends the current phase |
+| `SetPhaseId(phaseId)` | `Boolean(String)` | Gives the current phase a persistent id |
+| `AddPhaseTag(name, icon, group, priority)` | `Boolean(String, String, String, Integer)` | Tags the current phase, such as with the opponent |
+| `SetPhaseAttribute(group, value, priority)` | `Boolean(String, String, Integer)` | Sets a text attribute, such as the final score |
+| `RequestPhaseRecording(phaseId)` | `Request(String)` | Asks what the recording holds for a phase |
+| `OpenOverlayToPhase(phaseId)` | `Boolean(String)` | Opens the overlay at a phase |
+| `OpenOverlayToEvent(eventId)` | `Boolean(String)` | Opens the overlay at an event |
+
+### Behavior Notes
+
+- **Times.** Offsets are seconds relative to now, and negative values are in the past, so a
+  marker for a play that ended two seconds ago uses `-2.0`. Non-finite offsets and negative
+  durations return `FALSE` (or `""`) with a diagnostic. Steam accepts ranges of at most 600
+  seconds.
+- **Priorities and icons.** Priorities range over `0..1000`; higher values show more
+  prominently. Icons name one of the app's uploaded timeline icons or a built-in Steam icon such as
+  `steam_star`, `steam_flag`, or `steam_checkmark`; an empty icon is allowed.
+- **Ids.** Event ids are provider text (decimal handles on Steam) valid for the running process.
+  Phase ids are the game's own, such as `"season-1972-game-34"`, and Steam accepts up to 63 bytes.
+- **Recording queries.** `RequestEventRecording` completes with `Flag` `TRUE` when a recording
+  covers the event. `RequestPhaseRecording` completes with the recorded milliseconds in `Value`
+  and four details (see [Results by kind](#results-by-kind)). Both report nothing recorded while
+  the player has game recording turned off.
+- **Traps.** Empty titles, tooltip texts, ids, tag names, and groups; unknown `TimelineMode` or
+  `TimelineClip` values; and priorities outside their range trap whether or not a provider is
+  started. On Steam, an event id that is not a decimal handle traps while Steam is active.
+
+### Zia Example
+
+```zia
+module Broadcast;
+
+bind Zanna.Services as Services;
+
+var inning: String = "";
+
+func onGameStart(gameId: String, opponent: String) {
+    Services.Timeline.SetGameMode(Services.TimelineMode.Playing);
+    Services.Timeline.StartPhase();
+    Services.Timeline.SetPhaseId(gameId);
+    Services.Timeline.AddPhaseTag(opponent, "steam_flag", "Opponent", 100);
+}
+
+func onHomeRun(batter: String, runs: Integer) {
+    Services.Timeline.AddEvent("Home run", batter + " drives in " + Zanna.Text.Fmt.Int(runs),
+                               "steam_star", 900, -2.0, Services.TimelineClip.Featured);
+}
+
+func onScoreChanged(score: String) {
+    Services.Timeline.SetTooltip(score, 0.0);
+}
+
+func onGameOver(finalScore: String) {
+    Services.Timeline.SetPhaseAttribute("Final score", finalScore, 100);
+    Services.Timeline.EndPhase();
+    Services.Timeline.SetGameMode(Services.TimelineMode.Menus);
+}
+
+func start() {
+    if Services.Platform.Init("steam", "480").IsOk {
+        onGameStart("season-1972-game-34", "Chicago");
+        onHomeRun("Ortiz", 2);
+        onScoreChanged("Top 9th, 3-2");
+        onGameOver("3-2");
+    }
+    Services.Platform.Shutdown();
+}
+```
+
+## Zanna.Services.ActionInput
+
+Reads controllers through the platform's action system (Steam Input). The game names what the
+player does in an action manifest, such as `swing` or `aim`, and the player binds those actions to
+any controller in the platform's own interface.
+
+**Type:** Static utility class
+
+### Methods
+
+| Method | Signature | Description |
+|---|---|---|
+| `Start(manifestPath)` | `Boolean(String)` | Starts action input with an action manifest file, or `""` for the configuration published with the platform |
+| `Stop()` | `Boolean()` | Stops action input |
+| `ControllerIdAt(index)` | `String(Integer)` | Id of the connected controller at `index`, or `""` outside `0..ControllerCount-1` |
+| `ControllerType(controllerId)` | `Integer(String)` | A `ControllerType` value |
+| `GamepadIndex(controllerId)` | `Integer(String)` | Gamepad slot the controller emulates, or `-1` |
+| `ActivateActionSet(controllerId, actionSet)` | `Boolean(String, String)` | Selects the actions in use, such as `batting` or `menu` |
+| `ActivateLayer(controllerId, layer)` | `Boolean(String, String)` | Adds a layer of actions on top of the active set |
+| `DeactivateLayer(controllerId, layer)` | `Boolean(String, String)` | Removes a layer |
+| `DeactivateAllLayers(controllerId)` | `Boolean(String)` | Removes every layer |
+| `IsPressed(controllerId, action)` | `Boolean(String, String)` | Whether a digital action is held |
+| `AnalogX(controllerId, action)` | `Float(String, String)` | Horizontal value of an analog action |
+| `AnalogY(controllerId, action)` | `Float(String, String)` | Vertical value of an analog action |
+| `IsActionActive(controllerId, action)` | `Boolean(String, String)` | Whether an action is available in the active set and layers |
+| `ActionLabel(action)` | `String(String)` | The action's localized name from the manifest |
+| `OriginCount(controllerId, actionSet, action)` | `Integer(String, String, String)` | Physical inputs bound to the action (at most 8) |
+| `OriginAt(controllerId, actionSet, action, index)` | `Integer(String, String, String, Integer)` | Origin id of one bound input, or `0` |
+| `OriginLabel(origin)` | `String(Integer)` | Localized name of an input, such as `A Button` |
+| `OriginGlyphPath(origin, size)` | `String(Integer, Integer)` | PNG file showing the input at a `GlyphSize` |
+| `Vibrate(controllerId, left, right)` | `Boolean(String, Float, Float)` | Runs the rumble motors at strengths `0` to `1`; `0, 0` stops them |
+| `SetLedColor(controllerId, red, green, blue)` | `Boolean(String, Integer, Integer, Integer)` | Sets the controller light |
+| `ResetLedColor(controllerId)` | `Boolean(String)` | Restores the light color the player chose |
+| `ShowBindingPanel(controllerId)` | `Boolean(String)` | Opens the platform's binding screen |
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `IsStarted` | `Boolean` (read-only) | `TRUE` while action input runs |
+| `ControllerCount` | `Integer` (read-only) | Connected controllers (at most 16), updated by each platform pump |
+
+### Behavior Notes
+
+- **The manifest.** An action manifest lists action sets (with `Button`, `StickPadGyro`, and
+  `AnalogTrigger` actions), layers, and localized names; Steamworks documents the format as the
+  Steam Input action manifest. Pass a file path during development and `""` once the
+  configuration is published with the game in Steamworks. Relative paths resolve against the
+  working directory, and a missing file makes `Start` return `FALSE` with
+  `Services: ActionInput.Start found no action manifest at '<path>'`.
+- **When Steam refuses the manifest.** Steam accepts a manifest only after a controller has been
+  used with the app in the current Steam session. Until then `Start` still starts action input
+  (`IsStarted` is `TRUE`), returns `FALSE`, and records why; the manifest is applied as soon as a
+  controller connects, before `EventKind.ControllerConnected` is reported. Starting takes about a
+  second while Steam waits.
+- **Controller ids.** Ids are provider text (decimal handles on Steam) that stay the same when a
+  controller reconnects. An empty id means every connected controller: activation also reaches
+  controllers connected later, `IsPressed` and `IsActionActive` ask whether any controller
+  qualifies, `AnalogX` and `AnalogY` read the controller whose vector is longest (so both axes come
+  from the same controller), `Vibrate` and the light members reach each controller, and the
+  other members use the first controller. On Steam a malformed id traps, for example
+  `Services.ActionInput.IsPressed: Steam controller id 'abc' must be an integer in 1..18446744073709551614`.
+- **Reading actions.** Actions outside the active set and layers read as not pressed and `0`.
+  Sticks report `-1..1`; mouse-like inputs such as trackpads report deltas. An action the manifest
+  does not define records a diagnostic such as
+  `Services: ActionInput.IsPressed found no digital action 'jump' in the action manifest`, and an
+  unknown set records `Steam: action set 'fielding' is not in the action manifest`.
+- **Events.** While action input runs, `ControllerConnected` and `ControllerDisconnected` carry
+  the controller id in `EventText`, and `ControllerConfigured` reports that a controller's
+  bindings loaded (`EventFlag` is `TRUE` when they bind actions, `EventValue` holds the binding
+  revision). Rebuild button prompts on `ControllerConfigured`.
+- **Glyphs.** Origin ids are provider values; `OriginLabel` and `OriginGlyphPath` need no
+  controller. Steam's glyphs live in the Steam installation and load with `Pixels.LoadPng`;
+  outside Windows the binding returns them with `/` separators.
+- **Before `Start`.** Members return `FALSE`, `0`, `-1`, or `""`, and record
+  `Services: ActionInput.<Member> needs ActionInput.Start first`.
+- **Traps.** Empty action, set, and layer names, negative origins, unknown `GlyphSize` values,
+  strengths outside `0..1`, and color components outside `0..255` trap whether or not a
+  provider is started.
+
+### Zia Example
+
+```zia
+module Batting;
+
+bind Zanna.Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Time.Clock as Clock;
+bind Zanna.Services as Services;
+
+var prompt: String = "Swing";
+var swinging: Boolean = false;
+
+// Follow the player's bindings: "Press A Button to swing" on Xbox, "X Button" on PlayStation.
+func updatePrompt() {
+    var origin = Services.ActionInput.OriginAt("", "batting", "swing", 0);
+    if origin != 0 {
+        prompt = "Press " + Services.ActionInput.OriginLabel(origin) + " to swing";
+        // OriginGlyphPath(origin, GlyphSize.Medium) names a PNG of the same button.
+    }
+}
+
+func handleEvents() {
+    var kind = Services.Platform.PollEvent();
+    while kind != Services.EventKind.None {
+        if kind == Services.EventKind.ControllerConfigured {
+            updatePrompt();
+        }
+        kind = Services.Platform.PollEvent();
+    }
+}
+
+func start() {
+    if Services.Platform.Init("steam", "480").IsErr {
+        return;
+    }
+    if !Services.ActionInput.Start("input/steam_input_manifest.vdf") {
+        Say("Action manifest not applied yet: see Platform.Diagnostics()");
+    }
+    // An empty controller id also reaches controllers connected later.
+    Services.ActionInput.ActivateActionSet("", "batting");
+    updatePrompt();
+    Say(prompt);
+
+    // A game pumps from its frame loop (Canvas.Poll); this sketch pumps for ten seconds.
+    var until = Clock.NowMs() + 10000;
+    while Clock.NowMs() < until {
+        Services.Platform.Update();
+        handleEvents();
+        var pressed = Services.ActionInput.IsPressed("", "swing");
+        if pressed && !swinging {
+            var aimX = Services.ActionInput.AnalogX("", "aim");
+            Say("Swing, aiming " + Fmt.NumFixed(aimX, 2));
+            Services.ActionInput.Vibrate("", 0.6, 0.3);
+        } else if !pressed && swinging {
+            Services.ActionInput.Vibrate("", 0.0, 0.0);
+        }
+        swinging = pressed;
+        Clock.Sleep(16);
+    }
+    Services.ActionInput.Stop();
+    Services.Platform.Shutdown();
+}
+```
+
+---
+
+## Zanna.Services.Workshop
+
+Lists, installs, browses, and publishes the game's user-generated content (Steam Workshop). Items
+are addressed by provider-defined ids (decimal item numbers on Steam).
+
+**Type:** Static utility class
+
+### Methods
+
+| Method | Signature | Description |
+|---|---|---|
+| `SubscribedIdAt(index)` | `String(Integer)` | Id of the subscribed item at `index`, or `""` |
+| `IsSubscribed(itemId)` | `Boolean(String)` | The player is subscribed to the item |
+| `IsInstalled(itemId)` | `Boolean(String)` | The item's files are on disk (possibly out of date) |
+| `NeedsUpdate(itemId)` | `Boolean(String)` | The item still needs a download or an update |
+| `IsDownloading(itemId)` | `Boolean(String)` | A download is running or queued |
+| `InstallFolder(itemId)` | `String(String)` | Folder holding an installed item's files, or `""` |
+| `InstallSize(itemId)` | `Integer(String)` | Installed size in bytes, or `0` |
+| `InstallTime(itemId)` | `Integer(String)` | When the item was installed or updated (Unix seconds), or `0` |
+| `DownloadedBytes(itemId)` | `Integer(String)` | Bytes of the current download that arrived |
+| `DownloadTotalBytes(itemId)` | `Integer(String)` | Size of the current download |
+| `Download(itemId, highPriority)` | `Boolean(String, Boolean)` | Downloads or updates the item |
+| `Subscribe(itemId)` | `Request(String)` | Subscribes the player to the item |
+| `Unsubscribe(itemId)` | `Request(String)` | Unsubscribes the player |
+| `Query(order, page, requiredTags, searchText)` | `Request(Integer, Integer, String, String)` | One page (from 1) of the game's items in a `WorkshopQuery` order |
+| `QueryUser(list, page)` | `Request(Integer, Integer)` | One page of a `WorkshopList` of the player's |
+| `QueryItems(itemIds)` | `Request(String)` | Details of specific items (comma-separated ids) |
+| `CreateItem()` | `Request()` | Creates an empty item owned by the player |
+| `StartUpdate(itemId)` | `String(String)` | Begins an update of the player's item; returns the update id, or `""` |
+| `SetTitle(updateId, title)` | `Boolean(String, String)` | Sets the title |
+| `SetDescription(updateId, description)` | `Boolean(String, String)` | Sets the description |
+| `SetMetadata(updateId, metadata)` | `Boolean(String, String)` | Stores game-defined text with the item |
+| `SetTags(updateId, tags)` | `Boolean(String, String)` | Replaces the tags (comma-separated) |
+| `SetVisibility(updateId, visibility)` | `Boolean(String, Integer)` | Sets a `WorkshopVisibility` |
+| `SetContent(updateId, folder)` | `Boolean(String, String)` | Uploads a folder's files as the item's content |
+| `SetPreview(updateId, file)` | `Boolean(String, String)` | Sets the preview image |
+| `SubmitUpdate(updateId, changeNote)` | `Request(String, String)` | Sends the update |
+| `UpdateStatus(updateId)` | `Integer(String)` | A `WorkshopUpdateStatus` for a submitted update |
+| `UpdateProgress(updateId)` | `Float(String)` | Progress of the current upload stage, `0` to `1` |
+| `DeleteItem(itemId)` | `Request(String)` | Deletes the player's item |
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `SubscribedCount` | `Integer` (read-only) | Items the player subscribed to |
+
+### Behavior Notes
+
+- **Using subscribed items.** Steam downloads subscribed items in the background. Read an item's
+  files from `InstallFolder` once `IsInstalled` is `TRUE`; call `Download(itemId, TRUE)` for one
+  that `NeedsUpdate`, and watch for `EventKind.WorkshopItemInstalled` (EventText: the item id)
+  and `EventKind.WorkshopItemDownloaded` (EventFlag: success, EventResultCode: the provider
+  result). `EventKind.WorkshopSubscriptionChanged` reports subscriptions made in the overlay or
+  on the website (EventFlag `TRUE` for a subscription).
+- **Queries.** A query request completes with `ItemCount` items read with `Request.ItemAt(i)` as
+  `WorkshopItem` objects, `Value` holding the number of matching items on every page (pages hold
+  up to 50 items on Steam), and `Flag` set when Steam answered from its local cache. Queries return
+  ready-to-use items made for the running app. `requiredTags` keeps items carrying every listed
+  tag, and `searchText` keeps items whose title or description matches; use
+  `WorkshopQuery.TextSearch` to rank by the match. `QueryItems` takes at most 50 ids on Steam.
+- **Publishing.** `CreateItem` completes with the new item id in `Text`. `StartUpdate` then
+  returns an update id for the setters, and `SubmitUpdate` completes with the item id in `Text`.
+  When `Flag` is `TRUE` on either request, the player must accept the Steam Workshop agreement
+  before the item becomes visible; open `steam://url/CommunityFilePage/<itemId>` with
+  `Overlay.OpenWebPage` to show it. Content folders and preview files resolve against the working
+  directory, and a missing one returns `FALSE` with a diagnostic such as
+  `Services: Workshop.SetContent found no folder at '/path'`. Only the player's own items can be
+  updated or deleted.
+- **Failures.** A request Steam refuses fails with the provider result, for example
+  `Steam: SubscribeItem('4000000000') failed (EResult 9)`.
+- **Ids.** On Steam, item ids must be integers in `1..18446744073709551615` and update ids in
+  `0..18446744073709551614`; anything else traps while Steam is active, such as
+  `Services.Workshop.IsInstalled: Steam Workshop item id 'abc' must be an integer in 1..18446744073709551615`.
+- **Traps.** Empty ids, unknown constants, pages below 1, and more than 100 ids in `QueryItems`
+  trap whether or not a provider is started.
+
+### Zia Example
+
+```zia
+module Leagues;
+
+bind Zanna.Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Time.Clock as Clock;
+bind Zanna.IO.Path as Path;
+bind Zanna.Services as Services;
+
+// Load every custom league the player subscribed to; download the ones that are not ready.
+func loadSubscribedLeagues() {
+    var i = 0;
+    while i < Services.Workshop.SubscribedCount {
+        var id = Services.Workshop.SubscribedIdAt(i);
+        if Services.Workshop.IsInstalled(id) && !Services.Workshop.NeedsUpdate(id) {
+            Say("League files in " + Path.Join(Services.Workshop.InstallFolder(id), "league.json"));
+        } else {
+            Services.Workshop.Download(id, true);
+        }
+        i = i + 1;
+    }
+}
+
+// Publish a league folder the player built; returns once Steam has the item.
+func publishLeague(folder: String, title: String) {
+    var created = Services.Workshop.CreateItem();
+    while !created.IsDone {
+        Services.Platform.Update();
+        Clock.Sleep(16);
+    }
+    if !created.Succeeded {
+        Say("Could not create the item: " + created.Error);
+        return;
+    }
+    var update = Services.Workshop.StartUpdate(created.Text);
+    Services.Workshop.SetTitle(update, title);
+    Services.Workshop.SetTags(update, "league");
+    Services.Workshop.SetContent(update, folder);
+    Services.Workshop.SetVisibility(update, Services.WorkshopVisibility.Public);
+    var submitted = Services.Workshop.SubmitUpdate(update, "First upload");
+    while !submitted.IsDone {
+        Services.Platform.Update();
+        Say("Uploading " + Fmt.NumFixed(Services.Workshop.UpdateProgress(update) * 100.0, 0) + "%");
+        Clock.Sleep(250);
+    }
+    if submitted.Succeeded && submitted.Flag {
+        // The item stays hidden until the player accepts the Workshop agreement.
+        Services.Overlay.OpenWebPage("steam://url/CommunityFilePage/" + submitted.Text, false);
+    }
+}
+
+func start() {
+    if Services.Platform.Init("steam", "480").IsErr {
+        return;
+    }
+    loadSubscribedLeagues();
+
+    var popular = Services.Workshop.Query(Services.WorkshopQuery.Popular, 1, "league", "");
+    while !popular.IsDone {
+        Services.Platform.Update();
+        Clock.Sleep(16);
+    }
+    var i = 0;
+    while i < popular.ItemCount {
+        var item = popular.ItemAt(i);
+        Say(item.Title + " (" + Fmt.Int(item.VotesUp) + " votes up)");
+        i = i + 1;
+    }
+    Services.Platform.Shutdown();
+}
+```
+
+---
+
+## Zanna.Services.WorkshopItem
+
+One Workshop item returned by a query. Items keep their values after the request is released.
+
+**Type:** Instance class (returned by `Request.ItemAt`)
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `Id` | `String` (read-only) | Item id |
+| `Title` | `String` (read-only) | Title |
+| `Description` | `String` (read-only) | Description |
+| `OwnerId` | `String` (read-only) | The author's user id (decimal SteamID64 on Steam) |
+| `Tags` | `String` (read-only) | Comma-separated tags |
+| `PreviewUrl` | `String` (read-only) | URL of the preview image, or `""` |
+| `Metadata` | `String` (read-only) | Game-defined text set with `Workshop.SetMetadata`, or `""` |
+| `Created` | `Integer` (read-only) | Creation time in Unix seconds |
+| `Updated` | `Integer` (read-only) | Last update time in Unix seconds |
+| `Visibility` | `Integer` (read-only) | A `WorkshopVisibility` value |
+| `VotesUp` | `Integer` (read-only) | Up votes |
+| `VotesDown` | `Integer` (read-only) | Down votes |
+| `Size` | `Integer` (read-only) | Content size in bytes |
+| `Score` | `Float` (read-only) | Vote score from `0` to `1` |
+
+---
+
 ## Zanna.Services.Steam
 
 Steam-only capabilities. Every query returns a neutral value unless Steam is the active provider;
@@ -802,7 +1366,8 @@ Steam-only capabilities. Every query returns a neutral value unless Steam is the
 - `RestartAppIfNecessary(appId)` returns `FALSE` when the game was launched by Steam, when a
   development `steam_appid.txt` file is present, or when the redistributable cannot be loaded (the
   reason goes to `Platform.Diagnostics()`). Ids outside `1..4294967295` trap. Use it in release
-  builds, before `Platform.Init`.
+  builds, before `Platform.Init`: `Init` sets `SteamAppId` for the process, and from then on Steam
+  treats the game as launched through the client and `RestartAppIfNecessary` returns `FALSE`.
 - Redistributables older than Steamworks SDK 1.65 report only `SteamHardware.SteamDeck` or
   `SteamHardware.None`, and `IsUnderProton` is always `FALSE`. Use hardware values for defaults and
   analytics, not to gate features.
@@ -823,7 +1388,7 @@ All constant classes are static and readable from any thread. Values are stable.
 | `LibraryNotFound`     | 3     | The provider's redistributable library file does not exist         |
 | `LibraryIncompatible` | 4     | The library failed to load or lacks a required export               |
 | `UnsupportedPlatform` | 5     | The provider ships no redistributable for this OS and architecture  |
-| `ClientNotRunning`    | 6     | The platform client (for example Steam) is not running              |
+| `ClientNotRunning`    | 6     | The platform client (for example Steam) is not running or not installed |
 | `VersionMismatch`     | 7     | The platform client is older than the redistributable requires      |
 | `InitFailed`          | 8     | Initialization failed for another reason                            |
 
@@ -837,11 +1402,18 @@ All constant classes are static and readable from any thread. Values are stable.
 | `ConnectFailed`           | 3     | `EventResultCode`: provider result; `EventFlag`: still retrying                  |
 | `OverlayChanged`          | 4     | `EventFlag`: overlay open; `EventValue`: `1` when the user opened or closed it   |
 | `DlcInstalled`            | 5     | `EventText` and `EventValue`: the DLC id                                         |
-| `LaunchParametersChanged` | 6     | —                                                                                |
+| `LaunchParametersChanged` | 6     | — (read `LaunchCommandLine` and `LaunchParameter` again)                         |
 | `ServiceShutdown`         | 7     | — (save and call `Platform.Shutdown()`)                                          |
 | `StatsStored`             | 8     | `EventFlag`: stored successfully; `EventResultCode`: provider result             |
 | `AchievementStored`       | 9     | `EventText`: achievement id; `EventFlag`: unlocked; `EventValue` of `EventTotal`: progress |
 | `TextInputDismissed`      | 10    | — (the floating keyboard closed)                                                 |
+| `AchievementIconReady`    | 11    | `EventText`: achievement id; `EventFlag`: unlocked icon; `EventValue`: `1` when the icon exists |
+| `ControllerConnected`     | 12    | `EventText`: controller id (while `ActionInput` runs)                            |
+| `ControllerDisconnected`  | 13    | `EventText`: controller id                                                       |
+| `ControllerConfigured`    | 14    | `EventText`: controller id; `EventFlag`: bindings use actions; `EventValue`: binding revision |
+| `WorkshopItemInstalled`   | 15    | `EventText`: item id                                                             |
+| `WorkshopItemDownloaded`  | 16    | `EventText`: item id; `EventFlag`: succeeded; `EventResultCode`: provider result |
+| `WorkshopSubscriptionChanged` | 17 | `EventText`: item id; `EventFlag`: subscribed                                  |
 
 ### Zanna.Services.Feature
 
@@ -858,6 +1430,13 @@ All constant classes are static and readable from any thread. Values are stable.
 | `Overlay`      | 9     | `Zanna.Services.Overlay`                 |
 | `TextInput`    | 10    | `Zanna.Services.OnScreenKeyboard`        |
 | `Cloud`        | 11    | `Zanna.Services.Cloud`                   |
+| `LaunchParameters` | 12 | `LaunchCommandLine`, `LaunchParameter`  |
+| `Timeline`     | 13    | `Zanna.Services.Timeline`                |
+| `AppDetails`   | 14    | `DlcCount`, `DlcIdAt`, `DlcNameAt`, `DlcAvailableAt`, `BuildId`, `BranchName` |
+| `AchievementIcons` | 15 | `Achievements.IconWidth`, `IconHeight`, `IconRgba`                        |
+| `AchievementPercentages` | 16 | `Achievements.RequestGlobalPercentages`, `GlobalPercent`          |
+| `ActionInput`  | 17    | `Zanna.Services.ActionInput`             |
+| `Workshop`     | 18    | `Zanna.Services.Workshop`                |
 
 ### Zanna.Services.RequestKind
 
@@ -868,6 +1447,105 @@ All constant classes are static and readable from any thread. Values are stable.
 | `LeaderboardUpload`   | 3     | `Leaderboards.Upload`                        |
 | `LeaderboardDownload` | 4     | `Leaderboards.Download`                      |
 | `TextInput`           | 5     | `OnScreenKeyboard.RequestText`               |
+| `TimelineEventRecording` | 6  | `Timeline.RequestEventRecording`             |
+| `TimelinePhaseRecording` | 7  | `Timeline.RequestPhaseRecording`             |
+| `AchievementPercentages` | 8  | `Achievements.RequestGlobalPercentages`      |
+| `WorkshopQuery`       | 9     | `Workshop.Query`, `QueryUser`, `QueryItems`  |
+| `WorkshopSubscribe`   | 10    | `Workshop.Subscribe`                         |
+| `WorkshopUnsubscribe` | 11    | `Workshop.Unsubscribe`                       |
+| `WorkshopCreate`      | 12    | `Workshop.CreateItem`                        |
+| `WorkshopSubmit`      | 13    | `Workshop.SubmitUpdate`                      |
+| `WorkshopDelete`      | 14    | `Workshop.DeleteItem`                        |
+
+### Zanna.Services.TimelineMode
+
+| Name            | Value | Meaning                                                 |
+|-----------------|-------|---------------------------------------------------------|
+| `Playing`       | 1     | The player is playing                                   |
+| `Staging`       | 2     | Play is being set up (a lobby, a lineup screen)         |
+| `Menus`         | 3     | The player is in menus                                  |
+| `LoadingScreen` | 4     | A loading screen is shown                               |
+
+### Zanna.Services.TimelineClip
+
+| Name       | Value | Meaning                                                  |
+|------------|-------|----------------------------------------------------------|
+| `None`     | 1     | Never suggest the event as a clip                        |
+| `Standard` | 2     | May suggest the event as a clip                          |
+| `Featured` | 3     | Suggest the event as a clip ahead of standard events     |
+
+### Zanna.Services.ControllerType
+
+| Name                       | Value | Controller                                   |
+|----------------------------|-------|----------------------------------------------|
+| `Unknown`                  | 0     | Unknown                                      |
+| `SteamController`          | 1     | Steam Controller (2015)                      |
+| `Xbox360`                  | 2     | Xbox 360 controller                          |
+| `XboxOne`                  | 3     | Xbox One or Xbox Series controller           |
+| `GenericGamepad`           | 4     | Generic (DirectInput) gamepad                |
+| `PlayStation4`             | 5     | PlayStation 4 controller                     |
+| `AppleMfi`                 | 6     | Apple MFi controller                         |
+| `Android`                  | 7     | Android controller                           |
+| `SwitchJoyConPair`         | 8     | A pair of Nintendo Switch Joy-Cons           |
+| `SwitchJoyConSingle`       | 9     | A single Nintendo Switch Joy-Con             |
+| `SwitchPro`                | 10    | Nintendo Switch Pro controller               |
+| `MobileTouch`              | 11    | On-screen touch controller (Steam Link)      |
+| `PlayStation3`             | 12    | PlayStation 3 controller                     |
+| `PlayStation5`             | 13    | PlayStation 5 controller                     |
+| `SteamDeck`                | 14    | Steam Deck built-in controls                 |
+| `SteamOSHandheld`          | 15    | Built-in controls of another SteamOS handheld |
+| `Switch2Pro`               | 16    | Nintendo Switch 2 Pro controller             |
+| `SteamController2026`      | 17    | Steam Controller (2026)                      |
+| `SteamFrameControllerPair` | 18    | Steam Frame controller pair                  |
+
+### Zanna.Services.GlyphSize
+
+| Name     | Value | Size on Steam       |
+|----------|-------|---------------------|
+| `Small`  | 0     | 32 by 32 pixels     |
+| `Medium` | 1     | 128 by 128 pixels   |
+| `Large`  | 2     | 256 by 256 pixels   |
+
+### Zanna.Services.WorkshopQuery
+
+| Name              | Value | Order                                         |
+|-------------------|-------|-----------------------------------------------|
+| `Popular`         | 1     | By votes                                      |
+| `Newest`          | 2     | By publication date, newest first             |
+| `Trending`        | 3     | By recent votes                               |
+| `MostSubscribed`  | 4     | By unique subscriptions                       |
+| `RecentlyUpdated` | 5     | By last update, newest first                  |
+| `TextSearch`      | 6     | By how well items match the search text       |
+
+### Zanna.Services.WorkshopList
+
+| Name         | Value | The player's items                   |
+|--------------|-------|--------------------------------------|
+| `Published`  | 1     | Items the player published           |
+| `Subscribed` | 2     | Items the player subscribed to       |
+| `Favorited`  | 3     | Items the player marked as favorites |
+| `VotedUp`    | 4     | Items the player voted up            |
+| `Played`     | 5     | Items the player used                |
+
+### Zanna.Services.WorkshopVisibility
+
+| Name          | Value | Visible to                          |
+|---------------|-------|-------------------------------------|
+| `Public`      | 0     | Everyone                            |
+| `FriendsOnly` | 1     | The author's friends                |
+| `Private`     | 2     | The author                          |
+| `Unlisted`    | 3     | Anyone with the link, but not listed |
+
+### Zanna.Services.WorkshopUpdateStatus
+
+| Name               | Value | Stage                                   |
+|--------------------|-------|-----------------------------------------|
+| `None`             | 0     | No upload in progress for the update id |
+| `PreparingConfig`  | 1     | Processing the item's settings          |
+| `PreparingContent` | 2     | Reading the content files               |
+| `UploadingContent` | 3     | Uploading the content                   |
+| `UploadingPreview` | 4     | Uploading the preview image             |
+| `Committing`       | 5     | Committing the changes                  |
 
 ### Zanna.Services.LeaderboardScope
 
@@ -1023,6 +1701,11 @@ options. The full reference is [Steam depots](../tools/cli.md#steam-depots).
   `TRUE`.
 - **Steam Deck**: games with text entry should show `OnScreenKeyboard.ShowFloating` when a text field
   gains focus, or use `OnScreenKeyboard.RequestText`.
+- **Steam Input**: upload the action manifest and the default configurations in the app admin's
+  Steam Input section and opt into the Steam Input API there; released games then call
+  `ActionInput.Start("")`.
+- **Workshop**: enable the Workshop for the app in the app admin (Workshop settings), define the
+  tags players may use, and accept ready-to-use items there before publishing from the game.
 
 ### Overlay and startup order
 
@@ -1057,10 +1740,52 @@ stats changed since the last commit.
 - To exercise the unavailable path deliberately, point `ZANNA_SERVICES_STEAM_LIBRARY` at a file that
   does not exist; `Init` then fails with `Status.LibraryNotFound`.
 - Zanna's own tests run the Steam provider against from-scratch fake `steam_api` libraries built by
-  the test tree (`src/tests/runtime/RTServicesFakeSteamApi.c`), on the VM and in native binaries.
-  The fakes model achievements, stats, a leaderboard with late-arriving player names, rich
-  presence, overlay requests, both keyboards, and cloud files, plus a profile that exports none of
-  the player features.
+  the test tree (`src/tests/runtime/RTServicesFakeSteamApi.c`), on the VM and in native binaries,
+  from Zia and from BASIC. The fakes model achievements (with icons that load a frame later, an
+  achievement without icons, and global percentages), stats, a leaderboard with late-arriving
+  player names, rich presence, overlay requests, both keyboards, cloud files, launch parameters,
+  the timeline, app details, Steam Input with two controllers, and a Workshop with three items,
+  plus a profile that exports none of the player features.
+
+### Checking a real Steam setup
+
+[`examples/apps/steam-check`](../../examples/apps/steam-check/) runs every class against a
+running Steam client and prints one `PASS`, `FAIL`, `SKIP`, or `INFO` line per check. It is
+read-only unless given `--write`, and the write checks put the account back where Steam allows it.
+On 2026-09-14 it passed on macOS arm64 with Spacewar (480), as a VM run and as a
+`zanna package --target steam-macos` bundle, against the SDK 1.61 redistributable and against
+the SDK 1.65-generation library the Steam client ships:
+
+- **Lifecycle:** `Init`, `Shutdown`, and a second `Init` in the same process.
+- **Identity:** user id, name, language, license, and online state.
+- **Player count.**
+- **Achievements and stats:** readable right after `Init`, even when Steam did not launch the
+  game. An unlock, commit, and relock arrive as `AchievementStored` then `StatsStored`.
+- **Leaderboards:** find, find-or-create, keep-best upload, and Global, AroundUser, and Friends
+  downloads with player names.
+- **Presence:** `Set` and `Clear`.
+- **Cloud:** write, read, delete, and quota.
+- **Launch parameters, timeline, and app details:** every member reached Steam.
+- **Achievement icons** (2026-09-15): 64 by 64 RGBA icons that decode to the Steamworks
+  artwork, loaded after one `AchievementIconReady` event; Spacewar's icon-less achievement
+  is reported once. Spacewar has no global percentages, so `RequestGlobalPercentages` fails
+  with `ResultCode` `2` there (Steam's public Web API reports none for app 480 either), and only
+  the fakes cover the success path.
+- **Steam Input** (2026-09-15, no controller attached): `ActionInput.Start` initialized Steam
+  Input on both redistributables, Steam refused the manifest until a controller is used with the
+  app ("Timed out waiting for game mapping!", about 1.1 seconds), origin labels and glyph files
+  resolved, and `Stop` shut Steam Input down. Actions, origins per controller, rumble, lights, the
+  binding panel, and device events need a controller and are covered by the fakes only.
+- **Workshop** (2026-09-15): on both redistributables the popular and newest pages of Spacewar's
+  Workshop returned 50 of 4,317 items with titles, authors, tags, votes, scores, sizes, dates,
+  metadata, and preview URLs, repeated queries reported Steam's cache, and item and user-list
+  queries completed. Subscribing, downloads, and publishing change the account (and would download
+  or publish content), so only the fakes cover them.
+
+Steam's overlay, the keyboards, and presence seen by a friend need a Steam launch, Big Picture
+or Steam Deck, and a second account; those are still to be checked. Under the hardened runtime
+the bundle loads the redistributable only with the entitlements `zanna package` adds; without
+them `Init` fails with `LibraryIncompatible` and macOS's library validation reason.
 
 ---
 
@@ -1074,7 +1799,9 @@ Providers are C tables compiled into the `zanna_rt_services` runtime component. 
    `rt_services_stat_ops`, `rt_services_leaderboard_ops`, `rt_services_presence_ops`,
    `rt_services_overlay_ops`, `rt_services_text_input_ops`, `rt_services_cloud_ops`) and handle the
    request kinds it supports in `begin_request`. Leave the rest `NULL`; the neutral classes then
-   report neutral values and failed requests.
+   report neutral values and failed requests. `begin_request` must never complete the request it
+   is starting: the core registers the request only after the callback returns. Fail by returning
+   `0` with a message, and complete later from `pump`.
 3. List it in the provider registry in `src/runtime/services/rt_services.c`.
 4. Optionally add a `Zanna.Services.<Provider>` extension class for store-only features.
 5. If the store uploads depot directories, add a `StoreProfile` row in

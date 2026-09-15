@@ -21,9 +21,13 @@ which returns a `Zanna.Services.EventKind` and exposes the payload through `Even
 
 When no provider is started (no Steam client, no redistributable, or a non-Steam build) every
 query returns an empty string, `0`, or `false` and never traps, so one build runs everywhere.
-Stateful members must be called on the main thread. Call `Shutdown` on the quit path. The
-player features live in `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`,
-`TextInput`, and `Cloud`.
+Stateful members must be called on the main thread. Call `Shutdown` on the quit path.
+`LaunchCommandLine` and `LaunchParameter(key)` read what the platform passed through a launch
+URL (for example a friend joining through rich presence); read them again after
+`EventKind.LaunchParametersChanged`. `DlcCount` with `DlcIdAt`, `DlcNameAt`, and
+`DlcAvailableAt` lists the application's DLC, and `BuildId` and `BranchName` identify the
+installed build. The player features live in `Achievements`, `Stats`, `Leaderboards`,
+`Presence`, `Overlay`, `OnScreenKeyboard`, `Cloud`, and `Timeline`.
 
 #### Properties
 
@@ -38,6 +42,10 @@ player features live in `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Ov
 | <a id="zanna-services-platform-language"></a>`Language` | `str` | read-only |
 | <a id="zanna-services-platform-islicensed"></a>`IsLicensed` | `i1` | read-only |
 | <a id="zanna-services-platform-isonline"></a>`IsOnline` | `i1` | read-only |
+| <a id="zanna-services-platform-launchcommandline"></a>`LaunchCommandLine` | `str` | read-only |
+| <a id="zanna-services-platform-dlccount"></a>`DlcCount` | `i64` | read-only |
+| <a id="zanna-services-platform-buildid"></a>`BuildId` | `i64` | read-only |
+| <a id="zanna-services-platform-branchname"></a>`BranchName` | `str` | read-only |
 | <a id="zanna-services-platform-eventresultcode"></a>`EventResultCode` | `i64` | read-only |
 | <a id="zanna-services-platform-eventtext"></a>`EventText` | `str` | read-only |
 | <a id="zanna-services-platform-eventvalue"></a>`EventValue` | `i64` | read-only |
@@ -58,6 +66,10 @@ player features live in `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Ov
 | <a id="zanna-services-platform-isdlcinstalled"></a>`IsDlcInstalled` | `i1(str)` | `Zanna.Services.Platform.IsDlcInstalled` |
 | <a id="zanna-services-platform-requestplayercount"></a>`RequestPlayerCount` | `obj<Zanna.Services.Request>()` | `Zanna.Services.Platform.RequestPlayerCount` |
 | <a id="zanna-services-platform-diagnostics"></a>`Diagnostics` | `seq<str>()` | `Zanna.Services.Platform.Diagnostics` |
+| <a id="zanna-services-platform-launchparameter"></a>`LaunchParameter` | `str(str)` | `Zanna.Services.Platform.LaunchParameter` |
+| <a id="zanna-services-platform-dlcidat"></a>`DlcIdAt` | `str(i64)` | `Zanna.Services.Platform.DlcIdAt` |
+| <a id="zanna-services-platform-dlcnameat"></a>`DlcNameAt` | `str(i64)` | `Zanna.Services.Platform.DlcNameAt` |
+| <a id="zanna-services-platform-dlcavailableat"></a>`DlcAvailableAt` | `i1(i64)` | `Zanna.Services.Platform.DlcAvailableAt` |
 
 <a id="zanna-services-request"></a>
 ### `Zanna.Services.Request`
@@ -71,8 +83,11 @@ waiting.
 `Succeeded`, `ResultCode`, `Value`, `Flag`, and `Text` describe the result (their meaning
 depends on `Kind`), and `Error` holds the failure message. Leaderboard downloads also carry
 entries: `EntryCount`, then `EntryRank(i)`, `EntryScore(i)`, `EntryUserId(i)`, and
-`EntryUserName(i)` for `i` in `0..EntryCount-1` (other indexes trap). Requests that cannot start
-are returned already completed as failed, and `Platform.Shutdown` cancels outstanding requests.
+`EntryUserName(i)` for `i` in `0..EntryCount-1` (other indexes trap). Some kinds also carry
+integer details read with `Detail(i)` for `i` in `0..DetailCount-1`. Workshop queries carry
+`ItemCount` items read with `ItemAt(i)` as `Zanna.Services.WorkshopItem` objects. Requests that
+cannot start are returned already completed as failed, and `Platform.Shutdown` cancels
+outstanding requests.
 
 #### Properties
 
@@ -87,6 +102,8 @@ are returned already completed as failed, and `Platform.Shutdown` cancels outsta
 | <a id="zanna-services-request-text"></a>`Text` | `str` | read-only |
 | <a id="zanna-services-request-error"></a>`Error` | `str` | read-only |
 | <a id="zanna-services-request-entrycount"></a>`EntryCount` | `i64` | read-only |
+| <a id="zanna-services-request-detailcount"></a>`DetailCount` | `i64` | read-only |
+| <a id="zanna-services-request-itemcount"></a>`ItemCount` | `i64` | read-only |
 
 #### Methods
 
@@ -96,6 +113,8 @@ are returned already completed as failed, and `Platform.Shutdown` cancels outsta
 | <a id="zanna-services-request-entryscore"></a>`EntryScore` | `i64(i64)` | `Zanna.Services.Request.EntryScore` |
 | <a id="zanna-services-request-entryuserid"></a>`EntryUserId` | `str(i64)` | `Zanna.Services.Request.EntryUserId` |
 | <a id="zanna-services-request-entryusername"></a>`EntryUserName` | `str(i64)` | `Zanna.Services.Request.EntryUserName` |
+| <a id="zanna-services-request-detail"></a>`Detail` | `i64(i64)` | `Zanna.Services.Request.Detail` |
+| <a id="zanna-services-request-itemat"></a>`ItemAt` | `obj<Zanna.Services.WorkshopItem>(i64)` | `Zanna.Services.Request.ItemAt` |
 
 <a id="zanna-services-achievements"></a>
 ### `Zanna.Services.Achievements`
@@ -110,8 +129,16 @@ Unlocks and inspects the game's platform achievements.
 achievement, and `Count` with `IdAt(index)` enumerates them. `Clear` relocks an achievement for
 testing.
 
-Without a provider that supports achievements every member returns `false`, `0`, or `""`. An
-empty id traps. A rejected call returns `false` and `Platform.Diagnostics` explains why.
+`IconWidth`, `IconHeight`, and `IconRgba` read the icon for the achievement's current state
+(locked or unlocked) as `IconWidth * IconHeight * 4` RGBA bytes, ready for `Pixels` or a
+texture. Platforms load icons on demand: while an icon loads these return `0` and empty
+`Bytes`, and an `EventKind.AchievementIconReady` event names the achievement once it is ready.
+`RequestGlobalPercentages` downloads the share of players who unlocked each achievement;
+after the request succeeds `GlobalPercent(id)` returns it in the range 0 to 100.
+
+Without a provider that supports achievements every member returns `false`, `0`, `""`, or
+empty `Bytes`. An empty id traps. A rejected call returns `false` and `Platform.Diagnostics`
+explains why.
 
 #### Properties
 
@@ -132,6 +159,11 @@ empty id traps. A rejected call returns `false` and `Platform.Diagnostics` expla
 | <a id="zanna-services-achievements-displayname"></a>`DisplayName` | `str(str)` | `Zanna.Services.Achievements.DisplayName` |
 | <a id="zanna-services-achievements-description"></a>`Description` | `str(str)` | `Zanna.Services.Achievements.Description` |
 | <a id="zanna-services-achievements-ishidden"></a>`IsHidden` | `i1(str)` | `Zanna.Services.Achievements.IsHidden` |
+| <a id="zanna-services-achievements-iconwidth"></a>`IconWidth` | `i64(str)` | `Zanna.Services.Achievements.IconWidth` |
+| <a id="zanna-services-achievements-iconheight"></a>`IconHeight` | `i64(str)` | `Zanna.Services.Achievements.IconHeight` |
+| <a id="zanna-services-achievements-iconrgba"></a>`IconRgba` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.Services.Achievements.IconRgba` |
+| <a id="zanna-services-achievements-requestglobalpercentages"></a>`RequestGlobalPercentages` | `obj<Zanna.Services.Request>()` | `Zanna.Services.Achievements.RequestGlobalPercentages` |
+| <a id="zanna-services-achievements-globalpercent"></a>`GlobalPercent` | `f64(str)` | `Zanna.Services.Achievements.GlobalPercent` |
 
 <a id="zanna-services-stats"></a>
 ### `Zanna.Services.Stats`
@@ -301,6 +333,207 @@ synchronization configured outside the game (Steam Auto-Cloud). An empty file na
 | <a id="zanna-services-cloud-beginbatch"></a>`BeginBatch` | `i1()` | `Zanna.Services.Cloud.BeginBatch` |
 | <a id="zanna-services-cloud-endbatch"></a>`EndBatch` | `i1()` | `Zanna.Services.Cloud.EndBatch` |
 
+<a id="zanna-services-timeline"></a>
+### `Zanna.Services.Timeline`
+
+Marks the platform's game recording timeline with events, state, and phases.
+
+`Zanna.Services.Timeline` annotates background gameplay recording (Steam game recording) so
+players can find and clip moments later. `SetGameMode` colors the timeline bar with a
+`TimelineMode`, and `SetTooltip(text, offsetSeconds)` describes the current state, such as the
+score. `AddEvent(title, description, icon, priority, offsetSeconds, clip)` marks a moment and
+`AddRangeEvent` a finished span; `StartRangeEvent`, `UpdateRangeEvent`, and `EndRangeEvent`
+follow a span as it happens, and `RemoveEvent` deletes one. Event methods return an event id
+(`""` when nothing was added). Offsets are seconds relative to now (negative is the past),
+priorities range over `0..1000`, and `clip` is a `TimelineClip` value.
+
+Phases group a longer stretch such as a match: `StartPhase`, `EndPhase`, `SetPhaseId`,
+`AddPhaseTag`, and `SetPhaseAttribute`. `RequestEventRecording` and `RequestPhaseRecording`
+return a `Zanna.Services.Request` that reports what was recorded, and `OpenOverlayToPhase` and
+`OpenOverlayToEvent` show it in the overlay. Empty titles, ids, tag names, or groups, unknown
+constants, and out-of-range priorities trap. Without a provider that supports the timeline,
+members return `false` or `""`.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-services-timeline-setgamemode"></a>`SetGameMode` | `i1(i64)` | `Zanna.Services.Timeline.SetGameMode` |
+| <a id="zanna-services-timeline-settooltip"></a>`SetTooltip` | `i1(str,f64)` | `Zanna.Services.Timeline.SetTooltip` |
+| <a id="zanna-services-timeline-cleartooltip"></a>`ClearTooltip` | `i1(f64)` | `Zanna.Services.Timeline.ClearTooltip` |
+| <a id="zanna-services-timeline-addevent"></a>`AddEvent` | `str(str,str,str,i64,f64,i64)` | `Zanna.Services.Timeline.AddEvent` |
+| <a id="zanna-services-timeline-addrangeevent"></a>`AddRangeEvent` | `str(str,str,str,i64,f64,f64,i64)` | `Zanna.Services.Timeline.AddRangeEvent` |
+| <a id="zanna-services-timeline-startrangeevent"></a>`StartRangeEvent` | `str(str,str,str,i64,f64,i64)` | `Zanna.Services.Timeline.StartRangeEvent` |
+| <a id="zanna-services-timeline-updaterangeevent"></a>`UpdateRangeEvent` | `i1(str,str,str,str,i64,i64)` | `Zanna.Services.Timeline.UpdateRangeEvent` |
+| <a id="zanna-services-timeline-endrangeevent"></a>`EndRangeEvent` | `i1(str,f64)` | `Zanna.Services.Timeline.EndRangeEvent` |
+| <a id="zanna-services-timeline-removeevent"></a>`RemoveEvent` | `i1(str)` | `Zanna.Services.Timeline.RemoveEvent` |
+| <a id="zanna-services-timeline-requesteventrecording"></a>`RequestEventRecording` | `obj<Zanna.Services.Request>(str)` | `Zanna.Services.Timeline.RequestEventRecording` |
+| <a id="zanna-services-timeline-startphase"></a>`StartPhase` | `i1()` | `Zanna.Services.Timeline.StartPhase` |
+| <a id="zanna-services-timeline-endphase"></a>`EndPhase` | `i1()` | `Zanna.Services.Timeline.EndPhase` |
+| <a id="zanna-services-timeline-setphaseid"></a>`SetPhaseId` | `i1(str)` | `Zanna.Services.Timeline.SetPhaseId` |
+| <a id="zanna-services-timeline-addphasetag"></a>`AddPhaseTag` | `i1(str,str,str,i64)` | `Zanna.Services.Timeline.AddPhaseTag` |
+| <a id="zanna-services-timeline-setphaseattribute"></a>`SetPhaseAttribute` | `i1(str,str,i64)` | `Zanna.Services.Timeline.SetPhaseAttribute` |
+| <a id="zanna-services-timeline-requestphaserecording"></a>`RequestPhaseRecording` | `obj<Zanna.Services.Request>(str)` | `Zanna.Services.Timeline.RequestPhaseRecording` |
+| <a id="zanna-services-timeline-openoverlaytophase"></a>`OpenOverlayToPhase` | `i1(str)` | `Zanna.Services.Timeline.OpenOverlayToPhase` |
+| <a id="zanna-services-timeline-openoverlaytoevent"></a>`OpenOverlayToEvent` | `i1(str)` | `Zanna.Services.Timeline.OpenOverlayToEvent` |
+
+<a id="zanna-services-actioninput"></a>
+### `Zanna.Services.ActionInput`
+
+Reads the platform's action-based controller input.
+
+`Zanna.Services.ActionInput` reads controllers through the platform's action system (Steam
+Input). The game names what the player does in an action manifest, such as `swing` or `aim`,
+and the player binds those actions to any controller in the platform's own interface.
+`Start(manifestPath)` begins, with the manifest file or `""` for the configuration published
+with the platform, and `Stop` ends. `ControllerCount`, `ControllerIdAt`, `ControllerType`,
+and `GamepadIndex` describe the connected controllers, and the pump keeps them current.
+
+`ActivateActionSet` selects a group of actions, and `ActivateLayer`, `DeactivateLayer`, and
+`DeactivateAllLayers` stack layers on top of it. `IsPressed` reads a digital action,
+`AnalogX` and `AnalogY` an analog one, and `IsActionActive` whether an action is available in
+the active set. `ActionLabel` returns the action's localized name. `OriginCount` and
+`OriginAt` list the physical inputs bound to an action, and `OriginLabel` and
+`OriginGlyphPath` describe one for button prompts. `Vibrate`, `SetLedColor`, and
+`ResetLedColor` drive feedback, and `ShowBindingPanel` opens the platform's binding screen.
+
+An empty controller id means every connected controller: activation also reaches controllers
+connected later, `IsPressed` and `IsActionActive` ask whether any controller qualifies,
+`AnalogX` and `AnalogY` read the controller whose vector is longest, feedback reaches every
+controller, and the other members use the first controller. Empty action, set, and layer
+names, negative origins, unknown `GlyphSize` values, strengths outside 0..1, and color
+components outside 0..255 trap. Before `Start`, or without a provider that supports action
+input, members return `false`, `0`, `-1`, or `""`.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-actioninput-isstarted"></a>`IsStarted` | `i1` | read-only |
+| <a id="zanna-services-actioninput-controllercount"></a>`ControllerCount` | `i64` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-services-actioninput-start"></a>`Start` | `i1(str)` | `Zanna.Services.ActionInput.Start` |
+| <a id="zanna-services-actioninput-stop"></a>`Stop` | `i1()` | `Zanna.Services.ActionInput.Stop` |
+| <a id="zanna-services-actioninput-controlleridat"></a>`ControllerIdAt` | `str(i64)` | `Zanna.Services.ActionInput.ControllerIdAt` |
+| <a id="zanna-services-actioninput-controllertype"></a>`ControllerType` | `i64(str)` | `Zanna.Services.ActionInput.ControllerType` |
+| <a id="zanna-services-actioninput-gamepadindex"></a>`GamepadIndex` | `i64(str)` | `Zanna.Services.ActionInput.GamepadIndex` |
+| <a id="zanna-services-actioninput-activateactionset"></a>`ActivateActionSet` | `i1(str,str)` | `Zanna.Services.ActionInput.ActivateActionSet` |
+| <a id="zanna-services-actioninput-activatelayer"></a>`ActivateLayer` | `i1(str,str)` | `Zanna.Services.ActionInput.ActivateLayer` |
+| <a id="zanna-services-actioninput-deactivatelayer"></a>`DeactivateLayer` | `i1(str,str)` | `Zanna.Services.ActionInput.DeactivateLayer` |
+| <a id="zanna-services-actioninput-deactivatealllayers"></a>`DeactivateAllLayers` | `i1(str)` | `Zanna.Services.ActionInput.DeactivateAllLayers` |
+| <a id="zanna-services-actioninput-ispressed"></a>`IsPressed` | `i1(str,str)` | `Zanna.Services.ActionInput.IsPressed` |
+| <a id="zanna-services-actioninput-analogx"></a>`AnalogX` | `f64(str,str)` | `Zanna.Services.ActionInput.AnalogX` |
+| <a id="zanna-services-actioninput-analogy"></a>`AnalogY` | `f64(str,str)` | `Zanna.Services.ActionInput.AnalogY` |
+| <a id="zanna-services-actioninput-isactionactive"></a>`IsActionActive` | `i1(str,str)` | `Zanna.Services.ActionInput.IsActionActive` |
+| <a id="zanna-services-actioninput-actionlabel"></a>`ActionLabel` | `str(str)` | `Zanna.Services.ActionInput.ActionLabel` |
+| <a id="zanna-services-actioninput-origincount"></a>`OriginCount` | `i64(str,str,str)` | `Zanna.Services.ActionInput.OriginCount` |
+| <a id="zanna-services-actioninput-originat"></a>`OriginAt` | `i64(str,str,str,i64)` | `Zanna.Services.ActionInput.OriginAt` |
+| <a id="zanna-services-actioninput-originlabel"></a>`OriginLabel` | `str(i64)` | `Zanna.Services.ActionInput.OriginLabel` |
+| <a id="zanna-services-actioninput-originglyphpath"></a>`OriginGlyphPath` | `str(i64,i64)` | `Zanna.Services.ActionInput.OriginGlyphPath` |
+| <a id="zanna-services-actioninput-vibrate"></a>`Vibrate` | `i1(str,f64,f64)` | `Zanna.Services.ActionInput.Vibrate` |
+| <a id="zanna-services-actioninput-setledcolor"></a>`SetLedColor` | `i1(str,i64,i64,i64)` | `Zanna.Services.ActionInput.SetLedColor` |
+| <a id="zanna-services-actioninput-resetledcolor"></a>`ResetLedColor` | `i1(str)` | `Zanna.Services.ActionInput.ResetLedColor` |
+| <a id="zanna-services-actioninput-showbindingpanel"></a>`ShowBindingPanel` | `i1(str)` | `Zanna.Services.ActionInput.ShowBindingPanel` |
+
+<a id="zanna-services-workshop"></a>
+### `Zanna.Services.Workshop`
+
+Lists, installs, browses, and publishes the game's Workshop items.
+
+`Zanna.Services.Workshop` reads the platform's user-generated content service (Steam
+Workshop). Items are addressed by provider-defined ids. `SubscribedCount` and
+`SubscribedIdAt` list the items the player subscribed to; `IsSubscribed`, `IsInstalled`,
+`NeedsUpdate`, and `IsDownloading` report an item's state, `InstallFolder`, `InstallSize`,
+and `InstallTime` where its files are, and `DownloadedBytes` and `DownloadTotalBytes` a
+download's progress. `Download` fetches or updates an item, and `Subscribe` and
+`Unsubscribe` change the player's subscriptions.
+
+`Query(order, page, requiredTags, searchText)`, `QueryUser(list, page)`, and
+`QueryItems(itemIds)` return a `Zanna.Services.Request` whose `ItemAt(i)` items describe one
+page (`Value` holds the number of matching items). `CreateItem` creates an item owned by the
+player; `StartUpdate` returns an update id that `SetTitle`, `SetDescription`, `SetMetadata`,
+`SetTags`, `SetVisibility`, `SetContent`, and `SetPreview` fill in before `SubmitUpdate`
+sends it, with `UpdateStatus` and `UpdateProgress` following the upload. `DeleteItem`
+removes an item. Lists of tags and ids are comma-separated.
+
+Empty ids, unknown constants, pages below 1, and more than 100 query ids trap. Without a
+provider that supports the Workshop, members return `false`, `0`, or `""` and requests fail.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-workshop-subscribedcount"></a>`SubscribedCount` | `i64` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-services-workshop-subscribedidat"></a>`SubscribedIdAt` | `str(i64)` | `Zanna.Services.Workshop.SubscribedIdAt` |
+| <a id="zanna-services-workshop-issubscribed"></a>`IsSubscribed` | `i1(str)` | `Zanna.Services.Workshop.IsSubscribed` |
+| <a id="zanna-services-workshop-isinstalled"></a>`IsInstalled` | `i1(str)` | `Zanna.Services.Workshop.IsInstalled` |
+| <a id="zanna-services-workshop-needsupdate"></a>`NeedsUpdate` | `i1(str)` | `Zanna.Services.Workshop.NeedsUpdate` |
+| <a id="zanna-services-workshop-isdownloading"></a>`IsDownloading` | `i1(str)` | `Zanna.Services.Workshop.IsDownloading` |
+| <a id="zanna-services-workshop-installfolder"></a>`InstallFolder` | `str(str)` | `Zanna.Services.Workshop.InstallFolder` |
+| <a id="zanna-services-workshop-installsize"></a>`InstallSize` | `i64(str)` | `Zanna.Services.Workshop.InstallSize` |
+| <a id="zanna-services-workshop-installtime"></a>`InstallTime` | `i64(str)` | `Zanna.Services.Workshop.InstallTime` |
+| <a id="zanna-services-workshop-downloadedbytes"></a>`DownloadedBytes` | `i64(str)` | `Zanna.Services.Workshop.DownloadedBytes` |
+| <a id="zanna-services-workshop-downloadtotalbytes"></a>`DownloadTotalBytes` | `i64(str)` | `Zanna.Services.Workshop.DownloadTotalBytes` |
+| <a id="zanna-services-workshop-download"></a>`Download` | `i1(str,i1)` | `Zanna.Services.Workshop.Download` |
+| <a id="zanna-services-workshop-subscribe"></a>`Subscribe` | `obj<Zanna.Services.Request>(str)` | `Zanna.Services.Workshop.Subscribe` |
+| <a id="zanna-services-workshop-unsubscribe"></a>`Unsubscribe` | `obj<Zanna.Services.Request>(str)` | `Zanna.Services.Workshop.Unsubscribe` |
+| <a id="zanna-services-workshop-query"></a>`Query` | `obj<Zanna.Services.Request>(i64,i64,str,str)` | `Zanna.Services.Workshop.Query` |
+| <a id="zanna-services-workshop-queryuser"></a>`QueryUser` | `obj<Zanna.Services.Request>(i64,i64)` | `Zanna.Services.Workshop.QueryUser` |
+| <a id="zanna-services-workshop-queryitems"></a>`QueryItems` | `obj<Zanna.Services.Request>(str)` | `Zanna.Services.Workshop.QueryItems` |
+| <a id="zanna-services-workshop-createitem"></a>`CreateItem` | `obj<Zanna.Services.Request>()` | `Zanna.Services.Workshop.CreateItem` |
+| <a id="zanna-services-workshop-startupdate"></a>`StartUpdate` | `str(str)` | `Zanna.Services.Workshop.StartUpdate` |
+| <a id="zanna-services-workshop-settitle"></a>`SetTitle` | `i1(str,str)` | `Zanna.Services.Workshop.SetTitle` |
+| <a id="zanna-services-workshop-setdescription"></a>`SetDescription` | `i1(str,str)` | `Zanna.Services.Workshop.SetDescription` |
+| <a id="zanna-services-workshop-setmetadata"></a>`SetMetadata` | `i1(str,str)` | `Zanna.Services.Workshop.SetMetadata` |
+| <a id="zanna-services-workshop-settags"></a>`SetTags` | `i1(str,str)` | `Zanna.Services.Workshop.SetTags` |
+| <a id="zanna-services-workshop-setvisibility"></a>`SetVisibility` | `i1(str,i64)` | `Zanna.Services.Workshop.SetVisibility` |
+| <a id="zanna-services-workshop-setcontent"></a>`SetContent` | `i1(str,str)` | `Zanna.Services.Workshop.SetContent` |
+| <a id="zanna-services-workshop-setpreview"></a>`SetPreview` | `i1(str,str)` | `Zanna.Services.Workshop.SetPreview` |
+| <a id="zanna-services-workshop-submitupdate"></a>`SubmitUpdate` | `obj<Zanna.Services.Request>(str,str)` | `Zanna.Services.Workshop.SubmitUpdate` |
+| <a id="zanna-services-workshop-updatestatus"></a>`UpdateStatus` | `i64(str)` | `Zanna.Services.Workshop.UpdateStatus` |
+| <a id="zanna-services-workshop-updateprogress"></a>`UpdateProgress` | `f64(str)` | `Zanna.Services.Workshop.UpdateProgress` |
+| <a id="zanna-services-workshop-deleteitem"></a>`DeleteItem` | `obj<Zanna.Services.Request>(str)` | `Zanna.Services.Workshop.DeleteItem` |
+
+<a id="zanna-services-workshopitem"></a>
+### `Zanna.Services.WorkshopItem`
+
+Describes one Workshop item returned by a query.
+
+`Zanna.Services.WorkshopItem` objects come from `Request.ItemAt` on a completed Workshop query
+and keep their values after the request is released. `Id`, `Title`, `Description`, `OwnerId`
+(the author's user id), `Tags` (comma-separated), `PreviewUrl`, and `Metadata` (game-defined
+text set with `Workshop.SetMetadata`) are strings; `Created` and `Updated` are Unix seconds;
+`Visibility` is a `WorkshopVisibility` value; `VotesUp`, `VotesDown`, and `Size` (bytes) are
+integers; and `Score` is the vote score from 0 to 1.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-workshopitem-id"></a>`Id` | `str` | read-only |
+| <a id="zanna-services-workshopitem-title"></a>`Title` | `str` | read-only |
+| <a id="zanna-services-workshopitem-description"></a>`Description` | `str` | read-only |
+| <a id="zanna-services-workshopitem-ownerid"></a>`OwnerId` | `str` | read-only |
+| <a id="zanna-services-workshopitem-tags"></a>`Tags` | `str` | read-only |
+| <a id="zanna-services-workshopitem-previewurl"></a>`PreviewUrl` | `str` | read-only |
+| <a id="zanna-services-workshopitem-metadata"></a>`Metadata` | `str` | read-only |
+| <a id="zanna-services-workshopitem-created"></a>`Created` | `i64` | read-only |
+| <a id="zanna-services-workshopitem-updated"></a>`Updated` | `i64` | read-only |
+| <a id="zanna-services-workshopitem-visibility"></a>`Visibility` | `i64` | read-only |
+| <a id="zanna-services-workshopitem-votesup"></a>`VotesUp` | `i64` | read-only |
+| <a id="zanna-services-workshopitem-votesdown"></a>`VotesDown` | `i64` | read-only |
+| <a id="zanna-services-workshopitem-size"></a>`Size` | `i64` | read-only |
+| <a id="zanna-services-workshopitem-score"></a>`Score` | `f64` | read-only |
+
 <a id="zanna-services-steam"></a>
 ### `Zanna.Services.Steam`
 
@@ -369,12 +602,23 @@ Defines platform services event kinds returned by Platform.PollEvent.
 (EventFlag is true while retrying) track the online connection. `OverlayChanged` reports the
 platform overlay opening (EventFlag true) or closing; pause single-player games while it is
 open. `DlcInstalled` carries the DLC id in EventText and EventValue,
-`LaunchParametersChanged` reports a relaunch with new parameters, and `ServiceShutdown` asks
+`LaunchParametersChanged` reports a relaunch with new parameters (read them again with
+`Platform.LaunchCommandLine` and `Platform.LaunchParameter`), and `ServiceShutdown` asks
 the game to save and shut the provider down. `StatsStored` reports the result of
 `Stats.Store` (EventFlag is true on success, EventResultCode holds the provider result).
 `AchievementStored` reports a stored unlock (EventFlag true) or progress notification
 (EventValue out of EventTotal) with the achievement id in EventText. `TextInputDismissed`
-reports that the floating keyboard closed. `None` means the queue is empty.
+reports that the floating keyboard closed. `AchievementIconReady` reports that an icon
+finished loading: EventText holds the achievement id, EventFlag is true for the unlocked
+variant, and EventValue is 1 when the achievement has an icon for that state.
+`ControllerConnected` and `ControllerDisconnected` carry the controller id in EventText while
+`ActionInput` is started, and `ControllerConfigured` reports that a controller's bindings loaded
+(EventFlag is true when they bind actions, EventValue holds the major binding revision).
+`WorkshopItemInstalled` names an installed or updated item in EventText,
+`WorkshopItemDownloaded` reports a `Workshop.Download` (EventFlag is true on success,
+EventResultCode holds the provider result), and `WorkshopSubscriptionChanged` reports a
+subscription (EventFlag true) or unsubscription with the item id in EventText. `None` means the
+queue is empty.
 
 #### Properties
 
@@ -391,6 +635,13 @@ reports that the floating keyboard closed. `None` means the queue is empty.
 | <a id="zanna-services-eventkind-statsstored"></a>`StatsStored` | `i64` | read-only |
 | <a id="zanna-services-eventkind-achievementstored"></a>`AchievementStored` | `i64` | read-only |
 | <a id="zanna-services-eventkind-textinputdismissed"></a>`TextInputDismissed` | `i64` | read-only |
+| <a id="zanna-services-eventkind-achievementiconready"></a>`AchievementIconReady` | `i64` | read-only |
+| <a id="zanna-services-eventkind-controllerconnected"></a>`ControllerConnected` | `i64` | read-only |
+| <a id="zanna-services-eventkind-controllerdisconnected"></a>`ControllerDisconnected` | `i64` | read-only |
+| <a id="zanna-services-eventkind-controllerconfigured"></a>`ControllerConfigured` | `i64` | read-only |
+| <a id="zanna-services-eventkind-workshopiteminstalled"></a>`WorkshopItemInstalled` | `i64` | read-only |
+| <a id="zanna-services-eventkind-workshopitemdownloaded"></a>`WorkshopItemDownloaded` | `i64` | read-only |
+| <a id="zanna-services-eventkind-workshopsubscriptionchanged"></a>`WorkshopSubscriptionChanged` | `i64` | read-only |
 
 <a id="zanna-services-feature"></a>
 ### `Zanna.Services.Feature`
@@ -399,9 +650,13 @@ Defines platform services feature identifiers for Platform.HasFeature.
 
 `Zanna.Services.Feature` values ask whether the active provider can serve a group of members
 right now: `Identity` (UserId, UserName, IsOnline), `Licensing` (IsLicensed, IsDlcInstalled),
-`Language`, `PlayerCount` (RequestPlayerCount), and one value per feature class:
-`Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`, `TextInput`, and `Cloud`. A
-feature can be unavailable even while a provider is started, for example when an older
+`Language`, `PlayerCount` (RequestPlayerCount), one value per feature class
+(`Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`, `TextInput` for
+`OnScreenKeyboard`, `Cloud`, and `Timeline`), `LaunchParameters` (LaunchCommandLine,
+LaunchParameter), `AppDetails` (the DLC list, BuildId, BranchName), `AchievementIcons`
+(Achievements.IconWidth, IconHeight, IconRgba), `AchievementPercentages`
+(Achievements.RequestGlobalPercentages, GlobalPercent), `ActionInput`, and `Workshop`.
+A feature can be unavailable even while a provider is started, for example when an older
 redistributable lacks an interface; `Platform.Diagnostics` then explains why.
 
 #### Properties
@@ -419,6 +674,13 @@ redistributable lacks an interface; `Platform.Diagnostics` then explains why.
 | <a id="zanna-services-feature-overlay"></a>`Overlay` | `i64` | read-only |
 | <a id="zanna-services-feature-textinput"></a>`TextInput` | `i64` | read-only |
 | <a id="zanna-services-feature-cloud"></a>`Cloud` | `i64` | read-only |
+| <a id="zanna-services-feature-launchparameters"></a>`LaunchParameters` | `i64` | read-only |
+| <a id="zanna-services-feature-timeline"></a>`Timeline` | `i64` | read-only |
+| <a id="zanna-services-feature-appdetails"></a>`AppDetails` | `i64` | read-only |
+| <a id="zanna-services-feature-achievementicons"></a>`AchievementIcons` | `i64` | read-only |
+| <a id="zanna-services-feature-achievementpercentages"></a>`AchievementPercentages` | `i64` | read-only |
+| <a id="zanna-services-feature-actioninput"></a>`ActionInput` | `i64` | read-only |
+| <a id="zanna-services-feature-workshop"></a>`Workshop` | `i64` | read-only |
 
 <a id="zanna-services-requestkind"></a>
 ### `Zanna.Services.RequestKind`
@@ -429,7 +691,12 @@ Defines platform services request kinds reported by Request.Kind.
 requests the number of players currently running the game (`Value` holds the count).
 `LeaderboardFind`, `LeaderboardUpload`, and `LeaderboardDownload` come from
 `Zanna.Services.Leaderboards`, and `TextInput` from `OnScreenKeyboard.RequestText` (`Text`
-holds the submitted text).
+holds the submitted text). `TimelineEventRecording` and `TimelinePhaseRecording` come from
+`Zanna.Services.Timeline` (`Flag` is true when something was recorded),
+`AchievementPercentages` from `Achievements.RequestGlobalPercentages`, and the `Workshop*`
+kinds from `Zanna.Services.Workshop` (`WorkshopQuery` requests carry items; the other kinds
+hold the item id in `Text`, and `WorkshopCreate` and `WorkshopSubmit` set `Flag` when the player
+must accept the Workshop agreement).
 
 #### Properties
 
@@ -440,6 +707,178 @@ holds the submitted text).
 | <a id="zanna-services-requestkind-leaderboardupload"></a>`LeaderboardUpload` | `i64` | read-only |
 | <a id="zanna-services-requestkind-leaderboarddownload"></a>`LeaderboardDownload` | `i64` | read-only |
 | <a id="zanna-services-requestkind-textinput"></a>`TextInput` | `i64` | read-only |
+| <a id="zanna-services-requestkind-timelineeventrecording"></a>`TimelineEventRecording` | `i64` | read-only |
+| <a id="zanna-services-requestkind-timelinephaserecording"></a>`TimelinePhaseRecording` | `i64` | read-only |
+| <a id="zanna-services-requestkind-achievementpercentages"></a>`AchievementPercentages` | `i64` | read-only |
+| <a id="zanna-services-requestkind-workshopquery"></a>`WorkshopQuery` | `i64` | read-only |
+| <a id="zanna-services-requestkind-workshopsubscribe"></a>`WorkshopSubscribe` | `i64` | read-only |
+| <a id="zanna-services-requestkind-workshopunsubscribe"></a>`WorkshopUnsubscribe` | `i64` | read-only |
+| <a id="zanna-services-requestkind-workshopcreate"></a>`WorkshopCreate` | `i64` | read-only |
+| <a id="zanna-services-requestkind-workshopsubmit"></a>`WorkshopSubmit` | `i64` | read-only |
+| <a id="zanna-services-requestkind-workshopdelete"></a>`WorkshopDelete` | `i64` | read-only |
+
+<a id="zanna-services-timelinemode"></a>
+### `Zanna.Services.TimelineMode`
+
+Defines the game modes that color the platform recording timeline.
+
+`Zanna.Services.TimelineMode` values are passed to `Timeline.SetGameMode`: `Playing` while the
+player plays, `Staging` while play is being set up (a lobby, a lineup screen), `Menus` in
+menus, and `LoadingScreen` while loading.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-timelinemode-playing"></a>`Playing` | `i64` | read-only |
+| <a id="zanna-services-timelinemode-staging"></a>`Staging` | `i64` | read-only |
+| <a id="zanna-services-timelinemode-menus"></a>`Menus` | `i64` | read-only |
+| <a id="zanna-services-timelinemode-loadingscreen"></a>`LoadingScreen` | `i64` | read-only |
+
+<a id="zanna-services-timelineclip"></a>
+### `Zanna.Services.TimelineClip`
+
+Defines whether the platform offers a timeline event as a clip.
+
+`Zanna.Services.TimelineClip` values tell the platform how to treat a timeline event when the
+player saves clips: `None` never suggests it, `Standard` may suggest it, and `Featured` suggests
+it ahead of standard events.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-timelineclip-none"></a>`None` | `i64` | read-only |
+| <a id="zanna-services-timelineclip-standard"></a>`Standard` | `i64` | read-only |
+| <a id="zanna-services-timelineclip-featured"></a>`Featured` | `i64` | read-only |
+
+<a id="zanna-services-controllertype"></a>
+### `Zanna.Services.ControllerType`
+
+Defines controller types reported by ActionInput.ControllerType.
+
+`Zanna.Services.ControllerType` values name the kind of controller behind a controller id:
+`Unknown`, `SteamController`, `Xbox360`, `XboxOne` (including Xbox Series controllers),
+`GenericGamepad`, `PlayStation4`, `AppleMfi`, `Android`, `SwitchJoyConPair`,
+`SwitchJoyConSingle`, `SwitchPro`, `MobileTouch` (an on-screen controller), `PlayStation3`,
+`PlayStation5`, `SteamDeck`, `SteamOSHandheld`, `Switch2Pro`, `SteamController2026`, and
+`SteamFrameControllerPair`. Use them for defaults and analytics; show button prompts with
+`ActionInput.OriginGlyphPath`, which follows the player's bindings.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-controllertype-unknown"></a>`Unknown` | `i64` | read-only |
+| <a id="zanna-services-controllertype-steamcontroller"></a>`SteamController` | `i64` | read-only |
+| <a id="zanna-services-controllertype-xbox360"></a>`Xbox360` | `i64` | read-only |
+| <a id="zanna-services-controllertype-xboxone"></a>`XboxOne` | `i64` | read-only |
+| <a id="zanna-services-controllertype-genericgamepad"></a>`GenericGamepad` | `i64` | read-only |
+| <a id="zanna-services-controllertype-playstation4"></a>`PlayStation4` | `i64` | read-only |
+| <a id="zanna-services-controllertype-applemfi"></a>`AppleMfi` | `i64` | read-only |
+| <a id="zanna-services-controllertype-android"></a>`Android` | `i64` | read-only |
+| <a id="zanna-services-controllertype-switchjoyconpair"></a>`SwitchJoyConPair` | `i64` | read-only |
+| <a id="zanna-services-controllertype-switchjoyconsingle"></a>`SwitchJoyConSingle` | `i64` | read-only |
+| <a id="zanna-services-controllertype-switchpro"></a>`SwitchPro` | `i64` | read-only |
+| <a id="zanna-services-controllertype-mobiletouch"></a>`MobileTouch` | `i64` | read-only |
+| <a id="zanna-services-controllertype-playstation3"></a>`PlayStation3` | `i64` | read-only |
+| <a id="zanna-services-controllertype-playstation5"></a>`PlayStation5` | `i64` | read-only |
+| <a id="zanna-services-controllertype-steamdeck"></a>`SteamDeck` | `i64` | read-only |
+| <a id="zanna-services-controllertype-steamoshandheld"></a>`SteamOSHandheld` | `i64` | read-only |
+| <a id="zanna-services-controllertype-switch2pro"></a>`Switch2Pro` | `i64` | read-only |
+| <a id="zanna-services-controllertype-steamcontroller2026"></a>`SteamController2026` | `i64` | read-only |
+| <a id="zanna-services-controllertype-steamframecontrollerpair"></a>`SteamFrameControllerPair` | `i64` | read-only |
+
+<a id="zanna-services-glyphsize"></a>
+### `Zanna.Services.GlyphSize`
+
+Defines glyph image sizes for ActionInput.OriginGlyphPath.
+
+`Zanna.Services.GlyphSize` values select the glyph image: `Small` (32 by 32 pixels on Steam),
+`Medium` (128 by 128), and `Large` (256 by 256).
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-glyphsize-small"></a>`Small` | `i64` | read-only |
+| <a id="zanna-services-glyphsize-medium"></a>`Medium` | `i64` | read-only |
+| <a id="zanna-services-glyphsize-large"></a>`Large` | `i64` | read-only |
+
+<a id="zanna-services-workshopquery"></a>
+### `Zanna.Services.WorkshopQuery`
+
+Defines the orders Workshop.Query ranks items by.
+
+`Zanna.Services.WorkshopQuery` values: `Popular` (by votes), `Newest` (by publication date),
+`Trending` (by recent votes), `MostSubscribed` (by unique subscriptions), `RecentlyUpdated`
+(by last update), and `TextSearch` (by how well items match the search text).
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-workshopquery-popular"></a>`Popular` | `i64` | read-only |
+| <a id="zanna-services-workshopquery-newest"></a>`Newest` | `i64` | read-only |
+| <a id="zanna-services-workshopquery-trending"></a>`Trending` | `i64` | read-only |
+| <a id="zanna-services-workshopquery-mostsubscribed"></a>`MostSubscribed` | `i64` | read-only |
+| <a id="zanna-services-workshopquery-recentlyupdated"></a>`RecentlyUpdated` | `i64` | read-only |
+| <a id="zanna-services-workshopquery-textsearch"></a>`TextSearch` | `i64` | read-only |
+
+<a id="zanna-services-workshoplist"></a>
+### `Zanna.Services.WorkshopList`
+
+Defines the player's Workshop lists for Workshop.QueryUser.
+
+`Zanna.Services.WorkshopList` values: `Published`, `Subscribed`, `Favorited`, `VotedUp`, and
+`Played` (items the player used).
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-workshoplist-published"></a>`Published` | `i64` | read-only |
+| <a id="zanna-services-workshoplist-subscribed"></a>`Subscribed` | `i64` | read-only |
+| <a id="zanna-services-workshoplist-favorited"></a>`Favorited` | `i64` | read-only |
+| <a id="zanna-services-workshoplist-votedup"></a>`VotedUp` | `i64` | read-only |
+| <a id="zanna-services-workshoplist-played"></a>`Played` | `i64` | read-only |
+
+<a id="zanna-services-workshopvisibility"></a>
+### `Zanna.Services.WorkshopVisibility`
+
+Defines who can see a Workshop item.
+
+`Zanna.Services.WorkshopVisibility` values: `Public`, `FriendsOnly`, `Private` (the author only),
+and `Unlisted` (anyone with the link).
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-workshopvisibility-public"></a>`Public` | `i64` | read-only |
+| <a id="zanna-services-workshopvisibility-friendsonly"></a>`FriendsOnly` | `i64` | read-only |
+| <a id="zanna-services-workshopvisibility-private"></a>`Private` | `i64` | read-only |
+| <a id="zanna-services-workshopvisibility-unlisted"></a>`Unlisted` | `i64` | read-only |
+
+<a id="zanna-services-workshopupdatestatus"></a>
+### `Zanna.Services.WorkshopUpdateStatus`
+
+Defines the stages of a submitted Workshop update.
+
+`Zanna.Services.WorkshopUpdateStatus` values: `None` (no upload in progress for the id),
+`PreparingConfig`, `PreparingContent`, `UploadingContent`, `UploadingPreview`, and
+`Committing`.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-services-workshopupdatestatus-none"></a>`None` | `i64` | read-only |
+| <a id="zanna-services-workshopupdatestatus-preparingconfig"></a>`PreparingConfig` | `i64` | read-only |
+| <a id="zanna-services-workshopupdatestatus-preparingcontent"></a>`PreparingContent` | `i64` | read-only |
+| <a id="zanna-services-workshopupdatestatus-uploadingcontent"></a>`UploadingContent` | `i64` | read-only |
+| <a id="zanna-services-workshopupdatestatus-uploadingpreview"></a>`UploadingPreview` | `i64` | read-only |
+| <a id="zanna-services-workshopupdatestatus-committing"></a>`Committing` | `i64` | read-only |
 
 <a id="zanna-services-leaderboardscope"></a>
 ### `Zanna.Services.LeaderboardScope`
@@ -580,6 +1019,7 @@ from `None`. Use these values for analytics and default settings, not to gate fe
 | `Zanna.Services.Platform.IsDlcInstalled` | `i1(str)` | `rt_services_platform_is_dlc_installed` |
 | `Zanna.Services.Platform.RequestPlayerCount` | `obj<Zanna.Services.Request>()` | `rt_services_platform_request_player_count` |
 | `Zanna.Services.Platform.Diagnostics` | `seq<str>()` | `rt_services_platform_diagnostics` |
+| `Zanna.Services.Platform.LaunchParameter` | `str(str)` | `rt_services_platform_launch_parameter` |
 | <a id="zanna-services-platform-get-isavailable"></a>`Zanna.Services.Platform.get_IsAvailable` | `i1()` | `rt_services_platform_get_is_available` |
 | <a id="zanna-services-platform-get-status"></a>`Zanna.Services.Platform.get_Status` | `i64()` | `rt_services_platform_get_status` |
 | <a id="zanna-services-platform-get-provider"></a>`Zanna.Services.Platform.get_Provider` | `str()` | `rt_services_platform_get_provider` |
@@ -589,6 +1029,13 @@ from `None`. Use these values for analytics and default settings, not to gate fe
 | <a id="zanna-services-platform-get-language"></a>`Zanna.Services.Platform.get_Language` | `str()` | `rt_services_platform_get_language` |
 | <a id="zanna-services-platform-get-islicensed"></a>`Zanna.Services.Platform.get_IsLicensed` | `i1()` | `rt_services_platform_get_is_licensed` |
 | <a id="zanna-services-platform-get-isonline"></a>`Zanna.Services.Platform.get_IsOnline` | `i1()` | `rt_services_platform_get_is_online` |
+| <a id="zanna-services-platform-get-launchcommandline"></a>`Zanna.Services.Platform.get_LaunchCommandLine` | `str()` | `rt_services_platform_get_launch_command_line` |
+| <a id="zanna-services-platform-get-dlccount"></a>`Zanna.Services.Platform.get_DlcCount` | `i64()` | `rt_services_platform_get_dlc_count` |
+| `Zanna.Services.Platform.DlcIdAt` | `str(i64)` | `rt_services_platform_dlc_id_at` |
+| `Zanna.Services.Platform.DlcNameAt` | `str(i64)` | `rt_services_platform_dlc_name_at` |
+| `Zanna.Services.Platform.DlcAvailableAt` | `i1(i64)` | `rt_services_platform_dlc_available_at` |
+| <a id="zanna-services-platform-get-buildid"></a>`Zanna.Services.Platform.get_BuildId` | `i64()` | `rt_services_platform_get_build_id` |
+| <a id="zanna-services-platform-get-branchname"></a>`Zanna.Services.Platform.get_BranchName` | `str()` | `rt_services_platform_get_branch_name` |
 | <a id="zanna-services-platform-get-eventresultcode"></a>`Zanna.Services.Platform.get_EventResultCode` | `i64()` | `rt_services_platform_get_event_result_code` |
 | <a id="zanna-services-platform-get-eventtext"></a>`Zanna.Services.Platform.get_EventText` | `str()` | `rt_services_platform_get_event_text` |
 | <a id="zanna-services-platform-get-eventvalue"></a>`Zanna.Services.Platform.get_EventValue` | `i64()` | `rt_services_platform_get_event_value` |
@@ -608,6 +1055,10 @@ from `None`. Use these values for analytics and default settings, not to gate fe
 | `Zanna.Services.Request.EntryScore` | `i64(obj,i64)` | `rt_services_request_entry_score` |
 | `Zanna.Services.Request.EntryUserId` | `str(obj,i64)` | `rt_services_request_entry_user_id` |
 | `Zanna.Services.Request.EntryUserName` | `str(obj,i64)` | `rt_services_request_entry_user_name` |
+| <a id="zanna-services-request-get-detailcount"></a>`Zanna.Services.Request.get_DetailCount` | `i64(obj)` | `rt_services_request_get_detail_count` |
+| `Zanna.Services.Request.Detail` | `i64(obj,i64)` | `rt_services_request_detail` |
+| <a id="zanna-services-request-get-itemcount"></a>`Zanna.Services.Request.get_ItemCount` | `i64(obj)` | `rt_services_request_get_item_count` |
+| `Zanna.Services.Request.ItemAt` | `obj<Zanna.Services.WorkshopItem>(obj,i64)` | `rt_services_request_item_at` |
 | `Zanna.Services.Achievements.Unlock` | `i1(str)` | `rt_services_achievements_unlock` |
 | `Zanna.Services.Achievements.Clear` | `i1(str)` | `rt_services_achievements_clear` |
 | `Zanna.Services.Achievements.IsUnlocked` | `i1(str)` | `rt_services_achievements_is_unlocked` |
@@ -618,6 +1069,11 @@ from `None`. Use these values for analytics and default settings, not to gate fe
 | `Zanna.Services.Achievements.DisplayName` | `str(str)` | `rt_services_achievements_display_name` |
 | `Zanna.Services.Achievements.Description` | `str(str)` | `rt_services_achievements_description` |
 | `Zanna.Services.Achievements.IsHidden` | `i1(str)` | `rt_services_achievements_is_hidden` |
+| `Zanna.Services.Achievements.IconWidth` | `i64(str)` | `rt_services_achievements_icon_width` |
+| `Zanna.Services.Achievements.IconHeight` | `i64(str)` | `rt_services_achievements_icon_height` |
+| `Zanna.Services.Achievements.IconRgba` | `obj<Zanna.Collections.Bytes>(str)` | `rt_services_achievements_icon_rgba` |
+| `Zanna.Services.Achievements.RequestGlobalPercentages` | `obj<Zanna.Services.Request>()` | `rt_services_achievements_request_global_percentages` |
+| `Zanna.Services.Achievements.GlobalPercent` | `f64(str)` | `rt_services_achievements_global_percent` |
 | `Zanna.Services.Stats.GetInt` | `i64(str)` | `rt_services_stats_get_int` |
 | `Zanna.Services.Stats.SetInt` | `i1(str,i64)` | `rt_services_stats_set_int` |
 | `Zanna.Services.Stats.GetFloat` | `f64(str)` | `rt_services_stats_get_float` |
@@ -652,6 +1108,135 @@ from `None`. Use these values for analytics and default settings, not to gate fe
 | <a id="zanna-services-cloud-get-quotaavailable"></a>`Zanna.Services.Cloud.get_QuotaAvailable` | `i64()` | `rt_services_cloud_get_quota_available` |
 | `Zanna.Services.Cloud.BeginBatch` | `i1()` | `rt_services_cloud_begin_batch` |
 | `Zanna.Services.Cloud.EndBatch` | `i1()` | `rt_services_cloud_end_batch` |
+| `Zanna.Services.Timeline.SetGameMode` | `i1(i64)` | `rt_services_timeline_set_game_mode` |
+| `Zanna.Services.Timeline.SetTooltip` | `i1(str,f64)` | `rt_services_timeline_set_tooltip` |
+| `Zanna.Services.Timeline.ClearTooltip` | `i1(f64)` | `rt_services_timeline_clear_tooltip` |
+| `Zanna.Services.Timeline.AddEvent` | `str(str,str,str,i64,f64,i64)` | `rt_services_timeline_add_event` |
+| `Zanna.Services.Timeline.AddRangeEvent` | `str(str,str,str,i64,f64,f64,i64)` | `rt_services_timeline_add_range_event` |
+| `Zanna.Services.Timeline.StartRangeEvent` | `str(str,str,str,i64,f64,i64)` | `rt_services_timeline_start_range_event` |
+| `Zanna.Services.Timeline.UpdateRangeEvent` | `i1(str,str,str,str,i64,i64)` | `rt_services_timeline_update_range_event` |
+| `Zanna.Services.Timeline.EndRangeEvent` | `i1(str,f64)` | `rt_services_timeline_end_range_event` |
+| `Zanna.Services.Timeline.RemoveEvent` | `i1(str)` | `rt_services_timeline_remove_event` |
+| `Zanna.Services.Timeline.RequestEventRecording` | `obj<Zanna.Services.Request>(str)` | `rt_services_timeline_request_event_recording` |
+| `Zanna.Services.Timeline.StartPhase` | `i1()` | `rt_services_timeline_start_phase` |
+| `Zanna.Services.Timeline.EndPhase` | `i1()` | `rt_services_timeline_end_phase` |
+| `Zanna.Services.Timeline.SetPhaseId` | `i1(str)` | `rt_services_timeline_set_phase_id` |
+| `Zanna.Services.Timeline.AddPhaseTag` | `i1(str,str,str,i64)` | `rt_services_timeline_add_phase_tag` |
+| `Zanna.Services.Timeline.SetPhaseAttribute` | `i1(str,str,i64)` | `rt_services_timeline_set_phase_attribute` |
+| `Zanna.Services.Timeline.RequestPhaseRecording` | `obj<Zanna.Services.Request>(str)` | `rt_services_timeline_request_phase_recording` |
+| `Zanna.Services.Timeline.OpenOverlayToPhase` | `i1(str)` | `rt_services_timeline_open_overlay_to_phase` |
+| `Zanna.Services.Timeline.OpenOverlayToEvent` | `i1(str)` | `rt_services_timeline_open_overlay_to_event` |
+| `Zanna.Services.ActionInput.Start` | `i1(str)` | `rt_services_action_input_start` |
+| `Zanna.Services.ActionInput.Stop` | `i1()` | `rt_services_action_input_stop` |
+| <a id="zanna-services-actioninput-get-isstarted"></a>`Zanna.Services.ActionInput.get_IsStarted` | `i1()` | `rt_services_action_input_get_is_started` |
+| <a id="zanna-services-actioninput-get-controllercount"></a>`Zanna.Services.ActionInput.get_ControllerCount` | `i64()` | `rt_services_action_input_get_controller_count` |
+| `Zanna.Services.ActionInput.ControllerIdAt` | `str(i64)` | `rt_services_action_input_controller_id_at` |
+| `Zanna.Services.ActionInput.ControllerType` | `i64(str)` | `rt_services_action_input_controller_type` |
+| `Zanna.Services.ActionInput.GamepadIndex` | `i64(str)` | `rt_services_action_input_gamepad_index` |
+| `Zanna.Services.ActionInput.ActivateActionSet` | `i1(str,str)` | `rt_services_action_input_activate_action_set` |
+| `Zanna.Services.ActionInput.ActivateLayer` | `i1(str,str)` | `rt_services_action_input_activate_layer` |
+| `Zanna.Services.ActionInput.DeactivateLayer` | `i1(str,str)` | `rt_services_action_input_deactivate_layer` |
+| `Zanna.Services.ActionInput.DeactivateAllLayers` | `i1(str)` | `rt_services_action_input_deactivate_all_layers` |
+| `Zanna.Services.ActionInput.IsPressed` | `i1(str,str)` | `rt_services_action_input_is_pressed` |
+| `Zanna.Services.ActionInput.AnalogX` | `f64(str,str)` | `rt_services_action_input_analog_x` |
+| `Zanna.Services.ActionInput.AnalogY` | `f64(str,str)` | `rt_services_action_input_analog_y` |
+| `Zanna.Services.ActionInput.IsActionActive` | `i1(str,str)` | `rt_services_action_input_is_action_active` |
+| `Zanna.Services.ActionInput.ActionLabel` | `str(str)` | `rt_services_action_input_action_label` |
+| `Zanna.Services.ActionInput.OriginCount` | `i64(str,str,str)` | `rt_services_action_input_origin_count` |
+| `Zanna.Services.ActionInput.OriginAt` | `i64(str,str,str,i64)` | `rt_services_action_input_origin_at` |
+| `Zanna.Services.ActionInput.OriginLabel` | `str(i64)` | `rt_services_action_input_origin_label` |
+| `Zanna.Services.ActionInput.OriginGlyphPath` | `str(i64,i64)` | `rt_services_action_input_origin_glyph_path` |
+| `Zanna.Services.ActionInput.Vibrate` | `i1(str,f64,f64)` | `rt_services_action_input_vibrate` |
+| `Zanna.Services.ActionInput.SetLedColor` | `i1(str,i64,i64,i64)` | `rt_services_action_input_set_led_color` |
+| `Zanna.Services.ActionInput.ResetLedColor` | `i1(str)` | `rt_services_action_input_reset_led_color` |
+| `Zanna.Services.ActionInput.ShowBindingPanel` | `i1(str)` | `rt_services_action_input_show_binding_panel` |
+| <a id="zanna-services-controllertype-get-unknown"></a>`Zanna.Services.ControllerType.get_Unknown` | `i64()` | `rt_services_controller_type_unknown` |
+| <a id="zanna-services-controllertype-get-steamcontroller"></a>`Zanna.Services.ControllerType.get_SteamController` | `i64()` | `rt_services_controller_type_steam_controller` |
+| <a id="zanna-services-controllertype-get-xbox360"></a>`Zanna.Services.ControllerType.get_Xbox360` | `i64()` | `rt_services_controller_type_xbox360` |
+| <a id="zanna-services-controllertype-get-xboxone"></a>`Zanna.Services.ControllerType.get_XboxOne` | `i64()` | `rt_services_controller_type_xbox_one` |
+| <a id="zanna-services-controllertype-get-genericgamepad"></a>`Zanna.Services.ControllerType.get_GenericGamepad` | `i64()` | `rt_services_controller_type_generic_gamepad` |
+| <a id="zanna-services-controllertype-get-playstation4"></a>`Zanna.Services.ControllerType.get_PlayStation4` | `i64()` | `rt_services_controller_type_playstation4` |
+| <a id="zanna-services-controllertype-get-applemfi"></a>`Zanna.Services.ControllerType.get_AppleMfi` | `i64()` | `rt_services_controller_type_apple_mfi` |
+| <a id="zanna-services-controllertype-get-android"></a>`Zanna.Services.ControllerType.get_Android` | `i64()` | `rt_services_controller_type_android` |
+| <a id="zanna-services-controllertype-get-switchjoyconpair"></a>`Zanna.Services.ControllerType.get_SwitchJoyConPair` | `i64()` | `rt_services_controller_type_switch_joy_con_pair` |
+| <a id="zanna-services-controllertype-get-switchjoyconsingle"></a>`Zanna.Services.ControllerType.get_SwitchJoyConSingle` | `i64()` | `rt_services_controller_type_switch_joy_con_single` |
+| <a id="zanna-services-controllertype-get-switchpro"></a>`Zanna.Services.ControllerType.get_SwitchPro` | `i64()` | `rt_services_controller_type_switch_pro` |
+| <a id="zanna-services-controllertype-get-mobiletouch"></a>`Zanna.Services.ControllerType.get_MobileTouch` | `i64()` | `rt_services_controller_type_mobile_touch` |
+| <a id="zanna-services-controllertype-get-playstation3"></a>`Zanna.Services.ControllerType.get_PlayStation3` | `i64()` | `rt_services_controller_type_playstation3` |
+| <a id="zanna-services-controllertype-get-playstation5"></a>`Zanna.Services.ControllerType.get_PlayStation5` | `i64()` | `rt_services_controller_type_playstation5` |
+| <a id="zanna-services-controllertype-get-steamdeck"></a>`Zanna.Services.ControllerType.get_SteamDeck` | `i64()` | `rt_services_controller_type_steam_deck` |
+| <a id="zanna-services-controllertype-get-steamoshandheld"></a>`Zanna.Services.ControllerType.get_SteamOSHandheld` | `i64()` | `rt_services_controller_type_steamos_handheld` |
+| <a id="zanna-services-controllertype-get-switch2pro"></a>`Zanna.Services.ControllerType.get_Switch2Pro` | `i64()` | `rt_services_controller_type_switch2_pro` |
+| <a id="zanna-services-controllertype-get-steamcontroller2026"></a>`Zanna.Services.ControllerType.get_SteamController2026` | `i64()` | `rt_services_controller_type_steam_controller_2026` |
+| <a id="zanna-services-controllertype-get-steamframecontrollerpair"></a>`Zanna.Services.ControllerType.get_SteamFrameControllerPair` | `i64()` | `rt_services_controller_type_steam_frame_controller_pair` |
+| <a id="zanna-services-glyphsize-get-small"></a>`Zanna.Services.GlyphSize.get_Small` | `i64()` | `rt_services_glyph_size_small` |
+| <a id="zanna-services-glyphsize-get-medium"></a>`Zanna.Services.GlyphSize.get_Medium` | `i64()` | `rt_services_glyph_size_medium` |
+| <a id="zanna-services-glyphsize-get-large"></a>`Zanna.Services.GlyphSize.get_Large` | `i64()` | `rt_services_glyph_size_large` |
+| <a id="zanna-services-workshop-get-subscribedcount"></a>`Zanna.Services.Workshop.get_SubscribedCount` | `i64()` | `rt_services_workshop_get_subscribed_count` |
+| `Zanna.Services.Workshop.SubscribedIdAt` | `str(i64)` | `rt_services_workshop_subscribed_id_at` |
+| `Zanna.Services.Workshop.IsSubscribed` | `i1(str)` | `rt_services_workshop_is_subscribed` |
+| `Zanna.Services.Workshop.IsInstalled` | `i1(str)` | `rt_services_workshop_is_installed` |
+| `Zanna.Services.Workshop.NeedsUpdate` | `i1(str)` | `rt_services_workshop_needs_update` |
+| `Zanna.Services.Workshop.IsDownloading` | `i1(str)` | `rt_services_workshop_is_downloading` |
+| `Zanna.Services.Workshop.InstallFolder` | `str(str)` | `rt_services_workshop_install_folder` |
+| `Zanna.Services.Workshop.InstallSize` | `i64(str)` | `rt_services_workshop_install_size` |
+| `Zanna.Services.Workshop.InstallTime` | `i64(str)` | `rt_services_workshop_install_time` |
+| `Zanna.Services.Workshop.DownloadedBytes` | `i64(str)` | `rt_services_workshop_downloaded_bytes` |
+| `Zanna.Services.Workshop.DownloadTotalBytes` | `i64(str)` | `rt_services_workshop_download_total_bytes` |
+| `Zanna.Services.Workshop.Download` | `i1(str,i1)` | `rt_services_workshop_download` |
+| `Zanna.Services.Workshop.Subscribe` | `obj<Zanna.Services.Request>(str)` | `rt_services_workshop_subscribe` |
+| `Zanna.Services.Workshop.Unsubscribe` | `obj<Zanna.Services.Request>(str)` | `rt_services_workshop_unsubscribe` |
+| `Zanna.Services.Workshop.Query` | `obj<Zanna.Services.Request>(i64,i64,str,str)` | `rt_services_workshop_query` |
+| `Zanna.Services.Workshop.QueryUser` | `obj<Zanna.Services.Request>(i64,i64)` | `rt_services_workshop_query_user` |
+| `Zanna.Services.Workshop.QueryItems` | `obj<Zanna.Services.Request>(str)` | `rt_services_workshop_query_items` |
+| `Zanna.Services.Workshop.CreateItem` | `obj<Zanna.Services.Request>()` | `rt_services_workshop_create_item` |
+| `Zanna.Services.Workshop.StartUpdate` | `str(str)` | `rt_services_workshop_start_update` |
+| `Zanna.Services.Workshop.SetTitle` | `i1(str,str)` | `rt_services_workshop_set_title` |
+| `Zanna.Services.Workshop.SetDescription` | `i1(str,str)` | `rt_services_workshop_set_description` |
+| `Zanna.Services.Workshop.SetMetadata` | `i1(str,str)` | `rt_services_workshop_set_metadata` |
+| `Zanna.Services.Workshop.SetTags` | `i1(str,str)` | `rt_services_workshop_set_tags` |
+| `Zanna.Services.Workshop.SetVisibility` | `i1(str,i64)` | `rt_services_workshop_set_visibility` |
+| `Zanna.Services.Workshop.SetContent` | `i1(str,str)` | `rt_services_workshop_set_content` |
+| `Zanna.Services.Workshop.SetPreview` | `i1(str,str)` | `rt_services_workshop_set_preview` |
+| `Zanna.Services.Workshop.SubmitUpdate` | `obj<Zanna.Services.Request>(str,str)` | `rt_services_workshop_submit_update` |
+| `Zanna.Services.Workshop.UpdateStatus` | `i64(str)` | `rt_services_workshop_update_status` |
+| `Zanna.Services.Workshop.UpdateProgress` | `f64(str)` | `rt_services_workshop_update_progress` |
+| `Zanna.Services.Workshop.DeleteItem` | `obj<Zanna.Services.Request>(str)` | `rt_services_workshop_delete_item` |
+| <a id="zanna-services-workshopitem-get-id"></a>`Zanna.Services.WorkshopItem.get_Id` | `str(obj)` | `rt_services_workshop_item_get_id` |
+| <a id="zanna-services-workshopitem-get-title"></a>`Zanna.Services.WorkshopItem.get_Title` | `str(obj)` | `rt_services_workshop_item_get_title` |
+| <a id="zanna-services-workshopitem-get-description"></a>`Zanna.Services.WorkshopItem.get_Description` | `str(obj)` | `rt_services_workshop_item_get_description` |
+| <a id="zanna-services-workshopitem-get-ownerid"></a>`Zanna.Services.WorkshopItem.get_OwnerId` | `str(obj)` | `rt_services_workshop_item_get_owner_id` |
+| <a id="zanna-services-workshopitem-get-tags"></a>`Zanna.Services.WorkshopItem.get_Tags` | `str(obj)` | `rt_services_workshop_item_get_tags` |
+| <a id="zanna-services-workshopitem-get-previewurl"></a>`Zanna.Services.WorkshopItem.get_PreviewUrl` | `str(obj)` | `rt_services_workshop_item_get_preview_url` |
+| <a id="zanna-services-workshopitem-get-metadata"></a>`Zanna.Services.WorkshopItem.get_Metadata` | `str(obj)` | `rt_services_workshop_item_get_metadata` |
+| <a id="zanna-services-workshopitem-get-created"></a>`Zanna.Services.WorkshopItem.get_Created` | `i64(obj)` | `rt_services_workshop_item_get_created` |
+| <a id="zanna-services-workshopitem-get-updated"></a>`Zanna.Services.WorkshopItem.get_Updated` | `i64(obj)` | `rt_services_workshop_item_get_updated` |
+| <a id="zanna-services-workshopitem-get-visibility"></a>`Zanna.Services.WorkshopItem.get_Visibility` | `i64(obj)` | `rt_services_workshop_item_get_visibility` |
+| <a id="zanna-services-workshopitem-get-votesup"></a>`Zanna.Services.WorkshopItem.get_VotesUp` | `i64(obj)` | `rt_services_workshop_item_get_votes_up` |
+| <a id="zanna-services-workshopitem-get-votesdown"></a>`Zanna.Services.WorkshopItem.get_VotesDown` | `i64(obj)` | `rt_services_workshop_item_get_votes_down` |
+| <a id="zanna-services-workshopitem-get-size"></a>`Zanna.Services.WorkshopItem.get_Size` | `i64(obj)` | `rt_services_workshop_item_get_size` |
+| <a id="zanna-services-workshopitem-get-score"></a>`Zanna.Services.WorkshopItem.get_Score` | `f64(obj)` | `rt_services_workshop_item_get_score` |
+| <a id="zanna-services-workshopquery-get-popular"></a>`Zanna.Services.WorkshopQuery.get_Popular` | `i64()` | `rt_services_workshop_query_popular` |
+| <a id="zanna-services-workshopquery-get-newest"></a>`Zanna.Services.WorkshopQuery.get_Newest` | `i64()` | `rt_services_workshop_query_newest` |
+| <a id="zanna-services-workshopquery-get-trending"></a>`Zanna.Services.WorkshopQuery.get_Trending` | `i64()` | `rt_services_workshop_query_trending` |
+| <a id="zanna-services-workshopquery-get-mostsubscribed"></a>`Zanna.Services.WorkshopQuery.get_MostSubscribed` | `i64()` | `rt_services_workshop_query_most_subscribed` |
+| <a id="zanna-services-workshopquery-get-recentlyupdated"></a>`Zanna.Services.WorkshopQuery.get_RecentlyUpdated` | `i64()` | `rt_services_workshop_query_recently_updated` |
+| <a id="zanna-services-workshopquery-get-textsearch"></a>`Zanna.Services.WorkshopQuery.get_TextSearch` | `i64()` | `rt_services_workshop_query_text_search` |
+| <a id="zanna-services-workshoplist-get-published"></a>`Zanna.Services.WorkshopList.get_Published` | `i64()` | `rt_services_workshop_list_published` |
+| <a id="zanna-services-workshoplist-get-subscribed"></a>`Zanna.Services.WorkshopList.get_Subscribed` | `i64()` | `rt_services_workshop_list_subscribed` |
+| <a id="zanna-services-workshoplist-get-favorited"></a>`Zanna.Services.WorkshopList.get_Favorited` | `i64()` | `rt_services_workshop_list_favorited` |
+| <a id="zanna-services-workshoplist-get-votedup"></a>`Zanna.Services.WorkshopList.get_VotedUp` | `i64()` | `rt_services_workshop_list_voted_up` |
+| <a id="zanna-services-workshoplist-get-played"></a>`Zanna.Services.WorkshopList.get_Played` | `i64()` | `rt_services_workshop_list_played` |
+| <a id="zanna-services-workshopvisibility-get-public"></a>`Zanna.Services.WorkshopVisibility.get_Public` | `i64()` | `rt_services_workshop_visibility_public` |
+| <a id="zanna-services-workshopvisibility-get-friendsonly"></a>`Zanna.Services.WorkshopVisibility.get_FriendsOnly` | `i64()` | `rt_services_workshop_visibility_friends_only` |
+| <a id="zanna-services-workshopvisibility-get-private"></a>`Zanna.Services.WorkshopVisibility.get_Private` | `i64()` | `rt_services_workshop_visibility_private` |
+| <a id="zanna-services-workshopvisibility-get-unlisted"></a>`Zanna.Services.WorkshopVisibility.get_Unlisted` | `i64()` | `rt_services_workshop_visibility_unlisted` |
+| <a id="zanna-services-workshopupdatestatus-get-none"></a>`Zanna.Services.WorkshopUpdateStatus.get_None` | `i64()` | `rt_services_workshop_update_status_none` |
+| <a id="zanna-services-workshopupdatestatus-get-preparingconfig"></a>`Zanna.Services.WorkshopUpdateStatus.get_PreparingConfig` | `i64()` | `rt_services_workshop_update_status_preparing_config` |
+| <a id="zanna-services-workshopupdatestatus-get-preparingcontent"></a>`Zanna.Services.WorkshopUpdateStatus.get_PreparingContent` | `i64()` | `rt_services_workshop_update_status_preparing_content` |
+| <a id="zanna-services-workshopupdatestatus-get-uploadingcontent"></a>`Zanna.Services.WorkshopUpdateStatus.get_UploadingContent` | `i64()` | `rt_services_workshop_update_status_uploading_content` |
+| <a id="zanna-services-workshopupdatestatus-get-uploadingpreview"></a>`Zanna.Services.WorkshopUpdateStatus.get_UploadingPreview` | `i64()` | `rt_services_workshop_update_status_uploading_preview` |
+| <a id="zanna-services-workshopupdatestatus-get-committing"></a>`Zanna.Services.WorkshopUpdateStatus.get_Committing` | `i64()` | `rt_services_workshop_update_status_committing` |
 | `Zanna.Services.Steam.RestartAppIfNecessary` | `i1(i64)` | `rt_services_steam_restart_app_if_necessary` |
 | <a id="zanna-services-steam-get-isactive"></a>`Zanna.Services.Steam.get_IsActive` | `i1()` | `rt_services_steam_get_is_active` |
 | <a id="zanna-services-steam-get-steamid"></a>`Zanna.Services.Steam.get_SteamId` | `i64()` | `rt_services_steam_get_steam_id` |
@@ -679,6 +1264,13 @@ from `None`. Use these values for analytics and default settings, not to gate fe
 | <a id="zanna-services-eventkind-get-statsstored"></a>`Zanna.Services.EventKind.get_StatsStored` | `i64()` | `rt_services_event_kind_stats_stored` |
 | <a id="zanna-services-eventkind-get-achievementstored"></a>`Zanna.Services.EventKind.get_AchievementStored` | `i64()` | `rt_services_event_kind_achievement_stored` |
 | <a id="zanna-services-eventkind-get-textinputdismissed"></a>`Zanna.Services.EventKind.get_TextInputDismissed` | `i64()` | `rt_services_event_kind_text_input_dismissed` |
+| <a id="zanna-services-eventkind-get-achievementiconready"></a>`Zanna.Services.EventKind.get_AchievementIconReady` | `i64()` | `rt_services_event_kind_achievement_icon_ready` |
+| <a id="zanna-services-eventkind-get-controllerconnected"></a>`Zanna.Services.EventKind.get_ControllerConnected` | `i64()` | `rt_services_event_kind_controller_connected` |
+| <a id="zanna-services-eventkind-get-controllerdisconnected"></a>`Zanna.Services.EventKind.get_ControllerDisconnected` | `i64()` | `rt_services_event_kind_controller_disconnected` |
+| <a id="zanna-services-eventkind-get-controllerconfigured"></a>`Zanna.Services.EventKind.get_ControllerConfigured` | `i64()` | `rt_services_event_kind_controller_configured` |
+| <a id="zanna-services-eventkind-get-workshopiteminstalled"></a>`Zanna.Services.EventKind.get_WorkshopItemInstalled` | `i64()` | `rt_services_event_kind_workshop_item_installed` |
+| <a id="zanna-services-eventkind-get-workshopitemdownloaded"></a>`Zanna.Services.EventKind.get_WorkshopItemDownloaded` | `i64()` | `rt_services_event_kind_workshop_item_downloaded` |
+| <a id="zanna-services-eventkind-get-workshopsubscriptionchanged"></a>`Zanna.Services.EventKind.get_WorkshopSubscriptionChanged` | `i64()` | `rt_services_event_kind_workshop_subscription_changed` |
 | <a id="zanna-services-feature-get-identity"></a>`Zanna.Services.Feature.get_Identity` | `i64()` | `rt_services_feature_identity` |
 | <a id="zanna-services-feature-get-licensing"></a>`Zanna.Services.Feature.get_Licensing` | `i64()` | `rt_services_feature_licensing` |
 | <a id="zanna-services-feature-get-language"></a>`Zanna.Services.Feature.get_Language` | `i64()` | `rt_services_feature_language` |
@@ -690,11 +1282,34 @@ from `None`. Use these values for analytics and default settings, not to gate fe
 | <a id="zanna-services-feature-get-overlay"></a>`Zanna.Services.Feature.get_Overlay` | `i64()` | `rt_services_feature_overlay` |
 | <a id="zanna-services-feature-get-textinput"></a>`Zanna.Services.Feature.get_TextInput` | `i64()` | `rt_services_feature_text_input` |
 | <a id="zanna-services-feature-get-cloud"></a>`Zanna.Services.Feature.get_Cloud` | `i64()` | `rt_services_feature_cloud` |
+| <a id="zanna-services-feature-get-launchparameters"></a>`Zanna.Services.Feature.get_LaunchParameters` | `i64()` | `rt_services_feature_launch_parameters` |
+| <a id="zanna-services-feature-get-timeline"></a>`Zanna.Services.Feature.get_Timeline` | `i64()` | `rt_services_feature_timeline` |
+| <a id="zanna-services-feature-get-appdetails"></a>`Zanna.Services.Feature.get_AppDetails` | `i64()` | `rt_services_feature_app_details` |
+| <a id="zanna-services-feature-get-achievementicons"></a>`Zanna.Services.Feature.get_AchievementIcons` | `i64()` | `rt_services_feature_achievement_icons` |
+| <a id="zanna-services-feature-get-achievementpercentages"></a>`Zanna.Services.Feature.get_AchievementPercentages` | `i64()` | `rt_services_feature_achievement_percentages` |
+| <a id="zanna-services-feature-get-actioninput"></a>`Zanna.Services.Feature.get_ActionInput` | `i64()` | `rt_services_feature_action_input` |
+| <a id="zanna-services-feature-get-workshop"></a>`Zanna.Services.Feature.get_Workshop` | `i64()` | `rt_services_feature_workshop` |
 | <a id="zanna-services-requestkind-get-playercount"></a>`Zanna.Services.RequestKind.get_PlayerCount` | `i64()` | `rt_services_request_kind_player_count` |
 | <a id="zanna-services-requestkind-get-leaderboardfind"></a>`Zanna.Services.RequestKind.get_LeaderboardFind` | `i64()` | `rt_services_request_kind_leaderboard_find` |
 | <a id="zanna-services-requestkind-get-leaderboardupload"></a>`Zanna.Services.RequestKind.get_LeaderboardUpload` | `i64()` | `rt_services_request_kind_leaderboard_upload` |
 | <a id="zanna-services-requestkind-get-leaderboarddownload"></a>`Zanna.Services.RequestKind.get_LeaderboardDownload` | `i64()` | `rt_services_request_kind_leaderboard_download` |
 | <a id="zanna-services-requestkind-get-textinput"></a>`Zanna.Services.RequestKind.get_TextInput` | `i64()` | `rt_services_request_kind_text_input` |
+| <a id="zanna-services-requestkind-get-timelineeventrecording"></a>`Zanna.Services.RequestKind.get_TimelineEventRecording` | `i64()` | `rt_services_request_kind_timeline_event_recording` |
+| <a id="zanna-services-requestkind-get-timelinephaserecording"></a>`Zanna.Services.RequestKind.get_TimelinePhaseRecording` | `i64()` | `rt_services_request_kind_timeline_phase_recording` |
+| <a id="zanna-services-requestkind-get-achievementpercentages"></a>`Zanna.Services.RequestKind.get_AchievementPercentages` | `i64()` | `rt_services_request_kind_achievement_percentages` |
+| <a id="zanna-services-requestkind-get-workshopquery"></a>`Zanna.Services.RequestKind.get_WorkshopQuery` | `i64()` | `rt_services_request_kind_workshop_query` |
+| <a id="zanna-services-requestkind-get-workshopsubscribe"></a>`Zanna.Services.RequestKind.get_WorkshopSubscribe` | `i64()` | `rt_services_request_kind_workshop_subscribe` |
+| <a id="zanna-services-requestkind-get-workshopunsubscribe"></a>`Zanna.Services.RequestKind.get_WorkshopUnsubscribe` | `i64()` | `rt_services_request_kind_workshop_unsubscribe` |
+| <a id="zanna-services-requestkind-get-workshopcreate"></a>`Zanna.Services.RequestKind.get_WorkshopCreate` | `i64()` | `rt_services_request_kind_workshop_create` |
+| <a id="zanna-services-requestkind-get-workshopsubmit"></a>`Zanna.Services.RequestKind.get_WorkshopSubmit` | `i64()` | `rt_services_request_kind_workshop_submit` |
+| <a id="zanna-services-requestkind-get-workshopdelete"></a>`Zanna.Services.RequestKind.get_WorkshopDelete` | `i64()` | `rt_services_request_kind_workshop_delete` |
+| <a id="zanna-services-timelinemode-get-playing"></a>`Zanna.Services.TimelineMode.get_Playing` | `i64()` | `rt_services_timeline_mode_playing` |
+| <a id="zanna-services-timelinemode-get-staging"></a>`Zanna.Services.TimelineMode.get_Staging` | `i64()` | `rt_services_timeline_mode_staging` |
+| <a id="zanna-services-timelinemode-get-menus"></a>`Zanna.Services.TimelineMode.get_Menus` | `i64()` | `rt_services_timeline_mode_menus` |
+| <a id="zanna-services-timelinemode-get-loadingscreen"></a>`Zanna.Services.TimelineMode.get_LoadingScreen` | `i64()` | `rt_services_timeline_mode_loading_screen` |
+| <a id="zanna-services-timelineclip-get-none"></a>`Zanna.Services.TimelineClip.get_None` | `i64()` | `rt_services_timeline_clip_none` |
+| <a id="zanna-services-timelineclip-get-standard"></a>`Zanna.Services.TimelineClip.get_Standard` | `i64()` | `rt_services_timeline_clip_standard` |
+| <a id="zanna-services-timelineclip-get-featured"></a>`Zanna.Services.TimelineClip.get_Featured` | `i64()` | `rt_services_timeline_clip_featured` |
 | <a id="zanna-services-leaderboardscope-get-global"></a>`Zanna.Services.LeaderboardScope.get_Global` | `i64()` | `rt_services_leaderboard_scope_global` |
 | <a id="zanna-services-leaderboardscope-get-arounduser"></a>`Zanna.Services.LeaderboardScope.get_AroundUser` | `i64()` | `rt_services_leaderboard_scope_around_user` |
 | <a id="zanna-services-leaderboardscope-get-friends"></a>`Zanna.Services.LeaderboardScope.get_Friends` | `i64()` | `rt_services_leaderboard_scope_friends` |

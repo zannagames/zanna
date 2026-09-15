@@ -148,6 +148,99 @@ _Static_assert(offsetof(rt_steam_leaderboard_entry, detail_count) == 16,
 _Static_assert(offsetof(rt_steam_leaderboard_entry, ugc) ==
                    (RT_STEAM_CALLBACK_PACK == 8 ? 24u : 20u),
                "LeaderboardEntry_t.m_hUGC offset");
+_Static_assert(sizeof(rt_steam_timeline_phase_recording_exists) ==
+                   RT_STEAM_TIMELINE_PHASE_RECORDING_EXISTS_SIZE,
+               "SteamTimelineGamePhaseRecordingExists_t size");
+_Static_assert(offsetof(rt_steam_timeline_phase_recording_exists, recording_ms) == 64,
+               "SteamTimelineGamePhaseRecordingExists_t.m_ulRecordingMS offset");
+_Static_assert(offsetof(rt_steam_timeline_phase_recording_exists, clip_count) == 80,
+               "SteamTimelineGamePhaseRecordingExists_t.m_unClipCount offset");
+_Static_assert(offsetof(rt_steam_timeline_phase_recording_exists, screenshot_count) == 84,
+               "SteamTimelineGamePhaseRecordingExists_t.m_unScreenshotCount offset");
+_Static_assert(sizeof(rt_steam_timeline_event_recording_exists) ==
+                   RT_STEAM_TIMELINE_EVENT_RECORDING_EXISTS_SIZE,
+               "SteamTimelineEventRecordingExists_t size");
+_Static_assert(offsetof(rt_steam_timeline_event_recording_exists, recording_exists) == 8,
+               "SteamTimelineEventRecordingExists_t.m_bRecordingExists offset");
+_Static_assert(sizeof(rt_steam_user_achievement_icon_fetched) ==
+                   RT_STEAM_USER_ACHIEVEMENT_ICON_FETCHED_SIZE,
+               "UserAchievementIconFetched_t size");
+_Static_assert(offsetof(rt_steam_user_achievement_icon_fetched, achieved) == 136,
+               "UserAchievementIconFetched_t.m_bAchieved offset");
+_Static_assert(offsetof(rt_steam_user_achievement_icon_fetched, icon_handle) == 140,
+               "UserAchievementIconFetched_t.m_nIconHandle offset");
+_Static_assert(sizeof(rt_steam_param_string_array) == RT_STEAM_PARAM_STRING_ARRAY_SIZE,
+               "SteamParamStringArray_t size");
+_Static_assert(sizeof(rt_steam_ugc_details) == RT_STEAM_UGC_DETAILS_SIZE, "SteamUGCDetails_t size");
+_Static_assert(offsetof(rt_steam_ugc_details, owner) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 8160u : 8156u),
+               "SteamUGCDetails_t.m_ulSteamIDOwner offset");
+_Static_assert(offsetof(rt_steam_ugc_details, tags) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 8187u : 8183u),
+               "SteamUGCDetails_t.m_rgchTags offset");
+_Static_assert(offsetof(rt_steam_ugc_details, file_handle) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 9216u : 9208u),
+               "SteamUGCDetails_t.m_hFile offset");
+_Static_assert(offsetof(rt_steam_ugc_details, url) == (RT_STEAM_CALLBACK_PACK == 8 ? 9500u : 9492u),
+               "SteamUGCDetails_t.m_rgchURL offset");
+_Static_assert(offsetof(rt_steam_ugc_details, score) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 9764u : 9756u),
+               "SteamUGCDetails_t.m_flScore offset");
+_Static_assert(offsetof(rt_steam_ugc_details, total_files_size) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 9776u : 9764u),
+               "SteamUGCDetails_t.m_ulTotalFilesSize offset");
+_Static_assert(sizeof(rt_steam_ugc_query_completed) == RT_STEAM_UGC_QUERY_COMPLETED_SIZE,
+               "SteamUGCQueryCompleted_t size");
+_Static_assert(offsetof(rt_steam_ugc_query_completed, cached) == 20,
+               "SteamUGCQueryCompleted_t.m_bCachedData offset");
+_Static_assert(sizeof(rt_steam_ugc_create_item_result) == RT_STEAM_UGC_CREATE_ITEM_RESULT_SIZE,
+               "CreateItemResult_t size");
+_Static_assert(offsetof(rt_steam_ugc_create_item_result, needs_agreement) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u),
+               "CreateItemResult_t.m_bUserNeedsToAcceptWorkshopLegalAgreement offset");
+_Static_assert(sizeof(rt_steam_ugc_submit_item_update_result) ==
+                   RT_STEAM_UGC_SUBMIT_ITEM_UPDATE_RESULT_SIZE,
+               "SubmitItemUpdateResult_t size");
+_Static_assert(offsetof(rt_steam_ugc_submit_item_update_result, file_id) == 8,
+               "SubmitItemUpdateResult_t.m_nPublishedFileId offset");
+_Static_assert(sizeof(rt_steam_ugc_item_installed) == RT_STEAM_UGC_ITEM_INSTALLED_SIZE,
+               "ItemInstalled_t size");
+_Static_assert(sizeof(rt_steam_ugc_download_item_result) == RT_STEAM_UGC_DOWNLOAD_ITEM_RESULT_SIZE,
+               "DownloadItemResult_t size");
+_Static_assert(offsetof(rt_steam_ugc_download_item_result, result) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u),
+               "DownloadItemResult_t.m_eResult offset");
+_Static_assert(sizeof(rt_steam_ugc_file_result) == RT_STEAM_UGC_FILE_RESULT_SIZE,
+               "DeleteItemResult_t size");
+_Static_assert(sizeof(rt_steam_ugc_file_subscription) == RT_STEAM_UGC_FILE_SUBSCRIPTION_SIZE,
+               "RemoteStoragePublishedFileSubscribed_t size");
+_Static_assert(sizeof(rt_steam_input_device) == 8, "SteamInputDeviceConnected_t size");
+_Static_assert(sizeof(rt_steam_input_configuration_loaded) ==
+                   RT_STEAM_INPUT_CONFIGURATION_LOADED_SIZE,
+               "SteamInputConfigurationLoaded_t size");
+_Static_assert(offsetof(rt_steam_input_configuration_loaded, device) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 8u : 4u),
+               "SteamInputConfigurationLoaded_t.m_ulDeviceHandle offset");
+_Static_assert(offsetof(rt_steam_input_configuration_loaded, mapping_creator) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u),
+               "SteamInputConfigurationLoaded_t.m_ulMappingCreator offset");
+_Static_assert(offsetof(rt_steam_input_configuration_loaded, major_revision) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 24u : 20u),
+               "SteamInputConfigurationLoaded_t.m_unMajorRevision offset");
+_Static_assert(offsetof(rt_steam_input_configuration_loaded, uses_input_api) ==
+                   (RT_STEAM_CALLBACK_PACK == 8 ? 32u : 28u),
+               "SteamInputConfigurationLoaded_t.m_bUsesSteamInputAPI offset");
+_Static_assert(sizeof(rt_steam_input_digital_data) == 2, "InputDigitalActionData_t size");
+_Static_assert(sizeof(rt_steam_input_analog_data) == 13, "InputAnalogActionData_t size");
+_Static_assert(offsetof(rt_steam_input_analog_data, x) == 4, "InputAnalogActionData_t.x offset");
+_Static_assert(offsetof(rt_steam_input_analog_data, y) == 8, "InputAnalogActionData_t.y offset");
+_Static_assert(offsetof(rt_steam_input_analog_data, active) == 12,
+               "InputAnalogActionData_t.bActive offset");
+_Static_assert(sizeof(rt_steam_global_achievement_percentages_ready) ==
+                   RT_STEAM_GLOBAL_ACHIEVEMENT_PERCENTAGES_READY_SIZE,
+               "GlobalAchievementPercentagesReady_t size");
+_Static_assert(offsetof(rt_steam_global_achievement_percentages_ready, result) == 8,
+               "GlobalAchievementPercentagesReady_t.m_eResult offset");
 
 //===----------------------------------------------------------------------===//
 // State
@@ -232,6 +325,28 @@ int rt_services_steam_parse_id(const char *text, uint32_t *out) {
     if (value == 0)
         return 0;
     *out = (uint32_t)value;
+    return 1;
+}
+
+/// @brief Parse a decimal, nonzero uint64 id.
+/// @param text NUL-terminated candidate; digits only, no sign or whitespace.
+/// @param out Receives the id on success.
+/// @return 1 when @p text is an integer in 1..18446744073709551615, otherwise 0.
+int rt_services_steam_parse_u64(const char *text, uint64_t *out) {
+    uint64_t value = 0;
+    if (!text || !*text)
+        return 0;
+    for (const char *p = text; *p; ++p) {
+        if (*p < '0' || *p > '9')
+            return 0;
+        const uint64_t digit = (uint64_t)(*p - '0');
+        if (value > (UINT64_MAX - digit) / 10u)
+            return 0;
+        value = value * 10u + digit;
+    }
+    if (value == 0)
+        return 0;
+    *out = value;
     return 1;
 }
 
@@ -424,6 +539,9 @@ static void steam_open_interfaces(void) {
     memset(&g_steam.apps, 0, sizeof(g_steam.apps));
     memset(&g_steam.user_stats, 0, sizeof(g_steam.user_stats));
     memset(&g_steam.remote_storage, 0, sizeof(g_steam.remote_storage));
+    memset(&g_steam.timeline, 0, sizeof(g_steam.timeline));
+    memset(&g_steam.input, 0, sizeof(g_steam.input));
+    memset(&g_steam.ugc, 0, sizeof(g_steam.ugc));
     int version = -1;
 
     {
@@ -480,7 +598,8 @@ static void steam_open_interfaces(void) {
         } else {
             rt_services_steam_report_missing(
                 RT_STEAM_SYMBOL_UTILS_V011 " or " RT_STEAM_SYMBOL_UTILS_V010,
-                "app id, hardware, Proton, Big Picture, overlay, and text input queries");
+                "app id, hardware, Proton, Big Picture, overlay, text input, and achievement "
+                "icon queries");
         }
     }
 
@@ -496,10 +615,45 @@ static void steam_open_interfaces(void) {
             g_steam.apps.is_subscribed = RT_FN_PTR_CAST((rt_steam_self_bool_fn)subscribed);
             g_steam.apps.is_dlc_installed = RT_FN_PTR_CAST((rt_steam_self_app_bool_fn)dlc);
             g_steam.apps.game_language = RT_FN_PTR_CAST((rt_steam_self_cstr_fn)language);
+
+            // Launch parameters are their own group so a redistributable without
+            // them keeps licensing, DLC, and language queries.
+            void *query = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_LAUNCH_QUERY_PARAM);
+            void *command = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_LAUNCH_COMMAND_LINE);
+            if (query && command) {
+                g_steam.apps.launch_query_param = RT_FN_PTR_CAST((rt_steam_self_str_cstr_fn)query);
+                g_steam.apps.launch_command_line =
+                    RT_FN_PTR_CAST((rt_steam_launch_command_line_fn)command);
+                g_steam.apps.launch_ready = 1;
+            } else {
+                rt_services_steam_report_missing(query ? RT_STEAM_SYMBOL_APPS_LAUNCH_COMMAND_LINE
+                                                       : RT_STEAM_SYMBOL_APPS_LAUNCH_QUERY_PARAM,
+                                                 "launch parameters");
+            }
+
+            // DLC list, build id, and branch are another optional group.
+            void *dlc_count = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_DLC_COUNT);
+            void *dlc_data = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_DLC_DATA);
+            void *build_id = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_BUILD_ID);
+            void *beta_name = rt_services_steam_symbol(RT_STEAM_SYMBOL_APPS_BETA_NAME);
+            if (dlc_count && dlc_data && build_id && beta_name) {
+                g_steam.apps.dlc_count = RT_FN_PTR_CAST((rt_steam_self_int_fn)dlc_count);
+                g_steam.apps.dlc_data = RT_FN_PTR_CAST((rt_steam_dlc_data_fn)dlc_data);
+                g_steam.apps.build_id = RT_FN_PTR_CAST((rt_steam_self_int_fn)build_id);
+                g_steam.apps.beta_name = RT_FN_PTR_CAST((rt_steam_beta_name_fn)beta_name);
+                g_steam.apps.details_ready = 1;
+            } else {
+                rt_services_steam_report_missing(!dlc_count  ? RT_STEAM_SYMBOL_APPS_DLC_COUNT
+                                                 : !dlc_data ? RT_STEAM_SYMBOL_APPS_DLC_DATA
+                                                 : !build_id ? RT_STEAM_SYMBOL_APPS_BUILD_ID
+                                                             : RT_STEAM_SYMBOL_APPS_BETA_NAME,
+                                                 "DLC list, build id, and branch queries");
+            }
         } else {
             rt_services_steam_report_missing(RT_STEAM_SYMBOL_APPS_V009
                                              " or " RT_STEAM_SYMBOL_APPS_V008,
-                                             "licensing, DLC, and language queries");
+                                             "licensing, DLC, language, launch parameter, and "
+                                             "app detail queries");
         }
     }
 
@@ -526,6 +680,9 @@ static void steam_open_interfaces(void) {
     rt_services_steam_bind_user_stats();
     rt_services_steam_bind_social();
     rt_services_steam_bind_cloud();
+    rt_services_steam_bind_timeline();
+    rt_services_steam_bind_input();
+    rt_services_steam_bind_workshop();
 }
 
 //===----------------------------------------------------------------------===//
@@ -663,6 +820,11 @@ static int64_t steam_start(rt_string app_id, char *message, size_t message_capac
                  "Steam: SteamAPI_InitFlat failed (%s): %s",
                  steam_init_result_name(init_result),
                  error[0] ? error : "no details reported");
+        // A machine without the Steam client installed reports FailedGeneric
+        // ("Could not determine Steam client install directory"); the status a
+        // game can act on is that the client is not running.
+        if (init_result == RT_STEAM_INIT_RESULT_FAILED_GENERIC && !g_steam.core.is_steam_running())
+            return RT_SERVICES_STATUS_CLIENT_NOT_RUNNING;
         return steam_status_for_init_result(init_result);
     }
 
@@ -685,6 +847,9 @@ static void steam_stop(void) {
     if (!g_steam.started)
         return;
     g_steam.started = 0;
+    rt_services_steam_stop_input();
+    for (size_t i = 0; i < sizeof(g_steam.ops) / sizeof(g_steam.ops[0]); ++i)
+        rt_services_steam_workshop_op_release(&g_steam.ops[i]);
     g_steam.core.shutdown();
     g_steam.pipe = 0;
     memset(&g_steam.user, 0, sizeof(g_steam.user));
@@ -693,6 +858,9 @@ static void steam_stop(void) {
     memset(&g_steam.apps, 0, sizeof(g_steam.apps));
     memset(&g_steam.user_stats, 0, sizeof(g_steam.user_stats));
     memset(&g_steam.remote_storage, 0, sizeof(g_steam.remote_storage));
+    memset(&g_steam.timeline, 0, sizeof(g_steam.timeline));
+    memset(&g_steam.input, 0, sizeof(g_steam.input));
+    memset(&g_steam.ugc, 0, sizeof(g_steam.ugc));
     memset(g_steam.ops, 0, sizeof(g_steam.ops));
     rt_services_steam_reset_user_stats();
 }
@@ -802,6 +970,21 @@ static void steam_route_call_result(const rt_steam_callback_msg *msg) {
         case STEAM_OP_DOWNLOAD:
             rt_services_steam_leaderboard_call_completed(op, &completed);
             break;
+        case STEAM_OP_TIMELINE_EVENT_RECORDING:
+        case STEAM_OP_TIMELINE_PHASE_RECORDING:
+            rt_services_steam_timeline_call_completed(op, &completed);
+            break;
+        case STEAM_OP_ACHIEVEMENT_PERCENTAGES:
+            rt_services_steam_achievement_percentages_completed(op, &completed);
+            break;
+        case STEAM_OP_UGC_QUERY:
+        case STEAM_OP_UGC_SUBSCRIBE:
+        case STEAM_OP_UGC_UNSUBSCRIBE:
+        case STEAM_OP_UGC_CREATE:
+        case STEAM_OP_UGC_SUBMIT:
+        case STEAM_OP_UGC_DELETE:
+            rt_services_steam_workshop_call_completed(op, &completed);
+            break;
         default:
             break;
     }
@@ -869,7 +1052,8 @@ static void steam_handle_callback(const rt_steam_callback_msg *msg) {
                 RT_SERVICES_EVENT_LAUNCH_PARAMETERS_CHANGED, 0, 0, 0, NULL);
             break;
         default:
-            if (!rt_services_steam_user_stats_callback(msg))
+            if (!rt_services_steam_user_stats_callback(msg) &&
+                !rt_services_steam_input_callback(msg) && !rt_services_steam_workshop_callback(msg))
                 (void)rt_services_steam_social_callback(msg);
             break;
     }
@@ -879,6 +1063,7 @@ static void steam_handle_callback(const rt_steam_callback_msg *msg) {
 static void steam_pump(void) {
     if (!g_steam.started)
         return;
+    rt_services_steam_input_frame();
     g_steam.core.dispatch_run_frame(g_steam.pipe);
     for (int i = 0; i < STEAM_MAX_CALLBACKS_PER_PUMP && g_steam.started; ++i) {
         rt_steam_callback_msg msg;
@@ -922,6 +1107,20 @@ static int8_t steam_has_feature(int64_t feature) {
             return g_steam.utils.text_input_ready ? 1 : 0;
         case RT_SERVICES_FEATURE_CLOUD:
             return g_steam.remote_storage.self ? 1 : 0;
+        case RT_SERVICES_FEATURE_LAUNCH_PARAMETERS:
+            return g_steam.apps.launch_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_TIMELINE:
+            return g_steam.timeline.ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_APP_DETAILS:
+            return g_steam.apps.details_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_ACHIEVEMENT_ICONS:
+            return g_steam.user_stats.icons_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_ACHIEVEMENT_PERCENTAGES:
+            return g_steam.user_stats.percentages_ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_ACTION_INPUT:
+            return g_steam.input.ready ? 1 : 0;
+        case RT_SERVICES_FEATURE_WORKSHOP:
+            return g_steam.ugc.ready ? 1 : 0;
         default:
             return 0;
     }
@@ -1005,6 +1204,98 @@ static int8_t steam_is_dlc_installed(rt_string dlc_id) {
     return g_steam.apps.is_dlc_installed(g_steam.apps.self, id) ? 1 : 0;
 }
 
+/// @brief Read the command line of a steam://run/<appid>//<command line>/ launch.
+/// @return Owned command line, or NULL when there is none.
+static rt_string steam_launch_command_line(void) {
+    if (!g_steam.started || !g_steam.apps.launch_ready)
+        return NULL;
+    char buffer[STEAM_LAUNCH_COMMAND_LINE_CAPACITY];
+    memset(buffer, 0, sizeof(buffer));
+    const int copied =
+        g_steam.apps.launch_command_line(g_steam.apps.self, buffer, (int)sizeof(buffer));
+    buffer[sizeof(buffer) - 1] = '\0';
+    if (copied <= 0 || !buffer[0])
+        return NULL;
+    if (strlen(buffer) == sizeof(buffer) - 1) {
+        rt_services_provider_add_diagnostic(
+            "Steam: the launch command line filled the %u-byte buffer and may be truncated",
+            (unsigned)sizeof(buffer));
+    }
+    return rt_const_cstr(buffer);
+}
+
+/// @brief Read one steam://run/<appid>//?key=value launch parameter.
+/// @param key Non-empty parameter name.
+/// @return Owned value, or NULL when the parameter is absent.
+static rt_string steam_launch_parameter(const char *key) {
+    if (!g_steam.started || !g_steam.apps.launch_ready)
+        return NULL;
+    const char *value = g_steam.apps.launch_query_param(g_steam.apps.self, key);
+    return (value && *value) ? rt_const_cstr(value) : NULL;
+}
+
+/// @brief Count the app's DLC.
+/// @return Count, or 0 when unavailable.
+static int64_t steam_dlc_count(void) {
+    if (!g_steam.started || !g_steam.apps.details_ready)
+        return 0;
+    const int count = g_steam.apps.dlc_count(g_steam.apps.self);
+    return count > 0 ? count : 0;
+}
+
+/// @brief Read one DLC of the app.
+/// @param index Non-negative index.
+/// @param out_id Receives the decimal DLC app id.
+/// @param id_capacity Size of @p out_id in bytes.
+/// @param out_name Receives the DLC name.
+/// @param name_capacity Size of @p out_name in bytes.
+/// @param out_available Receives 1 when the DLC is available in the store.
+/// @return 1 when @p index names a DLC, otherwise 0.
+static int8_t steam_dlc_at(int64_t index,
+                           char *out_id,
+                           size_t id_capacity,
+                           char *out_name,
+                           size_t name_capacity,
+                           int8_t *out_available) {
+    if (!g_steam.started || !g_steam.apps.details_ready || index > INT32_MAX)
+        return 0;
+    uint32_t app_id = 0;
+    bool available = false;
+    char name[STEAM_APP_TEXT_CAPACITY];
+    memset(name, 0, sizeof(name));
+    if (!g_steam.apps.dlc_data(
+            g_steam.apps.self, (int)index, &app_id, &available, name, (int)sizeof(name)) ||
+        app_id == 0)
+        return 0;
+    name[sizeof(name) - 1] = '\0';
+    snprintf(out_id, id_capacity, "%u", (unsigned)app_id);
+    snprintf(out_name, name_capacity, "%s", name);
+    *out_available = available ? 1 : 0;
+    return 1;
+}
+
+/// @brief Read the installed build id.
+/// @return Build id, or 0 when unknown.
+static int64_t steam_build_id(void) {
+    if (!g_steam.started || !g_steam.apps.details_ready)
+        return 0;
+    const int build = g_steam.apps.build_id(g_steam.apps.self);
+    return build > 0 ? build : 0;
+}
+
+/// @brief Read the beta branch name.
+/// @return Owned name, or NULL on the default branch.
+static rt_string steam_branch_name(void) {
+    if (!g_steam.started || !g_steam.apps.details_ready)
+        return NULL;
+    char name[STEAM_APP_TEXT_CAPACITY];
+    memset(name, 0, sizeof(name));
+    if (!g_steam.apps.beta_name(g_steam.apps.self, name, (int)sizeof(name)))
+        return NULL;
+    name[sizeof(name) - 1] = '\0';
+    return name[0] ? rt_const_cstr(name) : NULL;
+}
+
 /// @brief Start a player-count call.
 /// @param out_handle Receives the provider token.
 /// @param message Receives the failure message.
@@ -1056,6 +1347,21 @@ static int8_t steam_begin_request(const rt_services_request_args *args,
             return rt_services_steam_begin_leaderboard(args, out_handle, message, message_capacity);
         case RT_SERVICES_REQUEST_TEXT_INPUT:
             return rt_services_steam_begin_text_input(args, out_handle, message, message_capacity);
+        case RT_SERVICES_REQUEST_TIMELINE_EVENT_RECORDING:
+        case RT_SERVICES_REQUEST_TIMELINE_PHASE_RECORDING:
+            return rt_services_steam_begin_timeline_request(
+                args, out_handle, message, message_capacity);
+        case RT_SERVICES_REQUEST_WORKSHOP_QUERY:
+        case RT_SERVICES_REQUEST_WORKSHOP_SUBSCRIBE:
+        case RT_SERVICES_REQUEST_WORKSHOP_UNSUBSCRIBE:
+        case RT_SERVICES_REQUEST_WORKSHOP_CREATE:
+        case RT_SERVICES_REQUEST_WORKSHOP_SUBMIT:
+        case RT_SERVICES_REQUEST_WORKSHOP_DELETE:
+            return rt_services_steam_begin_workshop_request(
+                args, out_handle, message, message_capacity);
+        case RT_SERVICES_REQUEST_ACHIEVEMENT_PERCENTAGES:
+            return rt_services_steam_begin_achievement_percentages(
+                out_handle, message, message_capacity);
         default:
             snprintf(message,
                      message_capacity,
@@ -1080,6 +1386,12 @@ const rt_services_provider rt_services_steam_provider = {
     .is_licensed = steam_is_licensed,
     .is_online = steam_is_online,
     .is_dlc_installed = steam_is_dlc_installed,
+    .launch_command_line = steam_launch_command_line,
+    .launch_parameter = steam_launch_parameter,
+    .dlc_count = steam_dlc_count,
+    .dlc_at = steam_dlc_at,
+    .build_id = steam_build_id,
+    .branch_name = steam_branch_name,
     .begin_request = steam_begin_request,
     .achievements = &rt_services_steam_achievement_ops,
     .stats = &rt_services_steam_stat_ops,
@@ -1088,6 +1400,9 @@ const rt_services_provider rt_services_steam_provider = {
     .overlay = &rt_services_steam_overlay_ops,
     .text_input = &rt_services_steam_text_input_ops,
     .cloud = &rt_services_steam_cloud_ops,
+    .timeline = &rt_services_steam_timeline_ops,
+    .action_input = &rt_services_steam_action_input_ops,
+    .workshop = &rt_services_steam_workshop_ops,
 };
 
 //===----------------------------------------------------------------------===//

@@ -65,6 +65,8 @@ extern "C" {
 
 /// @brief Runtime heap class id for Zanna.Services.Request objects.
 #define RT_SERVICES_REQUEST_CLASS_ID INT64_C(-0x5E0101)
+/// @brief Runtime heap class id for Zanna.Services.WorkshopItem objects.
+#define RT_SERVICES_WORKSHOP_ITEM_CLASS_ID INT64_C(-0x5E0102)
 
 /// @brief A provider is started and serving requests.
 #define RT_SERVICES_STATUS_OK INT64_C(0)
@@ -97,7 +99,8 @@ extern "C" {
 #define RT_SERVICES_EVENT_OVERLAY_CHANGED INT64_C(4)
 /// @brief A DLC finished installing (text = provider DLC id, value = numeric id when known).
 #define RT_SERVICES_EVENT_DLC_INSTALLED INT64_C(5)
-/// @brief The game was relaunched with new launch parameters while running.
+/// @brief The game was relaunched with new launch parameters while running; read them again
+///        with Platform.LaunchCommandLine and Platform.LaunchParameter.
 #define RT_SERVICES_EVENT_LAUNCH_PARAMETERS_CHANGED INT64_C(6)
 /// @brief The platform client is shutting down; the game should save and stop the provider.
 #define RT_SERVICES_EVENT_SERVICE_SHUTDOWN INT64_C(7)
@@ -108,6 +111,23 @@ extern "C" {
 #define RT_SERVICES_EVENT_ACHIEVEMENT_STORED INT64_C(9)
 /// @brief The floating on-screen keyboard opened by OnScreenKeyboard.ShowFloating closed.
 #define RT_SERVICES_EVENT_TEXT_INPUT_DISMISSED INT64_C(10)
+/// @brief An achievement icon finished loading (text = achievement id, flag = unlocked variant,
+///        value = 1 when the achievement has an icon for that state).
+#define RT_SERVICES_EVENT_ACHIEVEMENT_ICON_READY INT64_C(11)
+/// @brief A controller connected while ActionInput is started (text = controller id).
+#define RT_SERVICES_EVENT_CONTROLLER_CONNECTED INT64_C(12)
+/// @brief A controller disconnected while ActionInput is started (text = controller id).
+#define RT_SERVICES_EVENT_CONTROLLER_DISCONNECTED INT64_C(13)
+/// @brief A controller's binding configuration loaded (text = controller id, flag = the
+///        configuration binds actions, value = major binding revision).
+#define RT_SERVICES_EVENT_CONTROLLER_CONFIGURED INT64_C(14)
+/// @brief A Workshop item was installed or updated on disk (text = item id).
+#define RT_SERVICES_EVENT_WORKSHOP_ITEM_INSTALLED INT64_C(15)
+/// @brief A Workshop.Download finished (text = item id, code = provider result, flag = succeeded).
+#define RT_SERVICES_EVENT_WORKSHOP_ITEM_DOWNLOADED INT64_C(16)
+/// @brief The player subscribed to or unsubscribed from a Workshop item (text = item id,
+///        flag = subscribed).
+#define RT_SERVICES_EVENT_WORKSHOP_SUBSCRIPTION_CHANGED INT64_C(17)
 
 /// @brief User identity queries (UserId, UserName, IsOnline).
 #define RT_SERVICES_FEATURE_IDENTITY INT64_C(1)
@@ -131,6 +151,20 @@ extern "C" {
 #define RT_SERVICES_FEATURE_TEXT_INPUT INT64_C(10)
 /// @brief Zanna.Services.Cloud.
 #define RT_SERVICES_FEATURE_CLOUD INT64_C(11)
+/// @brief Launch parameters (Platform.LaunchCommandLine, Platform.LaunchParameter).
+#define RT_SERVICES_FEATURE_LAUNCH_PARAMETERS INT64_C(12)
+/// @brief Zanna.Services.Timeline (game recording timeline markers and phases).
+#define RT_SERVICES_FEATURE_TIMELINE INT64_C(13)
+/// @brief Application details (DlcCount, DlcIdAt, DlcNameAt, DlcAvailableAt, BuildId, BranchName).
+#define RT_SERVICES_FEATURE_APP_DETAILS INT64_C(14)
+/// @brief Achievement icons (Achievements.IconWidth, IconHeight, IconRgba).
+#define RT_SERVICES_FEATURE_ACHIEVEMENT_ICONS INT64_C(15)
+/// @brief Global unlock percentages (Achievements.RequestGlobalPercentages, GlobalPercent).
+#define RT_SERVICES_FEATURE_ACHIEVEMENT_PERCENTAGES INT64_C(16)
+/// @brief Zanna.Services.ActionInput (platform action-based controller input).
+#define RT_SERVICES_FEATURE_ACTION_INPUT INT64_C(17)
+/// @brief Zanna.Services.Workshop (user-generated content).
+#define RT_SERVICES_FEATURE_WORKSHOP INT64_C(18)
 
 /// @brief Request kind for Platform.RequestPlayerCount.
 #define RT_SERVICES_REQUEST_PLAYER_COUNT INT64_C(1)
@@ -142,6 +176,24 @@ extern "C" {
 #define RT_SERVICES_REQUEST_LEADERBOARD_DOWNLOAD INT64_C(4)
 /// @brief Request kind for OnScreenKeyboard.RequestText.
 #define RT_SERVICES_REQUEST_TEXT_INPUT INT64_C(5)
+/// @brief Request kind for Timeline.RequestEventRecording.
+#define RT_SERVICES_REQUEST_TIMELINE_EVENT_RECORDING INT64_C(6)
+/// @brief Request kind for Timeline.RequestPhaseRecording.
+#define RT_SERVICES_REQUEST_TIMELINE_PHASE_RECORDING INT64_C(7)
+/// @brief Request kind for Achievements.RequestGlobalPercentages.
+#define RT_SERVICES_REQUEST_ACHIEVEMENT_PERCENTAGES INT64_C(8)
+/// @brief Request kind for Workshop.Query, Workshop.QueryUser, and Workshop.QueryItems.
+#define RT_SERVICES_REQUEST_WORKSHOP_QUERY INT64_C(9)
+/// @brief Request kind for Workshop.Subscribe.
+#define RT_SERVICES_REQUEST_WORKSHOP_SUBSCRIBE INT64_C(10)
+/// @brief Request kind for Workshop.Unsubscribe.
+#define RT_SERVICES_REQUEST_WORKSHOP_UNSUBSCRIBE INT64_C(11)
+/// @brief Request kind for Workshop.CreateItem.
+#define RT_SERVICES_REQUEST_WORKSHOP_CREATE INT64_C(12)
+/// @brief Request kind for Workshop.SubmitUpdate.
+#define RT_SERVICES_REQUEST_WORKSHOP_SUBMIT INT64_C(13)
+/// @brief Request kind for Workshop.DeleteItem.
+#define RT_SERVICES_REQUEST_WORKSHOP_DELETE INT64_C(14)
 
 /// @brief Capacity of the platform event queue.
 #define RT_SERVICES_EVENT_CAPACITY 256
@@ -151,6 +203,10 @@ extern "C" {
 #define RT_SERVICES_DIAGNOSTIC_CAPACITY 32
 /// @brief Maximum number of leaderboard entries one request holds.
 #define RT_SERVICES_LEADERBOARD_ENTRY_CAPACITY 100
+/// @brief Maximum number of integer details one request holds.
+#define RT_SERVICES_REQUEST_DETAIL_CAPACITY 8
+/// @brief Maximum number of Workshop items one request holds.
+#define RT_SERVICES_REQUEST_ITEM_CAPACITY 100
 
 //===----------------------------------------------------------------------===//
 // Zanna.Services.Platform
@@ -219,6 +275,16 @@ void *rt_services_platform_request_player_count(void);
 /// @return Caller-owned Seq of caller-owned strings.
 void *rt_services_platform_diagnostics(void);
 
+/// @brief Read one launch parameter passed by the platform's launch URL.
+/// @details Steam passes parameters as `steam://run/<appid>//?key=value&...`;
+///          names starting with `@` are reserved and always read as empty.
+///          Read them again after EventKind.LaunchParametersChanged. An empty
+///          key traps with "Services.Platform.LaunchParameter: key must not be
+///          empty", whether or not a provider is started.
+/// @param key Parameter name.
+/// @return Caller-owned value, or the empty string when absent or unavailable.
+rt_string rt_services_platform_launch_parameter(rt_string key);
+
 /// @brief Report whether a provider is started.
 /// @return 1 while a provider is active, otherwise 0.
 int8_t rt_services_platform_get_is_available(void);
@@ -255,6 +321,42 @@ int8_t rt_services_platform_get_is_licensed(void);
 /// @brief Report whether the platform client is connected to its online service.
 /// @return 1 when online, otherwise 0.
 int8_t rt_services_platform_get_is_online(void);
+
+/// @brief Read the command line passed by the platform's launch URL.
+/// @details Steam passes it as `steam://run/<appid>//<command line>/`, for
+///          example when a friend joins through rich presence. This is not the
+///          operating system command line (see Zanna.System.Environment). Read
+///          it again after EventKind.LaunchParametersChanged.
+/// @return Caller-owned command line, or the empty string when there is none.
+rt_string rt_services_platform_get_launch_command_line(void);
+
+/// @brief Count the DLC the application defines, owned or not.
+/// @return Count (Steam reports at most 64), or 0 when unavailable.
+int64_t rt_services_platform_get_dlc_count(void);
+
+/// @brief Read the id of the DLC at @p index.
+/// @param index DLC index in 0..DlcCount-1.
+/// @return Caller-owned provider-defined DLC id, or the empty string outside the range.
+rt_string rt_services_platform_dlc_id_at(int64_t index);
+
+/// @brief Read the display name of the DLC at @p index.
+/// @param index DLC index in 0..DlcCount-1.
+/// @return Caller-owned name, or the empty string outside the range.
+rt_string rt_services_platform_dlc_name_at(int64_t index);
+
+/// @brief Report whether the DLC at @p index can be bought now.
+/// @param index DLC index in 0..DlcCount-1.
+/// @return 1 when it is available in the store, otherwise 0.
+int8_t rt_services_platform_dlc_available_at(int64_t index);
+
+/// @brief Read the installed build's id.
+/// @return Build id (0 when the build did not come from the platform), or 0 when unavailable.
+int64_t rt_services_platform_get_build_id(void);
+
+/// @brief Read the branch the installed build comes from.
+/// @return Caller-owned branch name (Steam: the beta name), or the empty string on the default
+///         branch or when unavailable.
+rt_string rt_services_platform_get_branch_name(void);
 
 /// @brief Read the provider result code of the last polled event.
 /// @return Provider-defined code (Steam: EResult), or 0.
@@ -362,6 +464,31 @@ rt_string rt_services_request_entry_user_id(void *request, int64_t index);
 /// @return Caller-owned display name, or the empty string while it is unknown.
 rt_string rt_services_request_entry_user_name(void *request, int64_t index);
 
+/// @brief Read how many integer details a completed request holds.
+/// @param request Borrowed Zanna.Services.Request.
+/// @return Detail count (kind-specific; at most RT_SERVICES_REQUEST_DETAIL_CAPACITY), or 0.
+int64_t rt_services_request_get_detail_count(void *request);
+
+/// @brief Read one integer detail of a completed request.
+/// @details The meaning of each index depends on the request kind (for
+///          TimelinePhaseRecording: 0 recorded milliseconds, 1 longest clip
+///          milliseconds, 2 clip count, 3 screenshot count).
+/// @param request Borrowed Zanna.Services.Request.
+/// @param index Detail index in 0..DetailCount-1; other values trap.
+/// @return Detail value.
+int64_t rt_services_request_detail(void *request, int64_t index);
+
+/// @brief Count the Workshop items a completed query holds.
+/// @param request Borrowed Zanna.Services.Request.
+/// @return Item count (at most RT_SERVICES_REQUEST_ITEM_CAPACITY), or 0.
+int64_t rt_services_request_get_item_count(void *request);
+
+/// @brief Read one Workshop item of a completed query.
+/// @param request Borrowed Zanna.Services.Request.
+/// @param index Item index in 0..ItemCount-1; other values trap.
+/// @return Caller-owned Zanna.Services.WorkshopItem, or NULL after a trap.
+void *rt_services_request_item_at(void *request, int64_t index);
+
 //===----------------------------------------------------------------------===//
 // Constant classes: Zanna.Services.Status / EventKind / Feature / RequestKind
 //===----------------------------------------------------------------------===//
@@ -427,6 +554,27 @@ int64_t rt_services_event_kind_achievement_stored(void);
 /// @brief Return `Zanna.Services.EventKind.TextInputDismissed`.
 /// @return Stable ordinal 10.
 int64_t rt_services_event_kind_text_input_dismissed(void);
+/// @brief Return `Zanna.Services.EventKind.AchievementIconReady`.
+/// @return Stable ordinal 11.
+int64_t rt_services_event_kind_achievement_icon_ready(void);
+/// @brief Return `Zanna.Services.EventKind.ControllerConnected`.
+/// @return Stable ordinal 12.
+int64_t rt_services_event_kind_controller_connected(void);
+/// @brief Return `Zanna.Services.EventKind.ControllerDisconnected`.
+/// @return Stable ordinal 13.
+int64_t rt_services_event_kind_controller_disconnected(void);
+/// @brief Return `Zanna.Services.EventKind.ControllerConfigured`.
+/// @return Stable ordinal 14.
+int64_t rt_services_event_kind_controller_configured(void);
+/// @brief Return `Zanna.Services.EventKind.WorkshopItemInstalled`.
+/// @return Stable ordinal 15.
+int64_t rt_services_event_kind_workshop_item_installed(void);
+/// @brief Return `Zanna.Services.EventKind.WorkshopItemDownloaded`.
+/// @return Stable ordinal 16.
+int64_t rt_services_event_kind_workshop_item_downloaded(void);
+/// @brief Return `Zanna.Services.EventKind.WorkshopSubscriptionChanged`.
+/// @return Stable ordinal 17.
+int64_t rt_services_event_kind_workshop_subscription_changed(void);
 
 /// @brief Return `Zanna.Services.Feature.Identity`.
 /// @return Stable ordinal 1.
@@ -461,6 +609,27 @@ int64_t rt_services_feature_text_input(void);
 /// @brief Return `Zanna.Services.Feature.Cloud`.
 /// @return Stable ordinal 11.
 int64_t rt_services_feature_cloud(void);
+/// @brief Return `Zanna.Services.Feature.LaunchParameters`.
+/// @return Stable ordinal 12.
+int64_t rt_services_feature_launch_parameters(void);
+/// @brief Return `Zanna.Services.Feature.Timeline`.
+/// @return Stable ordinal 13.
+int64_t rt_services_feature_timeline(void);
+/// @brief Return `Zanna.Services.Feature.AppDetails`.
+/// @return Stable ordinal 14.
+int64_t rt_services_feature_app_details(void);
+/// @brief Return `Zanna.Services.Feature.AchievementIcons`.
+/// @return Stable ordinal 15.
+int64_t rt_services_feature_achievement_icons(void);
+/// @brief Return `Zanna.Services.Feature.AchievementPercentages`.
+/// @return Stable ordinal 16.
+int64_t rt_services_feature_achievement_percentages(void);
+/// @brief Return `Zanna.Services.Feature.ActionInput`.
+/// @return Stable ordinal 17.
+int64_t rt_services_feature_action_input(void);
+/// @brief Return `Zanna.Services.Feature.Workshop`.
+/// @return Stable ordinal 18.
+int64_t rt_services_feature_workshop(void);
 
 /// @brief Return `Zanna.Services.RequestKind.PlayerCount`.
 /// @return Stable ordinal 1.
@@ -477,6 +646,33 @@ int64_t rt_services_request_kind_leaderboard_download(void);
 /// @brief Return `Zanna.Services.RequestKind.TextInput`.
 /// @return Stable ordinal 5.
 int64_t rt_services_request_kind_text_input(void);
+/// @brief Return `Zanna.Services.RequestKind.TimelineEventRecording`.
+/// @return Stable ordinal 6.
+int64_t rt_services_request_kind_timeline_event_recording(void);
+/// @brief Return `Zanna.Services.RequestKind.TimelinePhaseRecording`.
+/// @return Stable ordinal 7.
+int64_t rt_services_request_kind_timeline_phase_recording(void);
+/// @brief Return `Zanna.Services.RequestKind.AchievementPercentages`.
+/// @return Stable ordinal 8.
+int64_t rt_services_request_kind_achievement_percentages(void);
+/// @brief Return `Zanna.Services.RequestKind.WorkshopQuery`.
+/// @return Stable ordinal 9.
+int64_t rt_services_request_kind_workshop_query(void);
+/// @brief Return `Zanna.Services.RequestKind.WorkshopSubscribe`.
+/// @return Stable ordinal 10.
+int64_t rt_services_request_kind_workshop_subscribe(void);
+/// @brief Return `Zanna.Services.RequestKind.WorkshopUnsubscribe`.
+/// @return Stable ordinal 11.
+int64_t rt_services_request_kind_workshop_unsubscribe(void);
+/// @brief Return `Zanna.Services.RequestKind.WorkshopCreate`.
+/// @return Stable ordinal 12.
+int64_t rt_services_request_kind_workshop_create(void);
+/// @brief Return `Zanna.Services.RequestKind.WorkshopSubmit`.
+/// @return Stable ordinal 13.
+int64_t rt_services_request_kind_workshop_submit(void);
+/// @brief Return `Zanna.Services.RequestKind.WorkshopDelete`.
+/// @return Stable ordinal 14.
+int64_t rt_services_request_kind_workshop_delete(void);
 
 #ifdef __cplusplus
 }

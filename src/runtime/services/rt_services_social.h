@@ -164,7 +164,7 @@ int8_t rt_services_on_screen_keyboard_dismiss_floating(void);
 ///          and Text hold the submitted text; cancelling fails the request.
 /// @param prompt Description shown above the text field.
 /// @param initial_text Text the field starts with.
-/// @param max_length Maximum text length in bytes, 1..RT_SERVICES_TEXT_INPUT_MAX_LENGTH;
+/// @param max_length Most characters the user may enter, 1..RT_SERVICES_TEXT_INPUT_MAX_LENGTH;
 ///                   other values trap.
 /// @param mode TextInputMode value; other values trap.
 /// @return Caller-owned Zanna.Services.Request of kind TextInput.

@@ -42,6 +42,7 @@ RT_FUNC(ServicesPlatformHasFeature,        rt_services_platform_has_feature,    
 RT_FUNC(ServicesPlatformIsDlcInstalled,    rt_services_platform_is_dlc_installed,      "Zanna.Services.Platform.IsDlcInstalled",        "i1(str)")
 RT_FUNC(ServicesPlatformRequestPlayerCount, rt_services_platform_request_player_count, "Zanna.Services.Platform.RequestPlayerCount",    "obj<Zanna.Services.Request>()", owned)
 RT_FUNC(ServicesPlatformDiagnostics,       rt_services_platform_diagnostics,           "Zanna.Services.Platform.Diagnostics",           "seq<str>()", owned)
+RT_FUNC(ServicesPlatformLaunchParameter,   rt_services_platform_launch_parameter,      "Zanna.Services.Platform.LaunchParameter",       "str(str)", owned)
 RT_FUNC(ServicesPlatformIsAvailable,       rt_services_platform_get_is_available,      "Zanna.Services.Platform.get_IsAvailable",       "i1()")
 RT_FUNC(ServicesPlatformStatus,            rt_services_platform_get_status,            "Zanna.Services.Platform.get_Status",            "i64()")
 RT_FUNC(ServicesPlatformProvider,          rt_services_platform_get_provider,          "Zanna.Services.Platform.get_Provider",          "str()", owned)
@@ -51,6 +52,13 @@ RT_FUNC(ServicesPlatformUserName,          rt_services_platform_get_user_name,  
 RT_FUNC(ServicesPlatformLanguage,          rt_services_platform_get_language,          "Zanna.Services.Platform.get_Language",          "str()", owned)
 RT_FUNC(ServicesPlatformIsLicensed,        rt_services_platform_get_is_licensed,       "Zanna.Services.Platform.get_IsLicensed",        "i1()")
 RT_FUNC(ServicesPlatformIsOnline,          rt_services_platform_get_is_online,         "Zanna.Services.Platform.get_IsOnline",          "i1()")
+RT_FUNC(ServicesPlatformLaunchCommandLine, rt_services_platform_get_launch_command_line, "Zanna.Services.Platform.get_LaunchCommandLine", "str()", owned)
+RT_FUNC(ServicesPlatformDlcCount,          rt_services_platform_get_dlc_count,         "Zanna.Services.Platform.get_DlcCount",          "i64()")
+RT_FUNC(ServicesPlatformDlcIdAt,           rt_services_platform_dlc_id_at,             "Zanna.Services.Platform.DlcIdAt",               "str(i64)", owned)
+RT_FUNC(ServicesPlatformDlcNameAt,         rt_services_platform_dlc_name_at,           "Zanna.Services.Platform.DlcNameAt",             "str(i64)", owned)
+RT_FUNC(ServicesPlatformDlcAvailableAt,    rt_services_platform_dlc_available_at,      "Zanna.Services.Platform.DlcAvailableAt",        "i1(i64)")
+RT_FUNC(ServicesPlatformBuildId,           rt_services_platform_get_build_id,          "Zanna.Services.Platform.get_BuildId",           "i64()")
+RT_FUNC(ServicesPlatformBranchName,        rt_services_platform_get_branch_name,       "Zanna.Services.Platform.get_BranchName",        "str()", owned)
 RT_FUNC(ServicesPlatformEventResultCode,   rt_services_platform_get_event_result_code, "Zanna.Services.Platform.get_EventResultCode",   "i64()")
 RT_FUNC(ServicesPlatformEventText,         rt_services_platform_get_event_text,        "Zanna.Services.Platform.get_EventText",         "str()", owned)
 RT_FUNC(ServicesPlatformEventValue,        rt_services_platform_get_event_value,       "Zanna.Services.Platform.get_EventValue",        "i64()")
@@ -75,6 +83,10 @@ RT_FUNC(ServicesRequestEntryRank,          rt_services_request_entry_rank,      
 RT_FUNC(ServicesRequestEntryScore,         rt_services_request_entry_score,            "Zanna.Services.Request.EntryScore",             "i64(obj,i64)")
 RT_FUNC(ServicesRequestEntryUserId,        rt_services_request_entry_user_id,          "Zanna.Services.Request.EntryUserId",            "str(obj,i64)", owned)
 RT_FUNC(ServicesRequestEntryUserName,      rt_services_request_entry_user_name,        "Zanna.Services.Request.EntryUserName",          "str(obj,i64)", owned)
+RT_FUNC(ServicesRequestDetailCount,        rt_services_request_get_detail_count,       "Zanna.Services.Request.get_DetailCount",        "i64(obj)")
+RT_FUNC(ServicesRequestDetail,             rt_services_request_detail,                 "Zanna.Services.Request.Detail",                 "i64(obj,i64)")
+RT_FUNC(ServicesRequestItemCount,          rt_services_request_get_item_count,         "Zanna.Services.Request.get_ItemCount",          "i64(obj)")
+RT_FUNC(ServicesRequestItemAt,             rt_services_request_item_at,                "Zanna.Services.Request.ItemAt",                 "obj<Zanna.Services.WorkshopItem>(obj,i64)", owned)
 
 //=============================================================================
 // SERVICES - ACHIEVEMENTS (Zanna.Services.Achievements)
@@ -90,6 +102,11 @@ RT_FUNC(ServicesAchievementsIdAt,          rt_services_achievements_id_at,      
 RT_FUNC(ServicesAchievementsDisplayName,   rt_services_achievements_display_name,      "Zanna.Services.Achievements.DisplayName",       "str(str)", owned)
 RT_FUNC(ServicesAchievementsDescription,   rt_services_achievements_description,       "Zanna.Services.Achievements.Description",       "str(str)", owned)
 RT_FUNC(ServicesAchievementsIsHidden,      rt_services_achievements_is_hidden,         "Zanna.Services.Achievements.IsHidden",          "i1(str)")
+RT_FUNC(ServicesAchievementsIconWidth,     rt_services_achievements_icon_width,        "Zanna.Services.Achievements.IconWidth",         "i64(str)")
+RT_FUNC(ServicesAchievementsIconHeight,    rt_services_achievements_icon_height,       "Zanna.Services.Achievements.IconHeight",        "i64(str)")
+RT_FUNC(ServicesAchievementsIconRgba,      rt_services_achievements_icon_rgba,         "Zanna.Services.Achievements.IconRgba",          "obj<Zanna.Collections.Bytes>(str)", owned)
+RT_FUNC(ServicesAchievementsRequestGlobalPercentages, rt_services_achievements_request_global_percentages, "Zanna.Services.Achievements.RequestGlobalPercentages", "obj<Zanna.Services.Request>()", owned)
+RT_FUNC(ServicesAchievementsGlobalPercent, rt_services_achievements_global_percent,    "Zanna.Services.Achievements.GlobalPercent",     "f64(str)")
 
 //=============================================================================
 // SERVICES - STATS (Zanna.Services.Stats)
@@ -148,6 +165,154 @@ RT_FUNC(ServicesCloudBeginBatch,           rt_services_cloud_begin_batch,       
 RT_FUNC(ServicesCloudEndBatch,             rt_services_cloud_end_batch,                "Zanna.Services.Cloud.EndBatch",                 "i1()")
 
 //=============================================================================
+// SERVICES - TIMELINE (Zanna.Services.Timeline)
+//=============================================================================
+
+RT_FUNC(ServicesTimelineSetGameMode,       rt_services_timeline_set_game_mode,         "Zanna.Services.Timeline.SetGameMode",           "i1(i64)")
+RT_FUNC(ServicesTimelineSetTooltip,        rt_services_timeline_set_tooltip,           "Zanna.Services.Timeline.SetTooltip",            "i1(str,f64)")
+RT_FUNC(ServicesTimelineClearTooltip,      rt_services_timeline_clear_tooltip,         "Zanna.Services.Timeline.ClearTooltip",          "i1(f64)")
+RT_FUNC(ServicesTimelineAddEvent,          rt_services_timeline_add_event,             "Zanna.Services.Timeline.AddEvent",              "str(str,str,str,i64,f64,i64)", owned)
+RT_FUNC(ServicesTimelineAddRangeEvent,     rt_services_timeline_add_range_event,       "Zanna.Services.Timeline.AddRangeEvent",         "str(str,str,str,i64,f64,f64,i64)", owned)
+RT_FUNC(ServicesTimelineStartRangeEvent,   rt_services_timeline_start_range_event,     "Zanna.Services.Timeline.StartRangeEvent",       "str(str,str,str,i64,f64,i64)", owned)
+RT_FUNC(ServicesTimelineUpdateRangeEvent,  rt_services_timeline_update_range_event,    "Zanna.Services.Timeline.UpdateRangeEvent",      "i1(str,str,str,str,i64,i64)")
+RT_FUNC(ServicesTimelineEndRangeEvent,     rt_services_timeline_end_range_event,       "Zanna.Services.Timeline.EndRangeEvent",         "i1(str,f64)")
+RT_FUNC(ServicesTimelineRemoveEvent,       rt_services_timeline_remove_event,          "Zanna.Services.Timeline.RemoveEvent",           "i1(str)")
+RT_FUNC(ServicesTimelineRequestEventRecording, rt_services_timeline_request_event_recording, "Zanna.Services.Timeline.RequestEventRecording", "obj<Zanna.Services.Request>(str)", owned)
+RT_FUNC(ServicesTimelineStartPhase,        rt_services_timeline_start_phase,           "Zanna.Services.Timeline.StartPhase",            "i1()")
+RT_FUNC(ServicesTimelineEndPhase,          rt_services_timeline_end_phase,             "Zanna.Services.Timeline.EndPhase",              "i1()")
+RT_FUNC(ServicesTimelineSetPhaseId,        rt_services_timeline_set_phase_id,          "Zanna.Services.Timeline.SetPhaseId",            "i1(str)")
+RT_FUNC(ServicesTimelineAddPhaseTag,       rt_services_timeline_add_phase_tag,         "Zanna.Services.Timeline.AddPhaseTag",           "i1(str,str,str,i64)")
+RT_FUNC(ServicesTimelineSetPhaseAttribute, rt_services_timeline_set_phase_attribute,   "Zanna.Services.Timeline.SetPhaseAttribute",     "i1(str,str,i64)")
+RT_FUNC(ServicesTimelineRequestPhaseRecording, rt_services_timeline_request_phase_recording, "Zanna.Services.Timeline.RequestPhaseRecording", "obj<Zanna.Services.Request>(str)", owned)
+RT_FUNC(ServicesTimelineOpenOverlayToPhase, rt_services_timeline_open_overlay_to_phase, "Zanna.Services.Timeline.OpenOverlayToPhase",   "i1(str)")
+RT_FUNC(ServicesTimelineOpenOverlayToEvent, rt_services_timeline_open_overlay_to_event, "Zanna.Services.Timeline.OpenOverlayToEvent",   "i1(str)")
+
+//=============================================================================
+// SERVICES - ACTION INPUT (Zanna.Services.ActionInput)
+//=============================================================================
+
+RT_FUNC(ServicesActionInputStart,          rt_services_action_input_start,             "Zanna.Services.ActionInput.Start",              "i1(str)")
+RT_FUNC(ServicesActionInputStop,           rt_services_action_input_stop,              "Zanna.Services.ActionInput.Stop",               "i1()")
+RT_FUNC(ServicesActionInputIsStarted,      rt_services_action_input_get_is_started,    "Zanna.Services.ActionInput.get_IsStarted",      "i1()")
+RT_FUNC(ServicesActionInputControllerCount, rt_services_action_input_get_controller_count, "Zanna.Services.ActionInput.get_ControllerCount", "i64()")
+RT_FUNC(ServicesActionInputControllerIdAt, rt_services_action_input_controller_id_at,  "Zanna.Services.ActionInput.ControllerIdAt",     "str(i64)", owned)
+RT_FUNC(ServicesActionInputControllerType, rt_services_action_input_controller_type,   "Zanna.Services.ActionInput.ControllerType",     "i64(str)")
+RT_FUNC(ServicesActionInputGamepadIndex,   rt_services_action_input_gamepad_index,     "Zanna.Services.ActionInput.GamepadIndex",       "i64(str)")
+RT_FUNC(ServicesActionInputActivateActionSet, rt_services_action_input_activate_action_set, "Zanna.Services.ActionInput.ActivateActionSet",  "i1(str,str)")
+RT_FUNC(ServicesActionInputActivateLayer,  rt_services_action_input_activate_layer,    "Zanna.Services.ActionInput.ActivateLayer",      "i1(str,str)")
+RT_FUNC(ServicesActionInputDeactivateLayer, rt_services_action_input_deactivate_layer,  "Zanna.Services.ActionInput.DeactivateLayer",    "i1(str,str)")
+RT_FUNC(ServicesActionInputDeactivateAllLayers, rt_services_action_input_deactivate_all_layers, "Zanna.Services.ActionInput.DeactivateAllLayers", "i1(str)")
+RT_FUNC(ServicesActionInputIsPressed,      rt_services_action_input_is_pressed,        "Zanna.Services.ActionInput.IsPressed",          "i1(str,str)")
+RT_FUNC(ServicesActionInputAnalogX,        rt_services_action_input_analog_x,          "Zanna.Services.ActionInput.AnalogX",            "f64(str,str)")
+RT_FUNC(ServicesActionInputAnalogY,        rt_services_action_input_analog_y,          "Zanna.Services.ActionInput.AnalogY",            "f64(str,str)")
+RT_FUNC(ServicesActionInputIsActionActive, rt_services_action_input_is_action_active,  "Zanna.Services.ActionInput.IsActionActive",     "i1(str,str)")
+RT_FUNC(ServicesActionInputActionLabel,    rt_services_action_input_action_label,      "Zanna.Services.ActionInput.ActionLabel",        "str(str)", owned)
+RT_FUNC(ServicesActionInputOriginCount,    rt_services_action_input_origin_count,      "Zanna.Services.ActionInput.OriginCount",        "i64(str,str,str)")
+RT_FUNC(ServicesActionInputOriginAt,       rt_services_action_input_origin_at,         "Zanna.Services.ActionInput.OriginAt",           "i64(str,str,str,i64)")
+RT_FUNC(ServicesActionInputOriginLabel,    rt_services_action_input_origin_label,      "Zanna.Services.ActionInput.OriginLabel",        "str(i64)", owned)
+RT_FUNC(ServicesActionInputOriginGlyphPath, rt_services_action_input_origin_glyph_path, "Zanna.Services.ActionInput.OriginGlyphPath",    "str(i64,i64)", owned)
+RT_FUNC(ServicesActionInputVibrate,        rt_services_action_input_vibrate,           "Zanna.Services.ActionInput.Vibrate",            "i1(str,f64,f64)")
+RT_FUNC(ServicesActionInputSetLedColor,    rt_services_action_input_set_led_color,     "Zanna.Services.ActionInput.SetLedColor",        "i1(str,i64,i64,i64)")
+RT_FUNC(ServicesActionInputResetLedColor,  rt_services_action_input_reset_led_color,   "Zanna.Services.ActionInput.ResetLedColor",      "i1(str)")
+RT_FUNC(ServicesActionInputShowBindingPanel, rt_services_action_input_show_binding_panel, "Zanna.Services.ActionInput.ShowBindingPanel",   "i1(str)")
+
+RT_FUNC(ServicesControllerTypeUnknown,     rt_services_controller_type_unknown,        "Zanna.Services.ControllerType.get_Unknown",     "i64()")
+RT_FUNC(ServicesControllerTypeSteamController, rt_services_controller_type_steam_controller, "Zanna.Services.ControllerType.get_SteamController", "i64()")
+RT_FUNC(ServicesControllerTypeXbox360,     rt_services_controller_type_xbox360,        "Zanna.Services.ControllerType.get_Xbox360",     "i64()")
+RT_FUNC(ServicesControllerTypeXboxOne,     rt_services_controller_type_xbox_one,       "Zanna.Services.ControllerType.get_XboxOne",     "i64()")
+RT_FUNC(ServicesControllerTypeGenericGamepad, rt_services_controller_type_generic_gamepad, "Zanna.Services.ControllerType.get_GenericGamepad", "i64()")
+RT_FUNC(ServicesControllerTypePlayStation4, rt_services_controller_type_playstation4,   "Zanna.Services.ControllerType.get_PlayStation4", "i64()")
+RT_FUNC(ServicesControllerTypeAppleMfi,    rt_services_controller_type_apple_mfi,      "Zanna.Services.ControllerType.get_AppleMfi",    "i64()")
+RT_FUNC(ServicesControllerTypeAndroid,     rt_services_controller_type_android,        "Zanna.Services.ControllerType.get_Android",     "i64()")
+RT_FUNC(ServicesControllerTypeSwitchJoyConPair, rt_services_controller_type_switch_joy_con_pair, "Zanna.Services.ControllerType.get_SwitchJoyConPair", "i64()")
+RT_FUNC(ServicesControllerTypeSwitchJoyConSingle, rt_services_controller_type_switch_joy_con_single, "Zanna.Services.ControllerType.get_SwitchJoyConSingle", "i64()")
+RT_FUNC(ServicesControllerTypeSwitchPro,   rt_services_controller_type_switch_pro,     "Zanna.Services.ControllerType.get_SwitchPro",   "i64()")
+RT_FUNC(ServicesControllerTypeMobileTouch, rt_services_controller_type_mobile_touch,   "Zanna.Services.ControllerType.get_MobileTouch", "i64()")
+RT_FUNC(ServicesControllerTypePlayStation3, rt_services_controller_type_playstation3,   "Zanna.Services.ControllerType.get_PlayStation3", "i64()")
+RT_FUNC(ServicesControllerTypePlayStation5, rt_services_controller_type_playstation5,   "Zanna.Services.ControllerType.get_PlayStation5", "i64()")
+RT_FUNC(ServicesControllerTypeSteamDeck,   rt_services_controller_type_steam_deck,     "Zanna.Services.ControllerType.get_SteamDeck",   "i64()")
+RT_FUNC(ServicesControllerTypeSteamOSHandheld, rt_services_controller_type_steamos_handheld, "Zanna.Services.ControllerType.get_SteamOSHandheld", "i64()")
+RT_FUNC(ServicesControllerTypeSwitch2Pro,  rt_services_controller_type_switch2_pro,    "Zanna.Services.ControllerType.get_Switch2Pro",  "i64()")
+RT_FUNC(ServicesControllerTypeSteamController2026, rt_services_controller_type_steam_controller_2026, "Zanna.Services.ControllerType.get_SteamController2026", "i64()")
+RT_FUNC(ServicesControllerTypeSteamFrameControllerPair, rt_services_controller_type_steam_frame_controller_pair, "Zanna.Services.ControllerType.get_SteamFrameControllerPair", "i64()")
+
+RT_FUNC(ServicesGlyphSizeSmall,            rt_services_glyph_size_small,               "Zanna.Services.GlyphSize.get_Small",            "i64()")
+RT_FUNC(ServicesGlyphSizeMedium,           rt_services_glyph_size_medium,              "Zanna.Services.GlyphSize.get_Medium",           "i64()")
+RT_FUNC(ServicesGlyphSizeLarge,            rt_services_glyph_size_large,               "Zanna.Services.GlyphSize.get_Large",            "i64()")
+
+//=============================================================================
+// SERVICES - WORKSHOP (Zanna.Services.Workshop)
+//=============================================================================
+
+RT_FUNC(ServicesWorkshopSubscribedCount,   rt_services_workshop_get_subscribed_count,  "Zanna.Services.Workshop.get_SubscribedCount",   "i64()")
+RT_FUNC(ServicesWorkshopSubscribedIdAt,    rt_services_workshop_subscribed_id_at,      "Zanna.Services.Workshop.SubscribedIdAt",        "str(i64)", owned)
+RT_FUNC(ServicesWorkshopIsSubscribed,      rt_services_workshop_is_subscribed,         "Zanna.Services.Workshop.IsSubscribed",          "i1(str)")
+RT_FUNC(ServicesWorkshopIsInstalled,       rt_services_workshop_is_installed,          "Zanna.Services.Workshop.IsInstalled",           "i1(str)")
+RT_FUNC(ServicesWorkshopNeedsUpdate,       rt_services_workshop_needs_update,          "Zanna.Services.Workshop.NeedsUpdate",           "i1(str)")
+RT_FUNC(ServicesWorkshopIsDownloading,     rt_services_workshop_is_downloading,        "Zanna.Services.Workshop.IsDownloading",         "i1(str)")
+RT_FUNC(ServicesWorkshopInstallFolder,     rt_services_workshop_install_folder,        "Zanna.Services.Workshop.InstallFolder",         "str(str)", owned)
+RT_FUNC(ServicesWorkshopInstallSize,       rt_services_workshop_install_size,          "Zanna.Services.Workshop.InstallSize",           "i64(str)")
+RT_FUNC(ServicesWorkshopInstallTime,       rt_services_workshop_install_time,          "Zanna.Services.Workshop.InstallTime",           "i64(str)")
+RT_FUNC(ServicesWorkshopDownloadedBytes,   rt_services_workshop_downloaded_bytes,      "Zanna.Services.Workshop.DownloadedBytes",       "i64(str)")
+RT_FUNC(ServicesWorkshopDownloadTotalBytes, rt_services_workshop_download_total_bytes,  "Zanna.Services.Workshop.DownloadTotalBytes",    "i64(str)")
+RT_FUNC(ServicesWorkshopDownload,          rt_services_workshop_download,              "Zanna.Services.Workshop.Download",              "i1(str,i1)")
+RT_FUNC(ServicesWorkshopSubscribe,         rt_services_workshop_subscribe,             "Zanna.Services.Workshop.Subscribe",             "obj<Zanna.Services.Request>(str)", owned)
+RT_FUNC(ServicesWorkshopUnsubscribe,       rt_services_workshop_unsubscribe,           "Zanna.Services.Workshop.Unsubscribe",           "obj<Zanna.Services.Request>(str)", owned)
+RT_FUNC(ServicesWorkshopQuery,             rt_services_workshop_query,                 "Zanna.Services.Workshop.Query",                 "obj<Zanna.Services.Request>(i64,i64,str,str)", owned)
+RT_FUNC(ServicesWorkshopQueryUser,         rt_services_workshop_query_user,            "Zanna.Services.Workshop.QueryUser",             "obj<Zanna.Services.Request>(i64,i64)", owned)
+RT_FUNC(ServicesWorkshopQueryItems,        rt_services_workshop_query_items,           "Zanna.Services.Workshop.QueryItems",            "obj<Zanna.Services.Request>(str)", owned)
+RT_FUNC(ServicesWorkshopCreateItem,        rt_services_workshop_create_item,           "Zanna.Services.Workshop.CreateItem",            "obj<Zanna.Services.Request>()", owned)
+RT_FUNC(ServicesWorkshopStartUpdate,       rt_services_workshop_start_update,          "Zanna.Services.Workshop.StartUpdate",           "str(str)", owned)
+RT_FUNC(ServicesWorkshopSetTitle,          rt_services_workshop_set_title,             "Zanna.Services.Workshop.SetTitle",              "i1(str,str)")
+RT_FUNC(ServicesWorkshopSetDescription,    rt_services_workshop_set_description,       "Zanna.Services.Workshop.SetDescription",        "i1(str,str)")
+RT_FUNC(ServicesWorkshopSetMetadata,       rt_services_workshop_set_metadata,          "Zanna.Services.Workshop.SetMetadata",           "i1(str,str)")
+RT_FUNC(ServicesWorkshopSetTags,           rt_services_workshop_set_tags,              "Zanna.Services.Workshop.SetTags",               "i1(str,str)")
+RT_FUNC(ServicesWorkshopSetVisibility,     rt_services_workshop_set_visibility,        "Zanna.Services.Workshop.SetVisibility",         "i1(str,i64)")
+RT_FUNC(ServicesWorkshopSetContent,        rt_services_workshop_set_content,           "Zanna.Services.Workshop.SetContent",            "i1(str,str)")
+RT_FUNC(ServicesWorkshopSetPreview,        rt_services_workshop_set_preview,           "Zanna.Services.Workshop.SetPreview",            "i1(str,str)")
+RT_FUNC(ServicesWorkshopSubmitUpdate,      rt_services_workshop_submit_update,         "Zanna.Services.Workshop.SubmitUpdate",          "obj<Zanna.Services.Request>(str,str)", owned)
+RT_FUNC(ServicesWorkshopUpdateStatus,      rt_services_workshop_update_status,         "Zanna.Services.Workshop.UpdateStatus",          "i64(str)")
+RT_FUNC(ServicesWorkshopUpdateProgress,    rt_services_workshop_update_progress,       "Zanna.Services.Workshop.UpdateProgress",        "f64(str)")
+RT_FUNC(ServicesWorkshopDeleteItem,        rt_services_workshop_delete_item,           "Zanna.Services.Workshop.DeleteItem",            "obj<Zanna.Services.Request>(str)", owned)
+
+RT_FUNC(ServicesWorkshopItemId,            rt_services_workshop_item_get_id,           "Zanna.Services.WorkshopItem.get_Id",            "str(obj)", owned)
+RT_FUNC(ServicesWorkshopItemTitle,         rt_services_workshop_item_get_title,        "Zanna.Services.WorkshopItem.get_Title",         "str(obj)", owned)
+RT_FUNC(ServicesWorkshopItemDescription,   rt_services_workshop_item_get_description,  "Zanna.Services.WorkshopItem.get_Description",   "str(obj)", owned)
+RT_FUNC(ServicesWorkshopItemOwnerId,       rt_services_workshop_item_get_owner_id,     "Zanna.Services.WorkshopItem.get_OwnerId",       "str(obj)", owned)
+RT_FUNC(ServicesWorkshopItemTags,          rt_services_workshop_item_get_tags,         "Zanna.Services.WorkshopItem.get_Tags",          "str(obj)", owned)
+RT_FUNC(ServicesWorkshopItemPreviewUrl,    rt_services_workshop_item_get_preview_url,  "Zanna.Services.WorkshopItem.get_PreviewUrl",    "str(obj)", owned)
+RT_FUNC(ServicesWorkshopItemMetadata,      rt_services_workshop_item_get_metadata,     "Zanna.Services.WorkshopItem.get_Metadata",      "str(obj)", owned)
+RT_FUNC(ServicesWorkshopItemCreated,       rt_services_workshop_item_get_created,      "Zanna.Services.WorkshopItem.get_Created",       "i64(obj)")
+RT_FUNC(ServicesWorkshopItemUpdated,       rt_services_workshop_item_get_updated,      "Zanna.Services.WorkshopItem.get_Updated",       "i64(obj)")
+RT_FUNC(ServicesWorkshopItemVisibility,    rt_services_workshop_item_get_visibility,   "Zanna.Services.WorkshopItem.get_Visibility",    "i64(obj)")
+RT_FUNC(ServicesWorkshopItemVotesUp,       rt_services_workshop_item_get_votes_up,     "Zanna.Services.WorkshopItem.get_VotesUp",       "i64(obj)")
+RT_FUNC(ServicesWorkshopItemVotesDown,     rt_services_workshop_item_get_votes_down,   "Zanna.Services.WorkshopItem.get_VotesDown",     "i64(obj)")
+RT_FUNC(ServicesWorkshopItemSize,          rt_services_workshop_item_get_size,         "Zanna.Services.WorkshopItem.get_Size",          "i64(obj)")
+RT_FUNC(ServicesWorkshopItemScore,         rt_services_workshop_item_get_score,        "Zanna.Services.WorkshopItem.get_Score",         "f64(obj)")
+
+RT_FUNC(ServicesWorkshopQueryPopular,      rt_services_workshop_query_popular,         "Zanna.Services.WorkshopQuery.get_Popular",      "i64()")
+RT_FUNC(ServicesWorkshopQueryNewest,       rt_services_workshop_query_newest,          "Zanna.Services.WorkshopQuery.get_Newest",       "i64()")
+RT_FUNC(ServicesWorkshopQueryTrending,     rt_services_workshop_query_trending,        "Zanna.Services.WorkshopQuery.get_Trending",     "i64()")
+RT_FUNC(ServicesWorkshopQueryMostSubscribed, rt_services_workshop_query_most_subscribed, "Zanna.Services.WorkshopQuery.get_MostSubscribed", "i64()")
+RT_FUNC(ServicesWorkshopQueryRecentlyUpdated, rt_services_workshop_query_recently_updated, "Zanna.Services.WorkshopQuery.get_RecentlyUpdated", "i64()")
+RT_FUNC(ServicesWorkshopQueryTextSearch,   rt_services_workshop_query_text_search,     "Zanna.Services.WorkshopQuery.get_TextSearch",   "i64()")
+RT_FUNC(ServicesWorkshopListPublished,     rt_services_workshop_list_published,        "Zanna.Services.WorkshopList.get_Published",     "i64()")
+RT_FUNC(ServicesWorkshopListSubscribed,    rt_services_workshop_list_subscribed,       "Zanna.Services.WorkshopList.get_Subscribed",    "i64()")
+RT_FUNC(ServicesWorkshopListFavorited,     rt_services_workshop_list_favorited,        "Zanna.Services.WorkshopList.get_Favorited",     "i64()")
+RT_FUNC(ServicesWorkshopListVotedUp,       rt_services_workshop_list_voted_up,         "Zanna.Services.WorkshopList.get_VotedUp",       "i64()")
+RT_FUNC(ServicesWorkshopListPlayed,        rt_services_workshop_list_played,           "Zanna.Services.WorkshopList.get_Played",        "i64()")
+RT_FUNC(ServicesWorkshopVisibilityPublic,  rt_services_workshop_visibility_public,     "Zanna.Services.WorkshopVisibility.get_Public",  "i64()")
+RT_FUNC(ServicesWorkshopVisibilityFriendsOnly, rt_services_workshop_visibility_friends_only, "Zanna.Services.WorkshopVisibility.get_FriendsOnly", "i64()")
+RT_FUNC(ServicesWorkshopVisibilityPrivate, rt_services_workshop_visibility_private,    "Zanna.Services.WorkshopVisibility.get_Private", "i64()")
+RT_FUNC(ServicesWorkshopVisibilityUnlisted, rt_services_workshop_visibility_unlisted,   "Zanna.Services.WorkshopVisibility.get_Unlisted", "i64()")
+RT_FUNC(ServicesWorkshopUpdateStatusNone,  rt_services_workshop_update_status_none,    "Zanna.Services.WorkshopUpdateStatus.get_None",  "i64()")
+RT_FUNC(ServicesWorkshopUpdateStatusPreparingConfig, rt_services_workshop_update_status_preparing_config, "Zanna.Services.WorkshopUpdateStatus.get_PreparingConfig", "i64()")
+RT_FUNC(ServicesWorkshopUpdateStatusPreparingContent, rt_services_workshop_update_status_preparing_content, "Zanna.Services.WorkshopUpdateStatus.get_PreparingContent", "i64()")
+RT_FUNC(ServicesWorkshopUpdateStatusUploadingContent, rt_services_workshop_update_status_uploading_content, "Zanna.Services.WorkshopUpdateStatus.get_UploadingContent", "i64()")
+RT_FUNC(ServicesWorkshopUpdateStatusUploadingPreview, rt_services_workshop_update_status_uploading_preview, "Zanna.Services.WorkshopUpdateStatus.get_UploadingPreview", "i64()")
+RT_FUNC(ServicesWorkshopUpdateStatusCommitting, rt_services_workshop_update_status_committing, "Zanna.Services.WorkshopUpdateStatus.get_Committing", "i64()")
+
+//=============================================================================
 // SERVICES - STEAM EXTENSION (Zanna.Services.Steam)
 //=============================================================================
 
@@ -184,6 +349,13 @@ RT_FUNC(ServicesEventKindServiceShutdown,  rt_services_event_kind_service_shutdo
 RT_FUNC(ServicesEventKindStatsStored,      rt_services_event_kind_stats_stored,        "Zanna.Services.EventKind.get_StatsStored",      "i64()")
 RT_FUNC(ServicesEventKindAchievementStored, rt_services_event_kind_achievement_stored, "Zanna.Services.EventKind.get_AchievementStored", "i64()")
 RT_FUNC(ServicesEventKindTextInputDismissed, rt_services_event_kind_text_input_dismissed, "Zanna.Services.EventKind.get_TextInputDismissed", "i64()")
+RT_FUNC(ServicesEventKindAchievementIconReady, rt_services_event_kind_achievement_icon_ready, "Zanna.Services.EventKind.get_AchievementIconReady", "i64()")
+RT_FUNC(ServicesEventKindControllerConnected, rt_services_event_kind_controller_connected, "Zanna.Services.EventKind.get_ControllerConnected", "i64()")
+RT_FUNC(ServicesEventKindControllerDisconnected, rt_services_event_kind_controller_disconnected, "Zanna.Services.EventKind.get_ControllerDisconnected", "i64()")
+RT_FUNC(ServicesEventKindControllerConfigured, rt_services_event_kind_controller_configured, "Zanna.Services.EventKind.get_ControllerConfigured", "i64()")
+RT_FUNC(ServicesEventKindWorkshopItemInstalled, rt_services_event_kind_workshop_item_installed, "Zanna.Services.EventKind.get_WorkshopItemInstalled", "i64()")
+RT_FUNC(ServicesEventKindWorkshopItemDownloaded, rt_services_event_kind_workshop_item_downloaded, "Zanna.Services.EventKind.get_WorkshopItemDownloaded", "i64()")
+RT_FUNC(ServicesEventKindWorkshopSubscriptionChanged, rt_services_event_kind_workshop_subscription_changed, "Zanna.Services.EventKind.get_WorkshopSubscriptionChanged", "i64()")
 
 RT_FUNC(ServicesFeatureIdentity,           rt_services_feature_identity,               "Zanna.Services.Feature.get_Identity",            "i64()")
 RT_FUNC(ServicesFeatureLicensing,          rt_services_feature_licensing,              "Zanna.Services.Feature.get_Licensing",          "i64()")
@@ -196,12 +368,37 @@ RT_FUNC(ServicesFeaturePresence,           rt_services_feature_presence,        
 RT_FUNC(ServicesFeatureOverlay,            rt_services_feature_overlay,                "Zanna.Services.Feature.get_Overlay",            "i64()")
 RT_FUNC(ServicesFeatureTextInput,          rt_services_feature_text_input,             "Zanna.Services.Feature.get_TextInput",          "i64()")
 RT_FUNC(ServicesFeatureCloud,              rt_services_feature_cloud,                  "Zanna.Services.Feature.get_Cloud",              "i64()")
+RT_FUNC(ServicesFeatureLaunchParameters,   rt_services_feature_launch_parameters,      "Zanna.Services.Feature.get_LaunchParameters",   "i64()")
+RT_FUNC(ServicesFeatureTimeline,           rt_services_feature_timeline,               "Zanna.Services.Feature.get_Timeline",           "i64()")
+RT_FUNC(ServicesFeatureAppDetails,         rt_services_feature_app_details,            "Zanna.Services.Feature.get_AppDetails",         "i64()")
+RT_FUNC(ServicesFeatureAchievementIcons,   rt_services_feature_achievement_icons,      "Zanna.Services.Feature.get_AchievementIcons",   "i64()")
+RT_FUNC(ServicesFeatureAchievementPercentages, rt_services_feature_achievement_percentages, "Zanna.Services.Feature.get_AchievementPercentages", "i64()")
+RT_FUNC(ServicesFeatureActionInput,        rt_services_feature_action_input,           "Zanna.Services.Feature.get_ActionInput",        "i64()")
+RT_FUNC(ServicesFeatureWorkshop,           rt_services_feature_workshop,               "Zanna.Services.Feature.get_Workshop",           "i64()")
 
 RT_FUNC(ServicesRequestKindPlayerCount,    rt_services_request_kind_player_count,      "Zanna.Services.RequestKind.get_PlayerCount",    "i64()")
 RT_FUNC(ServicesRequestKindLeaderboardFind, rt_services_request_kind_leaderboard_find, "Zanna.Services.RequestKind.get_LeaderboardFind", "i64()")
 RT_FUNC(ServicesRequestKindLeaderboardUpload, rt_services_request_kind_leaderboard_upload, "Zanna.Services.RequestKind.get_LeaderboardUpload", "i64()")
 RT_FUNC(ServicesRequestKindLeaderboardDownload, rt_services_request_kind_leaderboard_download, "Zanna.Services.RequestKind.get_LeaderboardDownload", "i64()")
 RT_FUNC(ServicesRequestKindTextInput,      rt_services_request_kind_text_input,        "Zanna.Services.RequestKind.get_TextInput",      "i64()")
+RT_FUNC(ServicesRequestKindTimelineEventRecording, rt_services_request_kind_timeline_event_recording, "Zanna.Services.RequestKind.get_TimelineEventRecording", "i64()")
+RT_FUNC(ServicesRequestKindTimelinePhaseRecording, rt_services_request_kind_timeline_phase_recording, "Zanna.Services.RequestKind.get_TimelinePhaseRecording", "i64()")
+RT_FUNC(ServicesRequestKindAchievementPercentages, rt_services_request_kind_achievement_percentages, "Zanna.Services.RequestKind.get_AchievementPercentages", "i64()")
+RT_FUNC(ServicesRequestKindWorkshopQuery,  rt_services_request_kind_workshop_query,    "Zanna.Services.RequestKind.get_WorkshopQuery",  "i64()")
+RT_FUNC(ServicesRequestKindWorkshopSubscribe, rt_services_request_kind_workshop_subscribe, "Zanna.Services.RequestKind.get_WorkshopSubscribe", "i64()")
+RT_FUNC(ServicesRequestKindWorkshopUnsubscribe, rt_services_request_kind_workshop_unsubscribe, "Zanna.Services.RequestKind.get_WorkshopUnsubscribe", "i64()")
+RT_FUNC(ServicesRequestKindWorkshopCreate, rt_services_request_kind_workshop_create,   "Zanna.Services.RequestKind.get_WorkshopCreate", "i64()")
+RT_FUNC(ServicesRequestKindWorkshopSubmit, rt_services_request_kind_workshop_submit,   "Zanna.Services.RequestKind.get_WorkshopSubmit", "i64()")
+RT_FUNC(ServicesRequestKindWorkshopDelete, rt_services_request_kind_workshop_delete,   "Zanna.Services.RequestKind.get_WorkshopDelete", "i64()")
+
+RT_FUNC(ServicesTimelineModePlaying,       rt_services_timeline_mode_playing,          "Zanna.Services.TimelineMode.get_Playing",       "i64()")
+RT_FUNC(ServicesTimelineModeStaging,       rt_services_timeline_mode_staging,          "Zanna.Services.TimelineMode.get_Staging",       "i64()")
+RT_FUNC(ServicesTimelineModeMenus,         rt_services_timeline_mode_menus,            "Zanna.Services.TimelineMode.get_Menus",         "i64()")
+RT_FUNC(ServicesTimelineModeLoadingScreen, rt_services_timeline_mode_loading_screen,   "Zanna.Services.TimelineMode.get_LoadingScreen", "i64()")
+
+RT_FUNC(ServicesTimelineClipNone,          rt_services_timeline_clip_none,             "Zanna.Services.TimelineClip.get_None",          "i64()")
+RT_FUNC(ServicesTimelineClipStandard,      rt_services_timeline_clip_standard,         "Zanna.Services.TimelineClip.get_Standard",      "i64()")
+RT_FUNC(ServicesTimelineClipFeatured,      rt_services_timeline_clip_featured,         "Zanna.Services.TimelineClip.get_Featured",      "i64()")
 
 RT_FUNC(ServicesLeaderboardScopeGlobal,    rt_services_leaderboard_scope_global,       "Zanna.Services.LeaderboardScope.get_Global",    "i64()")
 RT_FUNC(ServicesLeaderboardScopeAroundUser, rt_services_leaderboard_scope_around_user, "Zanna.Services.LeaderboardScope.get_AroundUser", "i64()")
@@ -255,9 +452,13 @@ RT_FUNC(ServicesSteamHardwareSteamFrame,   rt_services_steam_hardware_steam_fram
 ///
 /// When no provider is started (no Steam client, no redistributable, or a non-Steam build) every
 /// query returns an empty string, `0`, or `false` and never traps, so one build runs everywhere.
-/// Stateful members must be called on the main thread. Call `Shutdown` on the quit path. The
-/// player features live in `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`,
-/// `TextInput`, and `Cloud`.
+/// Stateful members must be called on the main thread. Call `Shutdown` on the quit path.
+/// `LaunchCommandLine` and `LaunchParameter(key)` read what the platform passed through a launch
+/// URL (for example a friend joining through rich presence); read them again after
+/// `EventKind.LaunchParametersChanged`. `DlcCount` with `DlcIdAt`, `DlcNameAt`, and
+/// `DlcAvailableAt` lists the application's DLC, and `BuildId` and `BranchName` identify the
+/// installed build. The player features live in `Achievements`, `Stats`, `Leaderboards`,
+/// `Presence`, `Overlay`, `OnScreenKeyboard`, `Cloud`, and `Timeline`.
 RT_CLASS_BEGIN("Zanna.Services.Platform", ServicesPlatform, "none", none)
     RT_PROP("IsAvailable", "i1", ServicesPlatformIsAvailable, none)
     RT_PROP("Status", "i64", ServicesPlatformStatus, none)
@@ -268,6 +469,10 @@ RT_CLASS_BEGIN("Zanna.Services.Platform", ServicesPlatform, "none", none)
     RT_PROP("Language", "str", ServicesPlatformLanguage, none)
     RT_PROP("IsLicensed", "i1", ServicesPlatformIsLicensed, none)
     RT_PROP("IsOnline", "i1", ServicesPlatformIsOnline, none)
+    RT_PROP("LaunchCommandLine", "str", ServicesPlatformLaunchCommandLine, none)
+    RT_PROP("DlcCount", "i64", ServicesPlatformDlcCount, none)
+    RT_PROP("BuildId", "i64", ServicesPlatformBuildId, none)
+    RT_PROP("BranchName", "str", ServicesPlatformBranchName, none)
     RT_PROP("EventResultCode", "i64", ServicesPlatformEventResultCode, none)
     RT_PROP("EventText", "str", ServicesPlatformEventText, none)
     RT_PROP("EventValue", "i64", ServicesPlatformEventValue, none)
@@ -283,6 +488,10 @@ RT_CLASS_BEGIN("Zanna.Services.Platform", ServicesPlatform, "none", none)
     RT_METHOD("IsDlcInstalled", "i1(str)", ServicesPlatformIsDlcInstalled)
     RT_METHOD("RequestPlayerCount", "obj<Zanna.Services.Request>()", ServicesPlatformRequestPlayerCount)
     RT_METHOD("Diagnostics", "seq<str>()", ServicesPlatformDiagnostics)
+    RT_METHOD("LaunchParameter", "str(str)", ServicesPlatformLaunchParameter)
+    RT_METHOD("DlcIdAt", "str(i64)", ServicesPlatformDlcIdAt)
+    RT_METHOD("DlcNameAt", "str(i64)", ServicesPlatformDlcNameAt)
+    RT_METHOD("DlcAvailableAt", "i1(i64)", ServicesPlatformDlcAvailableAt)
 RT_CLASS_END()
 
 /// @summary Tracks one non-blocking platform services request.
@@ -294,8 +503,11 @@ RT_CLASS_END()
 /// `Succeeded`, `ResultCode`, `Value`, `Flag`, and `Text` describe the result (their meaning
 /// depends on `Kind`), and `Error` holds the failure message. Leaderboard downloads also carry
 /// entries: `EntryCount`, then `EntryRank(i)`, `EntryScore(i)`, `EntryUserId(i)`, and
-/// `EntryUserName(i)` for `i` in `0..EntryCount-1` (other indexes trap). Requests that cannot start
-/// are returned already completed as failed, and `Platform.Shutdown` cancels outstanding requests.
+/// `EntryUserName(i)` for `i` in `0..EntryCount-1` (other indexes trap). Some kinds also carry
+/// integer details read with `Detail(i)` for `i` in `0..DetailCount-1`. Workshop queries carry
+/// `ItemCount` items read with `ItemAt(i)` as `Zanna.Services.WorkshopItem` objects. Requests that
+/// cannot start are returned already completed as failed, and `Platform.Shutdown` cancels
+/// outstanding requests.
 RT_CLASS_BEGIN("Zanna.Services.Request", ServicesRequest, "obj", none)
     RT_PROP("Kind", "i64", ServicesRequestKind, none)
     RT_PROP("IsDone", "i1", ServicesRequestIsDone, none)
@@ -306,10 +518,14 @@ RT_CLASS_BEGIN("Zanna.Services.Request", ServicesRequest, "obj", none)
     RT_PROP("Text", "str", ServicesRequestText, none)
     RT_PROP("Error", "str", ServicesRequestError, none)
     RT_PROP("EntryCount", "i64", ServicesRequestEntryCount, none)
+    RT_PROP("DetailCount", "i64", ServicesRequestDetailCount, none)
+    RT_PROP("ItemCount", "i64", ServicesRequestItemCount, none)
     RT_METHOD("EntryRank", "i64(i64)", ServicesRequestEntryRank)
     RT_METHOD("EntryScore", "i64(i64)", ServicesRequestEntryScore)
     RT_METHOD("EntryUserId", "str(i64)", ServicesRequestEntryUserId)
     RT_METHOD("EntryUserName", "str(i64)", ServicesRequestEntryUserName)
+    RT_METHOD("Detail", "i64(i64)", ServicesRequestDetail)
+    RT_METHOD("ItemAt", "obj<Zanna.Services.WorkshopItem>(i64)", ServicesRequestItemAt)
 RT_CLASS_END()
 
 /// @summary Unlocks and inspects the game's platform achievements.
@@ -322,8 +538,16 @@ RT_CLASS_END()
 /// achievement, and `Count` with `IdAt(index)` enumerates them. `Clear` relocks an achievement for
 /// testing.
 ///
-/// Without a provider that supports achievements every member returns `false`, `0`, or `""`. An
-/// empty id traps. A rejected call returns `false` and `Platform.Diagnostics` explains why.
+/// `IconWidth`, `IconHeight`, and `IconRgba` read the icon for the achievement's current state
+/// (locked or unlocked) as `IconWidth * IconHeight * 4` RGBA bytes, ready for `Pixels` or a
+/// texture. Platforms load icons on demand: while an icon loads these return `0` and empty
+/// `Bytes`, and an `EventKind.AchievementIconReady` event names the achievement once it is ready.
+/// `RequestGlobalPercentages` downloads the share of players who unlocked each achievement;
+/// after the request succeeds `GlobalPercent(id)` returns it in the range 0 to 100.
+///
+/// Without a provider that supports achievements every member returns `false`, `0`, `""`, or
+/// empty `Bytes`. An empty id traps. A rejected call returns `false` and `Platform.Diagnostics`
+/// explains why.
 RT_CLASS_BEGIN("Zanna.Services.Achievements", ServicesAchievements, "none", none)
     RT_PROP("Count", "i64", ServicesAchievementsCount, none)
     RT_METHOD("Unlock", "i1(str)", ServicesAchievementsUnlock)
@@ -335,6 +559,11 @@ RT_CLASS_BEGIN("Zanna.Services.Achievements", ServicesAchievements, "none", none
     RT_METHOD("DisplayName", "str(str)", ServicesAchievementsDisplayName)
     RT_METHOD("Description", "str(str)", ServicesAchievementsDescription)
     RT_METHOD("IsHidden", "i1(str)", ServicesAchievementsIsHidden)
+    RT_METHOD("IconWidth", "i64(str)", ServicesAchievementsIconWidth)
+    RT_METHOD("IconHeight", "i64(str)", ServicesAchievementsIconHeight)
+    RT_METHOD("IconRgba", "obj<Zanna.Collections.Bytes>(str)", ServicesAchievementsIconRgba)
+    RT_METHOD("RequestGlobalPercentages", "obj<Zanna.Services.Request>()", ServicesAchievementsRequestGlobalPercentages)
+    RT_METHOD("GlobalPercent", "f64(str)", ServicesAchievementsGlobalPercent)
 RT_CLASS_END()
 
 /// @summary Reads, updates, and commits the player's platform stats.
@@ -459,6 +688,173 @@ RT_CLASS_BEGIN("Zanna.Services.Cloud", ServicesCloud, "none", none)
     RT_METHOD("EndBatch", "i1()", ServicesCloudEndBatch)
 RT_CLASS_END()
 
+/// @summary Marks the platform's game recording timeline with events, state, and phases.
+/// @details
+/// `Zanna.Services.Timeline` annotates background gameplay recording (Steam game recording) so
+/// players can find and clip moments later. `SetGameMode` colors the timeline bar with a
+/// `TimelineMode`, and `SetTooltip(text, offsetSeconds)` describes the current state, such as the
+/// score. `AddEvent(title, description, icon, priority, offsetSeconds, clip)` marks a moment and
+/// `AddRangeEvent` a finished span; `StartRangeEvent`, `UpdateRangeEvent`, and `EndRangeEvent`
+/// follow a span as it happens, and `RemoveEvent` deletes one. Event methods return an event id
+/// (`""` when nothing was added). Offsets are seconds relative to now (negative is the past),
+/// priorities range over `0..1000`, and `clip` is a `TimelineClip` value.
+///
+/// Phases group a longer stretch such as a match: `StartPhase`, `EndPhase`, `SetPhaseId`,
+/// `AddPhaseTag`, and `SetPhaseAttribute`. `RequestEventRecording` and `RequestPhaseRecording`
+/// return a `Zanna.Services.Request` that reports what was recorded, and `OpenOverlayToPhase` and
+/// `OpenOverlayToEvent` show it in the overlay. Empty titles, ids, tag names, or groups, unknown
+/// constants, and out-of-range priorities trap. Without a provider that supports the timeline,
+/// members return `false` or `""`.
+RT_CLASS_BEGIN("Zanna.Services.Timeline", ServicesTimeline, "none", none)
+    RT_METHOD("SetGameMode", "i1(i64)", ServicesTimelineSetGameMode)
+    RT_METHOD("SetTooltip", "i1(str,f64)", ServicesTimelineSetTooltip)
+    RT_METHOD("ClearTooltip", "i1(f64)", ServicesTimelineClearTooltip)
+    RT_METHOD("AddEvent", "str(str,str,str,i64,f64,i64)", ServicesTimelineAddEvent)
+    RT_METHOD("AddRangeEvent", "str(str,str,str,i64,f64,f64,i64)", ServicesTimelineAddRangeEvent)
+    RT_METHOD("StartRangeEvent", "str(str,str,str,i64,f64,i64)", ServicesTimelineStartRangeEvent)
+    RT_METHOD("UpdateRangeEvent", "i1(str,str,str,str,i64,i64)", ServicesTimelineUpdateRangeEvent)
+    RT_METHOD("EndRangeEvent", "i1(str,f64)", ServicesTimelineEndRangeEvent)
+    RT_METHOD("RemoveEvent", "i1(str)", ServicesTimelineRemoveEvent)
+    RT_METHOD("RequestEventRecording", "obj<Zanna.Services.Request>(str)", ServicesTimelineRequestEventRecording)
+    RT_METHOD("StartPhase", "i1()", ServicesTimelineStartPhase)
+    RT_METHOD("EndPhase", "i1()", ServicesTimelineEndPhase)
+    RT_METHOD("SetPhaseId", "i1(str)", ServicesTimelineSetPhaseId)
+    RT_METHOD("AddPhaseTag", "i1(str,str,str,i64)", ServicesTimelineAddPhaseTag)
+    RT_METHOD("SetPhaseAttribute", "i1(str,str,i64)", ServicesTimelineSetPhaseAttribute)
+    RT_METHOD("RequestPhaseRecording", "obj<Zanna.Services.Request>(str)", ServicesTimelineRequestPhaseRecording)
+    RT_METHOD("OpenOverlayToPhase", "i1(str)", ServicesTimelineOpenOverlayToPhase)
+    RT_METHOD("OpenOverlayToEvent", "i1(str)", ServicesTimelineOpenOverlayToEvent)
+RT_CLASS_END()
+
+/// @summary Reads the platform's action-based controller input.
+/// @details
+/// `Zanna.Services.ActionInput` reads controllers through the platform's action system (Steam
+/// Input). The game names what the player does in an action manifest, such as `swing` or `aim`,
+/// and the player binds those actions to any controller in the platform's own interface.
+/// `Start(manifestPath)` begins, with the manifest file or `""` for the configuration published
+/// with the platform, and `Stop` ends. `ControllerCount`, `ControllerIdAt`, `ControllerType`,
+/// and `GamepadIndex` describe the connected controllers, and the pump keeps them current.
+///
+/// `ActivateActionSet` selects a group of actions, and `ActivateLayer`, `DeactivateLayer`, and
+/// `DeactivateAllLayers` stack layers on top of it. `IsPressed` reads a digital action,
+/// `AnalogX` and `AnalogY` an analog one, and `IsActionActive` whether an action is available in
+/// the active set. `ActionLabel` returns the action's localized name. `OriginCount` and
+/// `OriginAt` list the physical inputs bound to an action, and `OriginLabel` and
+/// `OriginGlyphPath` describe one for button prompts. `Vibrate`, `SetLedColor`, and
+/// `ResetLedColor` drive feedback, and `ShowBindingPanel` opens the platform's binding screen.
+///
+/// An empty controller id means every connected controller: activation also reaches controllers
+/// connected later, `IsPressed` and `IsActionActive` ask whether any controller qualifies,
+/// `AnalogX` and `AnalogY` read the controller whose vector is longest, feedback reaches every
+/// controller, and the other members use the first controller. Empty action, set, and layer
+/// names, negative origins, unknown `GlyphSize` values, strengths outside 0..1, and color
+/// components outside 0..255 trap. Before `Start`, or without a provider that supports action
+/// input, members return `false`, `0`, `-1`, or `""`.
+RT_CLASS_BEGIN("Zanna.Services.ActionInput", ServicesActionInput, "none", none)
+    RT_PROP("IsStarted", "i1", ServicesActionInputIsStarted, none)
+    RT_PROP("ControllerCount", "i64", ServicesActionInputControllerCount, none)
+    RT_METHOD("Start", "i1(str)", ServicesActionInputStart)
+    RT_METHOD("Stop", "i1()", ServicesActionInputStop)
+    RT_METHOD("ControllerIdAt", "str(i64)", ServicesActionInputControllerIdAt)
+    RT_METHOD("ControllerType", "i64(str)", ServicesActionInputControllerType)
+    RT_METHOD("GamepadIndex", "i64(str)", ServicesActionInputGamepadIndex)
+    RT_METHOD("ActivateActionSet", "i1(str,str)", ServicesActionInputActivateActionSet)
+    RT_METHOD("ActivateLayer", "i1(str,str)", ServicesActionInputActivateLayer)
+    RT_METHOD("DeactivateLayer", "i1(str,str)", ServicesActionInputDeactivateLayer)
+    RT_METHOD("DeactivateAllLayers", "i1(str)", ServicesActionInputDeactivateAllLayers)
+    RT_METHOD("IsPressed", "i1(str,str)", ServicesActionInputIsPressed)
+    RT_METHOD("AnalogX", "f64(str,str)", ServicesActionInputAnalogX)
+    RT_METHOD("AnalogY", "f64(str,str)", ServicesActionInputAnalogY)
+    RT_METHOD("IsActionActive", "i1(str,str)", ServicesActionInputIsActionActive)
+    RT_METHOD("ActionLabel", "str(str)", ServicesActionInputActionLabel)
+    RT_METHOD("OriginCount", "i64(str,str,str)", ServicesActionInputOriginCount)
+    RT_METHOD("OriginAt", "i64(str,str,str,i64)", ServicesActionInputOriginAt)
+    RT_METHOD("OriginLabel", "str(i64)", ServicesActionInputOriginLabel)
+    RT_METHOD("OriginGlyphPath", "str(i64,i64)", ServicesActionInputOriginGlyphPath)
+    RT_METHOD("Vibrate", "i1(str,f64,f64)", ServicesActionInputVibrate)
+    RT_METHOD("SetLedColor", "i1(str,i64,i64,i64)", ServicesActionInputSetLedColor)
+    RT_METHOD("ResetLedColor", "i1(str)", ServicesActionInputResetLedColor)
+    RT_METHOD("ShowBindingPanel", "i1(str)", ServicesActionInputShowBindingPanel)
+RT_CLASS_END()
+
+/// @summary Lists, installs, browses, and publishes the game's Workshop items.
+/// @details
+/// `Zanna.Services.Workshop` reads the platform's user-generated content service (Steam
+/// Workshop). Items are addressed by provider-defined ids. `SubscribedCount` and
+/// `SubscribedIdAt` list the items the player subscribed to; `IsSubscribed`, `IsInstalled`,
+/// `NeedsUpdate`, and `IsDownloading` report an item's state, `InstallFolder`, `InstallSize`,
+/// and `InstallTime` where its files are, and `DownloadedBytes` and `DownloadTotalBytes` a
+/// download's progress. `Download` fetches or updates an item, and `Subscribe` and
+/// `Unsubscribe` change the player's subscriptions.
+///
+/// `Query(order, page, requiredTags, searchText)`, `QueryUser(list, page)`, and
+/// `QueryItems(itemIds)` return a `Zanna.Services.Request` whose `ItemAt(i)` items describe one
+/// page (`Value` holds the number of matching items). `CreateItem` creates an item owned by the
+/// player; `StartUpdate` returns an update id that `SetTitle`, `SetDescription`, `SetMetadata`,
+/// `SetTags`, `SetVisibility`, `SetContent`, and `SetPreview` fill in before `SubmitUpdate`
+/// sends it, with `UpdateStatus` and `UpdateProgress` following the upload. `DeleteItem`
+/// removes an item. Lists of tags and ids are comma-separated.
+///
+/// Empty ids, unknown constants, pages below 1, and more than 100 query ids trap. Without a
+/// provider that supports the Workshop, members return `false`, `0`, or `""` and requests fail.
+RT_CLASS_BEGIN("Zanna.Services.Workshop", ServicesWorkshop, "none", none)
+    RT_PROP("SubscribedCount", "i64", ServicesWorkshopSubscribedCount, none)
+    RT_METHOD("SubscribedIdAt", "str(i64)", ServicesWorkshopSubscribedIdAt)
+    RT_METHOD("IsSubscribed", "i1(str)", ServicesWorkshopIsSubscribed)
+    RT_METHOD("IsInstalled", "i1(str)", ServicesWorkshopIsInstalled)
+    RT_METHOD("NeedsUpdate", "i1(str)", ServicesWorkshopNeedsUpdate)
+    RT_METHOD("IsDownloading", "i1(str)", ServicesWorkshopIsDownloading)
+    RT_METHOD("InstallFolder", "str(str)", ServicesWorkshopInstallFolder)
+    RT_METHOD("InstallSize", "i64(str)", ServicesWorkshopInstallSize)
+    RT_METHOD("InstallTime", "i64(str)", ServicesWorkshopInstallTime)
+    RT_METHOD("DownloadedBytes", "i64(str)", ServicesWorkshopDownloadedBytes)
+    RT_METHOD("DownloadTotalBytes", "i64(str)", ServicesWorkshopDownloadTotalBytes)
+    RT_METHOD("Download", "i1(str,i1)", ServicesWorkshopDownload)
+    RT_METHOD("Subscribe", "obj<Zanna.Services.Request>(str)", ServicesWorkshopSubscribe)
+    RT_METHOD("Unsubscribe", "obj<Zanna.Services.Request>(str)", ServicesWorkshopUnsubscribe)
+    RT_METHOD("Query", "obj<Zanna.Services.Request>(i64,i64,str,str)", ServicesWorkshopQuery)
+    RT_METHOD("QueryUser", "obj<Zanna.Services.Request>(i64,i64)", ServicesWorkshopQueryUser)
+    RT_METHOD("QueryItems", "obj<Zanna.Services.Request>(str)", ServicesWorkshopQueryItems)
+    RT_METHOD("CreateItem", "obj<Zanna.Services.Request>()", ServicesWorkshopCreateItem)
+    RT_METHOD("StartUpdate", "str(str)", ServicesWorkshopStartUpdate)
+    RT_METHOD("SetTitle", "i1(str,str)", ServicesWorkshopSetTitle)
+    RT_METHOD("SetDescription", "i1(str,str)", ServicesWorkshopSetDescription)
+    RT_METHOD("SetMetadata", "i1(str,str)", ServicesWorkshopSetMetadata)
+    RT_METHOD("SetTags", "i1(str,str)", ServicesWorkshopSetTags)
+    RT_METHOD("SetVisibility", "i1(str,i64)", ServicesWorkshopSetVisibility)
+    RT_METHOD("SetContent", "i1(str,str)", ServicesWorkshopSetContent)
+    RT_METHOD("SetPreview", "i1(str,str)", ServicesWorkshopSetPreview)
+    RT_METHOD("SubmitUpdate", "obj<Zanna.Services.Request>(str,str)", ServicesWorkshopSubmitUpdate)
+    RT_METHOD("UpdateStatus", "i64(str)", ServicesWorkshopUpdateStatus)
+    RT_METHOD("UpdateProgress", "f64(str)", ServicesWorkshopUpdateProgress)
+    RT_METHOD("DeleteItem", "obj<Zanna.Services.Request>(str)", ServicesWorkshopDeleteItem)
+RT_CLASS_END()
+
+/// @summary Describes one Workshop item returned by a query.
+/// @details
+/// `Zanna.Services.WorkshopItem` objects come from `Request.ItemAt` on a completed Workshop query
+/// and keep their values after the request is released. `Id`, `Title`, `Description`, `OwnerId`
+/// (the author's user id), `Tags` (comma-separated), `PreviewUrl`, and `Metadata` (game-defined
+/// text set with `Workshop.SetMetadata`) are strings; `Created` and `Updated` are Unix seconds;
+/// `Visibility` is a `WorkshopVisibility` value; `VotesUp`, `VotesDown`, and `Size` (bytes) are
+/// integers; and `Score` is the vote score from 0 to 1.
+RT_CLASS_BEGIN("Zanna.Services.WorkshopItem", ServicesWorkshopItem, "obj", none)
+    RT_PROP("Id", "str", ServicesWorkshopItemId, none)
+    RT_PROP("Title", "str", ServicesWorkshopItemTitle, none)
+    RT_PROP("Description", "str", ServicesWorkshopItemDescription, none)
+    RT_PROP("OwnerId", "str", ServicesWorkshopItemOwnerId, none)
+    RT_PROP("Tags", "str", ServicesWorkshopItemTags, none)
+    RT_PROP("PreviewUrl", "str", ServicesWorkshopItemPreviewUrl, none)
+    RT_PROP("Metadata", "str", ServicesWorkshopItemMetadata, none)
+    RT_PROP("Created", "i64", ServicesWorkshopItemCreated, none)
+    RT_PROP("Updated", "i64", ServicesWorkshopItemUpdated, none)
+    RT_PROP("Visibility", "i64", ServicesWorkshopItemVisibility, none)
+    RT_PROP("VotesUp", "i64", ServicesWorkshopItemVotesUp, none)
+    RT_PROP("VotesDown", "i64", ServicesWorkshopItemVotesDown, none)
+    RT_PROP("Size", "i64", ServicesWorkshopItemSize, none)
+    RT_PROP("Score", "f64", ServicesWorkshopItemScore, none)
+RT_CLASS_END()
+
 /// @summary Exposes Steam-only capabilities of the platform services layer.
 /// @details
 /// `Zanna.Services.Steam` complements `Zanna.Services.Platform` when Steam is the active provider.
@@ -507,12 +903,23 @@ RT_CLASS_END()
 /// (EventFlag is true while retrying) track the online connection. `OverlayChanged` reports the
 /// platform overlay opening (EventFlag true) or closing; pause single-player games while it is
 /// open. `DlcInstalled` carries the DLC id in EventText and EventValue,
-/// `LaunchParametersChanged` reports a relaunch with new parameters, and `ServiceShutdown` asks
+/// `LaunchParametersChanged` reports a relaunch with new parameters (read them again with
+/// `Platform.LaunchCommandLine` and `Platform.LaunchParameter`), and `ServiceShutdown` asks
 /// the game to save and shut the provider down. `StatsStored` reports the result of
 /// `Stats.Store` (EventFlag is true on success, EventResultCode holds the provider result).
 /// `AchievementStored` reports a stored unlock (EventFlag true) or progress notification
 /// (EventValue out of EventTotal) with the achievement id in EventText. `TextInputDismissed`
-/// reports that the floating keyboard closed. `None` means the queue is empty.
+/// reports that the floating keyboard closed. `AchievementIconReady` reports that an icon
+/// finished loading: EventText holds the achievement id, EventFlag is true for the unlocked
+/// variant, and EventValue is 1 when the achievement has an icon for that state.
+/// `ControllerConnected` and `ControllerDisconnected` carry the controller id in EventText while
+/// `ActionInput` is started, and `ControllerConfigured` reports that a controller's bindings loaded
+/// (EventFlag is true when they bind actions, EventValue holds the major binding revision).
+/// `WorkshopItemInstalled` names an installed or updated item in EventText,
+/// `WorkshopItemDownloaded` reports a `Workshop.Download` (EventFlag is true on success,
+/// EventResultCode holds the provider result), and `WorkshopSubscriptionChanged` reports a
+/// subscription (EventFlag true) or unsubscription with the item id in EventText. `None` means the
+/// queue is empty.
 RT_CLASS_BEGIN("Zanna.Services.EventKind", ServicesEventKind, "none", none)
     RT_PROP("None", "i64", ServicesEventKindNone, none)
     RT_PROP("ServiceConnected", "i64", ServicesEventKindServiceConnected, none)
@@ -525,15 +932,26 @@ RT_CLASS_BEGIN("Zanna.Services.EventKind", ServicesEventKind, "none", none)
     RT_PROP("StatsStored", "i64", ServicesEventKindStatsStored, none)
     RT_PROP("AchievementStored", "i64", ServicesEventKindAchievementStored, none)
     RT_PROP("TextInputDismissed", "i64", ServicesEventKindTextInputDismissed, none)
+    RT_PROP("AchievementIconReady", "i64", ServicesEventKindAchievementIconReady, none)
+    RT_PROP("ControllerConnected", "i64", ServicesEventKindControllerConnected, none)
+    RT_PROP("ControllerDisconnected", "i64", ServicesEventKindControllerDisconnected, none)
+    RT_PROP("ControllerConfigured", "i64", ServicesEventKindControllerConfigured, none)
+    RT_PROP("WorkshopItemInstalled", "i64", ServicesEventKindWorkshopItemInstalled, none)
+    RT_PROP("WorkshopItemDownloaded", "i64", ServicesEventKindWorkshopItemDownloaded, none)
+    RT_PROP("WorkshopSubscriptionChanged", "i64", ServicesEventKindWorkshopSubscriptionChanged, none)
 RT_CLASS_END()
 
 /// @summary Defines platform services feature identifiers for Platform.HasFeature.
 /// @details
 /// `Zanna.Services.Feature` values ask whether the active provider can serve a group of members
 /// right now: `Identity` (UserId, UserName, IsOnline), `Licensing` (IsLicensed, IsDlcInstalled),
-/// `Language`, `PlayerCount` (RequestPlayerCount), and one value per feature class:
-/// `Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`, `TextInput`, and `Cloud`. A
-/// feature can be unavailable even while a provider is started, for example when an older
+/// `Language`, `PlayerCount` (RequestPlayerCount), one value per feature class
+/// (`Achievements`, `Stats`, `Leaderboards`, `Presence`, `Overlay`, `TextInput` for
+/// `OnScreenKeyboard`, `Cloud`, and `Timeline`), `LaunchParameters` (LaunchCommandLine,
+/// LaunchParameter), `AppDetails` (the DLC list, BuildId, BranchName), `AchievementIcons`
+/// (Achievements.IconWidth, IconHeight, IconRgba), `AchievementPercentages`
+/// (Achievements.RequestGlobalPercentages, GlobalPercent), `ActionInput`, and `Workshop`.
+/// A feature can be unavailable even while a provider is started, for example when an older
 /// redistributable lacks an interface; `Platform.Diagnostics` then explains why.
 RT_CLASS_BEGIN("Zanna.Services.Feature", ServicesFeature, "none", none)
     RT_PROP("Identity", "i64", ServicesFeatureIdentity, none)
@@ -547,6 +965,13 @@ RT_CLASS_BEGIN("Zanna.Services.Feature", ServicesFeature, "none", none)
     RT_PROP("Overlay", "i64", ServicesFeatureOverlay, none)
     RT_PROP("TextInput", "i64", ServicesFeatureTextInput, none)
     RT_PROP("Cloud", "i64", ServicesFeatureCloud, none)
+    RT_PROP("LaunchParameters", "i64", ServicesFeatureLaunchParameters, none)
+    RT_PROP("Timeline", "i64", ServicesFeatureTimeline, none)
+    RT_PROP("AppDetails", "i64", ServicesFeatureAppDetails, none)
+    RT_PROP("AchievementIcons", "i64", ServicesFeatureAchievementIcons, none)
+    RT_PROP("AchievementPercentages", "i64", ServicesFeatureAchievementPercentages, none)
+    RT_PROP("ActionInput", "i64", ServicesFeatureActionInput, none)
+    RT_PROP("Workshop", "i64", ServicesFeatureWorkshop, none)
 RT_CLASS_END()
 
 /// @summary Defines platform services request kinds reported by Request.Kind.
@@ -555,13 +980,142 @@ RT_CLASS_END()
 /// requests the number of players currently running the game (`Value` holds the count).
 /// `LeaderboardFind`, `LeaderboardUpload`, and `LeaderboardDownload` come from
 /// `Zanna.Services.Leaderboards`, and `TextInput` from `OnScreenKeyboard.RequestText` (`Text`
-/// holds the submitted text).
+/// holds the submitted text). `TimelineEventRecording` and `TimelinePhaseRecording` come from
+/// `Zanna.Services.Timeline` (`Flag` is true when something was recorded),
+/// `AchievementPercentages` from `Achievements.RequestGlobalPercentages`, and the `Workshop*`
+/// kinds from `Zanna.Services.Workshop` (`WorkshopQuery` requests carry items; the other kinds
+/// hold the item id in `Text`, and `WorkshopCreate` and `WorkshopSubmit` set `Flag` when the player
+/// must accept the Workshop agreement).
 RT_CLASS_BEGIN("Zanna.Services.RequestKind", ServicesRequestKind, "none", none)
     RT_PROP("PlayerCount", "i64", ServicesRequestKindPlayerCount, none)
     RT_PROP("LeaderboardFind", "i64", ServicesRequestKindLeaderboardFind, none)
     RT_PROP("LeaderboardUpload", "i64", ServicesRequestKindLeaderboardUpload, none)
     RT_PROP("LeaderboardDownload", "i64", ServicesRequestKindLeaderboardDownload, none)
     RT_PROP("TextInput", "i64", ServicesRequestKindTextInput, none)
+    RT_PROP("TimelineEventRecording", "i64", ServicesRequestKindTimelineEventRecording, none)
+    RT_PROP("TimelinePhaseRecording", "i64", ServicesRequestKindTimelinePhaseRecording, none)
+    RT_PROP("AchievementPercentages", "i64", ServicesRequestKindAchievementPercentages, none)
+    RT_PROP("WorkshopQuery", "i64", ServicesRequestKindWorkshopQuery, none)
+    RT_PROP("WorkshopSubscribe", "i64", ServicesRequestKindWorkshopSubscribe, none)
+    RT_PROP("WorkshopUnsubscribe", "i64", ServicesRequestKindWorkshopUnsubscribe, none)
+    RT_PROP("WorkshopCreate", "i64", ServicesRequestKindWorkshopCreate, none)
+    RT_PROP("WorkshopSubmit", "i64", ServicesRequestKindWorkshopSubmit, none)
+    RT_PROP("WorkshopDelete", "i64", ServicesRequestKindWorkshopDelete, none)
+RT_CLASS_END()
+
+/// @summary Defines the game modes that color the platform recording timeline.
+/// @details
+/// `Zanna.Services.TimelineMode` values are passed to `Timeline.SetGameMode`: `Playing` while the
+/// player plays, `Staging` while play is being set up (a lobby, a lineup screen), `Menus` in
+/// menus, and `LoadingScreen` while loading.
+RT_CLASS_BEGIN("Zanna.Services.TimelineMode", ServicesTimelineMode, "none", none)
+    RT_PROP("Playing", "i64", ServicesTimelineModePlaying, none)
+    RT_PROP("Staging", "i64", ServicesTimelineModeStaging, none)
+    RT_PROP("Menus", "i64", ServicesTimelineModeMenus, none)
+    RT_PROP("LoadingScreen", "i64", ServicesTimelineModeLoadingScreen, none)
+RT_CLASS_END()
+
+/// @summary Defines whether the platform offers a timeline event as a clip.
+/// @details
+/// `Zanna.Services.TimelineClip` values tell the platform how to treat a timeline event when the
+/// player saves clips: `None` never suggests it, `Standard` may suggest it, and `Featured` suggests
+/// it ahead of standard events.
+RT_CLASS_BEGIN("Zanna.Services.TimelineClip", ServicesTimelineClip, "none", none)
+    RT_PROP("None", "i64", ServicesTimelineClipNone, none)
+    RT_PROP("Standard", "i64", ServicesTimelineClipStandard, none)
+    RT_PROP("Featured", "i64", ServicesTimelineClipFeatured, none)
+RT_CLASS_END()
+
+/// @summary Defines controller types reported by ActionInput.ControllerType.
+/// @details
+/// `Zanna.Services.ControllerType` values name the kind of controller behind a controller id:
+/// `Unknown`, `SteamController`, `Xbox360`, `XboxOne` (including Xbox Series controllers),
+/// `GenericGamepad`, `PlayStation4`, `AppleMfi`, `Android`, `SwitchJoyConPair`,
+/// `SwitchJoyConSingle`, `SwitchPro`, `MobileTouch` (an on-screen controller), `PlayStation3`,
+/// `PlayStation5`, `SteamDeck`, `SteamOSHandheld`, `Switch2Pro`, `SteamController2026`, and
+/// `SteamFrameControllerPair`. Use them for defaults and analytics; show button prompts with
+/// `ActionInput.OriginGlyphPath`, which follows the player's bindings.
+RT_CLASS_BEGIN("Zanna.Services.ControllerType", ServicesControllerType, "none", none)
+    RT_PROP("Unknown", "i64", ServicesControllerTypeUnknown, none)
+    RT_PROP("SteamController", "i64", ServicesControllerTypeSteamController, none)
+    RT_PROP("Xbox360", "i64", ServicesControllerTypeXbox360, none)
+    RT_PROP("XboxOne", "i64", ServicesControllerTypeXboxOne, none)
+    RT_PROP("GenericGamepad", "i64", ServicesControllerTypeGenericGamepad, none)
+    RT_PROP("PlayStation4", "i64", ServicesControllerTypePlayStation4, none)
+    RT_PROP("AppleMfi", "i64", ServicesControllerTypeAppleMfi, none)
+    RT_PROP("Android", "i64", ServicesControllerTypeAndroid, none)
+    RT_PROP("SwitchJoyConPair", "i64", ServicesControllerTypeSwitchJoyConPair, none)
+    RT_PROP("SwitchJoyConSingle", "i64", ServicesControllerTypeSwitchJoyConSingle, none)
+    RT_PROP("SwitchPro", "i64", ServicesControllerTypeSwitchPro, none)
+    RT_PROP("MobileTouch", "i64", ServicesControllerTypeMobileTouch, none)
+    RT_PROP("PlayStation3", "i64", ServicesControllerTypePlayStation3, none)
+    RT_PROP("PlayStation5", "i64", ServicesControllerTypePlayStation5, none)
+    RT_PROP("SteamDeck", "i64", ServicesControllerTypeSteamDeck, none)
+    RT_PROP("SteamOSHandheld", "i64", ServicesControllerTypeSteamOSHandheld, none)
+    RT_PROP("Switch2Pro", "i64", ServicesControllerTypeSwitch2Pro, none)
+    RT_PROP("SteamController2026", "i64", ServicesControllerTypeSteamController2026, none)
+    RT_PROP("SteamFrameControllerPair", "i64", ServicesControllerTypeSteamFrameControllerPair, none)
+RT_CLASS_END()
+
+/// @summary Defines glyph image sizes for ActionInput.OriginGlyphPath.
+/// @details
+/// `Zanna.Services.GlyphSize` values select the glyph image: `Small` (32 by 32 pixels on Steam),
+/// `Medium` (128 by 128), and `Large` (256 by 256).
+RT_CLASS_BEGIN("Zanna.Services.GlyphSize", ServicesGlyphSize, "none", none)
+    RT_PROP("Small", "i64", ServicesGlyphSizeSmall, none)
+    RT_PROP("Medium", "i64", ServicesGlyphSizeMedium, none)
+    RT_PROP("Large", "i64", ServicesGlyphSizeLarge, none)
+RT_CLASS_END()
+
+/// @summary Defines the orders Workshop.Query ranks items by.
+/// @details
+/// `Zanna.Services.WorkshopQuery` values: `Popular` (by votes), `Newest` (by publication date),
+/// `Trending` (by recent votes), `MostSubscribed` (by unique subscriptions), `RecentlyUpdated`
+/// (by last update), and `TextSearch` (by how well items match the search text).
+RT_CLASS_BEGIN("Zanna.Services.WorkshopQuery", ServicesWorkshopQuery, "none", none)
+    RT_PROP("Popular", "i64", ServicesWorkshopQueryPopular, none)
+    RT_PROP("Newest", "i64", ServicesWorkshopQueryNewest, none)
+    RT_PROP("Trending", "i64", ServicesWorkshopQueryTrending, none)
+    RT_PROP("MostSubscribed", "i64", ServicesWorkshopQueryMostSubscribed, none)
+    RT_PROP("RecentlyUpdated", "i64", ServicesWorkshopQueryRecentlyUpdated, none)
+    RT_PROP("TextSearch", "i64", ServicesWorkshopQueryTextSearch, none)
+RT_CLASS_END()
+
+/// @summary Defines the player's Workshop lists for Workshop.QueryUser.
+/// @details
+/// `Zanna.Services.WorkshopList` values: `Published`, `Subscribed`, `Favorited`, `VotedUp`, and
+/// `Played` (items the player used).
+RT_CLASS_BEGIN("Zanna.Services.WorkshopList", ServicesWorkshopList, "none", none)
+    RT_PROP("Published", "i64", ServicesWorkshopListPublished, none)
+    RT_PROP("Subscribed", "i64", ServicesWorkshopListSubscribed, none)
+    RT_PROP("Favorited", "i64", ServicesWorkshopListFavorited, none)
+    RT_PROP("VotedUp", "i64", ServicesWorkshopListVotedUp, none)
+    RT_PROP("Played", "i64", ServicesWorkshopListPlayed, none)
+RT_CLASS_END()
+
+/// @summary Defines who can see a Workshop item.
+/// @details
+/// `Zanna.Services.WorkshopVisibility` values: `Public`, `FriendsOnly`, `Private` (the author only),
+/// and `Unlisted` (anyone with the link).
+RT_CLASS_BEGIN("Zanna.Services.WorkshopVisibility", ServicesWorkshopVisibility, "none", none)
+    RT_PROP("Public", "i64", ServicesWorkshopVisibilityPublic, none)
+    RT_PROP("FriendsOnly", "i64", ServicesWorkshopVisibilityFriendsOnly, none)
+    RT_PROP("Private", "i64", ServicesWorkshopVisibilityPrivate, none)
+    RT_PROP("Unlisted", "i64", ServicesWorkshopVisibilityUnlisted, none)
+RT_CLASS_END()
+
+/// @summary Defines the stages of a submitted Workshop update.
+/// @details
+/// `Zanna.Services.WorkshopUpdateStatus` values: `None` (no upload in progress for the id),
+/// `PreparingConfig`, `PreparingContent`, `UploadingContent`, `UploadingPreview`, and
+/// `Committing`.
+RT_CLASS_BEGIN("Zanna.Services.WorkshopUpdateStatus", ServicesWorkshopUpdateStatus, "none", none)
+    RT_PROP("None", "i64", ServicesWorkshopUpdateStatusNone, none)
+    RT_PROP("PreparingConfig", "i64", ServicesWorkshopUpdateStatusPreparingConfig, none)
+    RT_PROP("PreparingContent", "i64", ServicesWorkshopUpdateStatusPreparingContent, none)
+    RT_PROP("UploadingContent", "i64", ServicesWorkshopUpdateStatusUploadingContent, none)
+    RT_PROP("UploadingPreview", "i64", ServicesWorkshopUpdateStatusUploadingPreview, none)
+    RT_PROP("Committing", "i64", ServicesWorkshopUpdateStatusCommitting, none)
 RT_CLASS_END()
 
 /// @summary Defines which leaderboard entries Leaderboards.Download fetches.

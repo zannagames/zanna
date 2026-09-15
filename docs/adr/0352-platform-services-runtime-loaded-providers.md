@@ -1,7 +1,7 @@
 ---
 status: accepted
 audience: contributors
-last-verified: 2026-09-13
+last-verified: 2026-09-14
 ---
 
 # ADR 0352: Platform Services with Runtime-Loaded Provider Redistributables (Steamworks First)
@@ -271,3 +271,53 @@ through CPU blits and never receive the desktop overlay; this is documented rath
   cannot be limited to VM runs; the explicit override covers development.
 - **Automatic shutdown from the runtime's exit handler.** Rejected for the destructor-ordering and
   Windows exit reasons above.
+
+## Amendment (2026-09-14): verification against the real SDK, init status, launch parameters
+
+**Verification.** The binding was checked against a genuine Steamworks SDK 1.61 and against the SDK
+1.65 flat header. Every export name the provider resolves exists in the 1.61 macOS
+redistributable, except the 1.65 names that have 1.61 fallbacks (`SteamAPI_SteamUtils_v011`,
+`IsRunningOnSteamHardware`, `IsRunningUnderProton`, `SteamAPI_SteamApps_v009`,
+`SteamAPI_SteamFriends_v018`). Every bound flat signature is identical in both headers. The
+callback ids, the pack-4 structure sizes and offsets, and the enum values used by the provider
+compiled against the 1.61 headers with static assertions. With a signed-in Steam client on macOS
+arm64 and app 480, `examples/apps/steam-check` passed every check it runs:
+
+- Library: the 1.61 redistributable, and the 1.65-generation `libsteam_api.dylib` bundled with
+  the Steam client.
+- Runs: VM runs, and a `zanna package --target steam-macos` bundle.
+- Checks: identity, player counts, achievements, stats, all leaderboard request kinds with
+  entries, presence, cloud files, launch parameters, and `Shutdown` followed by a second `Init`.
+
+The client posts `UserAchievementStored_t` before `UserStatsStored_t`, and the fake library now
+does the same. The desktop overlay, the keyboards, and Windows and Linux clients remain
+unverified.
+
+**Init status.** A machine without the Steam client makes `SteamAPI_InitFlat` return
+`FailedGeneric` ("Could not determine Steam client install directory."), which the table above
+mapped to `InitFailed`. When `InitFlat` returns `FailedGeneric` and `SteamAPI_IsSteamRunning()`
+is false, the status is now `ClientNotRunning`; the message still carries Valve's text. A running
+client with no signed-in user also reports `FailedGeneric` ("ConnectToGlobalUser failed.") while
+`IsSteamRunning` is true, and keeps `InitFailed`. When `InitFlat` fails, the redistributable
+writes `[S_API]` lines to the console itself; they cannot be suppressed.
+
+**Launch parameters.** `EventKind.LaunchParametersChanged` had no way to read the new values.
+`Zanna.Services.Platform` gains:
+
+| Member | Signature | Ownership | Contract |
+|---|---|---|---|
+| `LaunchCommandLine` | `str` | owned | Command line of a platform launch URL (Steam: `steam://run/<appid>//<command line>/`), or `""` |
+| `LaunchParameter(key)` | `str(str)` | owned | Named launch parameter (Steam: `steam://run/<appid>//?key=value`), or `""`; an empty key traps with `Services.Platform.LaunchParameter: key must not be empty` |
+
+`Zanna.Services.Feature.LaunchParameters` is `12`. The provider table gains the query callbacks
+`launch_command_line` and `launch_parameter`. The Steam provider binds
+`SteamAPI_ISteamApps_GetLaunchCommandLine` and `SteamAPI_ISteamApps_GetLaunchQueryParam`
+(identical in SDK 1.61 through 1.65) as their own group. A redistributable without them keeps
+licensing, DLC, and language queries and records
+`Steam: export <symbol> unavailable; launch parameters disabled`. The command line is read into a
+4096-byte buffer; text that fills it records
+`Steam: the launch command line filled the 4096-byte buffer and may be truncated`.
+
+**Provider contract.** The core registers a request after `begin_request` returns, so a provider
+must never complete the request it is starting from inside that callback. It returns 0 to fail
+synchronously and completes later requests from `pump`.

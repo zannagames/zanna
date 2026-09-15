@@ -13,10 +13,14 @@
 //     exported symbol names, C function types, callback identifiers, and
 //     payload layouts. No Steamworks SDK file is vendored or included.
 //   - Callback payloads use the redistributables' packing: 8-byte packing on
-//     Windows and 4-byte packing on macOS and Linux. Sizes and offsets are
-//     pinned by compile-time assertions in rt_steam_provider.c.
+//     Windows and 4-byte packing on macOS and Linux. The Steam Input action
+//     data returned by value uses one-byte packing on every platform. Sizes
+//     and offsets are pinned by compile-time assertions in
+//     rt_steam_provider.c.
 //   - Every method type listed here has an identical signature in all
-//     supported redistributables (Steamworks SDK 1.61 through 1.65).
+//     supported redistributables (Steamworks SDK 1.61 through 1.65), except
+//     ISteamUGC's GetNumSubscribedItems and GetSubscribedItems, which gained a
+//     bool parameter with SteamUGC_v021; both forms are declared.
 //   - C `bool` maps to the one-byte C++ bool used by the flat API on every
 //     supported ABI; enums are 32-bit integers. Payload fields that are C++
 //     bool are declared uint8_t so arbitrary payload bytes are never read
@@ -30,6 +34,8 @@
 //        src/runtime/services/steam/rt_steam_user_stats.c,
 //        src/runtime/services/steam/rt_steam_social.c,
 //        src/runtime/services/steam/rt_steam_cloud.c,
+//        src/runtime/services/steam/rt_steam_input.c,
+//        src/runtime/services/steam/rt_steam_workshop.c,
 //        docs/adr/0352-platform-services-runtime-loaded-providers.md,
 //        docs/adr/0353-platform-services-player-features.md
 //
@@ -191,6 +197,86 @@ typedef uint64_t rt_steam_api_call;
 #define RT_STEAM_CB_LEADERBOARD_SCORE_UPLOADED 1106
 /// @brief NumberOfCurrentPlayers_t call result (ISteamUserStats base 1100 + 7).
 #define RT_STEAM_CB_NUMBER_OF_CURRENT_PLAYERS 1107
+/// @brief UserAchievementIconFetched_t (1100 + 9).
+#define RT_STEAM_CB_USER_ACHIEVEMENT_ICON_FETCHED 1109
+/// @brief GlobalAchievementPercentagesReady_t call result (1100 + 10).
+#define RT_STEAM_CB_GLOBAL_ACHIEVEMENT_PERCENTAGES_READY 1110
+/// @brief RemoteStorageSubscribePublishedFileResult_t call result (ISteamRemoteStorage base 1300 +
+/// 13).
+#define RT_STEAM_CB_UGC_SUBSCRIBE_RESULT 1313
+/// @brief RemoteStorageUnsubscribePublishedFileResult_t call result (1300 + 15).
+#define RT_STEAM_CB_UGC_UNSUBSCRIBE_RESULT 1315
+/// @brief RemoteStoragePublishedFileSubscribed_t (1300 + 21).
+#define RT_STEAM_CB_UGC_FILE_SUBSCRIBED 1321
+/// @brief RemoteStoragePublishedFileUnsubscribed_t (1300 + 22).
+#define RT_STEAM_CB_UGC_FILE_UNSUBSCRIBED 1322
+/// @brief SteamUGCQueryCompleted_t call result (ISteamUGC base 3400 + 1).
+#define RT_STEAM_CB_UGC_QUERY_COMPLETED 3401
+/// @brief CreateItemResult_t call result (3400 + 3).
+#define RT_STEAM_CB_UGC_CREATE_ITEM_RESULT 3403
+/// @brief SubmitItemUpdateResult_t call result (3400 + 4).
+#define RT_STEAM_CB_UGC_SUBMIT_ITEM_UPDATE_RESULT 3404
+/// @brief ItemInstalled_t (3400 + 5).
+#define RT_STEAM_CB_UGC_ITEM_INSTALLED 3405
+/// @brief DownloadItemResult_t (3400 + 6).
+#define RT_STEAM_CB_UGC_DOWNLOAD_ITEM_RESULT 3406
+/// @brief DeleteItemResult_t call result (3400 + 17).
+#define RT_STEAM_CB_UGC_DELETE_ITEM_RESULT 3417
+/// @brief SteamInputDeviceConnected_t (ISteamInput base 2800 + 1).
+#define RT_STEAM_CB_INPUT_DEVICE_CONNECTED 2801
+/// @brief SteamInputDeviceDisconnected_t (2800 + 2).
+#define RT_STEAM_CB_INPUT_DEVICE_DISCONNECTED 2802
+/// @brief SteamInputConfigurationLoaded_t (2800 + 3).
+#define RT_STEAM_CB_INPUT_CONFIGURATION_LOADED 2803
+/// @brief SteamTimelineGamePhaseRecordingExists_t call result (ISteamTimeline base 6000 + 1).
+#define RT_STEAM_CB_TIMELINE_PHASE_RECORDING_EXISTS 6001
+/// @brief SteamTimelineEventRecordingExists_t call result (6000 + 2).
+#define RT_STEAM_CB_TIMELINE_EVENT_RECORDING_EXISTS 6002
+
+/// @brief k_cchMaxPhaseIDLength: bytes, including the terminator, of a timeline phase id.
+#define RT_STEAM_TIMELINE_PHASE_ID_CAPACITY 64
+/// @brief k_unTimelinePriority_KeepCurrentValue: UpdateRangeTimelineEvent keeps the priority.
+#define RT_STEAM_TIMELINE_PRIORITY_KEEP_CURRENT UINT32_C(1000000)
+/// @brief k_flMaxTimelineEventDuration: longest timeline range event in seconds.
+#define RT_STEAM_TIMELINE_MAX_EVENT_DURATION 600.0
+
+/// @brief STEAM_INPUT_MAX_COUNT: handles GetConnectedControllers writes at most.
+#define RT_STEAM_INPUT_MAX_COUNT 16
+/// @brief STEAM_INPUT_MAX_ORIGINS: origins Get*ActionOrigins writes at most.
+#define RT_STEAM_INPUT_MAX_ORIGINS 8
+/// @brief STEAM_INPUT_HANDLE_ALL_CONTROLLERS: addresses every controller.
+#define RT_STEAM_INPUT_HANDLE_ALL_CONTROLLERS UINT64_MAX
+/// @brief k_EInputActionOrigin_MaximumPossibleValue: origins fit in 16 bits.
+#define RT_STEAM_INPUT_MAX_ORIGIN 32767
+/// @brief ESteamInputLEDFlag: set the color passed to SetLEDColor.
+#define RT_STEAM_INPUT_LED_SET_COLOR 0u
+/// @brief ESteamInputLEDFlag: restore the color the player chose.
+#define RT_STEAM_INPUT_LED_RESTORE_USER_DEFAULT 1u
+
+/// @brief k_cchPublishedDocumentTitleMax: bytes of a Workshop title, terminator included.
+#define RT_STEAM_UGC_TITLE_CAPACITY 129
+/// @brief k_cchPublishedDocumentDescriptionMax: bytes of a Workshop description.
+#define RT_STEAM_UGC_DESCRIPTION_CAPACITY 8000
+/// @brief k_cchTagListMax: bytes of a comma-separated Workshop tag list.
+#define RT_STEAM_UGC_TAGS_CAPACITY 1025
+/// @brief k_cchFilenameMax: bytes of a Workshop file name.
+#define RT_STEAM_UGC_FILE_NAME_CAPACITY 260
+/// @brief k_cchPublishedFileURLMax: bytes of a Workshop URL or paging cursor.
+#define RT_STEAM_UGC_URL_CAPACITY 256
+/// @brief k_cchDeveloperMetadataMax (SDK 1.61 onward): bytes of item metadata read back.
+#define RT_STEAM_UGC_METADATA_CAPACITY 10000
+/// @brief kNumUGCResultsPerPage: most results one query page returns.
+#define RT_STEAM_UGC_RESULTS_PER_PAGE 50
+/// @brief k_UGCQueryHandleInvalid and k_UGCUpdateHandleInvalid.
+#define RT_STEAM_UGC_INVALID_HANDLE UINT64_MAX
+/// @brief EUGCMatchingUGCType: ready-to-use items.
+#define RT_STEAM_UGC_MATCHING_ITEMS_READY_TO_USE 2
+/// @brief EWorkshopFileType: community items.
+#define RT_STEAM_UGC_FILE_TYPE_COMMUNITY 0
+/// @brief EUserUGCListSortOrder: newest first.
+#define RT_STEAM_UGC_SORT_CREATION_DESC 0
+/// @brief EUserUGCListSortOrder: most recently subscribed first.
+#define RT_STEAM_UGC_SORT_SUBSCRIPTION_DATE_DESC 4
 
 //===----------------------------------------------------------------------===//
 // Callback payload layouts (redistributable packing)
@@ -315,6 +401,166 @@ typedef struct rt_steam_leaderboard_entry {
     uint64_t ugc;         ///< UGCHandle_t attached to the entry.
 } rt_steam_leaderboard_entry;
 
+/// @brief UserAchievementIconFetched_t payload (144 bytes under both packings).
+typedef struct rt_steam_user_achievement_icon_fetched {
+    uint64_t game_id;                                   ///< Game the achievement belongs to.
+    char achievement_name[RT_STEAM_STAT_NAME_CAPACITY]; ///< Achievement API name.
+    uint8_t achieved;                                   ///< C++ bool: the unlocked variant loaded.
+    int32_t icon_handle;                                ///< Image handle, 0 when there is no icon.
+} rt_steam_user_achievement_icon_fetched;
+
+/// @brief GlobalAchievementPercentagesReady_t call result (16 bytes under pack 8, 12 under pack 4).
+typedef struct rt_steam_global_achievement_percentages_ready {
+    uint64_t game_id; ///< Game the percentages belong to.
+    int32_t result;   ///< EResult of the request.
+} rt_steam_global_achievement_percentages_ready;
+
+/// @brief SteamParamStringArray_t (16 bytes under pack 8, 12 under pack 4).
+typedef struct rt_steam_param_string_array {
+    const char **strings; ///< Borrowed strings.
+    int32_t count;        ///< Entries in @ref strings.
+} rt_steam_param_string_array;
+
+/// @brief SteamUGCDetails_t (9784 bytes under pack 8, 9772 under pack 4).
+typedef struct rt_steam_ugc_details {
+    uint64_t file_id;                                    ///< PublishedFileId_t.
+    int32_t result;                                      ///< EResult for this item.
+    int32_t file_type;                                   ///< EWorkshopFileType.
+    uint32_t creator_app;                                ///< App that created the item.
+    uint32_t consumer_app;                               ///< App that uses the item.
+    char title[RT_STEAM_UGC_TITLE_CAPACITY];             ///< Title.
+    char description[RT_STEAM_UGC_DESCRIPTION_CAPACITY]; ///< Description.
+    uint64_t owner;                                      ///< SteamID64 of the author.
+    uint32_t created;                                    ///< Creation time.
+    uint32_t updated;                                    ///< Last update time.
+    uint32_t added_to_user_list;                         ///< Time added to a user list.
+    int32_t visibility;                                  ///< ERemoteStoragePublishedFileVisibility.
+    uint8_t banned;                                      ///< C++ bool: banned.
+    uint8_t accepted_for_use;                            ///< C++ bool: accepted by the developer.
+    uint8_t tags_truncated;                              ///< C++ bool: @ref tags was cut.
+    char tags[RT_STEAM_UGC_TAGS_CAPACITY];               ///< Comma-separated tags.
+    uint64_t file_handle;                                ///< UGCHandle_t of the primary file.
+    uint64_t preview_handle;                             ///< UGCHandle_t of the preview.
+    char file_name[RT_STEAM_UGC_FILE_NAME_CAPACITY];     ///< Cloud file name (legacy items).
+    int32_t file_size;                                   ///< Primary file size (legacy items).
+    int32_t preview_file_size;                           ///< Preview size.
+    char url[RT_STEAM_UGC_URL_CAPACITY];                 ///< Video or website URL.
+    uint32_t votes_up;                                   ///< Up votes.
+    uint32_t votes_down;                                 ///< Down votes.
+    float score;                                         ///< Vote score.
+    uint32_t children;                                   ///< Children of a collection.
+    uint64_t total_files_size;                           ///< Size of all files but the preview.
+} rt_steam_ugc_details;
+
+/// @brief SteamUGCQueryCompleted_t call result (280 bytes under both packings).
+typedef struct rt_steam_ugc_query_completed {
+    uint64_t handle;                             ///< UGCQueryHandle_t.
+    int32_t result;                              ///< EResult.
+    uint32_t returned;                           ///< Results on this page.
+    uint32_t total;                              ///< Matching results on every page.
+    uint8_t cached;                              ///< C++ bool: answered from the local cache.
+    char next_cursor[RT_STEAM_UGC_URL_CAPACITY]; ///< Cursor of the next page (cursor queries).
+} rt_steam_ugc_query_completed;
+
+/// @brief CreateItemResult_t call result (24 bytes under pack 8, 16 under pack 4).
+typedef struct rt_steam_ugc_create_item_result {
+    int32_t result;          ///< EResult.
+    uint64_t file_id;        ///< PublishedFileId_t of the new item.
+    uint8_t needs_agreement; ///< C++ bool: the user must accept the Workshop agreement.
+} rt_steam_ugc_create_item_result;
+
+/// @brief SubmitItemUpdateResult_t call result (16 bytes under both packings).
+typedef struct rt_steam_ugc_submit_item_update_result {
+    int32_t result;          ///< EResult.
+    uint8_t needs_agreement; ///< C++ bool: the user must accept the Workshop agreement.
+    uint64_t file_id;        ///< PublishedFileId_t of the item.
+} rt_steam_ugc_submit_item_update_result;
+
+/// @brief ItemInstalled_t payload (32 bytes under pack 8, 28 under pack 4).
+typedef struct rt_steam_ugc_item_installed {
+    uint32_t app_id;         ///< AppId_t.
+    uint64_t file_id;        ///< PublishedFileId_t.
+    uint64_t legacy_content; ///< UGCHandle_t of legacy content.
+    uint64_t manifest_id;    ///< Manifest of the installed content.
+} rt_steam_ugc_item_installed;
+
+/// @brief DownloadItemResult_t payload (24 bytes under pack 8, 16 under pack 4).
+typedef struct rt_steam_ugc_download_item_result {
+    uint32_t app_id;  ///< AppId_t.
+    uint64_t file_id; ///< PublishedFileId_t.
+    int32_t result;   ///< EResult.
+} rt_steam_ugc_download_item_result;
+
+/// @brief DeleteItemResult_t and RemoteStorage[Un]subscribePublishedFileResult_t call results
+///        (16 bytes under pack 8, 12 under pack 4).
+typedef struct rt_steam_ugc_file_result {
+    int32_t result;   ///< EResult.
+    uint64_t file_id; ///< PublishedFileId_t.
+} rt_steam_ugc_file_result;
+
+/// @brief RemoteStoragePublishedFile[Un]subscribed_t payload (16 bytes under pack 8, 12 under
+///        pack 4).
+typedef struct rt_steam_ugc_file_subscription {
+    uint64_t file_id; ///< PublishedFileId_t.
+    uint32_t app_id;  ///< AppId_t.
+} rt_steam_ugc_file_subscription;
+
+/// @brief SteamInputDeviceConnected_t and SteamInputDeviceDisconnected_t payload (8 bytes).
+typedef struct rt_steam_input_device {
+    uint64_t device; ///< InputHandle_t of the controller.
+} rt_steam_input_device;
+
+/// @brief SteamInputConfigurationLoaded_t payload (40 bytes under pack 8, 32 under pack 4).
+/// @details The SDK declares the mapping creator as a one-byte-aligned CSteamID
+///          that directly follows the device handle, so a uint64_t yields the
+///          same offsets and size.
+typedef struct rt_steam_input_configuration_loaded {
+    uint32_t app_id;          ///< AppId_t the configuration belongs to.
+    uint64_t device;          ///< InputHandle_t of the controller.
+    uint64_t mapping_creator; ///< SteamID64 of the configuration's author.
+    uint32_t major_revision;  ///< Binding revision from the action manifest.
+    uint32_t minor_revision;  ///< Minor binding revision.
+    uint8_t uses_input_api;   ///< C++ bool: the configuration binds actions.
+    uint8_t uses_gamepad_api; ///< C++ bool: the configuration binds gamepad (XInput) inputs.
+} rt_steam_input_configuration_loaded;
+
+/// @brief SteamTimelineGamePhaseRecordingExists_t call result (88 bytes under both packings).
+typedef struct rt_steam_timeline_phase_recording_exists {
+    char phase_id[RT_STEAM_TIMELINE_PHASE_ID_CAPACITY]; ///< Phase id the query named.
+    uint64_t recording_ms;                              ///< Milliseconds of recorded video.
+    uint64_t longest_clip_ms;                           ///< Longest saved clip in milliseconds.
+    uint32_t clip_count;                                ///< Saved clips.
+    uint32_t screenshot_count;                          ///< Saved screenshots.
+} rt_steam_timeline_phase_recording_exists;
+
+/// @brief SteamTimelineEventRecordingExists_t call result (16 bytes under pack 8, 12 under pack 4).
+typedef struct rt_steam_timeline_event_recording_exists {
+    uint64_t event_id;        ///< TimelineEventHandle_t the query named.
+    uint8_t recording_exists; ///< C++ bool: nonzero when a recording covers the event.
+} rt_steam_timeline_event_recording_exists;
+
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+
+/// @brief InputDigitalActionData_t (2 bytes, one-byte packing on every platform).
+/// @details Returned by value from GetDigitalActionData.
+typedef struct rt_steam_input_digital_data {
+    uint8_t state;  ///< C++ bool: the action is pressed.
+    uint8_t active; ///< C++ bool: the action is available in the active action set.
+} rt_steam_input_digital_data;
+
+/// @brief InputAnalogActionData_t (13 bytes, one-byte packing on every platform).
+/// @details Returned by value from GetAnalogActionData. Every field sits at an
+///          offset that is a multiple of its own alignment, so the by-value
+///          return convention matches the SDK's declaration.
+typedef struct rt_steam_input_analog_data {
+    int32_t mode;   ///< EInputSourceMode of the bound input.
+    float x;        ///< Horizontal value; deltas for mouse-like inputs.
+    float y;        ///< Vertical value.
+    uint8_t active; ///< C++ bool: the action is available in the active action set.
+} rt_steam_input_analog_data;
+
 #pragma pack(pop)
 
 /// @brief Expected sizeof(rt_steam_packing_sentinel) under the platform pack.
@@ -333,6 +579,34 @@ typedef struct rt_steam_leaderboard_entry {
 #define RT_STEAM_LEADERBOARD_SCORE_UPLOADED_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 32u : 28u)
 /// @brief Expected sizeof(rt_steam_leaderboard_entry) under the platform pack.
 #define RT_STEAM_LEADERBOARD_ENTRY_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 32u : 28u)
+/// @brief Expected sizeof(rt_steam_user_achievement_icon_fetched) under either pack.
+#define RT_STEAM_USER_ACHIEVEMENT_ICON_FETCHED_SIZE 144u
+/// @brief Expected sizeof(rt_steam_global_achievement_percentages_ready) under the platform pack.
+#define RT_STEAM_GLOBAL_ACHIEVEMENT_PERCENTAGES_READY_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u)
+/// @brief Expected sizeof(rt_steam_param_string_array) under the platform pack.
+#define RT_STEAM_PARAM_STRING_ARRAY_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u)
+/// @brief Expected sizeof(rt_steam_ugc_details) under the platform pack.
+#define RT_STEAM_UGC_DETAILS_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 9784u : 9772u)
+/// @brief Expected sizeof(rt_steam_ugc_query_completed) under either pack.
+#define RT_STEAM_UGC_QUERY_COMPLETED_SIZE 280u
+/// @brief Expected sizeof(rt_steam_ugc_create_item_result) under the platform pack.
+#define RT_STEAM_UGC_CREATE_ITEM_RESULT_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 24u : 16u)
+/// @brief Expected sizeof(rt_steam_ugc_submit_item_update_result) under either pack.
+#define RT_STEAM_UGC_SUBMIT_ITEM_UPDATE_RESULT_SIZE 16u
+/// @brief Expected sizeof(rt_steam_ugc_item_installed) under the platform pack.
+#define RT_STEAM_UGC_ITEM_INSTALLED_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 32u : 28u)
+/// @brief Expected sizeof(rt_steam_ugc_download_item_result) under the platform pack.
+#define RT_STEAM_UGC_DOWNLOAD_ITEM_RESULT_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 24u : 16u)
+/// @brief Expected sizeof(rt_steam_ugc_file_result) under the platform pack.
+#define RT_STEAM_UGC_FILE_RESULT_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u)
+/// @brief Expected sizeof(rt_steam_ugc_file_subscription) under the platform pack.
+#define RT_STEAM_UGC_FILE_SUBSCRIPTION_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u)
+/// @brief Expected sizeof(rt_steam_input_configuration_loaded) under the platform pack.
+#define RT_STEAM_INPUT_CONFIGURATION_LOADED_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 40u : 32u)
+/// @brief Expected sizeof(rt_steam_timeline_phase_recording_exists) under either pack.
+#define RT_STEAM_TIMELINE_PHASE_RECORDING_EXISTS_SIZE 88u
+/// @brief Expected sizeof(rt_steam_timeline_event_recording_exists) under the platform pack.
+#define RT_STEAM_TIMELINE_EVENT_RECORDING_EXISTS_SIZE (RT_STEAM_CALLBACK_PACK == 8 ? 16u : 12u)
 
 //===----------------------------------------------------------------------===//
 // Flat API function types
@@ -374,6 +648,18 @@ typedef int (*rt_steam_self_enum_fn)(void *self);
 typedef const char *(*rt_steam_self_cstr_fn)(void *self);
 /// @brief Interface method taking an AppId_t and returning bool (ISteamApps::BIsDlcInstalled).
 typedef bool (*rt_steam_self_app_bool_fn)(void *self, uint32_t app_id);
+/// @brief Interface method taking one string and returning a borrowed C string
+///        (ISteamApps::GetLaunchQueryParam).
+typedef const char *(*rt_steam_self_str_cstr_fn)(void *self, const char *key);
+/// @brief ISteamApps::GetLaunchCommandLine; returns the number of bytes copied into @p buffer.
+typedef int (*rt_steam_launch_command_line_fn)(void *self, char *buffer, int capacity);
+/// @brief Interface method returning int (ISteamApps::GetDLCCount, GetAppBuildId).
+typedef int (*rt_steam_self_int_fn)(void *self);
+/// @brief ISteamApps::BGetDLCDataByIndex.
+typedef bool (*rt_steam_dlc_data_fn)(
+    void *self, int index, uint32_t *app_id, bool *available, char *name, int name_capacity);
+/// @brief ISteamApps::GetCurrentBetaName; returns true on a beta branch.
+typedef bool (*rt_steam_beta_name_fn)(void *self, char *name, int name_capacity);
 /// @brief Interface method returning a SteamAPICall_t (ISteamUserStats::GetNumberOfCurrentPlayers).
 typedef rt_steam_api_call (*rt_steam_self_call_fn)(void *self);
 /// @brief Interface method returning void (ISteamFriends::ClearRichPresence).
@@ -486,6 +772,214 @@ typedef int32_t (*rt_steam_file_count_fn)(void *self);
 typedef const char *(*rt_steam_file_name_and_size_fn)(void *self, int index, int32_t *size);
 /// @brief ISteamRemoteStorage::GetQuota.
 typedef bool (*rt_steam_quota_fn)(void *self, uint64_t *total_bytes, uint64_t *available_bytes);
+/// @brief Interface method taking one string and returning int
+/// (ISteamUserStats::GetAchievementIcon).
+typedef int (*rt_steam_self_str_int_fn)(void *self, const char *name);
+/// @brief ISteamUtils::GetImageSize.
+typedef bool (*rt_steam_image_size_fn)(void *self, int image, uint32_t *width, uint32_t *height);
+/// @brief ISteamUtils::GetImageRGBA.
+typedef bool (*rt_steam_image_rgba_fn)(void *self, int image, uint8_t *dest, int dest_size);
+/// @brief ISteamUserStats::GetAchievementAchievedPercent.
+typedef bool (*rt_steam_achieved_percent_fn)(void *self, const char *name, float *percent);
+/// @brief Interface method taking one string and returning void (SetGamePhaseID,
+/// OpenOverlayToGamePhase).
+typedef void (*rt_steam_self_str_void_fn)(void *self, const char *text);
+/// @brief Interface method taking one uint64 and returning void (RemoveTimelineEvent).
+typedef void (*rt_steam_self_u64_void_fn)(void *self, uint64_t value);
+/// @brief Interface method taking one uint64 and returning a SteamAPICall_t
+/// (DoesEventRecordingExist).
+typedef rt_steam_api_call (*rt_steam_self_u64_call_fn)(void *self, uint64_t value);
+/// @brief Interface method taking one string and returning a SteamAPICall_t
+///        (DoesGamePhaseRecordingExist).
+typedef rt_steam_api_call (*rt_steam_self_str_call_fn)(void *self, const char *text);
+/// @brief ISteamTimeline::SetTimelineTooltip.
+typedef void (*rt_steam_timeline_tooltip_fn)(void *self, const char *description, float time_delta);
+/// @brief ISteamTimeline::ClearTimelineTooltip.
+typedef void (*rt_steam_timeline_clear_tooltip_fn)(void *self, float time_delta);
+/// @brief ISteamTimeline::SetTimelineGameMode (ETimelineGameMode).
+typedef void (*rt_steam_timeline_game_mode_fn)(void *self, int mode);
+/// @brief ISteamTimeline::AddInstantaneousTimelineEvent.
+typedef uint64_t (*rt_steam_timeline_add_instant_fn)(void *self,
+                                                     const char *title,
+                                                     const char *description,
+                                                     const char *icon,
+                                                     uint32_t priority,
+                                                     float start_offset_seconds,
+                                                     int possible_clip);
+/// @brief ISteamTimeline::AddRangeTimelineEvent.
+typedef uint64_t (*rt_steam_timeline_add_range_fn)(void *self,
+                                                   const char *title,
+                                                   const char *description,
+                                                   const char *icon,
+                                                   uint32_t priority,
+                                                   float start_offset_seconds,
+                                                   float duration_seconds,
+                                                   int possible_clip);
+/// @brief ISteamTimeline::StartRangeTimelineEvent.
+typedef uint64_t (*rt_steam_timeline_start_range_fn)(void *self,
+                                                     const char *title,
+                                                     const char *description,
+                                                     const char *icon,
+                                                     uint32_t priority,
+                                                     float start_offset_seconds,
+                                                     int possible_clip);
+/// @brief ISteamTimeline::UpdateRangeTimelineEvent.
+typedef void (*rt_steam_timeline_update_range_fn)(void *self,
+                                                  uint64_t event,
+                                                  const char *title,
+                                                  const char *description,
+                                                  const char *icon,
+                                                  uint32_t priority,
+                                                  int possible_clip);
+/// @brief ISteamTimeline::EndRangeTimelineEvent.
+typedef void (*rt_steam_timeline_end_range_fn)(void *self,
+                                               uint64_t event,
+                                               float end_offset_seconds);
+/// @brief ISteamTimeline::AddGamePhaseTag.
+typedef void (*rt_steam_timeline_phase_tag_fn)(void *self,
+                                               const char *tag_name,
+                                               const char *tag_icon,
+                                               const char *tag_group,
+                                               uint32_t priority);
+/// @brief ISteamTimeline::SetGamePhaseAttribute.
+typedef void (*rt_steam_timeline_phase_attribute_fn)(void *self,
+                                                     const char *attribute_group,
+                                                     const char *attribute_value,
+                                                     uint32_t priority);
+/// @brief ISteamInput::Init.
+typedef bool (*rt_steam_input_init_fn)(void *self, bool explicitly_call_run_frame);
+/// @brief ISteamInput::RunFrame.
+typedef void (*rt_steam_input_run_frame_fn)(void *self, bool reserved);
+/// @brief ISteamInput::GetConnectedControllers; writes up to RT_STEAM_INPUT_MAX_COUNT handles.
+typedef int (*rt_steam_input_controllers_fn)(void *self, uint64_t *handles);
+/// @brief Interface method taking one string and returning a uint64 handle
+///        (GetActionSetHandle, GetDigitalActionHandle, GetAnalogActionHandle).
+typedef uint64_t (*rt_steam_self_str_u64_fn)(void *self, const char *name);
+/// @brief Interface method taking two uint64 values and returning void
+///        (ActivateActionSet, ActivateActionSetLayer, DeactivateActionSetLayer).
+typedef void (*rt_steam_self_u64_u64_void_fn)(void *self, uint64_t first, uint64_t second);
+/// @brief Interface method taking one uint64 and returning a uint64 (GetCurrentActionSet).
+typedef uint64_t (*rt_steam_self_u64_u64_fn)(void *self, uint64_t value);
+/// @brief ISteamInput::GetDigitalActionData.
+typedef rt_steam_input_digital_data (*rt_steam_input_digital_data_fn)(void *self,
+                                                                      uint64_t controller,
+                                                                      uint64_t action);
+/// @brief ISteamInput::GetAnalogActionData.
+typedef rt_steam_input_analog_data (*rt_steam_input_analog_data_fn)(void *self,
+                                                                    uint64_t controller,
+                                                                    uint64_t action);
+/// @brief ISteamInput::GetDigitalActionOrigins and GetAnalogActionOrigins; writes up to
+///        RT_STEAM_INPUT_MAX_ORIGINS EInputActionOrigin values.
+typedef int (*rt_steam_input_origins_fn)(
+    void *self, uint64_t controller, uint64_t action_set, uint64_t action, int32_t *origins);
+/// @brief Interface method taking one uint64 and returning a borrowed C string
+///        (GetStringForDigitalActionName, GetStringForAnalogActionName).
+typedef const char *(*rt_steam_self_u64_cstr_fn)(void *self, uint64_t value);
+/// @brief ISteamInput::GetGlyphPNGForActionOrigin.
+typedef const char *(*rt_steam_input_glyph_png_fn)(void *self,
+                                                   int origin,
+                                                   int size,
+                                                   uint32_t flags);
+/// @brief Interface method taking an int and returning a borrowed C string
+///        (GetStringForActionOrigin).
+typedef const char *(*rt_steam_self_int_cstr_fn)(void *self, int value);
+/// @brief ISteamInput::TriggerVibration.
+typedef void (*rt_steam_input_vibration_fn)(void *self,
+                                            uint64_t controller,
+                                            uint16_t left_speed,
+                                            uint16_t right_speed);
+/// @brief ISteamInput::SetLEDColor.
+typedef void (*rt_steam_input_led_fn)(
+    void *self, uint64_t controller, uint8_t red, uint8_t green, uint8_t blue, unsigned flags);
+/// @brief Interface method taking one uint64 and returning bool (ShowBindingPanel).
+typedef bool (*rt_steam_self_u64_bool_fn)(void *self, uint64_t value);
+/// @brief Interface method taking one uint64 and returning int
+///        (GetInputTypeForHandle, GetGamepadIndexForController).
+typedef int (*rt_steam_self_u64_int_fn)(void *self, uint64_t value);
+/// @brief ISteamUGC::CreateQueryUserUGCRequest.
+typedef uint64_t (*rt_steam_ugc_query_user_fn)(void *self,
+                                               uint32_t account_id,
+                                               int list,
+                                               int matching_type,
+                                               int sort_order,
+                                               uint32_t creator_app,
+                                               uint32_t consumer_app,
+                                               uint32_t page);
+/// @brief ISteamUGC::CreateQueryAllUGCRequestPage.
+typedef uint64_t (*rt_steam_ugc_query_all_fn)(void *self,
+                                              int query_type,
+                                              int matching_type,
+                                              uint32_t creator_app,
+                                              uint32_t consumer_app,
+                                              uint32_t page);
+/// @brief ISteamUGC::CreateQueryUGCDetailsRequest.
+typedef uint64_t (*rt_steam_ugc_query_details_fn)(void *self, uint64_t *file_ids, uint32_t count);
+/// @brief ISteamUGC::GetQueryUGCResult.
+typedef bool (*rt_steam_ugc_query_result_fn)(void *self,
+                                             uint64_t handle,
+                                             uint32_t index,
+                                             rt_steam_ugc_details *details);
+/// @brief ISteamUGC::GetQueryUGCPreviewURL and GetQueryUGCMetadata.
+typedef bool (*rt_steam_ugc_query_text_fn)(
+    void *self, uint64_t handle, uint32_t index, char *text, uint32_t capacity);
+/// @brief Interface method taking a uint64 and a string and returning bool
+///        (AddRequiredTag, SetSearchText, SetItemTitle, SetItemContent, ...).
+typedef bool (*rt_steam_self_u64_str_bool_fn)(void *self, uint64_t handle, const char *text);
+/// @brief Interface method taking a uint64 and a bool and returning bool
+///        (SetReturnLongDescription, SetReturnMetadata).
+typedef bool (*rt_steam_self_u64_flag_bool_fn)(void *self, uint64_t handle, bool flag);
+/// @brief ISteamUGC::CreateItem.
+typedef rt_steam_api_call (*rt_steam_ugc_create_item_fn)(void *self,
+                                                         uint32_t consumer_app,
+                                                         int file_type);
+/// @brief ISteamUGC::StartItemUpdate.
+typedef uint64_t (*rt_steam_ugc_start_update_fn)(void *self,
+                                                 uint32_t consumer_app,
+                                                 uint64_t file_id);
+/// @brief ISteamUGC::SetItemVisibility.
+typedef bool (*rt_steam_ugc_set_visibility_fn)(void *self, uint64_t handle, int visibility);
+/// @brief ISteamUGC::SetItemTags.
+typedef bool (*rt_steam_ugc_set_tags_fn)(void *self,
+                                         uint64_t handle,
+                                         const rt_steam_param_string_array *tags,
+                                         bool allow_admin_tags);
+/// @brief ISteamUGC::SubmitItemUpdate.
+typedef rt_steam_api_call (*rt_steam_ugc_submit_update_fn)(void *self,
+                                                           uint64_t handle,
+                                                           const char *change_note);
+/// @brief ISteamUGC::GetItemUpdateProgress; returns EItemUpdateStatus.
+typedef int (*rt_steam_ugc_update_progress_fn)(void *self,
+                                               uint64_t handle,
+                                               uint64_t *bytes_processed,
+                                               uint64_t *bytes_total);
+/// @brief ISteamUGC::GetNumSubscribedItems as declared through SDK 1.61 (SteamUGC_v020).
+typedef uint32_t (*rt_steam_ugc_subscribed_count_v020_fn)(void *self);
+/// @brief ISteamUGC::GetNumSubscribedItems from SDK 1.62 (SteamUGC_v021).
+typedef uint32_t (*rt_steam_ugc_subscribed_count_v021_fn)(void *self,
+                                                          bool include_locally_disabled);
+/// @brief ISteamUGC::GetSubscribedItems as declared through SDK 1.61 (SteamUGC_v020).
+typedef uint32_t (*rt_steam_ugc_subscribed_items_v020_fn)(void *self,
+                                                          uint64_t *file_ids,
+                                                          uint32_t max_entries);
+/// @brief ISteamUGC::GetSubscribedItems from SDK 1.62 (SteamUGC_v021).
+typedef uint32_t (*rt_steam_ugc_subscribed_items_v021_fn)(void *self,
+                                                          uint64_t *file_ids,
+                                                          uint32_t max_entries,
+                                                          bool include_locally_disabled);
+/// @brief ISteamUGC::GetItemState; returns EItemState flags.
+typedef uint32_t (*rt_steam_self_u64_u32_fn)(void *self, uint64_t value);
+/// @brief ISteamUGC::GetItemInstallInfo.
+typedef bool (*rt_steam_ugc_install_info_fn)(void *self,
+                                             uint64_t file_id,
+                                             uint64_t *size_on_disk,
+                                             char *folder,
+                                             uint32_t folder_capacity,
+                                             uint32_t *timestamp);
+/// @brief ISteamUGC::GetItemDownloadInfo.
+typedef bool (*rt_steam_ugc_download_info_fn)(void *self,
+                                              uint64_t file_id,
+                                              uint64_t *bytes_downloaded,
+                                              uint64_t *bytes_total);
 
 //===----------------------------------------------------------------------===//
 // Exported symbol names
@@ -523,6 +1017,12 @@ typedef bool (*rt_steam_quota_fn)(void *self, uint64_t *total_bytes, uint64_t *a
 #define RT_STEAM_SYMBOL_APPS_IS_SUBSCRIBED "SteamAPI_ISteamApps_BIsSubscribed"
 #define RT_STEAM_SYMBOL_APPS_IS_DLC_INSTALLED "SteamAPI_ISteamApps_BIsDlcInstalled"
 #define RT_STEAM_SYMBOL_APPS_GAME_LANGUAGE "SteamAPI_ISteamApps_GetCurrentGameLanguage"
+#define RT_STEAM_SYMBOL_APPS_LAUNCH_QUERY_PARAM "SteamAPI_ISteamApps_GetLaunchQueryParam"
+#define RT_STEAM_SYMBOL_APPS_LAUNCH_COMMAND_LINE "SteamAPI_ISteamApps_GetLaunchCommandLine"
+#define RT_STEAM_SYMBOL_APPS_DLC_COUNT "SteamAPI_ISteamApps_GetDLCCount"
+#define RT_STEAM_SYMBOL_APPS_DLC_DATA "SteamAPI_ISteamApps_BGetDLCDataByIndex"
+#define RT_STEAM_SYMBOL_APPS_BUILD_ID "SteamAPI_ISteamApps_GetAppBuildId"
+#define RT_STEAM_SYMBOL_APPS_BETA_NAME "SteamAPI_ISteamApps_GetCurrentBetaName"
 
 #define RT_STEAM_SYMBOL_FRIENDS_SET_RICH_PRESENCE "SteamAPI_ISteamFriends_SetRichPresence"
 #define RT_STEAM_SYMBOL_FRIENDS_CLEAR_RICH_PRESENCE "SteamAPI_ISteamFriends_ClearRichPresence"
@@ -575,6 +1075,13 @@ typedef bool (*rt_steam_quota_fn)(void *self, uint64_t *total_bytes, uint64_t *a
 #define RT_STEAM_SYMBOL_USER_STATS_DOWNLOADED_ENTRY                                                \
     "SteamAPI_ISteamUserStats_GetDownloadedLeaderboardEntry"
 #define RT_STEAM_SYMBOL_USER_STATS_UPLOAD_SCORE "SteamAPI_ISteamUserStats_UploadLeaderboardScore"
+#define RT_STEAM_SYMBOL_USER_STATS_ACHIEVEMENT_ICON "SteamAPI_ISteamUserStats_GetAchievementIcon"
+#define RT_STEAM_SYMBOL_USER_STATS_REQUEST_GLOBAL_PERCENTAGES                                      \
+    "SteamAPI_ISteamUserStats_RequestGlobalAchievementPercentages"
+#define RT_STEAM_SYMBOL_USER_STATS_ACHIEVED_PERCENT                                                \
+    "SteamAPI_ISteamUserStats_GetAchievementAchievedPercent"
+#define RT_STEAM_SYMBOL_UTILS_IMAGE_SIZE "SteamAPI_ISteamUtils_GetImageSize"
+#define RT_STEAM_SYMBOL_UTILS_IMAGE_RGBA "SteamAPI_ISteamUtils_GetImageRGBA"
 
 #define RT_STEAM_SYMBOL_REMOTE_STORAGE_V016 "SteamAPI_SteamRemoteStorage_v016"
 #define RT_STEAM_SYMBOL_REMOTE_STORAGE_FILE_WRITE "SteamAPI_ISteamRemoteStorage_FileWrite"
@@ -595,6 +1102,94 @@ typedef bool (*rt_steam_quota_fn)(void *self, uint64_t *total_bytes, uint64_t *a
 #define RT_STEAM_SYMBOL_REMOTE_STORAGE_BEGIN_BATCH                                                 \
     "SteamAPI_ISteamRemoteStorage_BeginFileWriteBatch"
 #define RT_STEAM_SYMBOL_REMOTE_STORAGE_END_BATCH "SteamAPI_ISteamRemoteStorage_EndFileWriteBatch"
+
+#define RT_STEAM_SYMBOL_TIMELINE_V004 "SteamAPI_SteamTimeline_v004"
+#define RT_STEAM_SYMBOL_TIMELINE_SET_TOOLTIP "SteamAPI_ISteamTimeline_SetTimelineTooltip"
+#define RT_STEAM_SYMBOL_TIMELINE_CLEAR_TOOLTIP "SteamAPI_ISteamTimeline_ClearTimelineTooltip"
+#define RT_STEAM_SYMBOL_TIMELINE_SET_GAME_MODE "SteamAPI_ISteamTimeline_SetTimelineGameMode"
+#define RT_STEAM_SYMBOL_TIMELINE_ADD_INSTANT "SteamAPI_ISteamTimeline_AddInstantaneousTimelineEvent"
+#define RT_STEAM_SYMBOL_TIMELINE_ADD_RANGE "SteamAPI_ISteamTimeline_AddRangeTimelineEvent"
+#define RT_STEAM_SYMBOL_TIMELINE_START_RANGE "SteamAPI_ISteamTimeline_StartRangeTimelineEvent"
+#define RT_STEAM_SYMBOL_TIMELINE_UPDATE_RANGE "SteamAPI_ISteamTimeline_UpdateRangeTimelineEvent"
+#define RT_STEAM_SYMBOL_TIMELINE_END_RANGE "SteamAPI_ISteamTimeline_EndRangeTimelineEvent"
+#define RT_STEAM_SYMBOL_TIMELINE_REMOVE_EVENT "SteamAPI_ISteamTimeline_RemoveTimelineEvent"
+#define RT_STEAM_SYMBOL_TIMELINE_EVENT_RECORDING "SteamAPI_ISteamTimeline_DoesEventRecordingExist"
+#define RT_STEAM_SYMBOL_TIMELINE_START_PHASE "SteamAPI_ISteamTimeline_StartGamePhase"
+#define RT_STEAM_SYMBOL_TIMELINE_END_PHASE "SteamAPI_ISteamTimeline_EndGamePhase"
+#define RT_STEAM_SYMBOL_TIMELINE_SET_PHASE_ID "SteamAPI_ISteamTimeline_SetGamePhaseID"
+#define RT_STEAM_SYMBOL_TIMELINE_PHASE_RECORDING                                                   \
+    "SteamAPI_ISteamTimeline_DoesGamePhaseRecordingExist"
+#define RT_STEAM_SYMBOL_TIMELINE_ADD_PHASE_TAG "SteamAPI_ISteamTimeline_AddGamePhaseTag"
+#define RT_STEAM_SYMBOL_TIMELINE_SET_PHASE_ATTRIBUTE "SteamAPI_ISteamTimeline_SetGamePhaseAttribute"
+#define RT_STEAM_SYMBOL_TIMELINE_OVERLAY_TO_PHASE "SteamAPI_ISteamTimeline_OpenOverlayToGamePhase"
+#define RT_STEAM_SYMBOL_TIMELINE_OVERLAY_TO_EVENT                                                  \
+    "SteamAPI_ISteamTimeline_OpenOverlayToTimelineEvent"
+
+#define RT_STEAM_SYMBOL_UGC_V021 "SteamAPI_SteamUGC_v021"
+#define RT_STEAM_SYMBOL_UGC_V020 "SteamAPI_SteamUGC_v020"
+#define RT_STEAM_SYMBOL_UGC_QUERY_USER "SteamAPI_ISteamUGC_CreateQueryUserUGCRequest"
+#define RT_STEAM_SYMBOL_UGC_QUERY_ALL "SteamAPI_ISteamUGC_CreateQueryAllUGCRequestPage"
+#define RT_STEAM_SYMBOL_UGC_QUERY_DETAILS "SteamAPI_ISteamUGC_CreateQueryUGCDetailsRequest"
+#define RT_STEAM_SYMBOL_UGC_SEND_QUERY "SteamAPI_ISteamUGC_SendQueryUGCRequest"
+#define RT_STEAM_SYMBOL_UGC_QUERY_RESULT "SteamAPI_ISteamUGC_GetQueryUGCResult"
+#define RT_STEAM_SYMBOL_UGC_QUERY_PREVIEW_URL "SteamAPI_ISteamUGC_GetQueryUGCPreviewURL"
+#define RT_STEAM_SYMBOL_UGC_QUERY_METADATA "SteamAPI_ISteamUGC_GetQueryUGCMetadata"
+#define RT_STEAM_SYMBOL_UGC_RELEASE_QUERY "SteamAPI_ISteamUGC_ReleaseQueryUGCRequest"
+#define RT_STEAM_SYMBOL_UGC_ADD_REQUIRED_TAG "SteamAPI_ISteamUGC_AddRequiredTag"
+#define RT_STEAM_SYMBOL_UGC_SET_SEARCH_TEXT "SteamAPI_ISteamUGC_SetSearchText"
+#define RT_STEAM_SYMBOL_UGC_RETURN_LONG_DESCRIPTION "SteamAPI_ISteamUGC_SetReturnLongDescription"
+#define RT_STEAM_SYMBOL_UGC_RETURN_METADATA "SteamAPI_ISteamUGC_SetReturnMetadata"
+#define RT_STEAM_SYMBOL_UGC_CREATE_ITEM "SteamAPI_ISteamUGC_CreateItem"
+#define RT_STEAM_SYMBOL_UGC_START_UPDATE "SteamAPI_ISteamUGC_StartItemUpdate"
+#define RT_STEAM_SYMBOL_UGC_SET_TITLE "SteamAPI_ISteamUGC_SetItemTitle"
+#define RT_STEAM_SYMBOL_UGC_SET_DESCRIPTION "SteamAPI_ISteamUGC_SetItemDescription"
+#define RT_STEAM_SYMBOL_UGC_SET_METADATA "SteamAPI_ISteamUGC_SetItemMetadata"
+#define RT_STEAM_SYMBOL_UGC_SET_VISIBILITY "SteamAPI_ISteamUGC_SetItemVisibility"
+#define RT_STEAM_SYMBOL_UGC_SET_TAGS "SteamAPI_ISteamUGC_SetItemTags"
+#define RT_STEAM_SYMBOL_UGC_SET_CONTENT "SteamAPI_ISteamUGC_SetItemContent"
+#define RT_STEAM_SYMBOL_UGC_SET_PREVIEW "SteamAPI_ISteamUGC_SetItemPreview"
+#define RT_STEAM_SYMBOL_UGC_SUBMIT_UPDATE "SteamAPI_ISteamUGC_SubmitItemUpdate"
+#define RT_STEAM_SYMBOL_UGC_UPDATE_PROGRESS "SteamAPI_ISteamUGC_GetItemUpdateProgress"
+#define RT_STEAM_SYMBOL_UGC_SUBSCRIBE "SteamAPI_ISteamUGC_SubscribeItem"
+#define RT_STEAM_SYMBOL_UGC_UNSUBSCRIBE "SteamAPI_ISteamUGC_UnsubscribeItem"
+#define RT_STEAM_SYMBOL_UGC_SUBSCRIBED_COUNT "SteamAPI_ISteamUGC_GetNumSubscribedItems"
+#define RT_STEAM_SYMBOL_UGC_SUBSCRIBED_ITEMS "SteamAPI_ISteamUGC_GetSubscribedItems"
+#define RT_STEAM_SYMBOL_UGC_ITEM_STATE "SteamAPI_ISteamUGC_GetItemState"
+#define RT_STEAM_SYMBOL_UGC_INSTALL_INFO "SteamAPI_ISteamUGC_GetItemInstallInfo"
+#define RT_STEAM_SYMBOL_UGC_DOWNLOAD_INFO "SteamAPI_ISteamUGC_GetItemDownloadInfo"
+#define RT_STEAM_SYMBOL_UGC_DOWNLOAD "SteamAPI_ISteamUGC_DownloadItem"
+#define RT_STEAM_SYMBOL_UGC_DELETE "SteamAPI_ISteamUGC_DeleteItem"
+
+#define RT_STEAM_SYMBOL_INPUT_V007 "SteamAPI_SteamInput_v007"
+#define RT_STEAM_SYMBOL_INPUT_V006 "SteamAPI_SteamInput_v006"
+#define RT_STEAM_SYMBOL_INPUT_INIT "SteamAPI_ISteamInput_Init"
+#define RT_STEAM_SYMBOL_INPUT_SHUTDOWN "SteamAPI_ISteamInput_Shutdown"
+#define RT_STEAM_SYMBOL_INPUT_SET_MANIFEST "SteamAPI_ISteamInput_SetInputActionManifestFilePath"
+#define RT_STEAM_SYMBOL_INPUT_RUN_FRAME "SteamAPI_ISteamInput_RunFrame"
+#define RT_STEAM_SYMBOL_INPUT_CONNECTED "SteamAPI_ISteamInput_GetConnectedControllers"
+#define RT_STEAM_SYMBOL_INPUT_DEVICE_CALLBACKS "SteamAPI_ISteamInput_EnableDeviceCallbacks"
+#define RT_STEAM_SYMBOL_INPUT_ACTION_SET_HANDLE "SteamAPI_ISteamInput_GetActionSetHandle"
+#define RT_STEAM_SYMBOL_INPUT_ACTIVATE_SET "SteamAPI_ISteamInput_ActivateActionSet"
+#define RT_STEAM_SYMBOL_INPUT_CURRENT_SET "SteamAPI_ISteamInput_GetCurrentActionSet"
+#define RT_STEAM_SYMBOL_INPUT_ACTIVATE_LAYER "SteamAPI_ISteamInput_ActivateActionSetLayer"
+#define RT_STEAM_SYMBOL_INPUT_DEACTIVATE_LAYER "SteamAPI_ISteamInput_DeactivateActionSetLayer"
+#define RT_STEAM_SYMBOL_INPUT_DEACTIVATE_ALL_LAYERS                                                \
+    "SteamAPI_ISteamInput_DeactivateAllActionSetLayers"
+#define RT_STEAM_SYMBOL_INPUT_DIGITAL_HANDLE "SteamAPI_ISteamInput_GetDigitalActionHandle"
+#define RT_STEAM_SYMBOL_INPUT_DIGITAL_DATA "SteamAPI_ISteamInput_GetDigitalActionData"
+#define RT_STEAM_SYMBOL_INPUT_DIGITAL_ORIGINS "SteamAPI_ISteamInput_GetDigitalActionOrigins"
+#define RT_STEAM_SYMBOL_INPUT_DIGITAL_NAME "SteamAPI_ISteamInput_GetStringForDigitalActionName"
+#define RT_STEAM_SYMBOL_INPUT_ANALOG_HANDLE "SteamAPI_ISteamInput_GetAnalogActionHandle"
+#define RT_STEAM_SYMBOL_INPUT_ANALOG_DATA "SteamAPI_ISteamInput_GetAnalogActionData"
+#define RT_STEAM_SYMBOL_INPUT_ANALOG_ORIGINS "SteamAPI_ISteamInput_GetAnalogActionOrigins"
+#define RT_STEAM_SYMBOL_INPUT_ANALOG_NAME "SteamAPI_ISteamInput_GetStringForAnalogActionName"
+#define RT_STEAM_SYMBOL_INPUT_GLYPH_PNG "SteamAPI_ISteamInput_GetGlyphPNGForActionOrigin"
+#define RT_STEAM_SYMBOL_INPUT_ORIGIN_NAME "SteamAPI_ISteamInput_GetStringForActionOrigin"
+#define RT_STEAM_SYMBOL_INPUT_VIBRATION "SteamAPI_ISteamInput_TriggerVibration"
+#define RT_STEAM_SYMBOL_INPUT_LED_COLOR "SteamAPI_ISteamInput_SetLEDColor"
+#define RT_STEAM_SYMBOL_INPUT_BINDING_PANEL "SteamAPI_ISteamInput_ShowBindingPanel"
+#define RT_STEAM_SYMBOL_INPUT_TYPE "SteamAPI_ISteamInput_GetInputTypeForHandle"
+#define RT_STEAM_SYMBOL_INPUT_GAMEPAD_INDEX "SteamAPI_ISteamInput_GetGamepadIndexForController"
 
 #ifdef __cplusplus
 }

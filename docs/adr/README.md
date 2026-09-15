@@ -144,6 +144,11 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0357](0357-music-load-asset.md) — Music streams from the asset manager (`Music.LoadAsset`)
 - [ADR 0358](0358-basic-on-error-dispatcher-and-resume.md) — BASIC ON ERROR dispatcher and RESUME
 - [ADR 0359](0359-basic-managed-values-and-non-null-strings.md) — BASIC managed values follow ADR 0147, and a STRING is never null
+- [ADR 0362](0362-platform-services-timeline.md) — Platform Services Recording Timeline (Steam Timeline First)
+- [ADR 0363](0363-platform-services-app-details.md) — Platform Services App Details (DLC List, Build Id, Branch)
+- [ADR 0364](0364-platform-services-achievement-icons-and-percentages.md) — Platform Services Achievement Icons and Global Unlock Percentages
+- [ADR 0365](0365-platform-services-action-input.md) — Platform Services Action Input (Steam Input First)
+- [ADR 0366](0366-platform-services-workshop.md) — Platform Services Workshop (Steam Workshop First)
 
 ## GUI & IDE
 

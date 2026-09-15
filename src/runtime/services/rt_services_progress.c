@@ -22,7 +22,8 @@
 //   - Leaderboard members return caller-owned Zanna.Services.Request objects.
 // Links: src/runtime/services/rt_services_progress.h,
 //        src/runtime/services/rt_services_internal.h,
-//        docs/adr/0353-platform-services-player-features.md
+//        docs/adr/0353-platform-services-player-features.md,
+//        docs/adr/0364-platform-services-achievement-icons-and-percentages.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +34,7 @@
 
 #include "rt_services_progress.h"
 
+#include "rt_bytes.h"
 #include "rt_services.h"
 #include "rt_services_internal.h"
 #include "rt_services_provider.h"
@@ -228,6 +230,86 @@ int8_t rt_services_achievements_is_hidden(rt_string id) {
     const int8_t result = strcmp(rt_services_internal_cstr(hidden), "1") == 0 ? 1 : 0;
     rt_string_unref(hidden);
     return result;
+}
+
+/// @brief Read an achievement icon's size, and optionally its pixels.
+/// @param member Class-qualified member name.
+/// @param id Achievement id argument.
+/// @param out_width Receives the width.
+/// @param out_height Receives the height.
+/// @param out_rgba Receives caller-owned Bytes, or NULL to read only the size.
+/// @return 1 when the icon was read, otherwise 0.
+static int progress_read_icon(const char *member,
+                              rt_string id,
+                              int64_t *out_width,
+                              int64_t *out_height,
+                              void **out_rgba) {
+    const char *text = progress_enter(member, id, "achievement id");
+    if (!text)
+        return 0;
+    const rt_services_achievement_ops *ops = progress_achievement_ops();
+    *out_width = 0;
+    *out_height = 0;
+    if (out_rgba)
+        *out_rgba = NULL;
+    if (!ops || !ops->icon || !ops->icon(text, out_width, out_height, out_rgba))
+        return 0;
+    return 1;
+}
+
+/// @brief Read an achievement icon's width.
+/// @param id Achievement id.
+/// @return Width in pixels, or 0.
+int64_t rt_services_achievements_icon_width(rt_string id) {
+    int64_t width = 0;
+    int64_t height = 0;
+    return progress_read_icon("Achievements.IconWidth", id, &width, &height, NULL) ? width : 0;
+}
+
+/// @brief Read an achievement icon's height.
+/// @param id Achievement id.
+/// @return Height in pixels, or 0.
+int64_t rt_services_achievements_icon_height(rt_string id) {
+    int64_t width = 0;
+    int64_t height = 0;
+    return progress_read_icon("Achievements.IconHeight", id, &width, &height, NULL) ? height : 0;
+}
+
+/// @brief Read an achievement icon's RGBA bytes.
+/// @param id Achievement id.
+/// @return Caller-owned Bytes; empty while loading or unavailable.
+void *rt_services_achievements_icon_rgba(rt_string id) {
+    int64_t width = 0;
+    int64_t height = 0;
+    void *rgba = NULL;
+    if (progress_read_icon("Achievements.IconRgba", id, &width, &height, &rgba) && rgba)
+        return rgba;
+    return rt_bytes_new(0);
+}
+
+/// @brief Start a global unlock percentage request.
+/// @return Caller-owned request.
+void *rt_services_achievements_request_global_percentages(void) {
+    rt_services_request_args args;
+    memset(&args, 0, sizeof(args));
+    args.kind = RT_SERVICES_REQUEST_ACHIEVEMENT_PERCENTAGES;
+    args.name = "";
+    args.text = "";
+    return rt_services_internal_begin_request(&args, "Achievements.RequestGlobalPercentages");
+}
+
+/// @brief Read an achievement's global unlock percentage.
+/// @param id Achievement id.
+/// @return Percentage in 0..100, or 0.
+double rt_services_achievements_global_percent(rt_string id) {
+    const char *text = progress_enter("Achievements.GlobalPercent", id, "achievement id");
+    if (!text)
+        return 0.0;
+    const rt_services_achievement_ops *ops = progress_achievement_ops();
+    double percent = 0.0;
+    if (!ops || !ops->global_percent || !ops->global_percent(text, &percent))
+        return 0.0;
+    return percent;
 }
 
 //===----------------------------------------------------------------------===//

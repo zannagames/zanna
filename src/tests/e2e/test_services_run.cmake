@@ -5,10 +5,10 @@
 #
 #===----------------------------------------------------------------------===#
 #
-# File: src/tests/e2e/test_zia_services_run.cmake
-# Purpose: Run the Zanna.Services Zia fixture on the VM or as a native binary
-#          with a fake steam_api redistributable (or a missing one) selected
-#          through the environment.
+# File: src/tests/e2e/test_services_run.cmake
+# Purpose: Run a Zanna.Services fixture (Zia or BASIC) on the VM or as a native
+#          binary with a fake steam_api redistributable (or a missing one)
+#          selected through the environment.
 # Key invariants:
 #   - MODE is "vm" (zanna run) or "native" (zanna build, then run the output).
 #   - EXPECT is "available" (ZANNA_SERVICES_STEAM_LIBRARY names FAKE_LIBRARY)
@@ -17,6 +17,7 @@
 #     fixture and expectations, so their observable behavior must match.
 # Ownership/Lifetime: The native lane writes OUT_EXE into the build tree.
 # Links: src/tests/fixtures/runtime/test_services_platform.zia,
+#        src/tests/fixtures/runtime/test_basic_services_platform.bas,
 #        src/tests/runtime/RTServicesFakeSteamApi.c,
 #        docs/adr/0352-platform-services-runtime-loaded-providers.md
 #

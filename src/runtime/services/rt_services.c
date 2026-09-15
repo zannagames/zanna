@@ -92,6 +92,10 @@ typedef struct rt_services_request_impl {
     const rt_services_provider *provider;   ///< Provider that served the request, or NULL.
     rt_services_leaderboard_entry *entries; ///< Owned entry array, or NULL.
     int64_t entry_count;                    ///< Number of @ref entries.
+    int64_t details[RT_SERVICES_REQUEST_DETAIL_CAPACITY]; ///< Kind-specific integer details.
+    int64_t detail_count;                                 ///< Number of @ref details.
+    void **items;       ///< Owned references to Zanna.Services.WorkshopItem objects, or NULL.
+    int64_t item_count; ///< Number of @ref items.
 } rt_services_request_impl;
 
 /// @brief One outstanding request awaiting provider completion.
@@ -435,6 +439,13 @@ static void services_request_finalize(void *obj) {
     free(request->entries);
     request->entries = NULL;
     request->entry_count = 0;
+    for (int64_t i = 0; i < request->item_count; ++i) {
+        if (request->items[i] && rt_obj_release_known_check0(request->items[i]))
+            rt_obj_free(request->items[i]);
+    }
+    free(request->items);
+    request->items = NULL;
+    request->item_count = 0;
 }
 
 /// @brief Allocate a pending request object.
@@ -485,6 +496,29 @@ static void services_request_finish_result(rt_services_request_impl *request,
             succeeded = 0;
             error = "Services: out of memory storing leaderboard entries";
         }
+    }
+    int64_t items = (succeeded && result->items) ? result->item_count : 0;
+    if (items > RT_SERVICES_REQUEST_ITEM_CAPACITY)
+        items = RT_SERVICES_REQUEST_ITEM_CAPACITY;
+    if (items > 0) {
+        request->items = (void **)calloc((size_t)items, sizeof(void *));
+        for (int64_t i = 0; request->items && i < items; ++i) {
+            request->items[i] = rt_services_internal_workshop_item_new(&result->items[i]);
+            if (!request->items[i])
+                break;
+            request->item_count = i + 1;
+        }
+        if (request->item_count != items) {
+            succeeded = 0;
+            error = "Services: out of memory storing Workshop items";
+        }
+    }
+    if (succeeded && result->details && result->detail_count > 0) {
+        int64_t details = result->detail_count;
+        if (details > RT_SERVICES_REQUEST_DETAIL_CAPACITY)
+            details = RT_SERVICES_REQUEST_DETAIL_CAPACITY;
+        memcpy(request->details, result->details, (size_t)details * sizeof(int64_t));
+        request->detail_count = details;
     }
     request->done = 1;
     request->succeeded = succeeded;
@@ -817,6 +851,22 @@ void *rt_services_platform_diagnostics(void) {
     return seq;
 }
 
+/// @brief Read one launch parameter passed by the platform's launch URL.
+/// @param key Parameter name; an empty name traps.
+/// @return Caller-owned value, or the empty string.
+rt_string rt_services_platform_launch_parameter(rt_string key) {
+    static const char member[] = "Platform.LaunchParameter";
+    if (!services_require_main_thread(member))
+        return rt_str_empty();
+    const char *name = rt_services_internal_require_name(key, member, "key");
+    if (!name)
+        return rt_str_empty();
+    const rt_services_provider *provider = g_services.active;
+    return (provider && provider->launch_parameter)
+               ? services_owned_or_empty(provider->launch_parameter(name))
+               : rt_str_empty();
+}
+
 //===----------------------------------------------------------------------===//
 // Platform properties
 //===----------------------------------------------------------------------===//
@@ -901,6 +951,105 @@ int8_t rt_services_platform_get_is_online(void) {
         return 0;
     const rt_services_provider *provider = g_services.active;
     return (provider && provider->is_online && provider->is_online()) ? 1 : 0;
+}
+
+/// @brief Read the command line passed by the platform's launch URL.
+/// @return Caller-owned command line, or the empty string.
+rt_string rt_services_platform_get_launch_command_line(void) {
+    if (!services_require_main_thread("Platform.LaunchCommandLine"))
+        return rt_str_empty();
+    const rt_services_provider *provider = g_services.active;
+    return (provider && provider->launch_command_line)
+               ? services_owned_or_empty(provider->launch_command_line())
+               : rt_str_empty();
+}
+
+/// @brief Capacity, including the terminator, of a DLC id read from a provider.
+#define SERVICES_DLC_ID_CAPACITY 32
+/// @brief Capacity, including the terminator, of a DLC name read from a provider.
+#define SERVICES_DLC_NAME_CAPACITY 256
+
+/// @brief One DLC record read from the active provider.
+typedef struct services_dlc {
+    char id[SERVICES_DLC_ID_CAPACITY];     ///< Provider-defined DLC id.
+    char name[SERVICES_DLC_NAME_CAPACITY]; ///< Display name.
+    int8_t available;                      ///< Nonzero when the DLC can be bought.
+} services_dlc;
+
+/// @brief Read the DLC at an index from the active provider.
+/// @param member Class-qualified member name for the thread check.
+/// @param index DLC index.
+/// @param out Receives the record.
+/// @return 1 when @p index names a DLC, otherwise 0.
+static int services_read_dlc(const char *member, int64_t index, services_dlc *out) {
+    if (!services_require_main_thread(member) || index < 0)
+        return 0;
+    const rt_services_provider *provider = g_services.active;
+    if (!provider || !provider->dlc_at)
+        return 0;
+    memset(out, 0, sizeof(*out));
+    if (!provider->dlc_at(
+            index, out->id, sizeof(out->id), out->name, sizeof(out->name), &out->available))
+        return 0;
+    out->id[sizeof(out->id) - 1] = '\0';
+    out->name[sizeof(out->name) - 1] = '\0';
+    return 1;
+}
+
+/// @brief Count the application's DLC.
+/// @return Count, or 0.
+int64_t rt_services_platform_get_dlc_count(void) {
+    if (!services_require_main_thread("Platform.DlcCount"))
+        return 0;
+    const rt_services_provider *provider = g_services.active;
+    const int64_t count = (provider && provider->dlc_count) ? provider->dlc_count() : 0;
+    return count > 0 ? count : 0;
+}
+
+/// @brief Read a DLC id by index.
+/// @param index DLC index.
+/// @return Caller-owned id, or the empty string.
+rt_string rt_services_platform_dlc_id_at(int64_t index) {
+    services_dlc dlc;
+    return services_read_dlc("Platform.DlcIdAt", index, &dlc) ? services_owned_text(dlc.id)
+                                                              : rt_str_empty();
+}
+
+/// @brief Read a DLC name by index.
+/// @param index DLC index.
+/// @return Caller-owned name, or the empty string.
+rt_string rt_services_platform_dlc_name_at(int64_t index) {
+    services_dlc dlc;
+    return services_read_dlc("Platform.DlcNameAt", index, &dlc) ? services_owned_text(dlc.name)
+                                                                : rt_str_empty();
+}
+
+/// @brief Report whether a DLC can be bought now.
+/// @param index DLC index.
+/// @return 1 when available, otherwise 0.
+int8_t rt_services_platform_dlc_available_at(int64_t index) {
+    services_dlc dlc;
+    return (services_read_dlc("Platform.DlcAvailableAt", index, &dlc) && dlc.available) ? 1 : 0;
+}
+
+/// @brief Read the installed build's id.
+/// @return Build id, or 0.
+int64_t rt_services_platform_get_build_id(void) {
+    if (!services_require_main_thread("Platform.BuildId"))
+        return 0;
+    const rt_services_provider *provider = g_services.active;
+    const int64_t build = (provider && provider->build_id) ? provider->build_id() : 0;
+    return build > 0 ? build : 0;
+}
+
+/// @brief Read the installed build's branch.
+/// @return Caller-owned branch name, or the empty string.
+rt_string rt_services_platform_get_branch_name(void) {
+    if (!services_require_main_thread("Platform.BranchName"))
+        return rt_str_empty();
+    const rt_services_provider *provider = g_services.active;
+    return (provider && provider->branch_name) ? services_owned_or_empty(provider->branch_name())
+                                               : rt_str_empty();
 }
 
 /// @brief Read the last polled event's result code.
@@ -1113,6 +1262,75 @@ rt_string rt_services_request_entry_user_name(void *request, int64_t index) {
     return services_owned_text(entry->user_name);
 }
 
+/// @brief Read how many integer details a request holds.
+/// @param request Borrowed request handle.
+/// @return Detail count, or 0.
+int64_t rt_services_request_get_detail_count(void *request) {
+    rt_services_request_impl *impl = services_request_checked(request, "Request.DetailCount");
+    return impl ? impl->detail_count : 0;
+}
+
+/// @brief Read one integer detail of a request.
+/// @details Traps with "Services.Request.Detail: index <i> is outside 0..<n>"
+///          for an out-of-range index.
+/// @param request Borrowed request handle.
+/// @param index Detail index.
+/// @return Detail value, or 0 after a trap.
+int64_t rt_services_request_detail(void *request, int64_t index) {
+    static const char member[] = "Request.Detail";
+    rt_services_request_impl *impl = services_request_checked(request, member);
+    if (!impl)
+        return 0;
+    if (index < 0 || index >= impl->detail_count) {
+        if (impl->detail_count == 0) {
+            rt_services_internal_trap_argument(
+                member,
+                "index %lld is out of range; the request holds no details",
+                (long long)index);
+        } else {
+            rt_services_internal_trap_argument(member,
+                                               "index %lld is outside 0..%lld",
+                                               (long long)index,
+                                               (long long)(impl->detail_count - 1));
+        }
+        return 0;
+    }
+    return impl->details[index];
+}
+
+/// @brief Count the Workshop items a completed query holds.
+/// @param request Borrowed request handle.
+/// @return Item count, or 0.
+int64_t rt_services_request_get_item_count(void *request) {
+    rt_services_request_impl *impl = services_request_checked(request, "Request.ItemCount");
+    return impl ? impl->item_count : 0;
+}
+
+/// @brief Read one Workshop item of a completed query.
+/// @param request Borrowed request handle.
+/// @param index Item index.
+/// @return Caller-owned WorkshopItem, or NULL after a trap.
+void *rt_services_request_item_at(void *request, int64_t index) {
+    static const char member[] = "Request.ItemAt";
+    rt_services_request_impl *impl = services_request_checked(request, member);
+    if (!impl)
+        return NULL;
+    if (index < 0 || index >= impl->item_count) {
+        if (impl->item_count == 0) {
+            rt_services_internal_trap_argument(
+                member, "index %lld is out of range; the request holds no items", (long long)index);
+        } else {
+            rt_services_internal_trap_argument(member,
+                                               "index %lld is outside 0..%lld",
+                                               (long long)index,
+                                               (long long)(impl->item_count - 1));
+        }
+        return NULL;
+    }
+    rt_obj_retain_known(impl->items[index]);
+    return impl->items[index];
+}
+
 //===----------------------------------------------------------------------===//
 // Constant classes
 //===----------------------------------------------------------------------===//
@@ -1217,6 +1435,41 @@ int64_t rt_services_event_kind_text_input_dismissed(void) {
     return RT_SERVICES_EVENT_TEXT_INPUT_DISMISSED;
 }
 
+/// @brief Return EventKind.AchievementIconReady. @return 11.
+int64_t rt_services_event_kind_achievement_icon_ready(void) {
+    return RT_SERVICES_EVENT_ACHIEVEMENT_ICON_READY;
+}
+
+/// @brief Return EventKind.ControllerConnected. @return 12.
+int64_t rt_services_event_kind_controller_connected(void) {
+    return RT_SERVICES_EVENT_CONTROLLER_CONNECTED;
+}
+
+/// @brief Return EventKind.ControllerDisconnected. @return 13.
+int64_t rt_services_event_kind_controller_disconnected(void) {
+    return RT_SERVICES_EVENT_CONTROLLER_DISCONNECTED;
+}
+
+/// @brief Return EventKind.ControllerConfigured. @return 14.
+int64_t rt_services_event_kind_controller_configured(void) {
+    return RT_SERVICES_EVENT_CONTROLLER_CONFIGURED;
+}
+
+/// @brief Return EventKind.WorkshopItemInstalled. @return 15.
+int64_t rt_services_event_kind_workshop_item_installed(void) {
+    return RT_SERVICES_EVENT_WORKSHOP_ITEM_INSTALLED;
+}
+
+/// @brief Return EventKind.WorkshopItemDownloaded. @return 16.
+int64_t rt_services_event_kind_workshop_item_downloaded(void) {
+    return RT_SERVICES_EVENT_WORKSHOP_ITEM_DOWNLOADED;
+}
+
+/// @brief Return EventKind.WorkshopSubscriptionChanged. @return 17.
+int64_t rt_services_event_kind_workshop_subscription_changed(void) {
+    return RT_SERVICES_EVENT_WORKSHOP_SUBSCRIPTION_CHANGED;
+}
+
 /// @brief Return Feature.Identity. @return 1.
 int64_t rt_services_feature_identity(void) {
     return RT_SERVICES_FEATURE_IDENTITY;
@@ -1272,6 +1525,41 @@ int64_t rt_services_feature_cloud(void) {
     return RT_SERVICES_FEATURE_CLOUD;
 }
 
+/// @brief Return Feature.LaunchParameters. @return 12.
+int64_t rt_services_feature_launch_parameters(void) {
+    return RT_SERVICES_FEATURE_LAUNCH_PARAMETERS;
+}
+
+/// @brief Return Feature.Timeline. @return 13.
+int64_t rt_services_feature_timeline(void) {
+    return RT_SERVICES_FEATURE_TIMELINE;
+}
+
+/// @brief Return Feature.AppDetails. @return 14.
+int64_t rt_services_feature_app_details(void) {
+    return RT_SERVICES_FEATURE_APP_DETAILS;
+}
+
+/// @brief Return Feature.AchievementIcons. @return 15.
+int64_t rt_services_feature_achievement_icons(void) {
+    return RT_SERVICES_FEATURE_ACHIEVEMENT_ICONS;
+}
+
+/// @brief Return Feature.AchievementPercentages. @return 16.
+int64_t rt_services_feature_achievement_percentages(void) {
+    return RT_SERVICES_FEATURE_ACHIEVEMENT_PERCENTAGES;
+}
+
+/// @brief Return Feature.ActionInput. @return 17.
+int64_t rt_services_feature_action_input(void) {
+    return RT_SERVICES_FEATURE_ACTION_INPUT;
+}
+
+/// @brief Return Feature.Workshop. @return 18.
+int64_t rt_services_feature_workshop(void) {
+    return RT_SERVICES_FEATURE_WORKSHOP;
+}
+
 /// @brief Return RequestKind.PlayerCount. @return 1.
 int64_t rt_services_request_kind_player_count(void) {
     return RT_SERVICES_REQUEST_PLAYER_COUNT;
@@ -1295,4 +1583,49 @@ int64_t rt_services_request_kind_leaderboard_download(void) {
 /// @brief Return RequestKind.TextInput. @return 5.
 int64_t rt_services_request_kind_text_input(void) {
     return RT_SERVICES_REQUEST_TEXT_INPUT;
+}
+
+/// @brief Return RequestKind.TimelineEventRecording. @return 6.
+int64_t rt_services_request_kind_timeline_event_recording(void) {
+    return RT_SERVICES_REQUEST_TIMELINE_EVENT_RECORDING;
+}
+
+/// @brief Return RequestKind.TimelinePhaseRecording. @return 7.
+int64_t rt_services_request_kind_timeline_phase_recording(void) {
+    return RT_SERVICES_REQUEST_TIMELINE_PHASE_RECORDING;
+}
+
+/// @brief Return RequestKind.AchievementPercentages. @return 8.
+int64_t rt_services_request_kind_achievement_percentages(void) {
+    return RT_SERVICES_REQUEST_ACHIEVEMENT_PERCENTAGES;
+}
+
+/// @brief Return RequestKind.WorkshopQuery. @return 9.
+int64_t rt_services_request_kind_workshop_query(void) {
+    return RT_SERVICES_REQUEST_WORKSHOP_QUERY;
+}
+
+/// @brief Return RequestKind.WorkshopSubscribe. @return 10.
+int64_t rt_services_request_kind_workshop_subscribe(void) {
+    return RT_SERVICES_REQUEST_WORKSHOP_SUBSCRIBE;
+}
+
+/// @brief Return RequestKind.WorkshopUnsubscribe. @return 11.
+int64_t rt_services_request_kind_workshop_unsubscribe(void) {
+    return RT_SERVICES_REQUEST_WORKSHOP_UNSUBSCRIBE;
+}
+
+/// @brief Return RequestKind.WorkshopCreate. @return 12.
+int64_t rt_services_request_kind_workshop_create(void) {
+    return RT_SERVICES_REQUEST_WORKSHOP_CREATE;
+}
+
+/// @brief Return RequestKind.WorkshopSubmit. @return 13.
+int64_t rt_services_request_kind_workshop_submit(void) {
+    return RT_SERVICES_REQUEST_WORKSHOP_SUBMIT;
+}
+
+/// @brief Return RequestKind.WorkshopDelete. @return 14.
+int64_t rt_services_request_kind_workshop_delete(void) {
+    return RT_SERVICES_REQUEST_WORKSHOP_DELETE;
 }

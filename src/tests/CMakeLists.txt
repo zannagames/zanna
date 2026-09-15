@@ -1076,9 +1076,9 @@ set_tests_properties(basic_runtime_test_basic_on_error_resume PROPERTIES
         LABELS "runtime;basic"
         TIMEOUT 30)
 
-# Platform services (ADR 0352): the Zia fixture runs on the VM against the fake
-# steam_api redistributable and against a missing one. Native twins live with
-# the other native_run lanes below.
+# Platform services (ADR 0352): the Zia and BASIC fixtures run on the VM against
+# the fake steam_api redistributable and against a missing one. Native twins
+# live with the other native_run lanes below.
 if (TARGET zanna_fake_steam_api)
     foreach (_services_expect IN ITEMS available missing)
         add_test(NAME zia_runtime_test_services_platform_${_services_expect}
@@ -1088,10 +1088,22 @@ if (TARGET zanna_fake_steam_api)
                 -DTEST_FILE=${ZIA_RUNTIME_TESTS_DIR}/test_services_platform.zia
                 -DFAKE_LIBRARY=$<TARGET_FILE:zanna_fake_steam_api>
                 -DEXPECT=${_services_expect}
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_services_run.cmake
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_services_run.cmake
                 WORKING_DIRECTORY "${ZIA_RUNTIME_TESTS_DIR}")
         set_tests_properties(zia_runtime_test_services_platform_${_services_expect} PROPERTIES
                 LABELS "runtime;zia"
+                TIMEOUT 60)
+        add_test(NAME basic_runtime_test_services_platform_${_services_expect}
+                COMMAND ${CMAKE_COMMAND}
+                -DMODE=vm
+                -DZANNA_EXE=$<TARGET_FILE:zanna>
+                -DTEST_FILE=${ZIA_RUNTIME_TESTS_DIR}/test_basic_services_platform.bas
+                -DFAKE_LIBRARY=$<TARGET_FILE:zanna_fake_steam_api>
+                -DEXPECT=${_services_expect}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_services_run.cmake
+                WORKING_DIRECTORY "${ZIA_RUNTIME_TESTS_DIR}")
+        set_tests_properties(basic_runtime_test_services_platform_${_services_expect} PROPERTIES
+                LABELS "runtime;basic"
                 TIMEOUT 60)
     endforeach ()
 
@@ -1379,10 +1391,23 @@ if (NOT WIN32)
                     -DFAKE_LIBRARY=$<TARGET_FILE:zanna_fake_steam_api>
                     -DEXPECT=${_services_expect}
                     -DOUT_EXE=${CMAKE_BINARY_DIR}/zia_services_platform_${_services_expect}_native
-                    -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_services_run.cmake
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_services_run.cmake
                     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
             set_tests_properties(native_run_zia_services_platform_${_services_expect} PROPERTIES
                     LABELS "zia;native_run"
+                    TIMEOUT 90)
+            add_test(NAME native_run_basic_services_platform_${_services_expect}
+                    COMMAND ${CMAKE_COMMAND}
+                    -DMODE=native
+                    -DZANNA_EXE=$<TARGET_FILE:zanna>
+                    -DTEST_FILE=${ZIA_RUNTIME_TESTS_DIR}/test_basic_services_platform.bas
+                    -DFAKE_LIBRARY=$<TARGET_FILE:zanna_fake_steam_api>
+                    -DEXPECT=${_services_expect}
+                    -DOUT_EXE=${CMAKE_BINARY_DIR}/basic_services_platform_${_services_expect}_native
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_services_run.cmake
+                    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+            set_tests_properties(native_run_basic_services_platform_${_services_expect} PROPERTIES
+                    LABELS "basic;native_run"
                     TIMEOUT 90)
         endforeach ()
     endif ()

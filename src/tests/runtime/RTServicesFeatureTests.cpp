@@ -345,16 +345,17 @@ TEST(ServicesFeatures, AchievementsUnlockStoreAndReport) {
     EXPECT_EQ(rt_services_achievements_is_unlocked(win), 1);
     EXPECT_EQ(rt_services_achievements_unlock_time(win), 1700000000);
 
+    // The Steam client reports each new unlock before the stats commit.
     EXPECT_EQ(rt_services_stats_store(), 1);
     rt_services_platform_update();
-    EXPECT_EQ(rt_services_platform_poll_event(), RT_SERVICES_EVENT_STATS_STORED);
-    EXPECT_EQ(rt_services_platform_get_event_result_code(), 1);
-    EXPECT_EQ(rt_services_platform_get_event_flag(), 1);
     EXPECT_EQ(rt_services_platform_poll_event(), RT_SERVICES_EVENT_ACHIEVEMENT_STORED);
     EXPECT_EQ(take(rt_services_platform_get_event_text()), std::string("ACH_WIN_ONE_GAME"));
     EXPECT_EQ(rt_services_platform_get_event_flag(), 1);
     EXPECT_EQ(rt_services_platform_get_event_value(), 0);
     EXPECT_EQ(rt_services_platform_get_event_total(), 0);
+    EXPECT_EQ(rt_services_platform_poll_event(), RT_SERVICES_EVENT_STATS_STORED);
+    EXPECT_EQ(rt_services_platform_get_event_result_code(), 1);
+    EXPECT_EQ(rt_services_platform_get_event_flag(), 1);
     EXPECT_EQ(rt_services_platform_poll_event(), RT_SERVICES_EVENT_NONE);
 
     EXPECT_EQ(rt_services_achievements_indicate_progress(travel, 2640, 5280), 1);
@@ -815,7 +816,13 @@ TEST(ServicesFeatures, CoreOnlyRedistributableDisablesFeatures) {
     EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_PLAYER_COUNT), 1);
     for (int64_t feature : kPhase2Features)
         EXPECT_EQ(rt_services_platform_has_feature(feature), 0);
+    EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LICENSING), 1);
+    EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LAUNCH_PARAMETERS), 0);
     for (const char *message : {
+             "Steam: export SteamAPI_ISteamApps_GetLaunchQueryParam unavailable; launch "
+             "parameters disabled",
+             "Steam: export SteamAPI_ISteamApps_GetDLCCount unavailable; DLC list, build id, and "
+             "branch queries disabled",
              "Steam: export SteamAPI_ISteamUserStats_SetAchievement unavailable; achievements "
              "disabled",
              "Steam: export SteamAPI_ISteamUserStats_GetStatInt32 unavailable; stats disabled",

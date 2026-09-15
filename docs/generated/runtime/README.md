@@ -33,7 +33,7 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Project](project.md) | 1 | 2 |
 | [Result](result.md) | 1 | 26 |
 | [Runtime](runtime.md) | 2 | 16 |
-| [Services](services.md) | 21 | 153 |
+| [Services](services.md) | 33 | 329 |
 | [String](string.md) | 1 | 53 |
 | [System](system.md) | 12 | 97 |
 | [Terminal](terminal.md) | 1 | 24 |

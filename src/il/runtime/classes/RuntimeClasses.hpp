@@ -723,6 +723,21 @@ enum class RuntimeTypeId : std::size_t {
     RTCLS_Game2DLevelDocument,
     RTCLS_GameSceneManager,
     RTCLS_GameConfig,
+    // Zanna.Services recording timeline (ADR 0362); appended so existing values never shift.
+    RTCLS_ServicesTimeline,
+    RTCLS_ServicesTimelineMode,
+    RTCLS_ServicesTimelineClip,
+    // Zanna.Services action input (ADR 0365); appended so existing values never shift.
+    RTCLS_ServicesActionInput,
+    RTCLS_ServicesControllerType,
+    RTCLS_ServicesGlyphSize,
+    // Zanna.Services Workshop (ADR 0366); appended so existing values never shift.
+    RTCLS_ServicesWorkshop,
+    RTCLS_ServicesWorkshopItem,
+    RTCLS_ServicesWorkshopQuery,
+    RTCLS_ServicesWorkshopList,
+    RTCLS_ServicesWorkshopVisibility,
+    RTCLS_ServicesWorkshopUpdateStatus,
 };
 
 /// @brief Describes a property on a runtime class.

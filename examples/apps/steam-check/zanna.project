@@ -1,0 +1,5 @@
+# steam-check — verify Zanna.Services against a real Steam client
+project steam-check
+version 0.1.0
+lang zia
+entry main.zia

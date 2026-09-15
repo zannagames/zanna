@@ -699,10 +699,16 @@ set(RT_SERVICES_SOURCES
         services/rt_services_progress.c
         services/rt_services_social.c
         services/rt_services_cloud.c
+        services/rt_services_timeline.c
+        services/rt_services_input.c
+        services/rt_services_workshop.c
         services/steam/rt_steam_provider.c
         services/steam/rt_steam_user_stats.c
         services/steam/rt_steam_social.c
         services/steam/rt_steam_cloud.c
+        services/steam/rt_steam_timeline.c
+        services/steam/rt_steam_input.c
+        services/steam/rt_steam_workshop.c
 )
 
 if (WIN32)
@@ -811,6 +817,9 @@ set(RT_PUBLIC_HEADERS
         ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_progress.h
         ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_social.h
         ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_cloud.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_timeline.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_input.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/services/rt_services_workshop.h
         ${CMAKE_CURRENT_SOURCE_DIR}/services/steam/rt_steam.h
 )
 

@@ -1613,7 +1613,7 @@ function(zanna_add_runtime_tests)
     target_link_libraries(test_rt_archive PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_archive test_rt_archive)
 
-    # Platform services (ADR 0352, ADR 0353). Four from-scratch fake steam_api
+    # Platform services (ADR 0352, ADR 0353, ADR 0362-0366). Four from-scratch fake steam_api
     # shared libraries built from one source exercise run-time loading without
     # Steam: the SDK 1.65 accessor set, the SDK 1.61-1.64 set, a library that
     # lacks SteamAPI_InitFlat, and a library exporting only the ADR 0352 core
@@ -1646,11 +1646,18 @@ function(zanna_add_runtime_tests)
         endif ()
     endforeach ()
 
-    foreach (_services_test IN ITEMS test_rt_services test_rt_services_features)
+    foreach (_services_test IN ITEMS test_rt_services test_rt_services_features test_rt_services_extended
+                                     test_rt_services_input test_rt_services_workshop)
         if (_services_test STREQUAL "test_rt_services")
             zanna_add_test(${_services_test} ${ZANNA_TESTS_DIR}/runtime/RTServicesTests.cpp)
-        else ()
+        elseif (_services_test STREQUAL "test_rt_services_features")
             zanna_add_test(${_services_test} ${ZANNA_TESTS_DIR}/runtime/RTServicesFeatureTests.cpp)
+        elseif (_services_test STREQUAL "test_rt_services_input")
+            zanna_add_test(${_services_test} ${ZANNA_TESTS_DIR}/runtime/RTServicesInputTests.cpp)
+        elseif (_services_test STREQUAL "test_rt_services_workshop")
+            zanna_add_test(${_services_test} ${ZANNA_TESTS_DIR}/runtime/RTServicesWorkshopTests.cpp)
+        else ()
+            zanna_add_test(${_services_test} ${ZANNA_TESTS_DIR}/runtime/RTServicesExtendedTests.cpp)
         endif ()
         target_link_libraries(${_services_test} PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
         target_compile_definitions(${_services_test} PRIVATE

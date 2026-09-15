@@ -62,6 +62,7 @@ TEST(Services, ConstantsMatchAdr) {
     EXPECT_EQ(rt_services_feature_licensing(), 2);
     EXPECT_EQ(rt_services_feature_language(), 3);
     EXPECT_EQ(rt_services_feature_player_count(), 4);
+    EXPECT_EQ(rt_services_feature_launch_parameters(), 12);
     EXPECT_EQ(rt_services_request_kind_player_count(), 1);
     EXPECT_EQ(rt_services_steam_hardware_unknown(), -1);
     EXPECT_EQ(rt_services_steam_hardware_none(), 0);
@@ -210,6 +211,16 @@ TEST(Services, InitFailuresMapToStatus) {
               std::string("Steam: SteamAPI_InitFlat failed (FailedGeneric): no details reported"));
     EXPECT_EQ(rt_services_platform_get_status(), RT_SERVICES_STATUS_INIT_FAILED);
     EXPECT_EQ(rt_services_platform_get_is_available(), 0);
+
+    // The real redistributable reports a machine without the Steam client as
+    // FailedGeneric; with no client running the status is ClientNotRunning.
+    fake.setScenario("not-installed");
+    InitOutcome not_installed = init("steam", "480");
+    EXPECT_EQ(not_installed.text,
+              std::string("Steam: SteamAPI_InitFlat failed (FailedGeneric): Steam client is not "
+                          "installed (fake)"));
+    EXPECT_EQ(rt_services_platform_get_status(), RT_SERVICES_STATUS_CLIENT_NOT_RUNNING);
+    EXPECT_EQ(rt_services_platform_get_is_available(), 0);
     EXPECT_EQ(fake.initCount(), 0);
     rt_services_platform_shutdown();
 }
@@ -253,6 +264,7 @@ TEST(Services, SteamStartsAndReportsIdentity) {
     EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LICENSING), 1);
     EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LANGUAGE), 1);
     EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_PLAYER_COUNT), 1);
+    EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LAUNCH_PARAMETERS), 1);
     EXPECT_EQ(rt_services_platform_has_feature(99), 0);
 
     rt_string installed = rt_const_cstr("1234567");
@@ -437,6 +449,47 @@ TEST(Services, OlderRedistributableProfileUsesDeckQuery) {
     EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LICENSING), 1);
     EXPECT_EQ(take(rt_services_steam_get_library_path()), fake.path);
     rt_services_platform_shutdown();
+}
+
+TEST(Services, LaunchParametersFollowTheLaunchUrl) {
+    rt_services_platform_shutdown();
+    Str team("team");
+    Str season("season");
+    Str reserved("@internal");
+    Str absent("nope");
+    Str empty("");
+
+    EXPECT_EQ(take(rt_services_platform_get_launch_command_line()), std::string(""));
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(team)), std::string(""));
+    EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LAUNCH_PARAMETERS), 0);
+    EXPECT_TRAP_MESSAGE(rt_services_platform_launch_parameter(empty),
+                        "Services.Platform.LaunchParameter: key must not be empty");
+
+    const FakeSteam &fake = fake165();
+    useFake(fake);
+    fake.setScripted(0);
+    ASSERT_TRUE(init("steam", "480").ok);
+    EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LAUNCH_PARAMETERS), 1);
+    EXPECT_EQ(take(rt_services_platform_get_launch_command_line()),
+              std::string("+join 76561198000000002"));
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(team)), std::string("boston"));
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(season)), std::string("1972"));
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(reserved)), std::string(""));
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(absent)), std::string(""));
+    EXPECT_TRAP_MESSAGE(rt_services_platform_launch_parameter(nullptr),
+                        "Services.Platform.LaunchParameter: key must not be empty");
+
+    // A relaunch while running changes the values and queues the event.
+    fake.setLaunch("", "team=chicago");
+    rt_services_platform_update();
+    EXPECT_EQ(rt_services_platform_poll_event(), RT_SERVICES_EVENT_LAUNCH_PARAMETERS_CHANGED);
+    EXPECT_EQ(take(rt_services_platform_get_launch_command_line()), std::string(""));
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(team)), std::string("chicago"));
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(season)), std::string(""));
+
+    rt_services_platform_shutdown();
+    EXPECT_EQ(take(rt_services_platform_launch_parameter(team)), std::string(""));
+    EXPECT_EQ(rt_services_platform_has_feature(RT_SERVICES_FEATURE_LAUNCH_PARAMETERS), 0);
 }
 
 TEST(Services, MalformedDlcIdTrapsWhileSteamIsActive) {
