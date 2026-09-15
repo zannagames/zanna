@@ -98,6 +98,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace il::frontends::basic {
 
@@ -145,6 +146,8 @@ struct BasicCompilerInput {
 /// @brief Aggregated result of compiling BASIC source.
 /// @ownership Owns diagnostics, emitter, and module. The emitter borrows the
 ///            SourceManager passed to compileBasic().
+/// @invariant @ref emitter reports into this object's @ref diagnostics, including
+///            after a move.
 struct BasicCompilerResult {
     /// @brief Diagnostics accumulated during compilation.
     il::support::DiagnosticEngine diagnostics{};
@@ -157,6 +160,45 @@ struct BasicCompilerResult {
 
     /// @brief True when the module has been verified since the last mutation.
     bool moduleVerified{false};
+
+    /// @brief Construct an empty result with no emitter.
+    BasicCompilerResult() = default;
+
+    /// @brief Move a result and rebind its emitter to the moved diagnostics.
+    /// @details The emitter refers to @ref diagnostics by address. A defaulted
+    ///          move would leave it reporting into the moved-from engine, which
+    ///          dies with that object; compilers that move rather than elide
+    ///          compileBasic()'s returned local (MSVC without optimization) then
+    ///          handed every caller an emitter bound to a destroyed engine.
+    /// @param other Result to move from; left without an emitter.
+    BasicCompilerResult(BasicCompilerResult &&other) noexcept
+        : diagnostics(std::move(other.diagnostics)), emitter(std::move(other.emitter)),
+          fileId(other.fileId), module(std::move(other.module)),
+          moduleVerified(other.moduleVerified) {
+        if (emitter)
+            emitter->rebindEngine(diagnostics);
+    }
+
+    /// @brief Move-assign a result and rebind its emitter to this object's diagnostics.
+    /// @param other Result to move from; left without an emitter.
+    /// @return This result.
+    BasicCompilerResult &operator=(BasicCompilerResult &&other) noexcept {
+        if (this != &other) {
+            // Release the old emitter before its engine is overwritten.
+            emitter.reset();
+            diagnostics = std::move(other.diagnostics);
+            emitter = std::move(other.emitter);
+            fileId = other.fileId;
+            module = std::move(other.module);
+            moduleVerified = other.moduleVerified;
+            if (emitter)
+                emitter->rebindEngine(diagnostics);
+        }
+        return *this;
+    }
+
+    BasicCompilerResult(const BasicCompilerResult &) = delete;
+    BasicCompilerResult &operator=(const BasicCompilerResult &) = delete;
 
     /// @brief Helper indicating whether compilation succeeded without errors.
     /// @details This predicate checks only that an emitter exists and has

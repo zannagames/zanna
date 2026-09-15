@@ -620,11 +620,14 @@ endif ()
 #   - global_scalar_load_store: mutable scalar globals now emit a writable
 #     __DATA,__data section in the binary object path; the text section's
 #     undefined reference coalesces onto the data-section defined global.
+# narrow_width_memory: x86-64 stored and loaded i1/i16/i32 values as 8 bytes,
+# clobbering the neighbouring bytes (a trailing Boolean field overran its heap
+# object); every width now transfers exactly its own bytes.
 set(_ZANNA_DIFF_CORPUS
         ret_i64 arith_chain block_params_sum conditional_abs recursive_factorial
         alloca_store_load alloca_zero_init gep_stack bitwise_shift unsigned_div_rem signed_div_rem
         fp_cast_round cast_round_to_even idxchk_normalize i1_bool_flow call_two_args
-        string_print print_i64 branch_join_value i16_narrow_store unsigned_compare
+        string_print print_i64 branch_join_value i16_narrow_store narrow_width_memory unsigned_compare
         fcmp_ord_nan fcmp_uno_nan err_get_msg_exec switch_i32 eh_catch_return
         global_scalar_load_store
         kernel_loop_sum kernel_array_traverse kernel_checked_arith

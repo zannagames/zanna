@@ -35,7 +35,7 @@ namespace il::frontends::basic {
 /// @param sm Manager providing file path lookups for caret output.
 DiagnosticEmitter::DiagnosticEmitter(il::support::DiagnosticEngine &de,
                                      const il::support::SourceManager &sm)
-    : de_(de), sm_(sm) {}
+    : de_(&de), sm_(sm) {}
 
 /// @brief Register full source text for a file identifier.
 /// @details Caches the provided buffer so caret printing can fetch the
@@ -71,7 +71,7 @@ void DiagnosticEmitter::emit(il::support::Severity sev,
     il::support::Diagnostic diag{sev, message, loc, code};
     diag.range = range;
     diag.stage = "basic";
-    de_.report(std::move(diag));
+    de_->report(std::move(diag));
     entries_.push_back({sev, std::move(code), std::move(message), loc, length});
 }
 
@@ -133,14 +133,14 @@ void DiagnosticEmitter::printAll(std::ostream &os) const {
 ///          whether the compilation pipeline should continue.
 /// @return Count of error-severity diagnostics from the underlying engine.
 size_t DiagnosticEmitter::errorCount() const {
-    return de_.errorCount();
+    return de_->errorCount();
 }
 
 /// @brief Retrieve the number of warnings emitted so far.
 /// @details Mirrors @ref errorCount but for warning-severity diagnostics.
 /// @return Count of warning-severity diagnostics from the underlying engine.
 size_t DiagnosticEmitter::warningCount() const {
-    return de_.warningCount();
+    return de_->warningCount();
 }
 
 /// @brief Format a path:line string for a source location.

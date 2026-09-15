@@ -28,12 +28,14 @@ namespace zanna::codegen::x64 {
 namespace {
 
 [[nodiscard]] bool isLoad(MOpcode opc) noexcept {
-    return opc == MOpcode::MOVmr || opc == MOpcode::MOVSDmr || opc == MOpcode::MOVUPSmr ||
+    return opc == MOpcode::MOVmr || opc == MOpcode::MOVZXmr8 || opc == MOpcode::MOVSXmr16 ||
+           opc == MOpcode::MOVSXDmr || opc == MOpcode::MOVSDmr || opc == MOpcode::MOVUPSmr ||
            opc == MOpcode::POP;
 }
 
 [[nodiscard]] bool isStore(MOpcode opc) noexcept {
-    return opc == MOpcode::MOVrm || opc == MOpcode::MOVSDrm || opc == MOpcode::MOVUPSrm ||
+    return opc == MOpcode::MOVrm || opc == MOpcode::MOVrm8 || opc == MOpcode::MOVrm16 ||
+           opc == MOpcode::MOVrm32 || opc == MOpcode::MOVSDrm || opc == MOpcode::MOVUPSrm ||
            opc == MOpcode::PUSH;
 }
 

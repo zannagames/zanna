@@ -2600,6 +2600,137 @@ static void test_d3d11_backend_source_contracts(void) {
     free(source);
 }
 
+/// @brief Resolve a shader-manifest source accessor name to the HLSL linked into this test.
+/// @param[in] name Accessor name as written in the manifest (not NUL-terminated).
+/// @param[in] length Byte length of @p name.
+/// @return The joined HLSL source, or NULL for an unknown accessor.
+static const char *manifest_hlsl_named(const char *name, size_t length) {
+    static const struct {
+        const char *name;
+        const char *(*get)(void);
+    } k_sources[] = {
+        {"d3d11_shader_source", d3d11_shader_source_get},
+        {"d3d11_skybox_shader_source", d3d11_skybox_shader_source_get},
+        {"d3d11_postfx_shader_source", d3d11_postfx_shader_source_get},
+        {"d3d11_bloom_shader_source", d3d11_bloom_shader_source_get},
+        {"d3d11_taa_shader_source", d3d11_taa_shader_source_get},
+        {"d3d11_ssr_shader_source", d3d11_ssr_shader_source_get},
+    };
+
+    for (size_t i = 0; i < sizeof(k_sources) / sizeof(k_sources[0]); i++) {
+        if (strlen(k_sources[i].name) == length && strncmp(k_sources[i].name, name, length) == 0)
+            return k_sources[i].get();
+    }
+    return NULL;
+}
+
+/// @brief Copy the C identifier starting at @p cursor.
+/// @return Pointer just past the identifier.
+static const char *read_identifier(const char *cursor, char *out, size_t capacity) {
+    size_t length = 0;
+    while (*cursor == '_' || (*cursor >= '0' && *cursor <= '9') ||
+           (*cursor >= 'a' && *cursor <= 'z') || (*cursor >= 'A' && *cursor <= 'Z')) {
+        if (length + 1u < capacity)
+            out[length++] = *cursor;
+        cursor++;
+    }
+    out[length] = '\0';
+    return cursor;
+}
+
+/// @brief Copy one comma-separated `X(...)` manifest field, skipping blanks and quotes.
+/// @return Pointer just past the field's terminating comma or closing parenthesis.
+static const char *manifest_field(const char *cursor, char *out, size_t capacity) {
+    while (*cursor == ' ' || *cursor == '"')
+        cursor++;
+    cursor = read_identifier(cursor, out, capacity);
+    while (*cursor && *cursor != ',' && *cursor != ')' && *cursor != '\n')
+        cursor++;
+    return *cursor == ',' || *cursor == ')' ? cursor + 1 : cursor;
+}
+
+static void test_d3d11_shader_manifest_contracts(void) {
+    char path[1024];
+    char *manifest;
+    char *source = read_d3d11_backend_sources();
+    const char *cursor;
+    const char *struct_begin;
+    const char *struct_end;
+    size_t manifest_entries = 0;
+    size_t blob_members = 0;
+    int entries_resolve = 1;
+    int members_listed = 1;
+
+    snprintf(path,
+             sizeof(path),
+             "%s/src/runtime/graphics/3d/backend/vgfx3d_backend_d3d11_shader_manifest.inc",
+             ZANNA_SOURCE_DIR);
+    manifest = read_text_file(path);
+    EXPECT_TRUE(manifest != NULL && source != NULL,
+                "D3D11 shader manifest and backend sources are readable for contract checks");
+    if (!manifest || !source) {
+        free(manifest);
+        free(source);
+        return;
+    }
+
+    EXPECT_TRUE(
+        contains_text(manifest,
+                      "((UINT)(D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_IEEE_STRICTNESS))"),
+        "D3D11 shaders compile with IEEE strictness so HLSL isnan() guards survive (ZB-38)");
+    EXPECT_TRUE(contains_text(source, "VGFX3D_D3D11_SHADER_COMPILE_FLAGS,") &&
+                    !contains_text(source, "D3DCOMPILE_ENABLE_STRICTNESS,"),
+                "Every backend D3DCompile call uses the shared manifest flags");
+    EXPECT_TRUE(contains_text(source,
+                              "vgfx3d_d3d11_shader_manifest_digest() != "
+                              "VGFX3D_D3D11_EMBEDDED_BYTECODE_DIGEST"),
+                "Embedded DXBC is used only when baked from this binary's HLSL (ZB-39)");
+    EXPECT_TRUE(contains_text(source, "VGFX3D_D3D11_SHADER_LIST(D3D11_COMPILE_SHADER)") &&
+                    contains_text(source, "VGFX3D_D3D11_SHADER_LIST(D3D11_LOAD_EMBEDDED_SHADER)"),
+                "Embedded and runtime-compiled shader paths both walk the one manifest");
+
+    // Each manifest entry names an entry point its HLSL source defines.
+    cursor = strstr(manifest, "#define VGFX3D_D3D11_SHADER_LIST(X)");
+    while (cursor && (cursor = strstr(cursor, "    X(")) != NULL) {
+        char member[64];
+        char source_name[64];
+        char entry[64];
+        char target[16];
+        char signature[80];
+        const char *hlsl;
+        cursor = manifest_field(cursor + 6, member, sizeof(member));
+        cursor = manifest_field(cursor, source_name, sizeof(source_name));
+        cursor = manifest_field(cursor, entry, sizeof(entry));
+        cursor = manifest_field(cursor, target, sizeof(target));
+        hlsl = manifest_hlsl_named(source_name, strlen(source_name));
+        snprintf(signature, sizeof(signature), " %s(", entry);
+        if (!hlsl || !contains_text(hlsl, signature) ||
+            (strcmp(target, "vs_5_0") != 0 && strcmp(target, "ps_5_0") != 0))
+            entries_resolve = 0;
+        manifest_entries++;
+    }
+    EXPECT_TRUE(manifest_entries > 0 && entries_resolve,
+                "Every D3D11 manifest entry resolves to an entry point in its HLSL source");
+
+    // Each temporary shader blob is produced by exactly one manifest entry.
+    struct_begin = strstr(source, "typedef struct d3d11_shader_blobs_t {");
+    struct_end = struct_begin ? strstr(struct_begin, "} d3d11_shader_blobs_t;") : NULL;
+    for (cursor = struct_begin;
+         struct_end && (cursor = strstr(cursor, "ID3DBlob *")) != NULL && cursor < struct_end;) {
+        char member[64];
+        char listed[80];
+        cursor = read_identifier(cursor + strlen("ID3DBlob *"), member, sizeof(member));
+        snprintf(listed, sizeof(listed), "    X(%s,", member);
+        if (count_text(manifest, listed) != 1u)
+            members_listed = 0;
+        blob_members++;
+    }
+    EXPECT_TRUE(blob_members > 0 && blob_members == manifest_entries && members_listed,
+                "The D3D11 shader manifest lists every shader blob exactly once");
+    free(manifest);
+    free(source);
+}
+
 int main(void) {
     test_pack_bone_palette_identity_pads_unused_bones();
     test_pack_bone_palette_identity_pads_empty_source();
@@ -2630,6 +2761,7 @@ int main(void) {
     test_d3d11_shader_chunk_join_validation();
     test_d3d11_shader_sources_keep_numeric_guards();
     test_d3d11_backend_source_contracts();
+    test_d3d11_shader_manifest_contracts();
 
     printf("vgfx3d d3d11 shared tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

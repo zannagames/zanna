@@ -1110,7 +1110,19 @@ void X64BinaryEncoder::encodeInstructionImpl(const MInstr &instr,
             encodeMemOp(op, src, mem, text);
             return;
         }
-        case MOpcode::MOVmr: // load: MOVmr reg, [mem]
+        case MOpcode::MOVrm8: // store the low byte/word/doubleword of reg
+        case MOpcode::MOVrm16:
+        case MOpcode::MOVrm32: {
+            requireOps(2);
+            PhysReg src = gprFromOperand(ops[1], "narrow store source");
+            const auto &mem = memFromOperand(ops[0]);
+            encodeNarrowStore(op, src, mem, text);
+            return;
+        }
+        case MOpcode::MOVmr:    // load: MOVmr reg, [mem]
+        case MOpcode::MOVZXmr8: // narrow loads extend to the 64-bit register
+        case MOpcode::MOVSXmr16:
+        case MOpcode::MOVSXDmr:
         case MOpcode::ADDrm: // reg <- reg op [mem]
         case MOpcode::SUBrm:
         case MOpcode::ANDrm:
@@ -1359,8 +1371,7 @@ void X64BinaryEncoder::encodeRegReg(MOpcode op,
     // 16-bit operand size uses the 0x66 legacy prefix, emitted before REX.
     // MOVSXrr16 does not take it: movswq's source width is opcode-implied and
     // its destination is the full 64-bit register.
-    const bool is16 =
-        (op == MOpcode::ADDrr16 || op == MOpcode::SUBrr16 || op == MOpcode::IMULrr16);
+    const bool is16 = (op == MOpcode::ADDrr16 || op == MOpcode::SUBrr16 || op == MOpcode::IMULrr16);
     if (is16) {
         cs.emit8(0x66);
     }
@@ -1369,9 +1380,9 @@ void X64BinaryEncoder::encodeRegReg(MOpcode op,
     // 16-bit width (their flag semantics come from the narrow op). MOVSXD and
     // MOVSXrr16 keep REX.W: they read a narrow source but write the full
     // 64-bit destination.
-    bool rexW = (op != MOpcode::XORrr32 && op != MOpcode::MOVZXrr32 && op != MOpcode::ADDrr32 &&
-                 op != MOpcode::SUBrr32 && op != MOpcode::IMULrr32 && op != MOpcode::CMPrr32 &&
-                 !is16);
+    bool rexW =
+        (op != MOpcode::XORrr32 && op != MOpcode::MOVZXrr32 && op != MOpcode::ADDrr32 &&
+         op != MOpcode::SUBrr32 && op != MOpcode::IMULrr32 && op != MOpcode::CMPrr32 && !is16);
 
     if (needsRex(rexW, regField.rexBit != 0, false, rmField.rexBit != 0)) {
         cs.emit8(computeRex(rexW, regField.rexBit != 0, false, rmField.rexBit != 0));
@@ -1390,12 +1401,8 @@ void X64BinaryEncoder::encodeRegReg(MOpcode op,
 // === Reg-Imm ALU ===
 
 /// @copydoc X64BinaryEncoder::encodeRegImm
-void X64BinaryEncoder::encodeRegImm(MOpcode op,
-                                    PhysReg dst,
-                                    int64_t imm,
-                                    objfile::CodeSection &cs,
-                                    bool rexW,
-                                    bool prefix66) {
+void X64BinaryEncoder::encodeRegImm(
+    MOpcode op, PhysReg dst, int64_t imm, objfile::CodeSection &cs, bool rexW, bool prefix66) {
     const auto hw = hwEncode(dst);
     uint8_t ext = regImmExt(op);
 
@@ -1531,7 +1538,8 @@ void X64BinaryEncoder::emitWithMemOperand(uint8_t reg3,
                                           bool rexW,
                                           uint8_t mandatoryPrefix,
                                           uint8_t opByte1,
-                                          uint8_t opByte2) {
+                                          uint8_t opByte2,
+                                          bool forceRex) {
     validateEncodedMemOperand(mem, "x86-64 binary encoder");
     const auto hwBase = hwEncode(toPhys(mem.base));
     bool hasSIB = mem.hasIndex || hwBase.bits3 == 4; // RSP/R12 encoding needs SIB
@@ -1559,7 +1567,7 @@ void X64BinaryEncoder::emitWithMemOperand(uint8_t reg3,
     }
 
     // Emit REX.
-    if (needsRex(rexW, regRex != 0, indexRex != 0, hwBase.rexBit != 0)) {
+    if (forceRex || needsRex(rexW, regRex != 0, indexRex != 0, hwBase.rexBit != 0)) {
         cs.emit8(computeRex(rexW, regRex != 0, indexRex != 0, hwBase.rexBit != 0));
     }
 
@@ -1612,6 +1620,17 @@ void X64BinaryEncoder::encodeMemOp(MOpcode op,
         case MOpcode::MOVmr:
             opByte = 0x8B;
             break; // load
+        case MOpcode::MOVZXmr8:
+            opByte = 0x0F;
+            opByte2 = 0xB6;
+            break; // movzbq reg, [mem]
+        case MOpcode::MOVSXmr16:
+            opByte = 0x0F;
+            opByte2 = 0xBF;
+            break; // movswq reg, [mem]
+        case MOpcode::MOVSXDmr:
+            opByte = 0x63;
+            break; // movslq reg, [mem]
         case MOpcode::ADDrm:
             opByte = 0x03;
             break; // reg <- reg + [mem]
@@ -1651,6 +1670,44 @@ void X64BinaryEncoder::encodeMemOp(MOpcode op,
                        /*mandatoryPrefix=*/0,
                        opByte,
                        opByte2);
+}
+
+/// @copydoc X64BinaryEncoder::encodeNarrowStore
+void X64BinaryEncoder::encodeNarrowStore(MOpcode op,
+                                         PhysReg src,
+                                         const OpMem &mem,
+                                         objfile::CodeSection &cs) {
+    if (!isGPR(src))
+        throw std::runtime_error("x86-64 binary encoder: narrow store source must be a GPR");
+    const auto hwSrc = hwEncode(src);
+    switch (op) {
+        case MOpcode::MOVrm8: {
+            // 88 /r. Without a REX prefix, register encodings 4-7 name AH/CH/DH/BH
+            // rather than SPL/BPL/SIL/DIL.
+            const bool needsRexForByteSrc = (hwSrc.bits3 >= 4 && hwSrc.rexBit == 0);
+            emitWithMemOperand(hwSrc.bits3,
+                               hwSrc.rexBit,
+                               mem,
+                               cs,
+                               /*rexW=*/false,
+                               /*mandatoryPrefix=*/0,
+                               0x88,
+                               0,
+                               needsRexForByteSrc);
+            return;
+        }
+        case MOpcode::MOVrm16:
+            // 66 89 /r: the operand-size prefix precedes any REX prefix.
+            emitWithMemOperand(hwSrc.bits3, hwSrc.rexBit, mem, cs, /*rexW=*/false, 0x66, 0x89, 0);
+            return;
+        case MOpcode::MOVrm32:
+            emitWithMemOperand(hwSrc.bits3, hwSrc.rexBit, mem, cs, /*rexW=*/false, 0, 0x89, 0);
+            return;
+        default:
+            throw std::runtime_error("x86-64 binary encoder: opcode '" +
+                                     std::to_string(static_cast<int>(op)) +
+                                     "' is not a narrow store opcode");
+    }
 }
 
 // === LEA ===

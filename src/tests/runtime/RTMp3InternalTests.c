@@ -17,6 +17,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Every check is an assert: keep them live in Release configurations too.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <limits.h>
 #include <math.h>

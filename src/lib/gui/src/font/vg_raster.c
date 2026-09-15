@@ -12,9 +12,12 @@
 //   - OVERSAMPLE (4) vertical supersampling is used for coverage antialiasing.
 //   - Polygon conversion flips y from TTF upward-positive to bitmap
 //     downward-positive after outline_to_polygon returns.
+//   - Every contour segment is emitted, including curves between implied
+//     on-curve midpoints and contours with no explicit on-curve point.
 //   - Maximum bitmap dimension is MAX_GLYPH_BITMAP_DIM (4096); inputs exceeding
 //     this limit return NULL to avoid runaway allocation.
-//   - Even-odd fill rule is used for scanline rasterisation.
+//   - The non-zero winding fill rule (TrueType's) is used for scanline
+//     rasterisation, so overlapping contours stay solid.
 // Ownership/Lifetime:
 //   - vg_rasterize_glyph returns a heap-allocated vg_glyph_t (caller owns it).
 //   - All internal working buffers are freed before return.
@@ -33,8 +36,8 @@
 /// @file
 /// @brief Implements quadratic-outline flattening and antialiased glyph rasterization.
 /// @details TrueType contours are transformed into bitmap coordinates, recursively flattened into
-/// polylines, converted to a sorted edge list, and filled with vertically supersampled even-odd
-/// scanlines. All working buffers are bounded and released before the result is returned.
+/// polylines, converted to a sorted edge list, and filled with vertically supersampled non-zero
+/// winding scanlines. All working buffers are bounded and released before the result is returned.
 
 //=============================================================================
 // Constants
@@ -149,8 +152,31 @@ static int flatten_quadratic(float x0,
 // Convert Glyph Outline to Polygon Points
 //=============================================================================
 
+/// @brief Append one point to the flattened polygon.
+/// @param out Destination polygon-point array.
+/// @param max_points Capacity of @p out.
+/// @param count Number of points already stored in @p out.
+/// @param x Point x coordinate.
+/// @param y Point y coordinate.
+/// @param truncated Set when @p out is full.
+/// @return Updated number of stored output points.
+static int polygon_append(
+    raster_point_t *out, int max_points, int count, float x, float y, int *truncated) {
+    if (count < max_points) {
+        out[count].x = x;
+        out[count].y = y;
+        return count + 1;
+    }
+    *truncated = 1;
+    return count;
+}
+
 /// @brief Convert a TTF glyph outline (on/off-curve points) to a flat polygon
 ///        by flattening quadratic Bezier curves into polyline segments.
+/// @details TrueType contours may start, end, or consist entirely of off-curve points, and two
+/// consecutive off-curve points imply an on-curve point at their midpoint. Each contour is walked
+/// from an on-curve point (or the implied one before its first point) so every quadratic segment,
+/// including the one that closes the contour, is flattened.
 /// @param points_x Source outline x coordinates in font units.
 /// @param points_y Source outline y coordinates in font units.
 /// @param flags Per-point on-curve flags.
@@ -191,66 +217,98 @@ static int outline_to_polygon(float *points_x,
         }
 
         int polygon_contour_start = count;
+        float start_x;
+        float start_y;
+        int walk_from = 1;
+        int walk_count = contour_len - 1;
 
-        // Process points in contour
-        for (int i = 0; i < contour_len; i++) {
-            int idx = contour_start + i;
-            int next_idx = contour_start + ((i + 1) % contour_len);
+        // Start on an on-curve point: the first, else the last (walked last), else the implied
+        // midpoint between the last and first off-curve points (every point is then walked).
+        if (flags[contour_start]) {
+            start_x = points_x[contour_start] * scale + offset_x;
+            start_y = points_y[contour_start] * scale + offset_y;
+        } else if (flags[contour_end]) {
+            start_x = points_x[contour_end] * scale + offset_x;
+            start_y = points_y[contour_end] * scale + offset_y;
+            walk_from = 0;
+        } else {
+            start_x = (points_x[contour_end] + points_x[contour_start]) * 0.5f * scale + offset_x;
+            start_y = (points_y[contour_end] + points_y[contour_start]) * 0.5f * scale + offset_y;
+            walk_from = 0;
+            walk_count = contour_len;
+        }
+        count = polygon_append(out, max_points, count, start_x, start_y, &truncated);
 
-            float x0 = points_x[idx] * scale + offset_x;
-            float y0 = points_y[idx] * scale + offset_y;
-            float x1 = points_x[next_idx] * scale + offset_x;
-            float y1 = points_y[next_idx] * scale + offset_y;
+        float pen_x = start_x;
+        float pen_y = start_y;
+        float control_x = 0.0f;
+        float control_y = 0.0f;
+        bool has_control = false;
+        for (int k = 0; k < walk_count; k++) {
+            int idx = contour_start + ((walk_from + k) % contour_len);
+            float x = points_x[idx] * scale + offset_x;
+            float y = points_y[idx] * scale + offset_y;
 
-            bool on0 = flags[idx];
-            bool on1 = flags[next_idx];
-
-            if (on0 && on1) {
-                // Line segment
-                if (count < max_points) {
-                    out[count].x = x0;
-                    out[count].y = y0;
-                    count++;
+            if (flags[idx]) {
+                if (has_control) {
+                    count = flatten_quadratic(pen_x,
+                                              pen_y,
+                                              control_x,
+                                              control_y,
+                                              x,
+                                              y,
+                                              CURVE_TOLERANCE,
+                                              out,
+                                              max_points,
+                                              count,
+                                              0,
+                                              &truncated);
+                    has_control = false;
                 } else {
-                    truncated = 1;
+                    count = polygon_append(out, max_points, count, x, y, &truncated);
                 }
-            } else if (on0 && !on1) {
-                // Current on-curve, next is control point
-                // Find the end point
-                int end_idx = contour_start + ((i + 2) % contour_len);
-                float x2, y2;
-
-                if (flags[end_idx]) {
-                    // End point is on-curve
-                    x2 = points_x[end_idx] * scale + offset_x;
-                    y2 = points_y[end_idx] * scale + offset_y;
-                } else {
-                    // End point is also off-curve, use midpoint
-                    x2 = (x1 + points_x[end_idx] * scale + offset_x) * 0.5f;
-                    y2 = (y1 + points_y[end_idx] * scale + offset_y) * 0.5f;
-                }
-
-                // Start with current point
-                if (count < max_points) {
-                    out[count].x = x0;
-                    out[count].y = y0;
-                    count++;
-                } else {
-                    truncated = 1;
-                }
-
-                // Flatten the curve
-                count = flatten_quadratic(
-                    x0, y0, x1, y1, x2, y2, CURVE_TOLERANCE, out, max_points, count, 0, &truncated);
-            } else if (!on0 && !on1) {
-                // Both off-curve - implicit on-curve at midpoint
-                // The midpoint becomes our "on-curve" start
-                // and x1,y1 is the control for next segment
-                // This case is handled by the previous iteration
-            } else if (!on0 && on1) {
-                // Current off-curve, next on-curve
-                // This is handled by previous point's curve
+                pen_x = x;
+                pen_y = y;
+            } else if (has_control) {
+                // Two off-curve points in a row imply an on-curve point between them.
+                float mid_x = (control_x + x) * 0.5f;
+                float mid_y = (control_y + y) * 0.5f;
+                count = flatten_quadratic(pen_x,
+                                          pen_y,
+                                          control_x,
+                                          control_y,
+                                          mid_x,
+                                          mid_y,
+                                          CURVE_TOLERANCE,
+                                          out,
+                                          max_points,
+                                          count,
+                                          0,
+                                          &truncated);
+                pen_x = mid_x;
+                pen_y = mid_y;
+                control_x = x;
+                control_y = y;
+            } else {
+                control_x = x;
+                control_y = y;
+                has_control = true;
             }
+        }
+        if (has_control) {
+            // The contour closes through its trailing control point.
+            count = flatten_quadratic(pen_x,
+                                      pen_y,
+                                      control_x,
+                                      control_y,
+                                      start_x,
+                                      start_y,
+                                      CURVE_TOLERANCE,
+                                      out,
+                                      max_points,
+                                      count,
+                                      0,
+                                      &truncated);
         }
 
         if (count - polygon_contour_start >= 2 && out_contour_ends && out_contour_count) {
@@ -266,13 +324,19 @@ static int outline_to_polygon(float *points_x,
 // Edge Comparison for Sorting
 //=============================================================================
 
-/// @brief Compare floating-point values in ascending order for `qsort`.
-/// @param a Address of the first `float`.
-/// @param b Address of the second `float`.
+/// @brief One scanline crossing: where an edge meets the scanline and its winding direction.
+typedef struct {
+    float x;
+    int winding; ///< +1 for an edge running down the bitmap, -1 for one running up.
+} raster_crossing_t;
+
+/// @brief Compare scanline crossings by x in ascending order for `qsort`.
+/// @param a Address of the first @ref raster_crossing_t.
+/// @param b Address of the second @ref raster_crossing_t.
 /// @return A negative, zero, or positive value according to the ordering of @p a and @p b.
-static int raster_cmp_float(const void *a, const void *b) {
-    float fa = *(const float *)a;
-    float fb = *(const float *)b;
+static int raster_cmp_crossing(const void *a, const void *b) {
+    float fa = ((const raster_crossing_t *)a)->x;
+    float fb = ((const raster_crossing_t *)b)->x;
     return (fa > fb) - (fa < fb);
 }
 
@@ -356,9 +420,11 @@ static int build_edges(raster_point_t *points,
 //=============================================================================
 
 /// @brief Fill a bitmap using scanline rasterisation with OVERSAMPLE vertical
-///        supersampling and even-odd fill rule.
+///        supersampling and the non-zero winding fill rule.
 /// @details The function clears the output first, intersects each fractional scanline with active
-/// edges, sorts the x coordinates, and accumulates fractional coverage between intersection pairs.
+/// edges, sorts the crossings by x, and accumulates fractional coverage over every span whose
+/// winding number is non-zero. TrueType specifies non-zero winding: script and stroke-built faces
+/// overlap their contours, and an even-odd fill punches holes wherever two strokes cross.
 /// Allocation or bounds failures leave a fully or partially cleared bitmap and return silently.
 /// @param points Flattened polygon vertices.
 /// @param point_count Number of readable entries in @p points.
@@ -407,8 +473,8 @@ static void rasterize_scanlines(raster_point_t *points,
         free(edges);
         return;
     }
-    float *intersections = malloc((size_t)edge_count * sizeof(float));
-    if (!intersections) {
+    raster_crossing_t *crossings = malloc((size_t)edge_count * sizeof(raster_crossing_t));
+    if (!crossings) {
         free(coverage);
         free(edges);
         return;
@@ -422,8 +488,8 @@ static void rasterize_scanlines(raster_point_t *points,
         for (int sub = 0; sub < OVERSAMPLE; sub++) {
             float scan_y = y + (sub + 0.5f) / OVERSAMPLE;
 
-            // Find intersections with active edges
-            int num_intersections = 0;
+            // Find crossings with active edges
+            int num_crossings = 0;
 
             for (int e = 0; e < edge_count; e++) {
                 float y0 = edges[e].y0;
@@ -441,20 +507,25 @@ static void rasterize_scanlines(raster_point_t *points,
                 if (crosses) {
                     // Calculate x intersection
                     float t = (scan_y - y0) / (y1 - y0);
-                    float x = edges[e].x0 + t * (edges[e].x1 - edges[e].x0);
-                    intersections[num_intersections++] = x;
+                    crossings[num_crossings].x = edges[e].x0 + t * (edges[e].x1 - edges[e].x0);
+                    crossings[num_crossings].winding = (y1 > y0) ? 1 : -1;
+                    num_crossings++;
                 }
             }
 
-            // Sort intersections (qsort: O(n log n) vs previous O(n²) bubble sort)
-            if (num_intersections > 1) {
-                qsort(intersections, num_intersections, sizeof(float), raster_cmp_float);
+            // Sort crossings (qsort: O(n log n) vs previous O(n²) bubble sort)
+            if (num_crossings > 1) {
+                qsort(crossings, num_crossings, sizeof(raster_crossing_t), raster_cmp_crossing);
             }
 
-            // Fill between pairs (even-odd rule)
-            for (int i = 0; i + 1 < num_intersections; i += 2) {
-                float x0f = intersections[i];
-                float x1f = intersections[i + 1];
+            // Fill every span inside the outline (non-zero winding rule)
+            int winding = 0;
+            for (int i = 0; i + 1 < num_crossings; i++) {
+                winding += crossings[i].winding;
+                if (winding == 0)
+                    continue;
+                float x0f = crossings[i].x;
+                float x1f = crossings[i + 1].x;
 
                 int x0 = (int)floorf(x0f);
                 int x1 = (int)ceilf(x1f);
@@ -486,7 +557,7 @@ static void rasterize_scanlines(raster_point_t *points,
         }
     }
 
-    free(intersections);
+    free(crossings);
     free(coverage);
     free(edges);
 }

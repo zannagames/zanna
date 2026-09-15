@@ -59,6 +59,18 @@ namespace {
             return "MOVrm";
         case MOpcode::MOVmr:
             return "MOVmr";
+        case MOpcode::MOVrm8:
+            return "MOVrm8";
+        case MOpcode::MOVrm16:
+            return "MOVrm16";
+        case MOpcode::MOVrm32:
+            return "MOVrm32";
+        case MOpcode::MOVZXmr8:
+            return "MOVZXmr8";
+        case MOpcode::MOVSXmr16:
+            return "MOVSXmr16";
+        case MOpcode::MOVSXDmr:
+            return "MOVSXDmr";
         case MOpcode::CMOVNErr:
             return "CMOVNErr";
         case MOpcode::SELECT_GPR:

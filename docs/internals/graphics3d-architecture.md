@@ -549,8 +549,26 @@ For D3D11 specifically, the CPU and HLSL sides also share explicit packed `float
 
 Shaders are embedded as C string literals and compiled at runtime:
 - Metal: `[device newLibraryWithSource:...]`
-- D3D11: `D3DCompile(...)`
+- D3D11: `D3DCompile(...)`, normally skipped — see below
 - OpenGL: `glCompileShader` + `glLinkProgram`
+
+D3D11 has no system shader cache, and compiling the backend HLSL costs several
+seconds (`PSMain` alone is ~4 s), which every process paid before its first
+frame. `vgfx3d_backend_d3d11_shader_manifest.inc` is the single list of entry
+points, sources and compile flags. On native Windows builds the host tool
+`zanna_d3d11_shader_bake` compiles that manifest during the build and writes
+`generated/runtime/d3d11/vgfx3d_backend_d3d11_bytecode.inc`; the backend wraps
+the embedded DXBC and compiles nothing. It records an FNV-1a digest of the flags
+and every source, and the backend uses the bytes only when that digest matches
+the HLSL linked into the binary, so a stale include falls back to runtime
+compilation, as does a cross-architecture build that cannot run the tool
+([ADR 0360](../adr/0360-bake-d3d11-shader-bytecode-at-build-time.md)).
+
+The flags include `D3DCOMPILE_IEEE_STRICTNESS`. Without it FXC folds the NaN
+self-comparison inside `isnan()` to false (warning X3577, which it still prints
+under the flag), silently disabling every finite-value guard in the scene,
+post-FX, bloom, TAA and SSR shaders. `test_vgfx3d_backend_d3d11_shader_bake`
+proves both behaviors against the real compiler.
 
 ### Metal Fragment Shader Features
 

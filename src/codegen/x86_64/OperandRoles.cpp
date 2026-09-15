@@ -52,6 +52,9 @@ std::pair<bool, bool> operandRoles(const MInstr &instr, std::size_t idx) noexcep
         case MOpcode::MOVrr:
         case MOpcode::MOVri:
         case MOpcode::MOVmr:
+        case MOpcode::MOVZXmr8:
+        case MOpcode::MOVSXmr16:
+        case MOpcode::MOVSXDmr:
         case MOpcode::LEA:
         case MOpcode::MOVZXrr8:
         case MOpcode::MOVZXrr32:
@@ -70,6 +73,9 @@ std::pair<bool, bool> operandRoles(const MInstr &instr, std::size_t idx) noexcep
             return {false, idx == 0};
 
         case MOpcode::MOVrm:
+        case MOpcode::MOVrm8:
+        case MOpcode::MOVrm16:
+        case MOpcode::MOVrm32:
         case MOpcode::MOVSDrm:
         case MOpcode::MOVUPSrm:
             return {idx == 0 || idx == 1, false};
@@ -274,6 +280,9 @@ bool hasObservableSideEffects(MOpcode opcode) noexcept {
         case MOpcode::PUSH:
         case MOpcode::POP:
         case MOpcode::MOVrm:
+        case MOpcode::MOVrm8:
+        case MOpcode::MOVrm16:
+        case MOpcode::MOVrm32:
         case MOpcode::MOVSDrm:
         case MOpcode::MOVUPSrm:
         case MOpcode::CALL:
@@ -304,6 +313,9 @@ bool hasObservableSideEffects(MOpcode opcode) noexcept {
         case MOpcode::MOVrr:
         case MOpcode::MOVri:
         case MOpcode::MOVmr:
+        case MOpcode::MOVZXmr8:
+        case MOpcode::MOVSXmr16:
+        case MOpcode::MOVSXDmr:
         case MOpcode::CMOVNErr:
         case MOpcode::SELECT_GPR:
         case MOpcode::SELECT_XMM:
@@ -427,8 +439,9 @@ InstrEffects effectsOf(const MInstr &instr, const TargetInfo &target) {
             // whatever the instruction does with the location, so the access
             // direction comes from the opcode: the register-to-memory move
             // forms store, everything else (except LEA) loads.
-            if (instr.opcode == MOpcode::MOVrm || instr.opcode == MOpcode::MOVSDrm ||
-                instr.opcode == MOpcode::MOVUPSrm) {
+            if (instr.opcode == MOpcode::MOVrm || instr.opcode == MOpcode::MOVrm8 ||
+                instr.opcode == MOpcode::MOVrm16 || instr.opcode == MOpcode::MOVrm32 ||
+                instr.opcode == MOpcode::MOVSDrm || instr.opcode == MOpcode::MOVUPSrm) {
                 fx.memWrite = true;
             } else if (instr.opcode != MOpcode::LEA) {
                 fx.memRead = true;

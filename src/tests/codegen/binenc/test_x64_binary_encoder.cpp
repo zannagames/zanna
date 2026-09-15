@@ -728,6 +728,88 @@ int main() {
     }
 
     // ================================================================
+    // 16b. Narrow memory transfers (i1/i16/i32 stores and loads)
+    // ================================================================
+
+    // movb %al, 8(%rbp) -> 88 45 08 (no REX.W: only the low byte is written)
+    {
+        auto bytes = encodeOne(MOpcode::MOVrm8, {mem(PhysReg::RBP, 8), gpr(PhysReg::RAX)});
+        CHECK(bytes.size() == 3);
+        CHECK(bytesMatch(bytes, {0x88, 0x45, 0x08}));
+    }
+
+    // movb %sil, (%rax) -> 40 88 30 (a bare REX selects SIL instead of DH)
+    {
+        auto bytes = encodeOne(MOpcode::MOVrm8, {mem(PhysReg::RAX, 0), gpr(PhysReg::RSI)});
+        CHECK(bytes.size() == 3);
+        CHECK(bytesMatch(bytes, {0x40, 0x88, 0x30}));
+    }
+
+    // movb %r9b, 4(%rbx) -> 44 88 4B 04 (REX.R)
+    {
+        auto bytes = encodeOne(MOpcode::MOVrm8, {mem(PhysReg::RBX, 4), gpr(PhysReg::R9)});
+        CHECK(bytes.size() == 4);
+        CHECK(bytesMatch(bytes, {0x44, 0x88, 0x4B, 0x04}));
+    }
+
+    // movw %cx, 2(%rdx) -> 66 89 4A 02
+    {
+        auto bytes = encodeOne(MOpcode::MOVrm16, {mem(PhysReg::RDX, 2), gpr(PhysReg::RCX)});
+        CHECK(bytes.size() == 4);
+        CHECK(bytesMatch(bytes, {0x66, 0x89, 0x4A, 0x02}));
+    }
+
+    // movw %r10w, (%r11) -> 66 45 89 13 (0x66 precedes REX)
+    {
+        auto bytes = encodeOne(MOpcode::MOVrm16, {mem(PhysReg::R11, 0), gpr(PhysReg::R10)});
+        CHECK(bytes.size() == 4);
+        CHECK(bytesMatch(bytes, {0x66, 0x45, 0x89, 0x13}));
+    }
+
+    // movl %edx, (%rsp) -> 89 14 24
+    {
+        auto bytes = encodeOne(MOpcode::MOVrm32, {mem(PhysReg::RSP, 0), gpr(PhysReg::RDX)});
+        CHECK(bytes.size() == 3);
+        CHECK(bytesMatch(bytes, {0x89, 0x14, 0x24}));
+    }
+
+    // movl %r8d, 16(%rax,%rcx,4) -> 44 89 44 88 10
+    {
+        auto bytes = encodeOne(MOpcode::MOVrm32,
+                               {memIdx(PhysReg::RAX, PhysReg::RCX, 4, 16), gpr(PhysReg::R8)});
+        CHECK(bytes.size() == 5);
+        CHECK(bytesMatch(bytes, {0x44, 0x89, 0x44, 0x88, 0x10}));
+    }
+
+    // movzbq 7(%rdi), %rax -> 48 0F B6 47 07
+    {
+        auto bytes = encodeOne(MOpcode::MOVZXmr8, {gpr(PhysReg::RAX), mem(PhysReg::RDI, 7)});
+        CHECK(bytes.size() == 5);
+        CHECK(bytesMatch(bytes, {0x48, 0x0F, 0xB6, 0x47, 0x07}));
+    }
+
+    // movzbq (%r13), %r14 -> 4D 0F B6 75 00
+    {
+        auto bytes = encodeOne(MOpcode::MOVZXmr8, {gpr(PhysReg::R14), mem(PhysReg::R13, 0)});
+        CHECK(bytes.size() == 5);
+        CHECK(bytesMatch(bytes, {0x4D, 0x0F, 0xB6, 0x75, 0x00}));
+    }
+
+    // movswq 6(%rsi), %rcx -> 48 0F BF 4E 06
+    {
+        auto bytes = encodeOne(MOpcode::MOVSXmr16, {gpr(PhysReg::RCX), mem(PhysReg::RSI, 6)});
+        CHECK(bytes.size() == 5);
+        CHECK(bytesMatch(bytes, {0x48, 0x0F, 0xBF, 0x4E, 0x06}));
+    }
+
+    // movslq 4(%rbx), %rdx -> 48 63 53 04
+    {
+        auto bytes = encodeOne(MOpcode::MOVSXDmr, {gpr(PhysReg::RDX), mem(PhysReg::RBX, 4)});
+        CHECK(bytes.size() == 4);
+        CHECK(bytesMatch(bytes, {0x48, 0x63, 0x53, 0x04}));
+    }
+
+    // ================================================================
     // 17. LEA with memory operand
     // ================================================================
 

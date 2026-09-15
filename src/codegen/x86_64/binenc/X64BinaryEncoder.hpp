@@ -373,9 +373,11 @@ class X64BinaryEncoder {
     /// @param mem Validated memory operand.
     /// @param cs Destination section receiving instruction bytes.
     /// @param rexW Whether @c REX.W is required.
-    /// @param mandatoryPrefix SSE prefix byte, or zero for none.
+    /// @param mandatoryPrefix Legacy prefix byte (SSE or @c 0x66), or zero for none.
     /// @param opByte1 First opcode byte.
     /// @param opByte2 Second opcode byte, or zero for a one-byte opcode.
+    /// @param forceRex Emit a REX prefix even when no REX bit is set, as a byte
+    ///        register SPL/BPL/SIL/DIL in the ModR/M register field requires.
     /// @throws std::runtime_error If @p mem contains an invalid register or scale.
     void emitWithMemOperand(uint8_t reg3,
                             uint8_t regRex,
@@ -384,7 +386,16 @@ class X64BinaryEncoder {
                             bool rexW,
                             uint8_t mandatoryPrefix,
                             uint8_t opByte1,
-                            uint8_t opByte2);
+                            uint8_t opByte2,
+                            bool forceRex = false);
+
+    /// @brief Encodes a byte, word, or doubleword store of a GPR's low bits.
+    /// @param op One of @c MOVrm8, @c MOVrm16, or @c MOVrm32.
+    /// @param src Physical GPR supplying the stored low bits.
+    /// @param mem Destination address.
+    /// @param cs Destination section receiving instruction bytes.
+    /// @throws std::runtime_error If the opcode, register, or address is invalid.
+    void encodeNarrowStore(MOpcode op, PhysReg src, const OpMem &mem, objfile::CodeSection &cs);
 
     // === Internal branch resolution ===
 
@@ -393,7 +404,7 @@ class X64BinaryEncoder {
         /// @brief Absolute section offset of the rel32 placeholder.
         size_t patchOffset = 0; ///< Offset in CodeSection of the rel32 placeholder.
         /// @brief Non-empty internal target label.
-        std::string target;     ///< Target label name.
+        std::string target; ///< Target label name.
     };
 
     /// @brief Record of a jump-table entry word awaiting label resolution.

@@ -235,7 +235,10 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "GetFileAttributesExW",
         "GetDiskFreeSpaceExW",
         "GetFileSizeEx",
+        "GetFileType",
         "GetConsoleMode",
+        "GetConsoleProcessList",
+        "FreeConsole",
         "GetExitCodeProcess",
         "GetFileInformationByHandle",
         "GetFileInformationByHandleEx",
@@ -277,6 +280,7 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "SetEvent",
         "SetHandleInformation",
         "SetInformationJobObject",
+        "SetStdHandle",
         "SetWaitableTimer",
         "Sleep",
         "SleepConditionVariableCS",
@@ -441,7 +445,7 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
     static const std::unordered_set<std::string> d3d11 = {"D3D11CreateDevice",
                                                           "D3D11CreateDeviceAndSwapChain"};
     static const std::unordered_set<std::string> d3dcompiler = {
-        "D3DCompile", "D3DCompile2", "D3DCompileFromFile", "D3DReflect"};
+        "D3DCompile", "D3DCompile2", "D3DCompileFromFile", "D3DCreateBlob", "D3DReflect"};
     static const std::unordered_set<std::string> ucrt = {
         "_Exit",
         "_exit",

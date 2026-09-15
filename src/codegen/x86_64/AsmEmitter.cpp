@@ -302,11 +302,13 @@ enum : std::uint16_t {
     kFmtCond = 1U << 6U,
     kFmtSetcc = 1U << 7U,
     kFmtReg32 = 1U << 8U,
-    kFmtReg32Imm = 1U << 9U, ///< Immediate + 32-bit register destination.
-    kFmtMovsxd = 1U << 10U,  ///< 32-bit source register, 64-bit destination (movslq).
-    kFmtReg16 = 1U << 11U,   ///< Both operands printed as 16-bit registers.
+    kFmtReg32Imm = 1U << 9U,  ///< Immediate + 32-bit register destination.
+    kFmtMovsxd = 1U << 10U,   ///< 32-bit source register, 64-bit destination (movslq).
+    kFmtReg16 = 1U << 11U,    ///< Both operands printed as 16-bit registers.
     kFmtReg16Imm = 1U << 12U, ///< Immediate + 16-bit register destination.
     kFmtMovsx16 = 1U << 13U,  ///< 16-bit source register, 64-bit destination (movswq).
+    kFmtMemRegNarrow =
+        1U << 14U, ///< Narrow store: opcode-width source register, memory destination.
 };
 
 /// @brief Compact generated textual-format descriptor for one opcode.
@@ -986,6 +988,24 @@ void AsmEmitter::emit_from_row(const EncodingRow &row,
             throw std::runtime_error("x86-64 asm emitter: MOVSXrr16 requires GPR operands");
         }
         os << ' ' << formatReg16(*src, target) << ", " << formatReg(*dest, target) << '\n';
+        return;
+    }
+
+    if ((flags & kFmtMemRegNarrow) != 0U) {
+        if (operands.size() < 2) {
+            os << " #<missing>\n";
+            return;
+        }
+        const auto *mem = std::get_if<OpMem>(&operands[0]);
+        const auto *src = std::get_if<OpReg>(&operands[1]);
+        if (!mem || !src || src->cls != RegClass::GPR) {
+            throw std::runtime_error(
+                "x86-64 asm emitter: narrow store requires a memory destination and GPR source");
+        }
+        const std::string source = row.opcode == MOpcode::MOVrm8    ? formatReg8(*src, target)
+                                   : row.opcode == MOpcode::MOVrm16 ? formatReg16(*src, target)
+                                                                    : formatReg32(*src, target);
+        os << ' ' << source << ", " << formatOperand(operands[0], target, format) << '\n';
         return;
     }
 

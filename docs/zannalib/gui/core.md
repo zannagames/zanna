@@ -264,7 +264,7 @@ while !app.get_ShouldClose() {
 
 Managed font loading for GUI widgets. Supports TrueType (`.ttf`/supported first-face collection)
 files plus zero-dependency regular and bold system UI roles.
-TrueType outline rasterization preserves separate contour boundaries, so glyphs with holes or multiple independent contours render with the intended even-odd fill instead of connecting unrelated contour endpoints.
+TrueType outline rasterization preserves separate contour boundaries, so glyphs with holes or multiple independent contours render correctly instead of connecting unrelated contour endpoints. Outlines fill with TrueType's non-zero winding rule, so script and stroke-built faces whose contours overlap stay solid, and every quadratic segment is flattened, including contours built only from off-curve points (the usual encoding of an `o` or a bowl).
 `Font.Load(path)` rejects paths containing embedded NUL bytes instead of passing a truncated path to the platform loader.
 `LoadSystemUi` and `LoadSystemUiBold` try deterministic host paths and fall back to Zanna's embedded
 font, so a graphics-enabled build has a portable face without adding a font library. Sizes are

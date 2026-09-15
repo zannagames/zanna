@@ -113,6 +113,30 @@ if (ZANNAGFX_BACKEND STREQUAL "Wayland")
             LABELS "integration;gui;wayland;requires_linux;requires_display")
 endif ()
 
+if (ZANNAGFX_BACKEND STREQUAL "Win32")
+    # A graphical process releases a console only it uses (ADR 0361). The test
+    # re-launches itself in windowless-console child roles; it opens no window.
+    add_executable(test_win32_console test_win32_console.c ../src/vgfx_platform_win32_console.c)
+    target_include_directories(test_win32_console PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_features(test_win32_console PRIVATE c_std_11)
+    add_test(NAME test_win32_console COMMAND test_win32_console)
+    set_tests_properties(test_win32_console PROPERTIES
+            TIMEOUT 120
+            LABELS "unit;gui;requires_windows")
+
+    # A lone Alt or F10 press must not park a window in the keyboard menu loop.
+    # Windows runs that loop only for the foreground window, so the test reports
+    # a skip in a session that will not activate its windows.
+    add_executable(test_win32_keymenu test_win32_keymenu.c)
+    target_link_libraries(test_win32_keymenu PRIVATE zannagfx user32)
+    target_include_directories(test_win32_keymenu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_features(test_win32_keymenu PRIVATE c_std_11)
+    add_test(NAME test_win32_keymenu COMMAND test_win32_keymenu)
+    set_tests_properties(test_win32_keymenu PROPERTIES
+            TIMEOUT 30
+            LABELS "integration;gui;requires_windows;requires_display")
+endif ()
+
 if (ZANNAGFX_BACKEND STREQUAL "LinuxAuto")
     add_executable(test_linux_auto_backend test_linux_auto_backend.c)
     target_link_libraries(test_linux_auto_backend PRIVATE zannagfx Threads::Threads)

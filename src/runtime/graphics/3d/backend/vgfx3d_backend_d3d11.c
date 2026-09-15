@@ -96,6 +96,12 @@ static const GUID VGFX3D_IID_ID3D11Device = {
     0xdb6f6ddb, 0xac77, 0x4e88, {0x82, 0x53, 0x81, 0x9d, 0xf9, 0xbb, 0xf1, 0x40}};
 
 #include "vgfx3d_backend_d3d11_shaders.inc"
+/* The manifest expands the shader-source accessors defined above. */
+#include "vgfx3d_backend_d3d11_shader_manifest.inc"
+#if defined(VGFX3D_D3D11_EMBEDDED_BYTECODE)
+/* Build-time DXBC from zanna_d3d11_shader_bake (src/runtime/CMakeLists.txt). */
+#include "vgfx3d_backend_d3d11_bytecode.inc"
+#endif
 
 /// @brief One cached 2D texture or native TextureAsset3D upload and its streaming cursor.
 typedef struct {
@@ -1669,7 +1675,8 @@ static int d3d11_present_swapchain(d3d11_context_t *ctx) {
 
 /// @brief Runtime-compile an HLSL shader entry point to bytecode.
 ///
-/// Wraps `D3DCompile` with strict-mode enabled and our standard error
+/// Wraps `D3DCompile` with the manifest's flags (strict mode plus IEEE
+/// strictness, which keeps the HLSL `isnan()` guards) and our standard error
 /// reporting. The bytecode blob is returned via `*out_blob`; caller
 /// owns the release. Used for both vertex and pixel shader stages
 /// (the `target` parameter selects via "vs_5_0" / "ps_5_0" etc).
@@ -1700,7 +1707,7 @@ static HRESULT d3d11_compile_shader(const char *source,
                     NULL,
                     entry,
                     target,
-                    D3DCOMPILE_ENABLE_STRICTNESS,
+                    VGFX3D_D3D11_SHADER_COMPILE_FLAGS,
                     0,
                     &blob,
                     &err_blob);

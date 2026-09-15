@@ -876,8 +876,7 @@ static void emitNullAddressGuard(MIRBuilder &builder,
     const auto *reg = std::get_if<OpReg>(&guardOp);
     if (!reg)
         return;
-    if (!reg->isPhys &&
-        !builder.lower().noteNullGuardedBase(builder.block().label, reg->idOrPhys))
+    if (!reg->isPhys && !builder.lower().noteNullGuardedBase(builder.block().label, reg->idOrPhys))
         return;
     const std::string trapLabel = builder.lower().requestNullTrapLabel();
     builder.append(
@@ -929,7 +928,23 @@ void EmitCommon::emitLoad(const ILInstr &instr, RegClass cls) {
     emitNullAddressGuard(builder(), instr.ops[0], baseOp);
 
     if (cls == RegClass::GPR) {
-        builder().append(MInstr::make(MOpcode::MOVmr, std::vector<Operand>{clone(dest), mem}));
+        // Read exactly the IL type's width, extended as the VM extends it:
+        // i1 is the low bit of one byte, i16/i32 are sign-extended. A 64-bit
+        // read past a narrow field picks up neighbouring bytes, or bytes past
+        // the end of the allocation.
+        const bool isBool = instr.resultKind == ILValue::Kind::I1 || instr.resultBits == 1;
+        MOpcode loadOpc = MOpcode::MOVmr;
+        if (isBool)
+            loadOpc = MOpcode::MOVZXmr8;
+        else if (instr.resultBits == 16)
+            loadOpc = MOpcode::MOVSXmr16;
+        else if (instr.resultBits == 32)
+            loadOpc = MOpcode::MOVSXDmr;
+        builder().append(MInstr::make(loadOpc, std::vector<Operand>{clone(dest), mem}));
+        if (isBool) {
+            builder().append(
+                MInstr::make(MOpcode::ANDri, std::vector<Operand>{clone(dest), makeImmOperand(1)}));
+        }
     } else {
         builder().append(MInstr::make(MOpcode::MOVSDmr, std::vector<Operand>{clone(dest), mem}));
     }
@@ -986,20 +1001,35 @@ void EmitCommon::emitStore(const ILInstr &instr) {
     // between an address def and the backward fold scan that consumes it.
     emitNullAddressGuard(builder(), instr.ops[0], baseOp);
 
+    // Write exactly the IL type's width: an 8-byte store of an i1/i16/i32
+    // overwrites the following bytes, which may be another field or lie past
+    // the end of the allocation.
+    MOpcode gprStoreOpc = MOpcode::MOVrm;
+    if (instr.resultBits == 1)
+        gprStoreOpc = MOpcode::MOVrm8;
+    else if (instr.resultBits == 16)
+        gprStoreOpc = MOpcode::MOVrm16;
+    else if (instr.resultBits == 32)
+        gprStoreOpc = MOpcode::MOVrm32;
+
     if (std::holds_alternative<OpReg>(value)) {
         const auto cls = std::get<OpReg>(value).cls;
         if (cls == RegClass::XMM) {
             builder().append(MInstr::make(MOpcode::MOVSDrm, std::vector<Operand>{mem, value}));
         } else {
-            builder().append(MInstr::make(MOpcode::MOVrm, std::vector<Operand>{mem, value}));
+            builder().append(MInstr::make(gprStoreOpc, std::vector<Operand>{mem, value}));
         }
     } else {
         // For immediate-to-memory stores, we must go through a temp register
         // because x86-64 can't move a 64-bit immediate directly to memory.
+        if (instr.resultBits == 1) {
+            if (auto *immValue = std::get_if<OpImm>(&value))
+                immValue->val &= 1;
+        }
         const VReg tmp = builder().makeTempVReg(RegClass::GPR);
         const Operand tmpOp = makeVRegOperand(tmp.cls, tmp.id);
         builder().append(MInstr::make(MOpcode::MOVri, std::vector<Operand>{tmpOp, value}));
-        builder().append(MInstr::make(MOpcode::MOVrm, std::vector<Operand>{mem, tmpOp}));
+        builder().append(MInstr::make(gprStoreOpc, std::vector<Operand>{mem, tmpOp}));
     }
 }
 

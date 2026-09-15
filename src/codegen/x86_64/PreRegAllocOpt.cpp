@@ -152,8 +152,8 @@ struct X64PreRATraits {
         // Physical sources such as ABI return registers are not tracked as
         // live ranges here. Forwarding them would let register allocation
         // reuse that physical register before the forwarded use.
-        if (!dstReg || !srcReg || dstReg->isPhys || srcReg->isPhys ||
-            dstReg->cls != srcReg->cls || sameReg(*dstReg, *srcReg))
+        if (!dstReg || !srcReg || dstReg->isPhys || srcReg->isPhys || dstReg->cls != srcReg->cls ||
+            sameReg(*dstReg, *srcReg))
             return false;
         dst = *dstReg;
         src = *srcReg;
@@ -289,9 +289,10 @@ namespace {
 
 /// @brief Predicate: does @p opcode write to memory?
 /// @param opcode Opcode to classify.
-/// @return @c true for GPR, scalar-double, or full-XMM stores.
+/// @return @c true for GPR (any width), scalar-double, or full-XMM stores.
 [[nodiscard]] bool isStoreOpcode(MOpcode opcode) noexcept {
-    return opcode == MOpcode::MOVrm || opcode == MOpcode::MOVSDrm || opcode == MOpcode::MOVUPSrm;
+    return opcode == MOpcode::MOVrm || opcode == MOpcode::MOVrm8 || opcode == MOpcode::MOVrm16 ||
+           opcode == MOpcode::MOVrm32 || opcode == MOpcode::MOVSDrm || opcode == MOpcode::MOVUPSrm;
 }
 
 /// @brief Predicate: does @p op mention virtual GPR @p reg (directly or via a memory operand)?

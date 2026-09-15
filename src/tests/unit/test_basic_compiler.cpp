@@ -20,6 +20,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace il::support {
 struct SourceManagerTestAccess {
@@ -45,6 +46,27 @@ int main() {
     assert(!result.module.functions.empty());
     assert(!result.module.functions.front().name.empty());
     assert(result.emitter->warningCount() == 0);
+
+    // A moved result keeps reporting into its own diagnostics. The emitter
+    // refers to the engine by address, so without rebinding it kept reporting
+    // into the moved-from engine. MSVC Debug builds move the local that
+    // compileBasic() returns, so callers read a destroyed engine's counts.
+    {
+        auto original = compileBasic(input, options, sm);
+        assert(original.succeeded());
+        BasicCompilerResult moved(std::move(original));
+        moved.emitter->emit(Severity::Error, "B9999", {}, 0, "reported after a move");
+        assert(moved.diagnostics.errorCount() == 1);
+        assert(moved.emitter->errorCount() == 1);
+        assert(!moved.succeeded());
+
+        BasicCompilerResult assigned;
+        assigned = std::move(moved);
+        assigned.emitter->emit(Severity::Warning, "B9998", {}, 0, "reported after assignment");
+        assert(assigned.diagnostics.errorCount() == 1);
+        assert(assigned.diagnostics.warningCount() == 1);
+        assert(assigned.emitter->warningCount() == 1);
+    }
 
     {
         SourceManager exhaustedSm;

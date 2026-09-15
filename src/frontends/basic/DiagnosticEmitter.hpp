@@ -135,14 +135,23 @@ class DiagnosticEmitter {
     /// @return String with path and line or empty string when unavailable.
     std::string formatFileLine(il::support::SourceLoc loc) const;
 
+    /// @brief Report later diagnostics into @p de instead of the current engine.
+    /// @details An owner that holds both the engine and this emitter by value
+    ///          (@c BasicCompilerResult) calls this when it is moved, so the
+    ///          emitter follows the engine to its new address.
+    /// @param de Diagnostic engine that must outlive this emitter.
+    void rebindEngine(il::support::DiagnosticEngine &de) noexcept {
+        de_ = &de;
+    }
+
   private:
     /// @brief Diagnostic record captured for later printing.
     struct Entry {
         il::support::Severity severity{il::support::Severity::Error}; ///< Diagnostic severity.
-        std::string code;               ///< Error code like B1001.
-        std::string message;            ///< Description text.
-        il::support::SourceLoc loc;     ///< Start source location.
-        uint32_t length{0};             ///< Number of characters to mark.
+        std::string code;                                             ///< Error code like B1001.
+        std::string message;                                          ///< Description text.
+        il::support::SourceLoc loc;                                   ///< Start source location.
+        uint32_t length{0}; ///< Number of characters to mark.
     };
 
     /// @brief Retrieve full line text for @p fileId at @p line.
@@ -152,12 +161,12 @@ class DiagnosticEmitter {
     ///         file, an unavailable line, or BASIC's unlabeled-line sentinel.
     std::string getLine(uint32_t fileId, uint32_t line) const;
 
-    ///< Borrowed engine receiving immediate structured diagnostics.
-    il::support::DiagnosticEngine &de_;                 ///< Underlying diagnostic engine.
+    ///< Borrowed engine receiving immediate structured diagnostics; never null.
+    il::support::DiagnosticEngine *de_; ///< Underlying diagnostic engine.
     ///< Borrowed manager used only for path/location formatting.
-    const il::support::SourceManager &sm_;              ///< Source manager for file paths.
+    const il::support::SourceManager &sm_; ///< Source manager for file paths.
     ///< Owning presentation records in emission order.
-    std::vector<Entry> entries_;                        ///< Diagnostics in emission order.
+    std::vector<Entry> entries_; ///< Diagnostics in emission order.
     ///< Owning source snapshot keyed by file id.
     std::unordered_map<uint32_t, std::string> sources_; ///< Source text per file id.
 };

@@ -360,64 +360,64 @@ static HRESULT d3d11_create_context_sampler_states(d3d11_context_t *ctx) {
     return hr;
 }
 
-/// @brief Compile every HLSL shader entry point needed by the process cache.
-/// @param[out] blobs Temporary blob bundle populated in dependency order.
-/// @return S_OK when every shader compiles, otherwise the first compiler HRESULT.
+#if defined(VGFX3D_D3D11_EMBEDDED_BYTECODE)
+/// @brief Wrap one build-time DXBC array in a compiler blob.
+/// @param[in] bytes Embedded bytecode.
+/// @param[in] size Byte count of @p bytes.
+/// @param[out] out_blob Receives a new blob the caller releases.
+/// @return S_OK on success, otherwise the D3DCreateBlob failure.
+static HRESULT d3d11_blob_from_embedded(const unsigned char *bytes,
+                                        size_t size,
+                                        ID3DBlob **out_blob) {
+    HRESULT hr;
+    *out_blob = NULL;
+    hr = D3DCreateBlob(size, out_blob);
+    if (FAILED(hr) || !*out_blob)
+        return FAILED(hr) ? hr : E_OUTOFMEMORY;
+    memcpy(ID3D10Blob_GetBufferPointer(*out_blob), bytes, size);
+    return S_OK;
+}
+
+/// @brief Load the build-time DXBC for every manifest entry.
+/// @details Only bytecode baked from exactly this binary's HLSL and compile flags is used; a
+///   digest mismatch (stale generated include) returns E_FAIL so the caller compiles instead.
+/// @param[out] blobs Blob bundle populated in manifest order; left empty on failure.
+/// @return S_OK when every embedded blob was wrapped.
+static HRESULT d3d11_load_embedded_context_shaders(d3d11_shader_blobs_t *blobs) {
+    HRESULT hr = S_OK;
+    if (vgfx3d_d3d11_shader_manifest_digest() != VGFX3D_D3D11_EMBEDDED_BYTECODE_DIGEST)
+        return E_FAIL;
+#define D3D11_LOAD_EMBEDDED_SHADER(member, source, entry, target)                                  \
+    if (SUCCEEDED(hr))                                                                             \
+        hr = d3d11_blob_from_embedded(                                                             \
+            vgfx3d_d3d11_dxbc_##member, sizeof(vgfx3d_d3d11_dxbc_##member), &blobs->member);
+    VGFX3D_D3D11_SHADER_LIST(D3D11_LOAD_EMBEDDED_SHADER)
+#undef D3D11_LOAD_EMBEDDED_SHADER
+    if (FAILED(hr))
+        d3d11_release_shader_blobs(blobs);
+    return hr;
+}
+#endif
+
+/// @brief Acquire bytecode for every HLSL shader entry point needed by the process cache.
+/// @details Build-time DXBC (zanna_d3d11_shader_bake) skips several seconds of D3DCompile at
+///   process start; without it, or when it is stale, each manifest entry compiles here.
+/// @param[out] blobs Temporary blob bundle populated in manifest order.
+/// @return S_OK when every shader is available, otherwise the first compiler HRESULT.
 static HRESULT d3d11_compile_context_shaders_uncached(d3d11_shader_blobs_t *blobs) {
     HRESULT hr;
     memset(blobs, 0, sizeof(*blobs));
-    hr = d3d11_compile_shader(d3d11_shader_source, "VSMain", "vs_5_0", &blobs->vs);
-    if (FAILED(hr))
+#if defined(VGFX3D_D3D11_EMBEDDED_BYTECODE)
+    if (SUCCEEDED(d3d11_load_embedded_context_shaders(blobs)))
+        return S_OK;
+#endif
+#define D3D11_COMPILE_SHADER(member, source, entry, target)                                        \
+    hr = d3d11_compile_shader(source, entry, target, &blobs->member);                              \
+    if (FAILED(hr))                                                                                \
         return hr;
-    hr = d3d11_compile_shader(
-        d3d11_shader_source, "VSMainInstanced", "vs_5_0", &blobs->vs_instanced);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(
-        d3d11_shader_source, "VSMainParticles", "vs_5_0", &blobs->vs_particles);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_shader_source, "PSMain", "ps_5_0", &blobs->ps);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_shader_source, "VSShadow", "vs_5_0", &blobs->vs_shadow);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(
-        d3d11_shader_source, "VSShadowInstanced", "vs_5_0", &blobs->vs_shadow_instanced);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_shader_source, "PSShadow", "ps_5_0", &blobs->ps_shadow);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_skybox_shader_source, "VSSkybox", "vs_5_0", &blobs->vs_skybox);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_skybox_shader_source, "PSSkybox", "ps_5_0", &blobs->ps_skybox);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_postfx_shader_source, "VSPostFX", "vs_5_0", &blobs->vs_postfx);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_postfx_shader_source, "PSPostFX", "ps_5_0", &blobs->ps_postfx);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(
-        d3d11_postfx_shader_source, "PSOverlayComposite", "ps_5_0", &blobs->ps_overlay);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(
-        d3d11_bloom_shader_source, "PSBloomDown", "ps_5_0", &blobs->ps_bloom_down);
-    if (FAILED(hr))
-        return hr;
-    hr =
-        d3d11_compile_shader(d3d11_bloom_shader_source, "PSBloomUp", "ps_5_0", &blobs->ps_bloom_up);
-    if (FAILED(hr))
-        return hr;
-    hr = d3d11_compile_shader(d3d11_taa_shader_source, "PSTAAResolve", "ps_5_0", &blobs->ps_taa);
-    if (FAILED(hr))
-        return hr;
-    return d3d11_compile_shader(d3d11_ssr_shader_source, "PSSSR", "ps_5_0", &blobs->ps_ssr);
+    VGFX3D_D3D11_SHADER_LIST(D3D11_COMPILE_SHADER)
+#undef D3D11_COMPILE_SHADER
+    return S_OK;
 }
 
 /* D3D bytecode is device-independent. Keep one process-lifetime compiler result

@@ -2420,6 +2420,59 @@ TEST(X86BackendRegressions, IndexedStoreUsesStoreDisplacementOperand) {
     EXPECT_FALSE(containsRegex(result.asmText, R"(42\(%r[a-z0-9]+,%r[a-z0-9]+,8\))"));
 }
 
+TEST(X86BackendRegressions, NarrowStoresAndLoadsUseTheirIlWidth) {
+    // A 64-bit transfer of an i1/i16/i32 field overwrites or reads the bytes
+    // after it, which may be a neighbouring field or lie past the allocation.
+    ILValue flag = val(ILValue::Kind::I1, 1);
+    flag.bits = 1;
+    ILValue word = val(ILValue::Kind::I64, 2);
+    word.bits = 16;
+    ILValue dword = val(ILValue::Kind::I64, 3);
+    dword.bits = 32;
+    const ILValue slot = val(ILValue::Kind::PTR, 0);
+
+    ILBlock entry{};
+    entry.name = "entry";
+    entry.paramIds = {0, 1, 2, 3};
+    entry.paramKinds = {
+        ILValue::Kind::PTR, ILValue::Kind::I1, ILValue::Kind::I64, ILValue::Kind::I64};
+    entry.instrs = {opBits("store", {slot, flag, imm(1)}, -1, ILValue::Kind::I1, 1),
+                    opBits("store", {slot, word, imm(2)}, -1, ILValue::Kind::I64, 16),
+                    opBits("store", {slot, dword, imm(4)}, -1, ILValue::Kind::I64, 32),
+                    opBits("store", {slot, immI1(3), imm(8)}, -1, ILValue::Kind::I1, 1),
+                    opBits("load", {slot, imm(1)}, 4, ILValue::Kind::I1, 1),
+                    opBits("load", {slot, imm(2)}, 5, ILValue::Kind::I64, 16),
+                    opBits("load", {slot, imm(4)}, 6, ILValue::Kind::I64, 32),
+                    op("store", {slot, val(ILValue::Kind::I1, 4), imm(16)}),
+                    op("store", {slot, val(ILValue::Kind::I64, 5), imm(24)}),
+                    op("ret", {val(ILValue::Kind::I64, 6)})};
+
+    ILFunction fn{};
+    fn.name = "narrow_width_memory";
+    fn.blocks = {entry};
+
+    const CodegenResult result = compile(fn);
+    if (!result.errors.empty()) {
+        std::cerr << result.errors << '\n';
+    }
+    ASSERT_TRUE(result.errors.empty());
+    const std::string &text = result.asmText;
+    EXPECT_TRUE(containsRegex(text, R"(movb\s+%(?:[a-d]l|sil|dil|r\d+b),\s*1\(%r[a-z0-9]+\))"));
+    EXPECT_TRUE(containsRegex(text, R"(movb\s+%(?:[a-d]l|sil|dil|r\d+b),\s*8\(%r[a-z0-9]+\))"));
+    EXPECT_TRUE(containsRegex(text, R"(movw\s+%(?:[a-d]x|si|di|r\d+w),\s*2\(%r[a-z0-9]+\))"));
+    EXPECT_TRUE(containsRegex(text, R"(movl\s+%(?:e[a-d]x|esi|edi|r\d+d),\s*4\(%r[a-z0-9]+\))"));
+    EXPECT_TRUE(containsRegex(text, R"(movzbq\s+1\(%r[a-z0-9]+\),\s*%r[a-z0-9]+)"));
+    EXPECT_TRUE(containsRegex(text, R"(andq\s+\$1,\s*%r[a-z0-9]+)"));
+    EXPECT_TRUE(containsRegex(text, R"(movswq\s+2\(%r[a-z0-9]+\),\s*%r[a-z0-9]+)"));
+    EXPECT_TRUE(containsRegex(text, R"(movslq\s+4\(%r[a-z0-9]+\),\s*%r[a-z0-9]+)"));
+    EXPECT_FALSE(containsRegex(text, R"(movq\s+%r[a-z0-9]+,\s*(?:1|2|4|8)\(%r[a-z0-9]+\))"));
+    EXPECT_FALSE(containsRegex(text, R"(movq\s+(?:1|2|4)\(%r[a-z0-9]+\),\s*%r[a-z0-9]+)"));
+
+    // The binary path encodes the same instructions.
+    const BinaryEmitResult binary = compileBinary(fn);
+    ASSERT_TRUE(binary.errors.empty());
+}
+
 TEST(X86BackendRegressions, GepMaterializesImmediateBase) {
     ILValue nullBase{};
     nullBase.kind = ILValue::Kind::PTR;

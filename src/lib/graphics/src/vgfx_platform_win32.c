@@ -42,6 +42,8 @@
 
 #ifdef _WIN32
 
+#include "vgfx_platform_win32_console.h"
+
 #include <windows.h>
 
 #include <imm.h>
@@ -1504,6 +1506,19 @@ static LRESULT CALLBACK vgfx_win32_wndproc(HWND hwnd, UINT msg, WPARAM wparam, L
             return msg == WM_SYSKEYUP ? DefWindowProcW(hwnd, msg, wparam, lparam) : 0;
         }
 
+        case WM_SYSCOMMAND:
+            /* DefWindowProc turns a lone Alt or F10 press (lparam 0) and an
+               Alt+letter chord (lparam = the letter) into SC_KEYMENU, then runs
+               the window-menu loop modally inside this message: the program's
+               frame loop stops and the next arrow and Enter keys drive a menu
+               the window does not have. The keys already reached the program as
+               key events above, so only the activation is dropped. macOS and
+               Linux give a lone Alt no such meaning. Alt+Space still opens the
+               window menu. */
+            if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != ' ')
+                return 0;
+            break;
+
         case WM_CHAR: {
             uint32_t codepoint = 0;
             WCHAR ch = (WCHAR)wparam;
@@ -2024,8 +2039,14 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
                       strcmp(hide_env, "false") != 0 && strcmp(hide_env, "FALSE") != 0 &&
                       strcmp(hide_env, "off") != 0 && strcmp(hide_env, "OFF") != 0;
     ShowWindow(w32->hwnd, hide_window ? SW_HIDE : SW_SHOW);
-    if (!hide_window)
+    if (!hide_window) {
         UpdateWindow(w32->hwnd);
+        /* A program started from Explorer, a shortcut, or an installer owns a
+         * console window nobody reads once it has a window of its own; macOS and
+         * Linux desktop launches open no terminal at all. A terminal launch
+         * shares its console with the shell and keeps it (ADR 0361). */
+        (void)vgfx_win32_release_private_console();
+    }
     AcquireSRWLockExclusive(&g_vgfx_win32_clipboard_lock);
     g_vgfx_win32_clipboard_owner = w32->hwnd;
     ReleaseSRWLockExclusive(&g_vgfx_win32_clipboard_lock);

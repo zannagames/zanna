@@ -1160,6 +1160,49 @@ if (ZANNA_ENABLE_GRAPHICS AND TARGET zannagfx)
             ${PROJECT_SOURCE_DIR}/src/lib/graphics/include
             ${PROJECT_SOURCE_DIR}/src/lib/gui/include
     )
+    # D3D11: compiling the backend HLSL with D3DCompile costs several seconds at
+    # every process start. Bake it to DXBC at build time with the runtime's own
+    # shader manifest and flags; the backend checks the manifest digest and still
+    # compiles at runtime when no bake exists (a cross-architecture build cannot
+    # run the host tool) or the include is stale.
+    if (WIN32 AND NOT CMAKE_CROSSCOMPILING AND
+            CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL CMAKE_SYSTEM_PROCESSOR)
+        add_executable(zanna_d3d11_shader_bake
+                ${PROJECT_SOURCE_DIR}/src/tools/d3d11_shader_bake/d3d11_shader_bake.c)
+        target_include_directories(zanna_d3d11_shader_bake PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}
+                ${_RT_SUBDIRS}
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src
+                ${PROJECT_SOURCE_DIR}/src/lib/graphics/include
+                ${PROJECT_SOURCE_DIR}/src/lib/gui/include
+        )
+        target_compile_definitions(zanna_d3d11_shader_bake PRIVATE ZANNA_ENABLE_GRAPHICS)
+        if (MSVC)
+            target_compile_options(zanna_d3d11_shader_bake PRIVATE /W4 /wd4100 /wd4201)
+        endif ()
+        target_link_libraries(zanna_d3d11_shader_bake PRIVATE d3dcompiler)
+        set(ZANNA_D3D11_BYTECODE_DIR "${CMAKE_BINARY_DIR}/generated/runtime/d3d11")
+        set(ZANNA_D3D11_BYTECODE_INC "${ZANNA_D3D11_BYTECODE_DIR}/vgfx3d_backend_d3d11_bytecode.inc")
+        add_custom_command(
+                OUTPUT "${ZANNA_D3D11_BYTECODE_INC}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${ZANNA_D3D11_BYTECODE_DIR}"
+                COMMAND zanna_d3d11_shader_bake "${ZANNA_D3D11_BYTECODE_INC}"
+                DEPENDS zanna_d3d11_shader_bake
+                        "${CMAKE_CURRENT_SOURCE_DIR}/graphics/3d/backend/vgfx3d_backend_d3d11_shaders.inc"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/graphics/3d/backend/vgfx3d_backend_d3d11_shader_manifest.inc"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/graphics/3d/backend/vgfx3d_backend.h"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/graphics/3d/backend/vgfx3d_backend_d3d11_shared.h"
+                COMMENT "Baking D3D11 backend HLSL to embedded DXBC"
+                VERBATIM
+        )
+        # One generating target: the runtime and the bake fidelity test both
+        # consume the include without duplicating the custom command.
+        add_custom_target(zanna_d3d11_shader_bytecode DEPENDS "${ZANNA_D3D11_BYTECODE_INC}")
+        add_dependencies(zanna_rt_graphics_obj zanna_d3d11_shader_bytecode)
+        target_include_directories(zanna_rt_graphics_obj PRIVATE "${ZANNA_D3D11_BYTECODE_DIR}")
+        target_compile_definitions(zanna_rt_graphics_obj PRIVATE VGFX3D_D3D11_EMBEDDED_BYTECODE=1)
+    endif ()
     target_link_libraries(zanna_rt_graphics PUBLIC zannagfx)
     target_link_libraries(zanna_runtime PUBLIC zannagfx)
     # Link GUI library if available

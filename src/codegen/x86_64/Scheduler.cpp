@@ -285,6 +285,9 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 [[nodiscard]] bool opcodeReadsMem(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::MOVmr:
+        case MOpcode::MOVZXmr8:
+        case MOpcode::MOVSXmr16:
+        case MOpcode::MOVSXDmr:
         case MOpcode::MOVSDmr:
         case MOpcode::MOVUPSmr:
         case MOpcode::ADDrm:
@@ -296,6 +299,9 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
         case MOpcode::IMULrm:
             return true;
         case MOpcode::MOVrm:
+        case MOpcode::MOVrm8:
+        case MOpcode::MOVrm16:
+        case MOpcode::MOVrm32:
         case MOpcode::MOVSDrm:
         case MOpcode::MOVUPSrm:
         case MOpcode::LEA:
@@ -311,10 +317,16 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 [[nodiscard]] bool opcodeWritesMem(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::MOVrm:
+        case MOpcode::MOVrm8:
+        case MOpcode::MOVrm16:
+        case MOpcode::MOVrm32:
         case MOpcode::MOVSDrm:
         case MOpcode::MOVUPSrm:
             return true;
         case MOpcode::MOVmr:
+        case MOpcode::MOVZXmr8:
+        case MOpcode::MOVSXmr16:
+        case MOpcode::MOVSXDmr:
         case MOpcode::MOVSDmr:
         case MOpcode::MOVUPSmr:
         case MOpcode::ADDrm:

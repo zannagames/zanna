@@ -99,6 +99,12 @@ enum class MOpcode {
     MOVrr,        ///< Move register to register.
     MOVrm,        ///< Move register to memory.
     MOVmr,        ///< Move memory to register.
+    MOVrm8,       ///< Store a register's low byte to memory (movb; i1 stores).
+    MOVrm16,      ///< Store a register's low 16 bits to memory (movw; i16 stores).
+    MOVrm32,      ///< Store a register's low 32 bits to memory (movl; i32 stores).
+    MOVZXmr8,     ///< Load a byte from memory, zero-extended to 64 bits (movzbq).
+    MOVSXmr16,    ///< Load 16 bits from memory, sign-extended to 64 bits (movswq).
+    MOVSXDmr,     ///< Load 32 bits from memory, sign-extended to 64 bits (movslq).
     CMOVNErr,     ///< Conditional move when not equal (register-register).
     MOVri,        ///< Move immediate to register.
     SELECT_GPR,   ///< Select pseudo for integer/pointer values before ISel.

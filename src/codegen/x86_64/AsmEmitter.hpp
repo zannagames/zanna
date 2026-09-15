@@ -294,30 +294,33 @@ class AsmEmitter {
 
 /// \brief Enumerates operand orderings handled by the emitter table.
 enum class OperandOrder {
-    NONE,      ///< Instruction does not print operands.
-    DIRECT,    ///< Emit operands exactly as provided.
-    R,         ///< Single register operand.
-    M,         ///< Single memory operand.
-    I,         ///< Single immediate operand.
-    R_R,       ///< Destination register with register source.
-    R_R32,     ///< Destination register with register source (32-bit operands).
-    R32_I,     ///< 32-bit destination register with immediate source.
-    R_R16,     ///< Destination register with register source (16-bit operands).
-    R16_I,     ///< 16-bit destination register with immediate source.
+    NONE,       ///< Instruction does not print operands.
+    DIRECT,     ///< Emit operands exactly as provided.
+    R,          ///< Single register operand.
+    M,          ///< Single memory operand.
+    I,          ///< Single immediate operand.
+    R_R,        ///< Destination register with register source.
+    R_R32,      ///< Destination register with register source (32-bit operands).
+    R32_I,      ///< 32-bit destination register with immediate source.
+    R_R16,      ///< Destination register with register source (16-bit operands).
+    R16_I,      ///< 16-bit destination register with immediate source.
     MOVSX16_RR, ///< movswq: 16-bit source register, 64-bit destination register.
-    R_M,       ///< Destination register with memory source.
-    M_R,       ///< Destination memory with register source.
-    R_I,       ///< Destination register with immediate source.
-    M_I,       ///< Destination memory with immediate source.
-    R_R_R,     ///< Three operands following src2, src1, dest ordering.
-    SHIFT,     ///< Shift/rotate with specialised count formatting.
-    MOVZX_RR8, ///< movzbq-like instruction requiring 8-bit source formatting.
-    MOVSXD_RR, ///< movslq: 32-bit source register, 64-bit destination register.
-    LEA,       ///< LEA with custom source handling.
-    CALL,      ///< CALL-style operand formatting.
-    JUMP,      ///< JMP-style operand formatting.
-    JCC,       ///< Conditional branch formatting with suffix.
-    SETCC      ///< SETcc formatting with suffix.
+    R_M,        ///< Destination register with memory source.
+    M_R,        ///< Destination memory with register source.
+    M_R8,       ///< Destination memory with the source register's low byte.
+    M_R16,      ///< Destination memory with the source register's low 16 bits.
+    M_R32,      ///< Destination memory with the source register's low 32 bits.
+    R_I,        ///< Destination register with immediate source.
+    M_I,        ///< Destination memory with immediate source.
+    R_R_R,      ///< Three operands following src2, src1, dest ordering.
+    SHIFT,      ///< Shift/rotate with specialised count formatting.
+    MOVZX_RR8,  ///< movzbq-like instruction requiring 8-bit source formatting.
+    MOVSXD_RR,  ///< movslq: 32-bit source register, 64-bit destination register.
+    LEA,        ///< LEA with custom source handling.
+    CALL,       ///< CALL-style operand formatting.
+    JUMP,       ///< JMP-style operand formatting.
+    JCC,        ///< Conditional branch formatting with suffix.
+    SETCC       ///< SETcc formatting with suffix.
 };
 
 /// \brief Categorises operand variants for encoding table matching.

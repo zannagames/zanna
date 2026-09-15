@@ -1169,6 +1169,18 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_vgfx3d_backend_d3d11_shared test_vgfx3d_backend_d3d11_shared)
     zanna_add_test_labels(test_vgfx3d_backend_d3d11_shared graphics3d unit)
 
+    # Windows builds that bake the D3D11 HLSL (src/runtime/CMakeLists.txt) also
+    # prove the manifest flags and the embedded DXBC against the real compiler.
+    if (TARGET zanna_d3d11_shader_bytecode)
+        zanna_add_test(test_vgfx3d_backend_d3d11_shader_bake ${ZANNA_TESTS_DIR}/unit/test_vgfx3d_backend_d3d11_shader_bake.c)
+        target_link_libraries(test_vgfx3d_backend_d3d11_shader_bake PRIVATE ${ZANNA_RUNTIME_TEST_LIBS} d3dcompiler dxguid)
+        target_include_directories(test_vgfx3d_backend_d3d11_shader_bake PRIVATE
+                "${CMAKE_BINARY_DIR}/generated/runtime/d3d11")
+        add_dependencies(test_vgfx3d_backend_d3d11_shader_bake zanna_d3d11_shader_bytecode)
+        zanna_add_ctest(test_vgfx3d_backend_d3d11_shader_bake test_vgfx3d_backend_d3d11_shader_bake)
+        zanna_add_test_labels(test_vgfx3d_backend_d3d11_shader_bake graphics3d unit requires_windows)
+    endif ()
+
     zanna_add_test(test_vgfx3d_backend_metal_shared ${ZANNA_TESTS_DIR}/unit/test_vgfx3d_backend_metal_shared.c)
     target_link_libraries(test_vgfx3d_backend_metal_shared PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     target_compile_definitions(test_vgfx3d_backend_metal_shared PRIVATE ZANNA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

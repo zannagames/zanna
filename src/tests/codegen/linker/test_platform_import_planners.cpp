@@ -343,6 +343,8 @@ TEST(PlatformImportPlanners, WindowsPlannerCreatesGroupedImportsAndThunks) {
                                         "MsgWaitForMultipleObjectsEx",
                                         "RegisterRawInputDevices",
                                         "D3D11CreateDevice",
+                                        "D3DCompile",
+                                        "D3DCreateBlob",
                                         "cbrtf",
                                         "cos",
                                         "exp2f",
@@ -390,6 +392,9 @@ TEST(PlatformImportPlanners, WindowsPlannerCreatesGroupedImportsAndThunks) {
     EXPECT_TRUE(importPlanHasDll(plan, "kernel32.dll"));
     EXPECT_TRUE(importPlanHasDll(plan, "user32.dll"));
     EXPECT_TRUE(importPlanHasDll(plan, "d3d11.dll"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "d3dcompiler_47.dll", "D3DCompile"));
+    // The D3D11 backend wraps its build-time DXBC with D3DCreateBlob (ZB-39).
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "d3dcompiler_47.dll", "D3DCreateBlob"));
     EXPECT_TRUE(importPlanHasDll(plan, "ucrtbase.dll"));
     EXPECT_TRUE(importPlanHasDll(plan, "VCRUNTIME140.dll"));
     EXPECT_TRUE(importPlanHasDll(plan, "MSVCP140.dll"));
@@ -710,6 +715,32 @@ TEST(PlatformImportPlanners, WindowsReliabilityApisResolveToKernel32) {
     ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, syms, false, plan, err));
     for (const auto &sym : syms)
         EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", sym));
+}
+
+TEST(PlatformImportPlanners, WindowsPrivateConsoleReleaseApisResolveToKernel32) {
+    // A graphical program releases a console only it uses (ADR 0361).
+    const std::unordered_set<std::string> syms = {
+        "FreeConsole", "GetConsoleProcessList", "GetFileType", "SetStdHandle"};
+
+    for (const auto &sym : syms) {
+        EXPECT_TRUE(isKnownDynamicSymbol(sym, LinkPlatform::Windows));
+        EXPECT_FALSE(isKnownDynamicSymbol(sym, LinkPlatform::Linux));
+        EXPECT_FALSE(isKnownDynamicSymbol(sym, LinkPlatform::macOS));
+    }
+
+    WindowsImportPlan plan;
+    std::ostringstream err;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, syms, false, plan, err));
+    for (const auto &sym : syms)
+        EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", sym));
+
+    // The descriptor swap uses CRT exports the planner already owns.
+    const std::unordered_set<std::string> crt = {"_close", "_dup2", "_open_osfhandle"};
+    WindowsImportPlan crtPlan;
+    std::ostringstream crtErr;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, crt, false, crtPlan, crtErr));
+    for (const auto &sym : crt)
+        EXPECT_TRUE(importPlanDllHasFunction(crtPlan, "ucrtbase.dll", sym));
 }
 
 TEST(PlatformImportPlanners, WindowsHardenedRuntimeSymbolsResolveToSystemDlls) {

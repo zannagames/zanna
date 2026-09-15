@@ -286,6 +286,15 @@ if (ZANNA_BUILD_TESTING)
     add_test(NAME test_vg_font_bounds COMMAND test_vg_font_bounds)
     set_tests_properties(test_vg_font_bounds PROPERTIES LABELS "gui" TIMEOUT 15)
 
+    add_executable(test_vg_raster_outline tests/test_vg_raster_outline.c)
+    target_link_libraries(test_vg_raster_outline zannagui)
+    target_include_directories(test_vg_raster_outline PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/font
+    )
+    add_test(NAME test_vg_raster_outline COMMAND test_vg_raster_outline)
+    set_tests_properties(test_vg_raster_outline PROPERTIES LABELS "gui" TIMEOUT 15)
+
     add_executable(test_vg_codeeditor_perf tests/test_vg_codeeditor_perf.c)
     target_link_libraries(test_vg_codeeditor_perf zannagui)
     target_include_directories(test_vg_codeeditor_perf PRIVATE
@@ -396,6 +405,7 @@ if (ZANNA_BUILD_TESTING)
                 test_vg_grapheme
                 test_vg_textinput
                 test_vg_font_bounds
+                test_vg_raster_outline
                 test_vg_codeeditor_perf)
             target_compile_definitions(${vg_gui_test_target} PRIVATE _GNU_SOURCE)
         endforeach ()

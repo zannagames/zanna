@@ -150,6 +150,7 @@ The `PhysReg` enum order differs from hardware encoding. The encoder maps via lo
 | **Reg-Imm ALU** | ADDri, ANDri, CMPri | REX.W + opcode + ModR/M(11,/ext,reg) + imm32 |
 | **Shifts** | SHLri, SHRri, SARri | REX.W + C1/D3 + ModR/M + imm8 |
 | **Memory** | MOVrm, MOVmr, LEA | REX + opcode + ModR/M + [SIB] + [disp] |
+| **Narrow memory** | MOVrm8/16/32, MOVZXmr8, MOVSXmr16, MOVSXDmr | [66] + [REX] + 88/89/0F B6/0F BF/63 + ModR/M + [SIB] + [disp] |
 | **Branches** | JMP, JCC, CALL | E9/0F8x/E8 + rel32 |
 | **SSE scalar** | FADD, FSUB, FMUL | F2/66 prefix + 0F + opcode + ModR/M |
 | **64-bit move** | MOVri | REX.W + B8+rd + imm64 |
@@ -163,7 +164,10 @@ The `PhysReg` enum order differs from hardware encoding. The encoder maps via lo
   entry plus a `.rodata` target hint; object writers then resolve the final symbol by name so `.text` and `.rodata`
   symbol-table indexes are never mixed.
 - **MOVZX byte sources**: Sources encoded as SPL/BPL/SIL/DIL require a REX prefix even without high registers;
-  otherwise the same low three bits select AH/CH/DH/BH.
+  otherwise the same low three bits select AH/CH/DH/BH. `MOVrm8` byte stores follow the same rule.
+- **Narrow stores and loads**: `MOVrm16` carries the 0x66 operand-size prefix before any REX byte, `MOVrm8/16/32`
+  never set REX.W, and the loads (`MOVZXmr8`, `MOVSXmr16`, `MOVSXDmr`) always set REX.W so the destination is the
+  full 64-bit register.
 - **PC-relative addend**: x86_64 branch and RIP-relative relocations always carry addend = −4 because the CPU
   computes displacement relative to the *end* of the instruction, but the relocation offset points to the *start*
   of the 4-byte displacement field

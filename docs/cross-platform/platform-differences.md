@@ -177,6 +177,20 @@ magnitudes map to the left and right motors, and devices that do not advertise
 was built. If neither display is usable, window creation reports a platform
 error rather than selecting a backend implicitly.
 
+**Windows desktop launches:** native executables use the console subsystem, so
+Windows gives a program started from Explorer, a shortcut or an installer a
+console window of its own. When such a program shows its first window and is the
+only process on that console, the Win32 adapter points its console-backed
+standard streams at `NUL` and releases the console, so only the program's window
+remains, as on macOS and Linux. Programs started from a terminal keep printing to
+it, and redirected output is untouched ([ADR 0361](../adr/0361-release-private-console-for-windows-graphical-programs.md)).
+
+**Windows Alt and F10:** Win32 normally treats a lone Alt or F10 press as a
+request for the window menu and runs a modal menu loop, which stops a program's
+frame loop until Esc or a click. The Win32 adapter drops that keyboard
+activation, as macOS and Linux never have it, so programs still receive the Alt
+and F10 key events. Alt+Space still opens the window menu.
+
 ### 1.9 Audio
 
 | Aspect | Windows | macOS | Linux |

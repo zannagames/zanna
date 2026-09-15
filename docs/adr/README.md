@@ -350,6 +350,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0215](0215-project-owned-direct-model-previews.md) — Render Project-Owned Direct Model Previews
 - [ADR 0216](0216-project-owned-3d-node-preview-states.md) — Add Project-Owned 3D Node Preview States
 - [ADR 0232](0232-map-embedded-preview-and-physics-windows-imports.md) — Map Embedded Preview and Physics Windows Imports
+- [ADR 0361](0361-release-private-console-for-windows-graphical-programs.md) — Release a Private Console When a Windows Graphical Program Opens Its Window
 - [ADR 0331](0331-indirect-only-lightmap-baking.md) — Indirect-only lightmaps alongside live analytic lighting
 - [ADR 0332](0332-punctual-light-range.md) — Consistent authored point/spot range across rendering, clusters and shadows
 - [ADR 0333](0333-authored-local-light-attenuation.md) — Preserve authored local-light falloff separately from invalid-input defaults
@@ -376,3 +377,4 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0349](0349-retained-instance-revisions.md) — Retained instance batches track what changed
 - [ADR 0350](0350-blend-tree-weight-read.md) — Read the attached blend tree's pose weight
 - [ADR 0351](0351-render-truth-readbacks.md) — Mesh bone count, bound skeleton, selected LOD and LOD-gate skips as readbacks
+- [ADR 0360](0360-bake-d3d11-shader-bytecode-at-build-time.md) — Bake D3D11 Shader Bytecode at Build Time
