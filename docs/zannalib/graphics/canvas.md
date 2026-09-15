@@ -64,6 +64,7 @@ last-verified: 2026-07-26
 | `GradientH(x, y, w, h, c1, c2)`      | `Void(Integer...)`                    | Draws a horizontal gradient (left c1 to right c2), honoring the active clip rect |
 | `GradientV(x, y, w, h, c1, c2)`      | `Void(Integer...)`                    | Draws a vertical gradient (top c1 to bottom c2), honoring the active clip rect |
 | `IsFocused()`                         | `Boolean()`                           | Returns true if the window has keyboard focus              |
+| `IsFullscreen()`                      | `Boolean()`                           | Returns true while the window is in native fullscreen      |
 | `IsMaximized()`                       | `Boolean()`                           | Returns true if the window is maximized                    |
 | `IsMinimized()`                       | `Boolean()`                           | Returns true if the window is minimized (iconified)        |
 | `KeyHeld(keycode)`                    | `Integer(Integer)`                    | Returns non-zero if the specified key is held down         |
@@ -372,18 +373,15 @@ canvas.PreventClose(1)       ' Block the close button
 ' ... save work ...
 canvas.PreventClose(0)       ' Re-enable close button
 
-' Toggle fullscreen with F11 key
-DIM isFullscreen AS INTEGER = 0
+' Toggle fullscreen with F11 key; the window reports its own live mode
 DO WHILE NOT canvas.ShouldClose
     canvas.Poll()
 
     IF Zanna.Input.Keyboard.WasPressed(Zanna.Input.Key.F11) THEN
-        IF isFullscreen = 1 THEN
+        IF canvas.IsFullscreen() THEN
             canvas.Windowed()
-            isFullscreen = 0
         ELSE
             canvas.Fullscreen()
-            isFullscreen = 1
         END IF
     END IF
 
@@ -398,8 +396,8 @@ LOOP
 
 **Notes:**
 - Fullscreen mode uses the display's native resolution
-- Window size (Width/Height) remains unchanged; content is scaled
-- Use `Fullscreen()` to enter and `Windowed()` to exit fullscreen mode
+- Window size (Width/Height) remains unchanged; the content is scaled uniformly and **centered** on the monitor, with black bars on the axis that does not fit. Drawing never reaches the bars, `Clear` keeps them black, and a pointer in a bar reads below zero or past `Width`/`Height`. `Screenshot()` returns the design-sized image in fullscreen too
+- Use `Fullscreen()` to enter and `Windowed()` to exit fullscreen mode; `IsFullscreen()` reports the live mode. Transitions animate on macOS and X11, so the value converges over the following frames. A request made during a transition is honoured when it lands — the last request always wins
 - `GetScale()` returns 2.0 on HiDPI (Retina) displays — multiply pixel dimensions by this factor for sharp rendering
 - If the window moves between displays with different DPI scales, logical drawing, clipping, size queries, and input coordinates automatically follow the new scale
 - `SetFps(-1)` disables frame rate limiting (default); `GetFps()` returns the configured target

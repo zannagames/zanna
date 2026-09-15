@@ -1238,6 +1238,10 @@ vgfx_window_t vgfx_create_window(const vgfx_window_params_t *params) {
     }
     win->stride = win->width * 4;
     win->coord_scale = 1.0f; /* No coordinate scaling by default (GUI layer) */
+    win->coord_offset_x = 0;
+    win->coord_offset_y = 0;
+    win->coord_content_w = 0;
+    win->coord_content_h = 0;
 
     /* Set FPS (apply default if params.fps == 0, clamp if positive) */
     if (actual_params.fps == 0) {
@@ -1624,9 +1628,9 @@ int32_t vgfx_get_size(vgfx_window_t window, int32_t *width, int32_t *height) {
         return 0;
 
     if (width)
-        *width = vgfx_internal_public_extent_i32(window->width, window);
+        *width = vgfx_internal_public_width_i32(window->width, window);
     if (height)
-        *height = vgfx_internal_public_extent_i32(window->height, window);
+        *height = vgfx_internal_public_height_i32(window->height, window);
     return 1;
 }
 
@@ -1645,10 +1649,24 @@ float vgfx_window_get_scale(vgfx_window_t window) {
 
 /// @copydoc vgfx_set_coord_scale
 void vgfx_set_coord_scale(vgfx_window_t window, float scale) {
+    vgfx_set_coord_transform(window, scale, 0, 0, 0, 0);
+}
+
+/// @copydoc vgfx_set_coord_transform
+void vgfx_set_coord_transform(vgfx_window_t window,
+                              float scale,
+                              int32_t offset_x,
+                              int32_t offset_y,
+                              int32_t content_w,
+                              int32_t content_h) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     if (!win)
         return;
     win->coord_scale = vgfx_internal_sanitize_scale(scale);
+    win->coord_offset_x = offset_x > 0 ? offset_x : 0;
+    win->coord_offset_y = offset_y > 0 ? offset_y : 0;
+    win->coord_content_w = content_w > 0 ? content_w : 0;
+    win->coord_content_h = content_h > 0 ? content_h : 0;
     // Recording the selection is what lets a later backing-scale change follow
     // this window; the untouched default must not. See
     // vgfx_internal_refresh_scale_factor().
@@ -1817,10 +1835,10 @@ void vgfx_pset(vgfx_window_t window, int32_t x, int32_t y, vgfx_color_t color) {
         return;
 
     float cs = vgfx_internal_coord_scale(window);
-    if (cs > 1.0f) {
-        /* HiDPI: fill a cs×cs block at the scaled position */
-        int32_t px = vgfx_internal_scale_up_i32(x, cs);
-        int32_t py = vgfx_internal_scale_up_i32(y, cs);
+    if (vgfx_internal_transform_active(window)) {
+        /* HiDPI / centered presentation: fill a cs×cs block at the transformed position */
+        int32_t px = vgfx_internal_to_physical_x(window, x);
+        int32_t py = vgfx_internal_to_physical_y(window, y);
         int32_t sz = vgfx_internal_scale_up_i32(1, cs);
         uint8_t r = (color >> 16) & 0xFF;
         uint8_t g = (color >> 8) & 0xFF;
@@ -1897,10 +1915,10 @@ void vgfx_pset_alpha(vgfx_window_t window, int32_t x, int32_t y, uint32_t color)
         return;
 
     float cs = vgfx_internal_coord_scale(window);
-    if (cs > 1.0f) {
+    if (vgfx_internal_transform_active(window)) {
         vgfx_pset_alpha_block(window,
-                              vgfx_internal_scale_up_i32(x, cs),
-                              vgfx_internal_scale_up_i32(y, cs),
+                              vgfx_internal_to_physical_x(window, x),
+                              vgfx_internal_to_physical_y(window, y),
                               vgfx_internal_scale_up_i32(1, cs),
                               color);
         return;
@@ -1957,9 +1975,8 @@ int32_t vgfx_point(vgfx_window_t window, int32_t x, int32_t y, vgfx_color_t *out
     if (!window || !out_color)
         return 0;
 
-    float cs = vgfx_internal_coord_scale(window);
-    int32_t px = (cs > 1.0f) ? vgfx_internal_scale_up_i32(x, cs) : x;
-    int32_t py = (cs > 1.0f) ? vgfx_internal_scale_up_i32(y, cs) : y;
+    int32_t px = vgfx_internal_to_physical_x(window, x);
+    int32_t py = vgfx_internal_to_physical_y(window, y);
 
     if (!vgfx_internal_in_bounds(window, px, py))
         return 0;
@@ -1990,9 +2007,24 @@ void vgfx_cls(vgfx_window_t window, vgfx_color_t color) {
     uint8_t g = (color >> 8) & 0xFF;
     uint8_t b = (color >> 0) & 0xFF;
 
+    int64_t content_x0, content_y0, content_x1, content_y1;
+    vgfx_internal_content_rect(window, &content_x0, &content_y0, &content_x1, &content_y1);
+
     if (!window->clip_enabled) {
+        if (content_x0 == 0 && content_y0 == 0 && content_x1 == window->width &&
+            content_y1 == window->height) {
+            size_t pixel_count = (size_t)window->width * (size_t)window->height;
+            fill_rgba_pixels(window->pixels, pixel_count, r, g, b, 0xFF);
+            return;
+        }
+        /* A centered presentation: the bars stay black, the content takes the colour. */
         size_t pixel_count = (size_t)window->width * (size_t)window->height;
-        fill_rgba_pixels(window->pixels, pixel_count, r, g, b, 0xFF);
+        fill_rgba_pixels(window->pixels, pixel_count, 0, 0, 0, 0xFF);
+        for (int64_t y = content_y0; y < content_y1; y++) {
+            uint8_t *row =
+                window->pixels + (size_t)y * (size_t)window->stride + (size_t)content_x0 * 4u;
+            fill_rgba_pixels(row, (size_t)(content_x1 - content_x0), r, g, b, 0xFF);
+        }
         return;
     }
 
@@ -2003,14 +2035,14 @@ void vgfx_cls(vgfx_window_t window, vgfx_color_t color) {
     int64_t top = window->clip_y;
     int64_t right = (int64_t)window->clip_x + (int64_t)window->clip_w;
     int64_t bottom = (int64_t)window->clip_y + (int64_t)window->clip_h;
-    if (left < 0)
-        left = 0;
-    if (top < 0)
-        top = 0;
-    if (right > window->width)
-        right = window->width;
-    if (bottom > window->height)
-        bottom = window->height;
+    if (left < content_x0)
+        left = content_x0;
+    if (top < content_y0)
+        top = content_y0;
+    if (right > content_x1)
+        right = content_x1;
+    if (bottom > content_y1)
+        bottom = content_y1;
     if (left >= right || top >= bottom)
         return;
 
@@ -2055,13 +2087,12 @@ void vgfx_draw_fill_circle(
 /// @param color  RGB color (format: 0x00RRGGBB)
 void vgfx_line(
     vgfx_window_t window, int32_t x1, int32_t y1, int32_t x2, int32_t y2, vgfx_color_t color) {
-    float cs = vgfx_internal_coord_scale(window);
-    if (cs > 1.0f) {
+    if (vgfx_internal_transform_active(window)) {
         vgfx_draw_line(window,
-                       vgfx_internal_scale_up_i32(x1, cs),
-                       vgfx_internal_scale_up_i32(y1, cs),
-                       vgfx_internal_scale_up_i32(x2, cs),
-                       vgfx_internal_scale_up_i32(y2, cs),
+                       vgfx_internal_to_physical_x(window, x1),
+                       vgfx_internal_to_physical_y(window, y1),
+                       vgfx_internal_to_physical_x(window, x2),
+                       vgfx_internal_to_physical_y(window, y2),
                        color);
         return;
     }
@@ -2081,10 +2112,10 @@ void vgfx_line(
 void vgfx_rect(
     vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_t h, vgfx_color_t color) {
     float cs = vgfx_internal_coord_scale(window);
-    if (cs > 1.0f) {
+    if (vgfx_internal_transform_active(window)) {
         vgfx_draw_rect(window,
-                       vgfx_internal_scale_up_i32(x, cs),
-                       vgfx_internal_scale_up_i32(y, cs),
+                       vgfx_internal_to_physical_x(window, x),
+                       vgfx_internal_to_physical_y(window, y),
                        vgfx_internal_scale_up_i32(w, cs),
                        vgfx_internal_scale_up_i32(h, cs),
                        color);
@@ -2106,10 +2137,10 @@ void vgfx_rect(
 void vgfx_fill_rect(
     vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_t h, vgfx_color_t color) {
     float cs = vgfx_internal_coord_scale(window);
-    if (cs > 1.0f) {
+    if (vgfx_internal_transform_active(window)) {
         vgfx_draw_fill_rect(window,
-                            vgfx_internal_scale_up_i32(x, cs),
-                            vgfx_internal_scale_up_i32(y, cs),
+                            vgfx_internal_to_physical_x(window, x),
+                            vgfx_internal_to_physical_y(window, y),
                             vgfx_internal_scale_up_i32(w, cs),
                             vgfx_internal_scale_up_i32(h, cs),
                             color);
@@ -2129,10 +2160,10 @@ void vgfx_fill_rect(
 /// @param color  RGB color (format: 0x00RRGGBB)
 void vgfx_circle(vgfx_window_t window, int32_t cx, int32_t cy, int32_t radius, vgfx_color_t color) {
     float cs = vgfx_internal_coord_scale(window);
-    if (cs > 1.0f) {
+    if (vgfx_internal_transform_active(window)) {
         vgfx_draw_circle(window,
-                         vgfx_internal_scale_up_i32(cx, cs),
-                         vgfx_internal_scale_up_i32(cy, cs),
+                         vgfx_internal_to_physical_x(window, cx),
+                         vgfx_internal_to_physical_y(window, cy),
                          vgfx_internal_scale_up_i32(radius, cs),
                          color);
         return;
@@ -2152,10 +2183,10 @@ void vgfx_circle(vgfx_window_t window, int32_t cx, int32_t cy, int32_t radius, v
 void vgfx_fill_circle(
     vgfx_window_t window, int32_t cx, int32_t cy, int32_t radius, vgfx_color_t color) {
     float cs = vgfx_internal_coord_scale(window);
-    if (cs > 1.0f) {
+    if (vgfx_internal_transform_active(window)) {
         vgfx_draw_fill_circle(window,
-                              vgfx_internal_scale_up_i32(cx, cs),
-                              vgfx_internal_scale_up_i32(cy, cs),
+                              vgfx_internal_to_physical_x(window, cx),
+                              vgfx_internal_to_physical_y(window, cy),
                               vgfx_internal_scale_up_i32(radius, cs),
                               color);
         return;
@@ -2227,17 +2258,17 @@ int32_t vgfx_mouse_pos(vgfx_window_t window, int32_t *x, int32_t *y) {
         return 0;
 
     vgfx_internal_event_lock(window);
-    float cs = vgfx_internal_coord_scale(window);
     int32_t mx = window->mouse_x;
     int32_t my = window->mouse_y;
     int32_t width = window->width;
     int32_t height = window->height;
     vgfx_internal_event_unlock(window);
 
-    /* Return logical coordinates when coord_scale is active */
-    if (cs > 1.0f) {
-        mx = vgfx_internal_scale_down_i32(mx, cs);
-        my = vgfx_internal_scale_down_i32(my, cs);
+    /* Return public coordinates: the presentation offset comes off first, then
+     * the scale. A pointer in a bar lands below zero or past the extent. */
+    if (vgfx_internal_transform_active(window)) {
+        mx = vgfx_internal_to_logical_x(window, mx);
+        my = vgfx_internal_to_logical_y(window, my);
     }
 
     if (x)
@@ -2245,9 +2276,9 @@ int32_t vgfx_mouse_pos(vgfx_window_t window, int32_t *x, int32_t *y) {
     if (y)
         *y = my;
 
-    /* Logical bounds check */
-    int32_t lw = (cs > 1.0f) ? vgfx_internal_scale_down_i32(width, cs) : width;
-    int32_t lh = (cs > 1.0f) ? vgfx_internal_scale_down_i32(height, cs) : height;
+    /* Logical bounds check against the public (content) extent */
+    int32_t lw = vgfx_internal_public_width_i32(width, window);
+    int32_t lh = vgfx_internal_public_height_i32(height, window);
     return (mx >= 0 && mx < lw && my >= 0 && my < lh);
 }
 
@@ -2274,9 +2305,8 @@ int32_t vgfx_mouse_button(vgfx_window_t window, vgfx_mouse_button_t button) {
 void vgfx_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     if (!window)
         return;
-    float cs = vgfx_internal_coord_scale(window);
     vgfx_internal_set_mouse_position(
-        window, vgfx_internal_scale_up_i32(x, cs), vgfx_internal_scale_up_i32(y, cs));
+        window, vgfx_internal_to_physical_x(window, x), vgfx_internal_to_physical_y(window, y));
 
     extern void vgfx_platform_warp_cursor(vgfx_window_t w, int32_t x, int32_t y);
     vgfx_platform_warp_cursor(window, x, y);

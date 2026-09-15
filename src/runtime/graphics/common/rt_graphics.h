@@ -738,6 +738,11 @@ void *rt_canvas_screenshot(void *canvas);
 /// @param canvas Canvas handle.
 void rt_canvas_fullscreen(void *canvas);
 
+/// @brief Return 1 while the window is in native fullscreen, 0 otherwise (ADR 0367).
+/// @param canvas Canvas handle.
+/// @return `1` when fullscreen; otherwise `0`.
+int8_t rt_canvas_is_fullscreen(void *canvas);
+
 /// @brief Exit fullscreen mode (return to windowed).
 /// @param canvas Canvas handle.
 void rt_canvas_windowed(void *canvas);

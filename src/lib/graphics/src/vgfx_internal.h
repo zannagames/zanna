@@ -200,6 +200,25 @@ struct vgfx_window {
     ///          explicit selection follows later backing-scale changes.
     int coord_scale_explicit;
 
+    /// @brief Physical-pixel origin of the public coordinate space (default 0).
+    /// @details A centered fullscreen presentation places the designed logical
+    ///          extent inside a larger framebuffer; every public position is
+    ///          shifted by this offset after scaling and mouse positions are
+    ///          shifted back before dividing. The bars outside
+    ///          `[offset, framebuffer - offset)` are never drawable and stay
+    ///          black. Set via vgfx_set_coord_transform(); the GUI layer and
+    ///          Canvas3D leave both at zero.
+    int32_t coord_offset_x;
+    int32_t coord_offset_y;
+
+    /// @brief Physical extent of the content rectangle behind the offset.
+    /// @details Zero means "to the far edge, mirroring the offset", which is
+    ///          exact when the bars are even. A caller that knows the content
+    ///          extent (the scaled designed size) passes it so an odd remainder
+    ///          cannot round the public extent away from the design.
+    int32_t coord_content_w;
+    int32_t coord_content_h;
+
     /// @brief Target frame rate for this window.
     /// @details fps > 0: Target that specific FPS with frame limiting.
     ///          fps < 0: Unlimited (no frame rate limiting).
@@ -977,6 +996,43 @@ static inline int vgfx_internal_in_bounds(struct vgfx_window *win, int32_t x, in
     return (win && x >= 0 && x < win->width && y >= 0 && y < win->height);
 }
 
+/// @brief Physical rectangle that public drawing may touch.
+/// @details The whole framebuffer when no presentation offset is active;
+///          otherwise the centered content rectangle, leaving the bars alone.
+/// @param win Window to inspect; NULL yields an empty rectangle.
+/// @param x0 Receives the inclusive left edge.
+/// @param y0 Receives the inclusive top edge.
+/// @param x1 Receives the exclusive right edge.
+/// @param y1 Receives the exclusive bottom edge.
+static inline void vgfx_internal_content_rect(
+    const struct vgfx_window *win, int64_t *x0, int64_t *y0, int64_t *x1, int64_t *y1) {
+    int64_t left = 0, top = 0, right = 0, bottom = 0;
+    if (win) {
+        left = win->coord_offset_x > 0 ? win->coord_offset_x : 0;
+        top = win->coord_offset_y > 0 ? win->coord_offset_y : 0;
+        right = win->coord_content_w > 0 ? left + (int64_t)win->coord_content_w
+                                         : (int64_t)win->width - left;
+        bottom = win->coord_content_h > 0 ? top + (int64_t)win->coord_content_h
+                                          : (int64_t)win->height - top;
+        if (right > win->width)
+            right = win->width;
+        if (bottom > win->height)
+            bottom = win->height;
+        if (right < left)
+            right = left;
+        if (bottom < top)
+            bottom = top;
+    }
+    if (x0)
+        *x0 = left;
+    if (y0)
+        *y0 = top;
+    if (x1)
+        *x1 = right;
+    if (y1)
+        *y1 = bottom;
+}
+
 /// @brief Test whether a physical pixel survives framebuffer and clip bounds.
 /// @details First rejects coordinates outside the framebuffer.  With clipping
 ///          disabled, every remaining pixel is accepted.  With clipping
@@ -990,6 +1046,15 @@ static inline int vgfx_internal_in_bounds(struct vgfx_window *win, int32_t x, in
 static inline int vgfx_internal_in_effective_clip(struct vgfx_window *win, int32_t x, int32_t y) {
     if (!vgfx_internal_in_bounds(win, x, y))
         return 0;
+    if (win->coord_offset_x != 0 || win->coord_offset_y != 0 || win->coord_content_w != 0 ||
+        win->coord_content_h != 0) {
+        /* A centered presentation: the bars outside the content rect are never drawable. */
+        int64_t content_x0, content_y0, content_x1, content_y1;
+        vgfx_internal_content_rect(win, &content_x0, &content_y0, &content_x1, &content_y1);
+        if ((int64_t)x < content_x0 || (int64_t)x >= content_x1 || (int64_t)y < content_y0 ||
+            (int64_t)y >= content_y1)
+            return 0;
+    }
     if (!win->clip_enabled)
         return 1;
     if (win->clip_w <= 0 || win->clip_h <= 0)
@@ -1067,12 +1132,96 @@ static inline int32_t vgfx_internal_scale_down_i32(int32_t physical, float scale
 ///          the GUI layer leaves coord_scale at 1.0 this is the physical
 ///          framebuffer size; when the Canvas layer sets coord_scale to the
 ///          HiDPI backing scale it is the logical drawing size.
+/// @brief Whether public coordinates need any transform before touching pixels.
+/// @param win Window to inspect, or NULL.
+/// @return 1 when the scale exceeds 1.0 or a presentation offset is active.
+static inline int vgfx_internal_transform_active(const struct vgfx_window *win) {
+    return win && (vgfx_internal_coord_scale(win) > 1.0f || win->coord_offset_x != 0 ||
+                   win->coord_offset_y != 0);
+}
+
+/// @brief Convert a public X position to a physical framebuffer column.
+/// @param win Window whose scale and presentation offset apply.
+/// @param x Public (logical) X position.
+/// @return Physical column, saturated.
+static inline int32_t vgfx_internal_to_physical_x(const struct vgfx_window *win, int32_t x) {
+    int64_t px = (int64_t)vgfx_internal_scale_up_i32(x, vgfx_internal_coord_scale(win));
+    px += win ? (int64_t)win->coord_offset_x : 0;
+    return px > INT32_MAX ? INT32_MAX : (px < INT32_MIN ? INT32_MIN : (int32_t)px);
+}
+
+/// @brief Convert a public Y position to a physical framebuffer row.
+/// @copydetails vgfx_internal_to_physical_x
+static inline int32_t vgfx_internal_to_physical_y(const struct vgfx_window *win, int32_t y) {
+    int64_t py = (int64_t)vgfx_internal_scale_up_i32(y, vgfx_internal_coord_scale(win));
+    py += win ? (int64_t)win->coord_offset_y : 0;
+    return py > INT32_MAX ? INT32_MAX : (py < INT32_MIN ? INT32_MIN : (int32_t)py);
+}
+
+/// @brief Convert a physical framebuffer column to a public X position.
+/// @details Positions inside a presentation bar map below zero or past the
+///          public extent, which is how callers learn the pointer is off the
+///          content.
+/// @param win Window whose scale and presentation offset apply.
+/// @param x Physical column.
+/// @return Public (logical) X position.
+static inline int32_t vgfx_internal_to_logical_x(const struct vgfx_window *win, int32_t x) {
+    int64_t px = (int64_t)x - (win ? (int64_t)win->coord_offset_x : 0);
+    int32_t clamped = px > INT32_MAX ? INT32_MAX : (px < INT32_MIN ? INT32_MIN : (int32_t)px);
+    return vgfx_internal_scale_down_i32(clamped, vgfx_internal_coord_scale(win));
+}
+
+/// @brief Convert a physical framebuffer row to a public Y position.
+/// @copydetails vgfx_internal_to_logical_x
+static inline int32_t vgfx_internal_to_logical_y(const struct vgfx_window *win, int32_t y) {
+    int64_t py = (int64_t)y - (win ? (int64_t)win->coord_offset_y : 0);
+    int32_t clamped = py > INT32_MAX ? INT32_MAX : (py < INT32_MIN ? INT32_MIN : (int32_t)py);
+    return vgfx_internal_scale_down_i32(clamped, vgfx_internal_coord_scale(win));
+}
+
+/// @brief Convert one framebuffer axis to its public coordinate-space size.
+/// @details Uses the content extent when one is set, otherwise subtracts the
+///          presentation bars on both sides of the axis, then divides by the
+///          active coordinate scale. In a centered fullscreen presentation
+///          this is the designed extent.
 /// @param framebuffer_extent Physical framebuffer width or height in pixels.
 /// @param win Window whose coordinate scale should be applied.
+/// @param offset Presentation offset along the same axis.
+/// @param content Content extent along the same axis, or 0 to mirror the offset.
 /// @return Public coordinate-space extent after scale conversion.
-static inline int32_t vgfx_internal_public_extent_i32(int32_t framebuffer_extent,
+static inline int32_t vgfx_internal_public_extent_axis_i32(int32_t framebuffer_extent,
+                                                           const struct vgfx_window *win,
+                                                           int32_t offset,
+                                                           int32_t content) {
+    int64_t span = content > 0
+                       ? (int64_t)content
+                       : (int64_t)framebuffer_extent - 2 * (int64_t)(offset > 0 ? offset : 0);
+    if (span > (int64_t)framebuffer_extent - (offset > 0 ? offset : 0))
+        span = (int64_t)framebuffer_extent - (offset > 0 ? offset : 0);
+    if (span < 0)
+        span = 0;
+    return vgfx_internal_scale_down_i32(span > INT32_MAX ? INT32_MAX : (int32_t)span,
+                                        vgfx_internal_coord_scale(win));
+}
+
+/// @brief Public width of a framebuffer width (see vgfx_internal_public_extent_axis_i32).
+/// @param framebuffer_width Physical framebuffer width in pixels.
+/// @param win Window whose transform applies.
+/// @return Public width.
+static inline int32_t vgfx_internal_public_width_i32(int32_t framebuffer_width,
+                                                     const struct vgfx_window *win) {
+    return vgfx_internal_public_extent_axis_i32(
+        framebuffer_width, win, win ? win->coord_offset_x : 0, win ? win->coord_content_w : 0);
+}
+
+/// @brief Public height of a framebuffer height (see vgfx_internal_public_extent_axis_i32).
+/// @param framebuffer_height Physical framebuffer height in pixels.
+/// @param win Window whose transform applies.
+/// @return Public height.
+static inline int32_t vgfx_internal_public_height_i32(int32_t framebuffer_height,
                                                       const struct vgfx_window *win) {
-    return vgfx_internal_scale_down_i32(framebuffer_extent, vgfx_internal_coord_scale(win));
+    return vgfx_internal_public_extent_axis_i32(
+        framebuffer_height, win, win ? win->coord_offset_y : 0, win ? win->coord_content_h : 0);
 }
 
 /// @brief Refresh a window's backing scale without overriding an explicit coordinate scale.
@@ -1131,8 +1280,8 @@ static inline void vgfx_internal_init_resize_event(vgfx_event_t *event,
     event->time_ms = time_ms;
     event->data.resize.width = framebuffer_width;
     event->data.resize.height = framebuffer_height;
-    event->data.resize.logical_width = vgfx_internal_public_extent_i32(framebuffer_width, win);
-    event->data.resize.logical_height = vgfx_internal_public_extent_i32(framebuffer_height, win);
+    event->data.resize.logical_width = vgfx_internal_public_width_i32(framebuffer_width, win);
+    event->data.resize.logical_height = vgfx_internal_public_height_i32(framebuffer_height, win);
 }
 
 /// @brief Test whether a Unicode scalar lies in a private-use area.

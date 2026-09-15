@@ -67,10 +67,9 @@ static int get_effective_clip_bounds(
     if (!win || !min_x || !min_y || !max_x || !max_y || win->width <= 0 || win->height <= 0)
         return 0;
 
-    int64_t left = 0;
-    int64_t top = 0;
-    int64_t right = win->width;
-    int64_t bottom = win->height;
+    /* A centered presentation confines every primitive to the content rect. */
+    int64_t left, top, right, bottom;
+    vgfx_internal_content_rect(win, &left, &top, &right, &bottom);
 
     if (win->clip_enabled) {
         if (win->clip_w <= 0 || win->clip_h <= 0)
@@ -989,11 +988,11 @@ void vgfx_set_clip(vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_
         return;
     }
 
-    /* Scale clip rect to physical pixels when coord_scale is active */
+    /* Transform the clip rect to physical pixels when a coordinate transform is active */
     float cs = vgfx_internal_coord_scale(win);
-    if (cs > 1.0f) {
-        x = vgfx_internal_scale_up_i32(x, cs);
-        y = vgfx_internal_scale_up_i32(y, cs);
+    if (vgfx_internal_transform_active(win)) {
+        x = vgfx_internal_to_physical_x(win, x);
+        y = vgfx_internal_to_physical_y(win, y);
         w = vgfx_internal_scale_up_i32(w, cs);
         h = vgfx_internal_scale_up_i32(h, cs);
     }
@@ -1135,8 +1134,7 @@ int vgfx_push_clip_limit(vgfx_window_t window, int32_t x, int32_t y, int32_t w, 
     // innermost ceiling (depth unchanged so far), making nested scopes compose.
     vgfx_set_clip(window, x, y, w, h);
     if (frame->saved_enabled) {
-        intersect_current_clip(
-            win, frame->saved_x, frame->saved_y, frame->saved_w, frame->saved_h);
+        intersect_current_clip(win, frame->saved_x, frame->saved_y, frame->saved_w, frame->saved_h);
     }
     frame->limit_x = win->clip_x;
     frame->limit_y = win->clip_y;

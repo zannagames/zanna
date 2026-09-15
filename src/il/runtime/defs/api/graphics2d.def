@@ -102,6 +102,7 @@ RT_FUNC(CanvasSetIcon,     rt_canvas_set_icon,      "Zanna.Graphics.Canvas.SetIc
 RT_FUNC(CanvasScreenshot, rt_canvas_screenshot, "Zanna.Graphics.Canvas.Screenshot", "obj<Zanna.Graphics.Pixels>(obj)", owned)
 RT_FUNC(CanvasFullscreen,  rt_canvas_fullscreen,    "Zanna.Graphics.Canvas.Fullscreen",    "void(obj)")
 RT_FUNC(CanvasWindowed,    rt_canvas_windowed,      "Zanna.Graphics.Canvas.Windowed",      "void(obj)")
+RT_FUNC(CanvasIsFullscreen, rt_canvas_is_fullscreen, "Zanna.Graphics.Canvas.IsFullscreen",  "i1(obj)")
 RT_FUNC(CanvasGradientH,   rt_canvas_gradient_h,    "Zanna.Graphics.Canvas.GradientH",     "void(obj,i64,i64,i64,i64,i64,i64)")
 RT_FUNC(CanvasGradientV,   rt_canvas_gradient_v,    "Zanna.Graphics.Canvas.GradientV",     "void(obj,i64,i64,i64,i64,i64,i64)")
 // BINDING-001 + BINDING-002: Canvas window management

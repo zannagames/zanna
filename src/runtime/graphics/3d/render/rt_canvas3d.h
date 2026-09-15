@@ -1295,7 +1295,7 @@ void *rt_camera3d_get_projection_matrix(void *obj);
 /// @param obj Borrowed Camera3D handle.
 /// @return Retained positive aspect ratio, or 0.0 for an invalid camera.
 double rt_camera3d_get_aspect(void *obj);
-/// @brief Project a world point to pixels; returns 1 when in front of the camera.
+/// @brief Project a world point to pixels; returns 1 when visible (in front of the near plane).
 /// @param obj Borrowed Camera3D handle.
 /// @param x World-space X coordinate.
 /// @param y World-space Y coordinate.
@@ -1304,7 +1304,8 @@ double rt_camera3d_get_aspect(void *obj);
 /// @param sh Positive viewport height in pixels.
 /// @param[out] out_sx Optional destination for horizontal screen pixels.
 /// @param[out] out_sy Optional destination for vertical screen pixels.
-/// @return 1 when the point projects in front of the camera; otherwise 0.
+/// @return 1 when the point projects in front of the camera and (perspective) at or beyond the
+///         near plane; otherwise 0. Outputs are written either way but are only bounded on 1.
 int8_t rt_camera3d_world_to_screen(void *obj,
                                    double x,
                                    double y,

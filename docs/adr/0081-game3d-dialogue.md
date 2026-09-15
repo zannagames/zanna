@@ -59,3 +59,15 @@ keep revealing while gameplay is paused for a cutscene conversation.
   helper.
 - Tests: `test_rt_game3d_dialogue_facial` (projection cases, reveal/two-stage
   skip/queue order, choice latching, localization fallback).
+
+## Amendment (2026-09-15): near-plane visibility
+
+`visible` is now `clip.w >= near` for perspective cameras (`clip.w > 0` for
+orthographic). A point between the eye and the near plane is clipped by every
+renderer, and its perspective divide is unbounded — a torso a hair in front of
+the eye projected to ~1e10 pixels while still flagged visible, and Legacy
+Baseball's per-frame actor pick squared that as a 64-bit Integer and trapped
+"integer overflow" mid-game. Screen coordinates are still written on 0 so
+callers that ignore the flag keep receiving finite values, but they are only
+bounded when the flag is 1. Test: `test_rt_game3d_dialogue_facial`
+(inside-near-plane case).

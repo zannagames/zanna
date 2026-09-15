@@ -492,6 +492,68 @@ void test_extreme_circle_coordinates_do_not_overflow(void) {
 /// What: Entry point for drawing tests covering primitive rendering.
 /// Why:  Ensure that core drawing operations work end-to-end.
 /// How:  Creates a surface/window, issues draw calls, then validates output.
+/* Read one physical framebuffer pixel as 0x00RRGGBB. */
+static vgfx_color_t physical_rgb(vgfx_window_t win, int32_t px, int32_t py) {
+    vgfx_framebuffer_t fb;
+    if (!vgfx_get_framebuffer(win, &fb) || !fb.pixels)
+        return 0xDEADBEEF;
+    const uint8_t *p = fb.pixels + (size_t)py * (size_t)fb.stride + (size_t)px * 4u;
+    return ((vgfx_color_t)p[0] << 16) | ((vgfx_color_t)p[1] << 8) | (vgfx_color_t)p[2];
+}
+
+/* T14: A centered presentation (ADR 0367) never paints the bars: clears fill the
+ * content with the colour and the bars black, primitives are confined to the
+ * content rect, and a clip rect is transformed like every other position. */
+void test_coord_offset_keeps_bars_black(void) {
+    TEST_BEGIN("T14: Coord Offset Keeps Bars Black");
+
+    vgfx_window_params_t params = {
+        .width = 100, .height = 100, .title = "Bars", .fps = 0, .resizable = 0};
+    vgfx_window_t win = vgfx_create_window(&params);
+    ASSERT_NOT_NULL(win);
+
+    /* 10 px pillars on both sides: the content is physical columns [10, 90). */
+    vgfx_set_coord_transform(win, 1.0f, 10, 0, 80, 100);
+
+    vgfx_cls(win, 0xFF0000);
+    ASSERT_EQ(physical_rgb(win, 5, 50), 0x000000);
+    ASSERT_EQ(physical_rgb(win, 10, 50), 0xFF0000);
+    ASSERT_EQ(physical_rgb(win, 89, 50), 0xFF0000);
+    ASSERT_EQ(physical_rgb(win, 95, 50), 0x000000);
+
+    /* A rectangle wider than the content cannot reach the pillars. */
+    vgfx_fill_rect(win, -20, 0, 200, 100, 0x00FF00);
+    ASSERT_EQ(physical_rgb(win, 5, 50), 0x000000);
+    ASSERT_EQ(physical_rgb(win, 10, 50), 0x00FF00);
+    ASSERT_EQ(physical_rgb(win, 89, 50), 0x00FF00);
+    ASSERT_EQ(physical_rgb(win, 95, 50), 0x000000);
+
+    /* Neither can a line or a pixel. */
+    vgfx_line(win, -20, 10, 200, 10, 0x0000FF);
+    vgfx_pset(win, -5, 20, 0x0000FF);
+    ASSERT_EQ(physical_rgb(win, 5, 10), 0x000000);
+    ASSERT_EQ(physical_rgb(win, 50, 10), 0x0000FF);
+    ASSERT_EQ(physical_rgb(win, 5, 20), 0x000000);
+
+    /* Public clip [0, 50) is physical [10, 60). */
+    vgfx_set_clip(win, 0, 0, 50, 100);
+    vgfx_fill_rect(win, 0, 0, 100, 100, 0x0000FF);
+    ASSERT_EQ(physical_rgb(win, 59, 50), 0x0000FF);
+    ASSERT_EQ(physical_rgb(win, 60, 50), 0x00FF00);
+    ASSERT_EQ(physical_rgb(win, 5, 50), 0x000000);
+    vgfx_clear_clip(win);
+
+    /* Public point queries read through the same transform. */
+    vgfx_color_t color = 0;
+    ASSERT_EQ(vgfx_point(win, 0, 50, &color), 1);
+    ASSERT_EQ(color, 0x0000FF);
+    ASSERT_EQ(vgfx_point(win, 79, 50, &color), 1);
+    ASSERT_EQ(color, 0x00FF00);
+
+    vgfx_destroy_window(win);
+    TEST_END();
+}
+
 int main(void) {
     printf("========================================\n");
     printf("ZannaGFX Drawing Tests (T7-T13)\n");
@@ -510,6 +572,7 @@ int main(void) {
     test_empty_clip_rect_suppresses_drawing();
     test_clip_limit_contains_nested_clips_and_restores_state();
     test_extreme_circle_coordinates_do_not_overflow();
+    test_coord_offset_keeps_bars_black();
 
     TEST_SUMMARY();
     return TEST_RETURN_CODE();

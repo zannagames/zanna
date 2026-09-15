@@ -1,0 +1,128 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_canvas_fullscreen_transition.zia
+// Purpose: Displayed regression for the 2D Canvas fullscreen contract
+//          (ADR 0367): the LAST mode request always wins even when it lands
+//          while the platform is still animating the previous one, the public
+//          extent (`Screenshot()`) stays the designed size in fullscreen
+//          because the content is centered rather than stretched to the
+//          monitor aspect, and `IsFullscreen()` reports the live mode.
+//
+//          The 2026-09-15 Cat 'n' Mouse harness: a Windowed() issued ~100 ms
+//          after Fullscreen() was dropped on macOS (toggleFullScreen: is a
+//          toggle that AppKit ignores mid-transition), leaving the window
+//          fullscreen while the game believed it was windowed.
+//
+// Key invariants:
+//   - Every request is followed by a settle loop: mode transitions are
+//     asynchronous on macOS and X11; Win32 is synchronous.
+//   - Observer is the lender's own Screenshot() extent, never Mouse.SetPosition.
+//
+//===----------------------------------------------------------------------===//
+module test_canvas_fullscreen_transition;
+
+bind Zanna.Graphics;
+bind Zanna.Terminal as Terminal;
+
+// Pump until the live mode and public extent have held still for a while.
+func settle(canvas: Canvas) -> Boolean {
+    var stable = 0;
+    var lastMode = false;
+    var lastW = 0;
+    var lastH = 0;
+    var frames = 0;
+    while frames < 4000 && stable < 90 {
+        if canvas.BeginFrame() == 0 { return false; }
+        canvas.Flip();
+        var mode = canvas.IsFullscreen();
+        var w = 0;
+        var h = 0;
+        var shot = canvas.Screenshot();
+        if shot != null { w = shot!.Width; h = shot!.Height; }
+        if mode == lastMode && w == lastW && h == lastH {
+            stable = stable + 1;
+        } else {
+            stable = 0;
+            lastMode = mode;
+            lastW = w;
+            lastH = h;
+        }
+        frames = frames + 1;
+    }
+    return true;
+}
+
+func extentIsDesign(label: String, canvas: Canvas, w: Integer, h: Integer) -> Boolean {
+    var shot = canvas.Screenshot();
+    if shot == null {
+        Terminal.Say("FAIL " + label + ": screenshot unavailable");
+        return false;
+    }
+    if shot!.Width != w || shot!.Height != h {
+        Terminal.Say("FAIL " + label + ": public extent " + toString(shot!.Width) + "x" +
+                     toString(shot!.Height) + " but designed " + toString(w) + "x" + toString(h));
+        return false;
+    }
+    if canvas.Width != w || canvas.Height != h {
+        Terminal.Say("FAIL " + label + ": Width/Height drifted from the design");
+        return false;
+    }
+    return true;
+}
+
+func expectMode(label: String, canvas: Canvas, fullscreen: Boolean) -> Boolean {
+    if canvas.IsFullscreen() != fullscreen {
+        Terminal.Say("FAIL " + label + ": IsFullscreen is " + toString(canvas.IsFullscreen()) +
+                     ", expected " + toString(fullscreen));
+        return false;
+    }
+    return true;
+}
+
+func start() {
+    var canvas = Canvas.New("Canvas fullscreen transition probe", 1344, 872);
+    canvas.SetFps(60);
+    // Present once before any mode request: a window that has never drawn is
+    // not the shipped order.
+    if canvas.BeginFrame() == 0 { Terminal.Say("FAIL boot frame"); return; }
+    canvas.Clear(0x204060);
+    canvas.Flip();
+    if expectMode("boot", canvas, false) == false { return; }
+    if extentIsDesign("boot", canvas, 1344, 872) == false { return; }
+
+    // 1. Fullscreen then Windowed inside one frame: the second request lands
+    //    mid-transition on macOS and used to be dropped.
+    canvas.Fullscreen();
+    canvas.Windowed();
+    if settle(canvas) == false { Terminal.Say("FAIL pump closed (1)"); return; }
+    if expectMode("rapid on/off", canvas, false) == false { return; }
+    if extentIsDesign("rapid on/off", canvas, 1344, 872) == false { return; }
+
+    // 2. Plain fullscreen: the public extent stays the design (centered), not
+    //    the monitor aspect.
+    canvas.Fullscreen();
+    if settle(canvas) == false { Terminal.Say("FAIL pump closed (2)"); return; }
+    if expectMode("fullscreen", canvas, true) == false { return; }
+    if extentIsDesign("fullscreen", canvas, 1344, 872) == false { return; }
+
+    // 3. Windowed then Fullscreen inside one frame from fullscreen: ends
+    //    fullscreen.
+    canvas.Windowed();
+    canvas.Fullscreen();
+    if settle(canvas) == false { Terminal.Say("FAIL pump closed (3)"); return; }
+    if expectMode("rapid off/on", canvas, true) == false { return; }
+    if extentIsDesign("rapid off/on", canvas, 1344, 872) == false { return; }
+
+    // 4. Back to a window.
+    canvas.Windowed();
+    if settle(canvas) == false { Terminal.Say("FAIL pump closed (4)"); return; }
+    if expectMode("windowed", canvas, false) == false { return; }
+    if extentIsDesign("windowed", canvas, 1344, 872) == false { return; }
+
+    Terminal.Say("PASS canvas fullscreen transition");
+}

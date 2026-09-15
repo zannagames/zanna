@@ -118,6 +118,89 @@ void test_mouse_position_coord_scale_is_logical(void) {
     TEST_END();
 }
 
+/* T17c: A centered presentation offset (ADR 0367) shifts public coordinates in
+ * both directions and shrinks the public extent to the content. */
+void test_coord_transform_centers_public_space(void) {
+    TEST_BEGIN("T17c: Coord Transform Centers Public Space");
+
+    vgfx_window_params_t params = {
+        .width = 320, .height = 240, .title = "Letterbox", .fps = 0, .resizable = 0};
+    vgfx_window_t win = vgfx_create_window(&params);
+    ASSERT_NOT_NULL(win);
+
+    /* 1x scale, 40 px bars left and right, 20 px above and below. */
+    vgfx_set_coord_transform(win, 1.0f, 40, 20, 0, 0);
+
+    int32_t w = 0, h = 0;
+    ASSERT_EQ(vgfx_get_size(win, &w, &h), 1);
+    ASSERT_EQ(w, 240);
+    ASSERT_EQ(h, 200);
+
+    vgfx_mock_inject_mouse_move(win, 100, 60);
+    vgfx_update(win);
+    int32_t x = 0, y = 0;
+    ASSERT_EQ(vgfx_mouse_pos(win, &x, &y), 1);
+    ASSERT_EQ(x, 60);
+    ASSERT_EQ(y, 40);
+
+    /* A pointer inside the left bar is off the content: negative, out of bounds. */
+    vgfx_mock_inject_mouse_move(win, 10, 60);
+    vgfx_update(win);
+    ASSERT_EQ(vgfx_mouse_pos(win, &x, &y), 0);
+    ASSERT_EQ(x, -30);
+
+    /* Warping round-trips through the same transform. */
+    vgfx_warp_cursor(win, 10, 10);
+    ASSERT_EQ(vgfx_mouse_pos(win, &x, &y), 1);
+    ASSERT_EQ(x, 10);
+    ASSERT_EQ(y, 10);
+
+    /* Public (0,0) lands on physical (40,20). */
+    vgfx_cls(win, VGFX_BLACK);
+    vgfx_pset(win, 0, 0, 0xFF0000);
+    vgfx_framebuffer_t fb;
+    ASSERT_EQ(vgfx_get_framebuffer(win, &fb), 1);
+    ASSERT_EQ(fb.pixels[(size_t)20 * (size_t)fb.stride + 40u * 4u], 0xFF);
+    ASSERT_EQ(fb.pixels[(size_t)20 * (size_t)fb.stride + 40u * 4u + 1u], 0x00);
+    ASSERT_EQ(fb.pixels[0], 0x00);
+    vgfx_color_t color = 0;
+    ASSERT_EQ(vgfx_point(win, 0, 0, &color), 1);
+    ASSERT_EQ(color, 0xFF0000);
+
+    /* A 2x scale composes with the offset: physical (140,120) is public (50,50). */
+    vgfx_set_coord_transform(win, 2.0f, 40, 20, 0, 0);
+    ASSERT_EQ(vgfx_get_size(win, &w, &h), 1);
+    ASSERT_EQ(w, 120);
+    ASSERT_EQ(h, 100);
+
+    /* An explicit content extent wins over the mirrored offset: 1920x1080 over a
+     * 1344x872 design scales by 1080/872, whose content rounds to 1665 wide, an
+     * odd remainder of 255. The public width must still be the design. */
+    vgfx_window_params_t monitor = {
+        .width = 1920, .height = 1080, .title = "Monitor", .fps = 0, .resizable = 0};
+    vgfx_window_t full = vgfx_create_window(&monitor);
+    ASSERT_NOT_NULL(full);
+    vgfx_set_coord_transform(full, 1080.0f / 872.0f, 127, 0, 1665, 1080);
+    ASSERT_EQ(vgfx_get_size(full, &w, &h), 1);
+    ASSERT_EQ(w, 1344);
+    ASSERT_EQ(h, 872);
+    vgfx_destroy_window(full);
+    vgfx_mock_inject_mouse_move(win, 140, 120);
+    vgfx_update(win);
+    ASSERT_EQ(vgfx_mouse_pos(win, &x, &y), 1);
+    ASSERT_EQ(x, 50);
+    ASSERT_EQ(y, 50);
+
+    /* Plain vgfx_set_coord_scale clears the offset (a Canvas3D borrower relies on it). */
+    vgfx_set_coord_scale(win, 1.0f);
+    ASSERT_EQ(vgfx_get_size(win, &w, &h), 1);
+    ASSERT_EQ(w, 320);
+    ASSERT_EQ(h, 240);
+
+    vgfx_destroy_window(win);
+    TEST_END();
+}
+
 /* T18: Mouse Button (Mock Backend) */
 void test_mouse_button(void) {
     TEST_BEGIN("T18: Mouse Button (Mock Backend)");
@@ -770,6 +853,7 @@ int main(void) {
     test_keyboard_input();
     test_mouse_position();
     test_mouse_position_coord_scale_is_logical();
+    test_coord_transform_centers_public_space();
     test_mouse_button();
     test_event_queue_basic();
     test_event_queue_public_post();

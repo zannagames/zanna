@@ -1574,9 +1574,14 @@ static int camera_get_pick_inv_vp(rt_camera3d *cam, double aspect, double *out_i
 /// @brief Project a world-space point to pixel coordinates.
 /// @details Builds the same projection×view the picking path uses (perspective
 ///          or ortho, sanitized clip planes) and projects @p x/y/z. Writes the
-///          pixel position and returns 1 when the point is in front of the
-///          camera (clip w > 0); 0 means behind (outputs still written from
-///          the mirrored projection — callers should hide anchored UI).
+///          pixel position and returns 1 when the point is visible: in front of
+///          the camera AND, for a perspective camera, at or beyond the near
+///          plane (clip w >= near). A point between the eye and the near plane
+///          is clipped by every renderer, and its perspective divide is
+///          unbounded (a point a hair in front of the eye projects to pixel
+///          coordinates in the billions), so it reports 0 like a point behind
+///          the eye; the outputs are still written so callers that ignore the
+///          flag keep receiving finite values, but anchored UI must hide on 0.
 /// @param obj Borrowed heap or stack camera.
 /// @param x World-space point x coordinate.
 /// @param y World-space point y coordinate.
@@ -1638,7 +1643,13 @@ int8_t rt_camera3d_world_to_screen(void *obj,
         *out_sx = (ndc_x + 1.0) * 0.5 * (double)sw;
     if (out_sy)
         *out_sy = (1.0 - ndc_y) * 0.5 * (double)sh;
-    return clip[3] > 0.0 ? 1 : 0;
+    if (clip[3] <= 0.0)
+        return 0;
+    /* Perspective w is the view depth; inside the near plane the divide above is
+     * unbounded and the renderer clips the point anyway, so it is not visible. */
+    if (!cam->is_ortho && clip[3] < near_plane)
+        return 0;
+    return 1;
 }
 
 /// @brief VM-facing WorldToScreen: returns Vec3(pixelX, pixelY, visible ? 1 : 0).

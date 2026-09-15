@@ -401,14 +401,6 @@ static void win32_client_to_physical_mouse(
         *out_y = client_y;
 }
 
-/// @brief Convert a public drawing coordinate to Win32 client pixels.
-/// @param win Window supplying the active public coordinate scale.
-/// @param value Public logical coordinate or extent.
-/// @return Rounded physical client value.
-static int32_t win32_public_to_client_coord(const struct vgfx_window *win, int32_t value) {
-    return vgfx_internal_scale_up_i32(value, vgfx_internal_coord_scale(win));
-}
-
 /// @brief Convert a logical window dimension through the backing display scale.
 /// @param win Window supplying the sanitized HiDPI backing scale.
 /// @param value Logical window coordinate or extent.
@@ -3070,8 +3062,8 @@ void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     vgfx_win32_data *w32 = (vgfx_win32_data *)window->platform_data;
     if (!w32->hwnd)
         return;
-    POINT pt = {(LONG)win32_public_to_client_coord(window, x),
-                (LONG)win32_public_to_client_coord(window, y)};
+    POINT pt = {(LONG)vgfx_internal_to_physical_x(window, x),
+                (LONG)vgfx_internal_to_physical_y(window, y)};
     if (!ClientToScreen(w32->hwnd, &pt) || !SetCursorPos(pt.x, pt.y))
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to warp the Win32 cursor");
 }

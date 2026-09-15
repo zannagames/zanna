@@ -171,8 +171,8 @@ typedef struct {
     int width;              ///< Cached window width
     int height;             ///< Cached window height
     unsigned long resize_request_serial; ///< X request serial of the latest client resize
-    int hidden;             ///< 1 if creation intentionally skipped mapping
-    int close_requested;    ///< 1 if WM_DELETE_WINDOW received, 0 otherwise
+    int hidden;                          ///< 1 if creation intentionally skipped mapping
+    int close_requested;                 ///< 1 if WM_DELETE_WINDOW received, 0 otherwise
     // XDND (drag-and-drop) atoms
     Atom xdnd_aware;                  ///< XdndAware atom
     Atom xdnd_enter;                  ///< XdndEnter atom
@@ -1736,11 +1736,10 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
     x11->targets_atom = XInternAtom(x11->display, "TARGETS", False);
     x11->incr_atom = XInternAtom(x11->display, "INCR", False);
     x11->clipboard_property_atom = XInternAtom(x11->display, "ZANNAGFX_CLIPBOARD", False);
-    if (x11->wm_delete_window == None || x11->event_wake == None ||
-        x11->xdnd_aware == None || x11->xdnd_enter == None ||
-        x11->xdnd_position == None || x11->xdnd_status == None || x11->xdnd_drop == None ||
-        x11->xdnd_finished == None || x11->xdnd_selection == None || x11->xdnd_type_list == None ||
-        x11->text_uri_list == None || x11->clipboard_atom == None ||
+    if (x11->wm_delete_window == None || x11->event_wake == None || x11->xdnd_aware == None ||
+        x11->xdnd_enter == None || x11->xdnd_position == None || x11->xdnd_status == None ||
+        x11->xdnd_drop == None || x11->xdnd_finished == None || x11->xdnd_selection == None ||
+        x11->xdnd_type_list == None || x11->text_uri_list == None || x11->clipboard_atom == None ||
         x11->utf8_string_atom == None || x11->targets_atom == None || x11->incr_atom == None ||
         x11->clipboard_property_atom == None) {
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to initialize X11 protocol atoms");
@@ -3601,7 +3600,6 @@ void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     vgfx_x11_data *x11 = (vgfx_x11_data *)window->platform_data;
     if (!x11->display || !x11->window)
         return;
-    float cs = vgfx_internal_coord_scale(window);
     XWarpPointer(x11->display,
                  None,
                  x11->window,
@@ -3609,8 +3607,8 @@ void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
                  0,
                  0,
                  0,
-                 vgfx_internal_scale_up_i32(x, cs),
-                 vgfx_internal_scale_up_i32(y, cs));
+                 vgfx_internal_to_physical_x(window, x),
+                 vgfx_internal_to_physical_y(window, y));
     XFlush(x11->display);
 }
 

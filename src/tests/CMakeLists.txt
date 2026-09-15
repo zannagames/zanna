@@ -3199,6 +3199,19 @@ if (EXISTS "${CANVAS3D_SYNTHETIC_INPUT_PROBE}")
             TIMEOUT 30)
 endif ()
 
+set(CANVAS_FULLSCREEN_TRANSITION_PROBE
+    "${G3D_TESTS_DIR}/test_canvas_fullscreen_transition.zia")
+if (EXISTS "${CANVAS_FULLSCREEN_TRANSITION_PROBE}")
+    add_test(NAME rt_test_canvas_fullscreen_transition
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS_FULLSCREEN_TRANSITION_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(rt_test_canvas_fullscreen_transition PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS canvas fullscreen transition"
+            LABELS "runtime;graphics;zia;requires_display"
+            RUN_SERIAL TRUE
+            TIMEOUT 60)
+endif ()
+
 set(CANVAS3D_ADOPTED_COORDINATES_PROBE
     "${G3D_TESTS_DIR}/test_canvas3d_adopted_coordinates.zia")
 if (EXISTS "${CANVAS3D_ADOPTED_COORDINATES_PROBE}")

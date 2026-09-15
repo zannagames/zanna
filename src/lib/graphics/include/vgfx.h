@@ -786,6 +786,30 @@ float vgfx_window_get_scale(vgfx_window_t window);
 /// @param scale  Coordinate scale (typically vgfx_window_get_scale(window))
 void vgfx_set_coord_scale(vgfx_window_t window, float scale);
 
+/// @brief Enable coordinate-space scaling with a centered presentation offset.
+/// @details Like vgfx_set_coord_scale(), plus a physical-pixel origin for the
+///          public coordinate space: positions are scaled then shifted by the
+///          offset, mouse positions are shifted back then divided, and the
+///          public extent reported by vgfx_get_size() and RESIZE events is the
+///          framebuffer less the bars on both sides. Drawing never reaches the
+///          bars, and vgfx_cls() keeps them black. The Canvas layer uses this to
+///          center its designed extent on a fullscreen monitor; negative values
+///          are treated as zero. A zero content extent mirrors the offset to
+///          the far edge; passing the scaled designed extent keeps the public
+///          size exact when the remainder is odd.
+/// @param window    Window handle
+/// @param scale     Coordinate scale (>= 1.0)
+/// @param offset_x  Physical pixels left of the content
+/// @param offset_y  Physical pixels above the content
+/// @param content_w Physical content width, or 0
+/// @param content_h Physical content height, or 0
+void vgfx_set_coord_transform(vgfx_window_t window,
+                              float scale,
+                              int32_t offset_x,
+                              int32_t offset_y,
+                              int32_t content_w,
+                              int32_t content_h);
+
 /// @brief Get the physical pixel width of the window framebuffer.
 /// @details Returns win->width, which equals (logical_width × scale_factor)
 ///          after vgfx_create_window().  Use for framebuffer operations.

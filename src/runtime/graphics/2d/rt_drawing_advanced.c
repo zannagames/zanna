@@ -426,17 +426,20 @@ static int8_t rt_canvas_get_scaled_clip_bounds(
     if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
         return 0;
 
-    float scale = rt_canvas_effective_coord_scale(canvas);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
     if (scale_out)
         *scale_out = scale;
     if (px0)
-        *px0 = rtg_scale_up_i64(clip_x, scale);
+        *px0 = rtg_scale_up_i64(clip_x, scale) + offset_x;
     if (py0)
-        *py0 = rtg_scale_up_i64(clip_y, scale);
+        *py0 = rtg_scale_up_i64(clip_y, scale) + offset_y;
     if (px1)
-        *px1 = rtg_scale_up_i64(rtg_add_sat64(clip_x, clip_w), scale);
+        *px1 = rtg_scale_up_i64(rtg_add_sat64(clip_x, clip_w), scale) + offset_x;
     if (py1)
-        *py1 = rtg_scale_up_i64(rtg_add_sat64(clip_y, clip_h), scale);
+        *py1 = rtg_scale_up_i64(rtg_add_sat64(clip_y, clip_h), scale) + offset_y;
     return 1;
 }
 
@@ -817,8 +820,11 @@ void rt_canvas_flood_fill(void *canvas_ptr, int64_t start_x, int64_t start_y, in
             canvas, &scale, &clip_px0, &clip_py0, &clip_px1, &clip_py1))
         return;
 
-    start_x = rtg_scale_up_i64(start_x, scale);
-    start_y = rtg_scale_up_i64(start_y, scale);
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, NULL, &offset_x, &offset_y);
+    start_x = rtg_scale_up_i64(start_x, scale) + offset_x;
+    start_y = rtg_scale_up_i64(start_y, scale) + offset_y;
 
     if (clip_px0 < 0)
         clip_px0 = 0;
@@ -1796,11 +1802,14 @@ void rt_canvas_gradient_h(
         return;
     }
 
-    float scale = rt_canvas_effective_coord_scale(canvas);
-    int64_t px0 = rtg_scale_up_i64(x, scale);
-    int64_t px1 = rtg_scale_up_i64(rtg_add_sat64(x, w), scale);
-    int64_t py0 = rtg_scale_up_i64(y, scale);
-    int64_t py1 = rtg_scale_up_i64(rtg_add_sat64(y, h), scale);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
+    int64_t px0 = rtg_scale_up_i64(x, scale) + offset_x;
+    int64_t px1 = rtg_scale_up_i64(rtg_add_sat64(x, w), scale) + offset_x;
+    int64_t py0 = rtg_scale_up_i64(y, scale) + offset_y;
+    int64_t py1 = rtg_scale_up_i64(rtg_add_sat64(y, h), scale) + offset_y;
     if (px0 < 0)
         px0 = 0;
     if (py0 < 0)
@@ -1826,8 +1835,8 @@ void rt_canvas_gradient_h(
     memset(row_buf, 0, row_bytes);
     for (int64_t col = 0; col < w; col++) {
         int64_t logical_x = rtg_add_sat64(x, col);
-        int64_t col_px0 = rtg_scale_up_i64(logical_x, scale);
-        int64_t col_px1 = rtg_scale_up_i64(rtg_add_sat64(logical_x, 1), scale);
+        int64_t col_px0 = rtg_scale_up_i64(logical_x, scale) + offset_x;
+        int64_t col_px1 = rtg_scale_up_i64(rtg_add_sat64(logical_x, 1), scale) + offset_x;
         if (col_px1 <= col_px0)
             col_px1 = col_px0 + 1;
         if (col_px0 < px0)
@@ -1917,11 +1926,14 @@ void rt_canvas_gradient_v(
         return;
     }
 
-    float scale = rt_canvas_effective_coord_scale(canvas);
-    int64_t px0 = rtg_scale_up_i64(x, scale);
-    int64_t px1 = rtg_scale_up_i64(rtg_add_sat64(x, w), scale);
-    int64_t py0 = rtg_scale_up_i64(y, scale);
-    int64_t py1 = rtg_scale_up_i64(rtg_add_sat64(y, h), scale);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
+    int64_t px0 = rtg_scale_up_i64(x, scale) + offset_x;
+    int64_t px1 = rtg_scale_up_i64(rtg_add_sat64(x, w), scale) + offset_x;
+    int64_t py0 = rtg_scale_up_i64(y, scale) + offset_y;
+    int64_t py1 = rtg_scale_up_i64(rtg_add_sat64(y, h), scale) + offset_y;
     if (px0 < 0)
         px0 = 0;
     if (py0 < 0)
@@ -1945,8 +1957,8 @@ void rt_canvas_gradient_v(
     /* Full-precision per-channel interpolation (avoids rt_color_lerp's 101-step banding). */
     for (int64_t row = 0; row < h; row++) {
         int64_t logical_y = rtg_add_sat64(y, row);
-        int64_t row_py0 = rtg_scale_up_i64(logical_y, scale);
-        int64_t row_py1 = rtg_scale_up_i64(rtg_add_sat64(logical_y, 1), scale);
+        int64_t row_py0 = rtg_scale_up_i64(logical_y, scale) + offset_y;
+        int64_t row_py1 = rtg_scale_up_i64(rtg_add_sat64(logical_y, 1), scale) + offset_y;
         if (row_py1 <= row_py0)
             row_py1 = row_py0 + 1;
         if (row_py0 < py0)

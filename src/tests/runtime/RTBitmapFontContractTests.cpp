@@ -244,6 +244,9 @@ extern "C" int32_t vgfx_window_get_height(vgfx_window_t) {
 
 extern "C" void vgfx_set_coord_scale(vgfx_window_t, float) {}
 
+extern "C" void vgfx_set_coord_transform(vgfx_window_t, float, int32_t, int32_t, int32_t, int32_t) {
+}
+
 extern "C" void vgfx_set_clip(vgfx_window_t, int32_t, int32_t, int32_t, int32_t) {}
 
 extern "C" void vgfx_clear_clip(vgfx_window_t) {}

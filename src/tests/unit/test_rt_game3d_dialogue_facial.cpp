@@ -151,6 +151,20 @@ bool test_world_to_screen_projection() {
     EXPECT_TRUE(rt_camera3d_world_to_screen(camera, 0.0, 0.0, 30.0, 640, 480, &sx, &sy) == 0,
                 "point behind the camera is not visible");
 
+    /* A point in front of the eye but inside the near plane (0.1) is clipped, so
+     * it is not visible either; its perspective divide would otherwise hand
+     * callers an unbounded pixel coordinate (the Legacy Baseball actor pick
+     * squared one and overflowed 64-bit integer math mid-game). */
+    EXPECT_TRUE(rt_camera3d_world_to_screen(camera, 2.0, 0.0, 10.0 - 1e-9, 640, 480, &sx, &sy) == 0,
+                "point inside the near plane is not visible");
+    EXPECT_TRUE(std::isfinite(sx) && std::isfinite(sy),
+                "inside-near-plane projection still writes finite pixels");
+    EXPECT_TRUE(rt_camera3d_world_to_screen(camera, 2.0, 0.0, 10.0 - 0.09, 640, 480, &sx, &sy) == 0,
+                "point 0.09 in front of the eye is still inside the 0.1 near plane");
+    EXPECT_TRUE(rt_camera3d_world_to_screen(camera, 2.0, 0.0, 9.5, 640, 480, &sx, &sy) != 0,
+                "point 0.5 in front of the eye is visible");
+    EXPECT_TRUE(sx > 640.0, "a near point 2 units right projects far off the right edge");
+
     if (rt_obj_release_check0(up))
         rt_obj_free(up);
     if (rt_obj_release_check0(look))

@@ -96,6 +96,7 @@ Constructor: `Zanna.Graphics.Canvas.New`
 | <a id="zanna-graphics-canvas-close"></a>`Close` | `void()` | `Zanna.Graphics.Canvas.Close` |
 | <a id="zanna-graphics-canvas-fullscreen"></a>`Fullscreen` | `void()` | `Zanna.Graphics.Canvas.Fullscreen` |
 | <a id="zanna-graphics-canvas-windowed"></a>`Windowed` | `void()` | `Zanna.Graphics.Canvas.Windowed` |
+| <a id="zanna-graphics-canvas-isfullscreen"></a>`IsFullscreen` | `i1()` | `Zanna.Graphics.Canvas.IsFullscreen` |
 | <a id="zanna-graphics-canvas-textwidth"></a>`TextWidth` | `i64(str)` | `Zanna.Graphics.Canvas.TextWidth` |
 | <a id="zanna-graphics-canvas-textheight"></a>`TextHeight` | `i64()` | `Zanna.Graphics.Canvas.TextHeight` |
 | <a id="zanna-graphics-canvas-textscaled"></a>`TextScaled` | `void(i64,i64,str,i64,i64)` | `Zanna.Graphics.Canvas.TextScaled` |
@@ -1621,6 +1622,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Canvas.Screenshot` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_canvas_screenshot` |
 | `Zanna.Graphics.Canvas.Fullscreen` | `void(obj)` | `rt_canvas_fullscreen` |
 | `Zanna.Graphics.Canvas.Windowed` | `void(obj)` | `rt_canvas_windowed` |
+| `Zanna.Graphics.Canvas.IsFullscreen` | `i1(obj)` | `rt_canvas_is_fullscreen` |
 | `Zanna.Graphics.Canvas.GradientH` | `void(obj,i64,i64,i64,i64,i64,i64)` | `rt_canvas_gradient_h` |
 | `Zanna.Graphics.Canvas.GradientV` | `void(obj,i64,i64,i64,i64,i64,i64)` | `rt_canvas_gradient_v` |
 | `Zanna.Graphics.Canvas.GetScale` | `f64(obj)` | `rt_canvas_get_scale` |

@@ -15,6 +15,8 @@
 //     (ADR 0242 loan ownership rule); the loan return re-arms the push.
 //   - Native fullscreen keeps the designed logical size; windowed RESIZE
 //     derives the logical size from physical pixels and the backing scale.
+//   - Native fullscreen centers the designed extent: the presentation offset
+//     is pushed with the scale and withheld under a loan (ADR 0367).
 //   - Frame timing remains defined across extreme or non-monotonic clock values.
 //   - Canvas-owned title bytes round-trip independently of C-string termination.
 //
@@ -46,6 +48,10 @@ struct FakeWindow {
     float coord_scale;
     int coord_scale_calls;
     float last_coord_scale;
+    int32_t last_offset_x;
+    int32_t last_offset_y;
+    int32_t last_content_w;
+    int32_t last_content_h;
     int clip_set_calls;
     int clear_clip_calls;
     int32_t clip_x;
@@ -370,6 +376,73 @@ static void test_poll_resize_keeps_design_in_fullscreen_and_derives_windowed_fro
     assert(canvas->logical_height == 60);
 }
 
+/// @brief ADR 0367: in native fullscreen the designed extent is scaled by min(fb/design) and
+///        centered, so the remainder on the other axis becomes equal bars pushed as the
+///        presentation offset; windowed pushes no offset; a loaned window receives neither.
+static void test_fullscreen_pushes_centered_presentation_offset() {
+    g_initial_scale = 1.0f;
+    g_fake_fullscreen = 0;
+    rt_canvas *canvas = new_canvas(); // 100x50 design
+    assert(canvas != nullptr);
+    auto *window = window_from(canvas->gfx_win);
+    assert(window->last_offset_x == 0 && window->last_offset_y == 0);
+
+    // 300x200 monitor: scale = min(3.0, 4.0) = 3.0, content 300x150, 25 px bars top and bottom.
+    g_fake_fullscreen = 1;
+    window->physical_width = 300;
+    window->physical_height = 200;
+    rt_canvas_fullscreen(canvas);
+    assert(window->last_coord_scale == 3.0f);
+    assert(window->last_offset_x == 0);
+    assert(window->last_offset_y == 25);
+    assert(window->last_content_w == 300 && window->last_content_h == 150);
+    assert(canvas->applied_coord_offset_y == 25);
+
+    // 500x150 monitor: scale = min(5.0, 3.0) = 3.0, content 300x150, 100 px pillars.
+    window->physical_width = 500;
+    window->physical_height = 150;
+    canvas->window_state_synced = 0;
+    assert(rt_canvas_width(canvas) == 100);
+    assert(window->last_coord_scale == 3.0f);
+    assert(window->last_offset_x == 100);
+    assert(window->last_offset_y == 0);
+
+    // An unchanged transform is not re-pushed; a changed offset alone is.
+    int calls = window->coord_scale_calls;
+    assert(rt_canvas_height(canvas) == 50);
+    assert(window->coord_scale_calls == calls);
+    window->physical_width = 400;
+    canvas->window_state_synced = 0;
+    assert(rt_canvas_height(canvas) == 50);
+    assert(window->coord_scale_calls == calls + 1);
+    assert(window->last_offset_x == 50);
+
+    // Back to windowed: no bars.
+    g_fake_fullscreen = 0;
+    window->physical_width = 100;
+    window->physical_height = 50;
+    rt_canvas_windowed(canvas);
+    assert(window->last_coord_scale == 1.0f);
+    assert(window->last_offset_x == 0 && window->last_offset_y == 0);
+    assert(window->last_content_w == 0 && window->last_content_h == 0);
+
+    // Loaned: the lender's fullscreen pushes nothing, not even the offset.
+    vgfx_window_t loaned = rt_canvas_borrow_window(canvas);
+    assert(loaned == canvas->gfx_win);
+    calls = window->coord_scale_calls;
+    g_fake_fullscreen = 1;
+    window->physical_width = 300;
+    window->physical_height = 200;
+    rt_canvas_fullscreen(canvas);
+    assert(window->coord_scale_calls == calls);
+    assert(window->last_offset_y == 0);
+    rt_canvas_return_window(canvas);
+    assert(rt_canvas_width(canvas) == 100);
+    assert(window->coord_scale_calls == calls + 1);
+    assert(window->last_offset_y == 25);
+    g_fake_fullscreen = 0;
+}
+
 static void test_title_cache_preserves_embedded_nul_bytes() {
     g_initial_scale = 1.0f;
     rt_canvas *canvas = new_canvas();
@@ -598,12 +671,25 @@ extern "C" void vgfx_destroy_window(vgfx_window_t window) {
     std::free(window_from(window));
 }
 
-extern "C" void vgfx_set_coord_scale(vgfx_window_t window, float scale) {
+extern "C" void vgfx_set_coord_transform(vgfx_window_t window,
+                                         float scale,
+                                         int32_t offset_x,
+                                         int32_t offset_y,
+                                         int32_t content_w,
+                                         int32_t content_h) {
     auto *fake = window_from(window);
     assert(fake != nullptr);
     fake->coord_scale = scale;
     fake->last_coord_scale = scale;
+    fake->last_offset_x = offset_x;
+    fake->last_offset_y = offset_y;
+    fake->last_content_w = content_w;
+    fake->last_content_h = content_h;
     fake->coord_scale_calls++;
+}
+
+extern "C" void vgfx_set_coord_scale(vgfx_window_t window, float scale) {
+    vgfx_set_coord_transform(window, scale, 0, 0, 0, 0);
 }
 
 extern "C" float vgfx_window_get_scale(vgfx_window_t window) {
@@ -787,6 +873,7 @@ int main() {
     test_window_position_and_monitor_scalar_wrappers();
     test_loaned_window_never_receives_lender_state();
     test_poll_resize_keeps_design_in_fullscreen_and_derives_windowed_from_backing();
+    test_fullscreen_pushes_centered_presentation_offset();
     test_title_cache_preserves_embedded_nul_bytes();
     return 0;
 }

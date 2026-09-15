@@ -1175,6 +1175,15 @@ void rt_canvas_fullscreen(void *canvas) {
     RT_GRAPHICS_TRAP_VOID("Canvas.Fullscreen: graphics support not compiled in");
 }
 
+/// @brief Stub for `Canvas.IsFullscreen` — would normally report the live
+///        fullscreen mode of the window.
+/// @param canvas Canvas handle (ignored before trapping).
+/// @return Never returns normally; the trapping stub yields 0.
+int8_t rt_canvas_is_fullscreen(void *canvas) {
+    (void)canvas;
+    RT_GRAPHICS_TRAP_RET("Canvas.IsFullscreen: graphics support not compiled in", 0);
+}
+
 /// @brief Stub for `Canvas.Windowed` — would normally restore a fullscreen
 ///        window to its previous windowed dimensions and frame origin.
 ///

@@ -535,15 +535,17 @@ typedef struct {
     int64_t clip_y;          ///< Logical clip Y
     int64_t clip_w;          ///< Logical clip width
     int64_t clip_h;          ///< Logical clip height
-    int8_t relative_mouse_applied; ///< Relative (raw) mouse mode currently applied to the window
-    int8_t window_state_synced;    ///< Cached scale/clip state has been applied to gfx_win
-    int8_t applied_clip_enabled;   ///< Clip-enabled value last applied to gfx_win
-    int32_t window_loan_active;    ///< Atomic state: 0=available, 1=loaned, 2=closing/closed
-    float applied_coord_scale;     ///< Coordinate scale last applied to gfx_win
-    int64_t applied_clip_x;        ///< Logical clip X last applied to gfx_win
-    int64_t applied_clip_y;        ///< Logical clip Y last applied to gfx_win
-    int64_t applied_clip_w;        ///< Logical clip width last applied to gfx_win
-    int64_t applied_clip_h;        ///< Logical clip height last applied to gfx_win
+    int8_t relative_mouse_applied;  ///< Relative (raw) mouse mode currently applied to the window
+    int8_t window_state_synced;     ///< Cached scale/clip state has been applied to gfx_win
+    int8_t applied_clip_enabled;    ///< Clip-enabled value last applied to gfx_win
+    int32_t window_loan_active;     ///< Atomic state: 0=available, 1=loaned, 2=closing/closed
+    float applied_coord_scale;      ///< Coordinate scale last applied to gfx_win
+    int32_t applied_coord_offset_x; ///< Presentation offset X last applied to gfx_win
+    int32_t applied_coord_offset_y; ///< Presentation offset Y last applied to gfx_win
+    int64_t applied_clip_x;         ///< Logical clip X last applied to gfx_win
+    int64_t applied_clip_y;         ///< Logical clip Y last applied to gfx_win
+    int64_t applied_clip_w;         ///< Logical clip width last applied to gfx_win
+    int64_t applied_clip_h;         ///< Logical clip height last applied to gfx_win
 } rt_canvas;
 
 /// @brief Safely down-cast an opaque pointer to rt_canvas.
@@ -638,6 +640,42 @@ static inline float rt_canvas_effective_coord_scale(rt_canvas *canvas) {
     return (float)presentation_scale;
 }
 
+/// @brief Resolve the coordinate scale and the centered presentation offset.
+/// @details In native fullscreen the designed extent, scaled by
+///          rt_canvas_effective_coord_scale, is smaller than the framebuffer on
+///          at least one axis; the remainder is split evenly so the content is
+///          centered and the bars are equal (ADR 0367). Windowed canvases and
+///          canvases whose designed extent exactly fits report a zero offset.
+/// @param canvas Canvas whose window and designed extent are inspected.
+/// @param scale_out Receives the effective coordinate scale.
+/// @param offset_x_out Receives physical pixels left of the content.
+/// @param offset_y_out Receives physical pixels above the content.
+static inline void rt_canvas_effective_coord_transform(rt_canvas *canvas,
+                                                       float *scale_out,
+                                                       int32_t *offset_x_out,
+                                                       int32_t *offset_y_out) {
+    float scale = rt_canvas_effective_coord_scale(canvas);
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    if (canvas && canvas->gfx_win && vgfx_is_fullscreen(canvas->gfx_win) == 1 &&
+        canvas->logical_width > 0 && canvas->logical_height > 0) {
+        int64_t framebuffer_w = (int64_t)vgfx_window_get_width(canvas->gfx_win);
+        int64_t framebuffer_h = (int64_t)vgfx_window_get_height(canvas->gfx_win);
+        int64_t content_w = rtg_scale_up_i64(canvas->logical_width, scale);
+        int64_t content_h = rtg_scale_up_i64(canvas->logical_height, scale);
+        if (framebuffer_w > content_w)
+            offset_x = rtg_clamp_i64_to_i32((framebuffer_w - content_w) / 2);
+        if (framebuffer_h > content_h)
+            offset_y = rtg_clamp_i64_to_i32((framebuffer_h - content_h) / 2);
+    }
+    if (scale_out)
+        *scale_out = scale;
+    if (offset_x_out)
+        *offset_x_out = offset_x;
+    if (offset_y_out)
+        *offset_y_out = offset_y;
+}
+
 /// @brief Push the canvas's logical coordinate scale and clip rect into the
 ///        underlying ZannaGFX window.
 /// @details Re-reads the window HiDPI scale and applies coordinate-scale/clip
@@ -661,15 +699,29 @@ static inline void rt_canvas_resync_window_state(rt_canvas *canvas) {
     if (rt_atomic_load_i32(&canvas->window_loan_active, __ATOMIC_ACQUIRE) == 1)
         return;
 
-    float scale = rt_canvas_effective_coord_scale(canvas);
-    int8_t scale_changed = !canvas->window_state_synced || scale != canvas->applied_coord_scale;
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
+    int8_t scale_changed = !canvas->window_state_synced || scale != canvas->applied_coord_scale ||
+                           offset_x != canvas->applied_coord_offset_x ||
+                           offset_y != canvas->applied_coord_offset_y;
     int8_t clip_changed =
         scale_changed || canvas->clip_enabled != canvas->applied_clip_enabled ||
         (canvas->clip_enabled &&
          (canvas->clip_x != canvas->applied_clip_x || canvas->clip_y != canvas->applied_clip_y ||
           canvas->clip_w != canvas->applied_clip_w || canvas->clip_h != canvas->applied_clip_h));
-    if (scale_changed)
-        vgfx_set_coord_scale(canvas->gfx_win, scale);
+    if (scale_changed) {
+        /* The content extent is the scaled design so the public size rounds
+         * back to the design exactly, whatever the bars come to. */
+        int32_t content_w = 0;
+        int32_t content_h = 0;
+        if (offset_x != 0 || offset_y != 0) {
+            content_w = rtg_clamp_i64_to_i32(rtg_scale_up_i64(canvas->logical_width, scale));
+            content_h = rtg_clamp_i64_to_i32(rtg_scale_up_i64(canvas->logical_height, scale));
+        }
+        vgfx_set_coord_transform(canvas->gfx_win, scale, offset_x, offset_y, content_w, content_h);
+    }
     if (clip_changed) {
         if (canvas->clip_enabled) {
             vgfx_set_clip(canvas->gfx_win,
@@ -682,6 +734,8 @@ static inline void rt_canvas_resync_window_state(rt_canvas *canvas) {
         }
     }
     canvas->applied_coord_scale = scale;
+    canvas->applied_coord_offset_x = offset_x;
+    canvas->applied_coord_offset_y = offset_y;
     canvas->applied_clip_enabled = canvas->clip_enabled;
     canvas->applied_clip_x = canvas->clip_x;
     canvas->applied_clip_y = canvas->clip_y;

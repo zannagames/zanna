@@ -161,6 +161,8 @@ typedef struct {
     int fullscreen_resizable_added; ///< 1 if fullscreen temporarily enabled resizable style
     NSSize windowed_content_size;   ///< Last windowed content size before native fullscreen
     int has_windowed_content_size;  ///< 1 if windowed_content_size is valid
+    int fullscreen_target;          ///< Mode last requested through vgfx_platform_set_fullscreen
+    int fullscreen_transition;      ///< 1 while toggleFullScreen: is animating (requests defer)
 } vgfx_macos_platform;
 
 static BOOL g_finish_launching_called = NO;
@@ -170,6 +172,7 @@ static void macos_enqueue_text_input_events(struct vgfx_window *win,
                                             int64_t timestamp,
                                             NSString *characters,
                                             int modifiers);
+static void macos_settle_fullscreen_transition(struct vgfx_window *win);
 
 /// @brief Convert a UTF-8 C string to an NSString with a safe fallback.
 /// @details Cocoa returns nil from `stringWithUTF8String:` when the byte stream
@@ -1264,15 +1267,25 @@ static void macos_enqueue_composition_event(VGFXView *view,
     if (!_vgfxWindow || !_vgfxWindow->platform_data)
         return;
     vgfx_macos_platform *platform = (vgfx_macos_platform *)_vgfxWindow->platform_data;
+    platform->fullscreen_transition = 1;
     if (platform->view)
         platform->windowed_content_size = [platform->view bounds].size;
     platform->has_windowed_content_size = platform->view != nil ? 1 : 0;
     macos_set_view_tracks_window(platform->view);
 }
 
+- (void)windowWillExitFullScreen:(NSNotification *)notification {
+    (void)notification;
+    if (!_vgfxWindow || !_vgfxWindow->platform_data)
+        return;
+    vgfx_macos_platform *platform = (vgfx_macos_platform *)_vgfxWindow->platform_data;
+    platform->fullscreen_transition = 1;
+}
+
 - (void)windowDidEnterFullScreen:(NSNotification *)notification {
     (void)notification;
     macos_sync_window_metrics(_vgfxWindow, 1, 1);
+    macos_settle_fullscreen_transition(_vgfxWindow);
 }
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification {
@@ -1297,6 +1310,7 @@ static void macos_enqueue_composition_event(VGFXView *view,
     }
 
     macos_sync_window_metrics(_vgfxWindow, 1, 1);
+    macos_settle_fullscreen_transition(_vgfxWindow);
 }
 
 - (NSSize)window:(NSWindow *)window willUseFullScreenContentSize:(NSSize)proposedSize {
@@ -2172,9 +2186,79 @@ static void vgfx_macos_apply_adjacent_application_icon(void) {
     }
 }
 
+/// @brief Apply the requested fullscreen mode to a window that is not mid-transition.
+/// @details Compares the request against the live style mask and sends
+///          `toggleFullScreen:` only when they differ. The resizable style is
+///          added for the duration of native fullscreen on windows that are
+///          not resizable, and removed again once windowed.
+/// @param win Window whose platform data holds the NSWindow.
+/// @param fullscreen 1 for fullscreen, 0 for windowed.
+static void macos_apply_fullscreen(struct vgfx_window *win, int fullscreen) {
+    vgfx_macos_platform *platform = (vgfx_macos_platform *)win->platform_data;
+    if (!platform || !platform->window)
+        return;
+
+    BOOL is_currently_fullscreen =
+        ([platform->window styleMask] & NSWindowStyleMaskFullScreen) != 0;
+
+    if (fullscreen && !is_currently_fullscreen) {
+        [platform->window setCollectionBehavior:([platform->window collectionBehavior] |
+                                                 NSWindowCollectionBehaviorFullScreenPrimary)];
+        if (([platform->window styleMask] & NSWindowStyleMaskResizable) == 0) {
+            [platform->window
+                setStyleMask:([platform->window styleMask] | NSWindowStyleMaskResizable)];
+            platform->fullscreen_resizable_added = 1;
+        }
+        [platform->window makeKeyAndOrderFront:nil];
+        if (!vgfx_macos_no_activate_on_create())
+            [NSApp activateIgnoringOtherApps:YES];
+        [platform->window toggleFullScreen:nil];
+    } else if (!fullscreen && is_currently_fullscreen) {
+        [platform->window toggleFullScreen:nil];
+    } else if (!fullscreen && platform->fullscreen_resizable_added && !win->resizable) {
+        [platform->window
+            setStyleMask:([platform->window styleMask] & ~NSWindowStyleMaskResizable)];
+        platform->fullscreen_resizable_added = 0;
+    }
+}
+
+/// @brief Finish a fullscreen transition and honour any request made during it.
+/// @details AppKit ignores `toggleFullScreen:` while an animation is running,
+///          so a request that arrived mid-transition was only recorded as the
+///          target. Once the window has landed, a target that differs from the
+///          live mode is applied on the next run-loop turn (a toggle issued
+///          inside the did-enter/exit notification itself is dropped).
+/// @param win Window that just entered or exited fullscreen.
+static void macos_settle_fullscreen_transition(struct vgfx_window *win) {
+    if (!win || !win->platform_data)
+        return;
+    vgfx_macos_platform *platform = (vgfx_macos_platform *)win->platform_data;
+    platform->fullscreen_transition = 0;
+    if (!platform->window)
+        return;
+    int landed = ([platform->window styleMask] & NSWindowStyleMaskFullScreen) != 0 ? 1 : 0;
+    if (landed == platform->fullscreen_target)
+        return;
+    int target = platform->fullscreen_target;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (!win->platform_data)
+          return;
+      vgfx_macos_platform *p = (vgfx_macos_platform *)win->platform_data;
+      /* A newer request may have replaced the target; it is the one that counts. */
+      if (p->fullscreen_transition || p->fullscreen_target != target)
+          return;
+      @autoreleasepool {
+          macos_apply_fullscreen(win, target);
+      }
+    });
+}
+
 /// @brief Set the window to fullscreen or windowed mode.
 /// @details Toggles the NSWindow between fullscreen and windowed modes using
-///          macOS's native fullscreen API (toggleFullScreen:).
+///          macOS's native fullscreen API (toggleFullScreen:). The request is
+///          recorded as the target mode; if a transition is already animating
+///          it is applied when that transition lands, so the last request
+///          always wins.
 ///
 /// @param win        Pointer to the window structure
 /// @param fullscreen 1 for fullscreen, 0 for windowed
@@ -2189,31 +2273,11 @@ int vgfx_platform_set_fullscreen(struct vgfx_window *win, int fullscreen) {
         if (!platform->window)
             return 0;
 
-        /* Check current fullscreen state */
-        BOOL is_currently_fullscreen =
-            ([platform->window styleMask] & NSWindowStyleMaskFullScreen) != 0;
+        platform->fullscreen_target = fullscreen ? 1 : 0;
+        if (platform->fullscreen_transition)
+            return 1;
 
-        /* Only toggle if state needs to change */
-        if (fullscreen && !is_currently_fullscreen) {
-            [platform->window setCollectionBehavior:([platform->window collectionBehavior] |
-                                                     NSWindowCollectionBehaviorFullScreenPrimary)];
-            if (([platform->window styleMask] & NSWindowStyleMaskResizable) == 0) {
-                [platform->window
-                    setStyleMask:([platform->window styleMask] | NSWindowStyleMaskResizable)];
-                platform->fullscreen_resizable_added = 1;
-            }
-            [platform->window makeKeyAndOrderFront:nil];
-            if (!vgfx_macos_no_activate_on_create())
-                [NSApp activateIgnoringOtherApps:YES];
-            [platform->window toggleFullScreen:nil];
-        } else if (!fullscreen && is_currently_fullscreen) {
-            [platform->window toggleFullScreen:nil];
-        } else if (!fullscreen && platform->fullscreen_resizable_added && !win->resizable) {
-            [platform->window
-                setStyleMask:([platform->window styleMask] & ~NSWindowStyleMaskResizable)];
-            platform->fullscreen_resizable_added = 0;
-        }
-
+        macos_apply_fullscreen(win, platform->fullscreen_target);
         return 1;
     }
 }
@@ -2504,9 +2568,8 @@ void vgfx_platform_warp_cursor(struct vgfx_window *win, int32_t x, int32_t y) {
     CGDirectDisplayID display_id = macos_display_id_for_screen(screen);
 
     CGFloat display_scale = win->scale_factor > 0.0f ? (CGFloat)win->scale_factor : 1.0;
-    CGFloat coord_scale = vgfx_internal_coord_scale(win);
-    CGFloat physical_x = (CGFloat)vgfx_internal_scale_up_i32(x, coord_scale);
-    CGFloat physical_y = (CGFloat)vgfx_internal_scale_up_i32(y, coord_scale);
+    CGFloat physical_x = (CGFloat)vgfx_internal_to_physical_x(win, x);
+    CGFloat physical_y = (CGFloat)vgfx_internal_to_physical_y(win, y);
     CGFloat point_x = physical_x / display_scale;
     CGFloat point_y = physical_y / display_scale;
 

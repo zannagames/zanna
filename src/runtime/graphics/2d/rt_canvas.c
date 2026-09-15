@@ -136,10 +136,16 @@ static void rt_canvas_finalize(void *obj) {
 static void rt_canvas_update_mouse_from_physical(rt_canvas *canvas, int32_t x, int32_t y) {
     if (!canvas || !canvas->gfx_win)
         return;
-    float scale = rt_canvas_effective_coord_scale(canvas);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
     if (scale < 0.001f)
         scale = 1.0f;
-    rt_mouse_update_pos((int64_t)((double)x / (double)scale), (int64_t)((double)y / (double)scale));
+    /* The presentation bars come off before the scale, so a pointer in a bar
+     * reads below zero or past the designed extent rather than inside it. */
+    rt_mouse_update_pos((int64_t)(((double)x - (double)offset_x) / (double)scale),
+                        (int64_t)(((double)y - (double)offset_y) / (double)scale));
 }
 
 /// @brief Report that Canvas support is compiled into this runtime.
@@ -840,6 +846,19 @@ void rt_canvas_windowed(void *canvas_ptr) {
         canvas->window_state_synced = 0;
         rt_canvas_resync_window_state(canvas);
     }
+}
+
+/// @brief `Canvas.IsFullscreen` — whether the window is in native fullscreen right now.
+/// @details Reports the platform's live mode (ADR 0367). A transition requested
+///          by Fullscreen()/Windowed() may still be animating on macOS, so the
+///          value converges over the following frames rather than immediately.
+/// @param canvas_ptr Canvas handle. NULL-safe.
+/// @return `1` when fullscreen; `0` when windowed, closed or invalid.
+int8_t rt_canvas_is_fullscreen(void *canvas_ptr) {
+    rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
+    if (!canvas || !canvas->gfx_win)
+        return 0;
+    return vgfx_is_fullscreen(canvas->gfx_win) > 0 ? 1 : 0;
 }
 
 /// @brief Set the target frame rate for the canvas.

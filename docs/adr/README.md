@@ -149,6 +149,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0364](0364-platform-services-achievement-icons-and-percentages.md) — Platform Services Achievement Icons and Global Unlock Percentages
 - [ADR 0365](0365-platform-services-action-input.md) — Platform Services Action Input (Steam Input First)
 - [ADR 0366](0366-platform-services-workshop.md) — Platform Services Workshop (Steam Workshop First)
+- [ADR 0367](0367-canvas-fullscreen-letterbox-and-query.md) — 2D Canvas Fullscreen Presentation (Centered Letterbox, Last Request Wins, IsFullscreen)
 
 ## GUI & IDE
 

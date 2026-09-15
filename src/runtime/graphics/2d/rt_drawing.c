@@ -1384,11 +1384,14 @@ void rt_canvas_blit(void *canvas_ptr, int64_t x, int64_t y, void *pixels_ptr) {
     if (!rt_canvas_prepare_blit_region(canvas, pixels, &dx, &dy, &sx, &sy, &w, &h))
         return;
 
-    float scale = rt_canvas_effective_coord_scale(canvas);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
 
     for (int64_t row = 0; row < h; row++) {
-        int64_t py0 = rtg_scale_up_i64(dy + row, scale);
-        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale);
+        int64_t py0 = rtg_scale_up_i64(dy + row, scale) + offset_y;
+        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale) + offset_y;
         if (py1 <= py0)
             py1 = py0 + 1;
         if (py0 < 0)
@@ -1400,8 +1403,8 @@ void rt_canvas_blit(void *canvas_ptr, int64_t x, int64_t y, void *pixels_ptr) {
 
         uint32_t *src_row_data = &pixels->data[(sy + row) * pixels->width + sx];
         for (int64_t col = 0; col < w; col++) {
-            int64_t px0 = rtg_scale_up_i64(dx + col, scale);
-            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale);
+            int64_t px0 = rtg_scale_up_i64(dx + col, scale) + offset_x;
+            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale) + offset_x;
             if (px1 <= px0)
                 px1 = px0 + 1;
             if (px0 < 0)
@@ -1469,11 +1472,14 @@ void rt_canvas_blit_region(void *canvas_ptr,
     if (!rt_canvas_prepare_blit_region(canvas, pixels, &dx, &dy, &sx, &sy, &w, &h))
         return;
 
-    float scale = rt_canvas_effective_coord_scale(canvas);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
 
     for (int64_t row = 0; row < h; row++) {
-        int64_t py0 = rtg_scale_up_i64(dy + row, scale);
-        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale);
+        int64_t py0 = rtg_scale_up_i64(dy + row, scale) + offset_y;
+        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale) + offset_y;
         if (py1 <= py0)
             py1 = py0 + 1;
         if (py0 < 0)
@@ -1485,8 +1491,8 @@ void rt_canvas_blit_region(void *canvas_ptr,
 
         uint32_t *src_row = &pixels->data[(sy + row) * pixels->width + sx];
         for (int64_t col = 0; col < w; col++) {
-            int64_t px0 = rtg_scale_up_i64(dx + col, scale);
-            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale);
+            int64_t px0 = rtg_scale_up_i64(dx + col, scale) + offset_x;
+            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale) + offset_x;
             if (px1 <= px0)
                 px1 = px0 + 1;
             if (px0 < 0)
@@ -1535,6 +1541,8 @@ static void rt_canvas_blit_region_alpha_raw(rt_canvas *canvas,
                                             rt_pixels_impl *pixels,
                                             const vgfx_framebuffer_t *fb,
                                             float scale,
+                                            int32_t offset_x,
+                                            int32_t offset_y,
                                             int64_t dx,
                                             int64_t dy,
                                             int64_t sx,
@@ -1545,8 +1553,8 @@ static void rt_canvas_blit_region_alpha_raw(rt_canvas *canvas,
         return;
 
     for (int64_t row = 0; row < h; row++) {
-        int64_t py0 = rtg_scale_up_i64(dy + row, scale);
-        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale);
+        int64_t py0 = rtg_scale_up_i64(dy + row, scale) + offset_y;
+        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale) + offset_y;
         if (py1 <= py0)
             py1 = py0 + 1;
         if (py0 < 0)
@@ -1558,8 +1566,8 @@ static void rt_canvas_blit_region_alpha_raw(rt_canvas *canvas,
 
         uint32_t *src_row = &pixels->data[(sy + row) * pixels->width + sx];
         for (int64_t col = 0; col < w; col++) {
-            int64_t px0 = rtg_scale_up_i64(dx + col, scale);
-            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale);
+            int64_t px0 = rtg_scale_up_i64(dx + col, scale) + offset_x;
+            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale) + offset_x;
             if (px1 <= px0)
                 px1 = px0 + 1;
             if (px0 < 0)
@@ -1642,13 +1650,18 @@ void rt_canvas_blit_regions_alpha(void *canvas_ptr,
     vgfx_framebuffer_t fb;
     if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
         return;
-    float scale = rt_canvas_effective_coord_scale(canvas);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
     for (size_t i = 0; i < region_count; ++i) {
         const rt_canvas_alpha_region *region = &regions[i];
         rt_canvas_blit_region_alpha_raw(canvas,
                                         pixels,
                                         &fb,
                                         scale,
+                                        offset_x,
+                                        offset_y,
                                         region->dx,
                                         region->dy,
                                         region->sx,
@@ -1695,11 +1708,14 @@ void rt_canvas_blit_alpha(void *canvas_ptr, int64_t x, int64_t y, void *pixels_p
     if (!rt_canvas_prepare_blit_region(canvas, pixels, &dx, &dy, &sx, &sy, &w, &h))
         return;
 
-    float scale = rt_canvas_effective_coord_scale(canvas);
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
 
     for (int64_t row = 0; row < h; row++) {
-        int64_t py0 = rtg_scale_up_i64(dy + row, scale);
-        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale);
+        int64_t py0 = rtg_scale_up_i64(dy + row, scale) + offset_y;
+        int64_t py1 = rtg_scale_up_i64(dy + row + 1, scale) + offset_y;
         if (py1 <= py0)
             py1 = py0 + 1;
         if (py0 < 0)
@@ -1711,8 +1727,8 @@ void rt_canvas_blit_alpha(void *canvas_ptr, int64_t x, int64_t y, void *pixels_p
 
         uint32_t *src_row = &pixels->data[(sy + row) * pixels->width + sx];
         for (int64_t col = 0; col < w; col++) {
-            int64_t px0 = rtg_scale_up_i64(dx + col, scale);
-            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale);
+            int64_t px0 = rtg_scale_up_i64(dx + col, scale) + offset_x;
+            int64_t px1 = rtg_scale_up_i64(dx + col + 1, scale) + offset_x;
             if (px1 <= px0)
                 px1 = px0 + 1;
             if (px0 < 0)
@@ -1846,8 +1862,11 @@ void *rt_canvas_copy_rect(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int
         return NULL;
     }
 
-    // Sample the physical pixel at the logical pixel's scaled top-left corner.
-    float scale = rt_canvas_effective_coord_scale(canvas);
+    // Sample the physical pixel at the logical pixel's transformed top-left corner.
+    float scale = 1.0f;
+    int32_t offset_x = 0;
+    int32_t offset_y = 0;
+    rt_canvas_effective_coord_transform(canvas, &scale, &offset_x, &offset_y);
 
     rt_pixels_impl *pix = rt_pixels_checked_impl_or_null(pixels);
     if (!pix || !pix->data) {
@@ -1857,7 +1876,7 @@ void *rt_canvas_copy_rect(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int
     }
 
     for (int64_t py = 0; py < h; py++) {
-        int64_t src_y = rtg_scale_up_i64(rtg_add_sat64(y, py), scale);
+        int64_t src_y = rtg_scale_up_i64(rtg_add_sat64(y, py), scale) + offset_y;
         if (src_y < 0 || src_y >= fb.height)
             continue;
 
@@ -1865,7 +1884,7 @@ void *rt_canvas_copy_rect(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int
         uint32_t *dst_row = &pix->data[(size_t)(py * w)];
 
         for (int64_t px = 0; px < w; px++) {
-            int64_t src_x = rtg_scale_up_i64(rtg_add_sat64(x, px), scale);
+            int64_t src_x = rtg_scale_up_i64(rtg_add_sat64(x, px), scale) + offset_x;
             if (src_x < 0 || src_x >= fb.width) {
                 dst_row[px] = 0;
                 continue;
