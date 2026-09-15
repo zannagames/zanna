@@ -101,6 +101,23 @@ function ConvertFrom-NativeArgumentString {
     return $result.ToArray()
 }
 
+# Windows PowerShell 5.1 turns a native command's stderr into error records
+# once the host captures this script's output (a pipeline, `2>&1`, or a log
+# capture), and under 'Stop' the FIRST record aborts the run -- so a plain
+# CMake warning ended the build before its exit status was ever read. Native
+# steps therefore run under 'Continue' and are judged only by $LASTEXITCODE.
+function Invoke-NativeStep {
+    param([Parameter(Mandatory = $true)][scriptblock]$Step)
+
+    $priorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Step
+    } finally {
+        $ErrorActionPreference = $priorPreference
+    }
+}
+
 function Invoke-CheckedNative {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -108,7 +125,7 @@ function Invoke-CheckedNative {
         [Parameter(Mandatory = $true)][string]$FailureMessage
     )
 
-    & $FilePath @Arguments
+    Invoke-NativeStep { & $FilePath @Arguments }
     if ($LASTEXITCODE -ne 0) {
         throw "$FailureMessage (exit $LASTEXITCODE)"
     }
@@ -435,7 +452,7 @@ try {
     } elseif ($cacheReset) {
         Write-Host "Skipping pre-configure clean because cached compiler state was reset."
     } elseif ($configuredBuild) {
-        & cmake --build $buildDir --target clean-all 2>$null
+        Invoke-NativeStep { & cmake --build $buildDir --target clean-all 2>$null }
     } else {
         Write-Host "Skipping pre-configure clean because the build tree is not configured."
     }
@@ -480,9 +497,9 @@ try {
         $prettyScript = Join-Path $scriptRoot "run_ctest_pretty.ps1"
         $windowsPowerShell = Get-Command powershell.exe -ErrorAction SilentlyContinue
         if ($null -ne $windowsPowerShell -and (Test-Path -LiteralPath $prettyScript -PathType Leaf)) {
-            & $windowsPowerShell.Source -NoProfile -ExecutionPolicy Bypass -File $prettyScript @ctestArguments
+            Invoke-NativeStep { & $windowsPowerShell.Source -NoProfile -ExecutionPolicy Bypass -File $prettyScript @ctestArguments }
         } else {
-            & ctest @ctestArguments
+            Invoke-NativeStep { & ctest @ctestArguments }
         }
         if ($LASTEXITCODE -ne 0) {
             $validationFailed = $true
@@ -501,7 +518,7 @@ try {
             if ($lintChangedOnly -eq "1") {
                 $lintArguments += "--changed-only"
             }
-            & $bashExe @lintArguments
+            Invoke-NativeStep { & $bashExe @lintArguments }
             if ($LASTEXITCODE -ne 0) {
                 $validationFailed = $true
             }
@@ -513,8 +530,8 @@ try {
     if ($skipAudit -eq "0") {
         if ($null -ne $bashExe) {
             Write-Host "Running runtime surface audit..."
-            & $bashExe --login scripts/audit_runtime_surface.sh `
-                "--build-dir=$bashBuildDir" "--config=$buildType"
+            Invoke-NativeStep { & $bashExe --login scripts/audit_runtime_surface.sh `
+                "--build-dir=$bashBuildDir" "--config=$buildType" }
             if ($LASTEXITCODE -ne 0) {
                 $validationFailed = $true
             }
@@ -526,8 +543,8 @@ try {
     if ($skipSmoke -eq "0") {
         if ($null -ne $bashExe) {
             Write-Host "Running cross-platform smoke tests..."
-            & $bashExe --login scripts/run_cross_platform_smoke.sh `
-                --build-dir $bashBuildDir --config $buildType
+            Invoke-NativeStep { & $bashExe --login scripts/run_cross_platform_smoke.sh `
+                --build-dir $bashBuildDir --config $buildType }
             if ($LASTEXITCODE -ne 0) {
                 $validationFailed = $true
             }
@@ -551,7 +568,7 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($configuredPrefix)) {
             $installPrefix = $configuredPrefix
         }
-        & cmake --install $buildDir --prefix $installPrefix --config $buildType
+        Invoke-NativeStep { & cmake --install $buildDir --prefix $installPrefix --config $buildType }
         if ($LASTEXITCODE -ne 0) {
             $validationFailed = $true
             Write-Warning "Install failed"

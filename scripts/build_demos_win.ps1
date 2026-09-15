@@ -229,13 +229,30 @@ function Assert-SafeRelativeWindowsPath {
     }
 }
 
+# Windows PowerShell 5.1 turns a native command's stderr into error records
+# once the host captures this script's output, and under 'Stop' the FIRST
+# record aborts the run -- a plain CMake warning ended the build before its
+# exit status was read. Native steps run under 'Continue' and are judged only
+# by $LASTEXITCODE (the same guard the zanna build call below already uses).
+function Invoke-NativeStep {
+    param([Parameter(Mandatory = $true)][scriptblock]$Step)
+
+    $priorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Step
+    } finally {
+        $ErrorActionPreference = $priorPreference
+    }
+}
+
 function Invoke-CheckedNative {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$Arguments = @(),
         [Parameter(Mandatory = $true)][string]$FailureMessage
     )
-    & $FilePath @Arguments
+    Invoke-NativeStep { & $FilePath @Arguments }
     if ($LASTEXITCODE -ne 0) {
         throw "$FailureMessage (exit $LASTEXITCODE)"
     }
