@@ -115,7 +115,12 @@ static void d3d11_fill_swap_chain_desc(DXGI_SWAP_CHAIN_DESC *swap_desc,
                                        int32_t width,
                                        int32_t height) {
     memset(swap_desc, 0, sizeof(*swap_desc));
-    swap_desc->BufferCount = 1;
+    /* Two back buffers. With a single buffer the blit-model swap chain has nothing
+     * to hand the CPU after Present, so the submitting thread blocks until the GPU
+     * finishes the frame and every frame costs CPU + GPU serially instead of
+     * max(CPU, GPU). Buffer 0 remains the same surface under DXGI_SWAP_EFFECT_DISCARD,
+     * so the cached render-target view stays valid across Present. */
+    swap_desc->BufferCount = 2;
     swap_desc->BufferDesc.Width = (UINT)width;
     swap_desc->BufferDesc.Height = (UINT)height;
     swap_desc->BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -156,6 +161,37 @@ static void d3d11_disable_implicit_fullscreen(d3d11_context_t *ctx, HWND hwnd) {
     if (FAILED(hr))
         d3d11_log_hresult("IDXGIFactory::MakeWindowAssociation", hr);
     SAFE_RELEASE(factory);
+}
+
+/// @brief Bound how many frames DXGI lets the CPU queue ahead of the GPU.
+/// @details The DXGI default of three frames maximizes throughput but adds latency,
+///   and leaving it unset alongside a one-buffer chain produced neither. Two keeps
+///   the CPU a frame ahead — the point of the extra back buffer — while holding
+///   input latency to one extra frame. Failure is non-fatal: presentation still
+///   works at the driver default.
+/// @param[in,out] ctx Backend context owning the created device.
+static void d3d11_set_max_frame_latency(d3d11_context_t *ctx) {
+    /* Interface id inline rather than IID_IDXGIDevice1 from dxguid.lib, matching
+     * d3d11_disable_implicit_fullscreen: Zanna's native-link pipeline does not
+     * consume MSVC #pragma comment records. */
+    static const GUID dxgi_device1_iid = {
+        0x77db970f, 0x6276, 0x48ba, {0xba, 0x28, 0x07, 0x01, 0x43, 0xb4, 0x39, 0x2c}};
+    IDXGIDevice1 *dxgi_device = NULL;
+    HRESULT hr;
+
+    if (!ctx || !ctx->device)
+        return;
+    hr = ID3D11Device_QueryInterface(ctx->device, &dxgi_device1_iid, (void **)&dxgi_device);
+    hr = d3d11_required_output_result(hr, dxgi_device);
+    if (FAILED(hr)) {
+        d3d11_log_hresult("ID3D11Device::QueryInterface(IDXGIDevice1)", hr);
+        SAFE_RELEASE(dxgi_device);
+        return;
+    }
+    hr = IDXGIDevice1_SetMaximumFrameLatency(dxgi_device, 2);
+    if (FAILED(hr))
+        d3d11_log_hresult("IDXGIDevice1::SetMaximumFrameLatency", hr);
+    SAFE_RELEASE(dxgi_device);
 }
 
 /// @brief Create the swapchain render-target view and matching main depth target.
@@ -1198,6 +1234,8 @@ static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) 
     }
     if (hwnd)
         d3d11_disable_implicit_fullscreen(ctx, hwnd);
+    if (ctx->swap_chain)
+        d3d11_set_max_frame_latency(ctx);
 
     if (ctx->swap_chain) {
         hr = d3d11_create_swapchain_targets(ctx, width, height);

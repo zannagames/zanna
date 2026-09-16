@@ -222,6 +222,36 @@ static int canvas3d_reserve_auto_instance_matrices(rt_canvas3d *c, int32_t neede
     return 1;
 }
 
+/* The instanced path carries one cmd-level transform pair, so batching compares
+ * every command byte except those two matrices. They must stay adjacent for the
+ * two-segment compare below to cover the whole struct. */
+typedef char canvas3d_assert_transform_fields_adjacent
+    [(offsetof(vgfx3d_draw_cmd_t, prev_model_matrix) ==
+      offsetof(vgfx3d_draw_cmd_t, model_matrix) + sizeof(((vgfx3d_draw_cmd_t *)0)->model_matrix))
+         ? 1
+         : -1];
+
+#define CANVAS3D_CMD_TRANSFORMS_BEGIN offsetof(vgfx3d_draw_cmd_t, model_matrix)
+#define CANVAS3D_CMD_TRANSFORMS_END                                                                    (offsetof(vgfx3d_draw_cmd_t, prev_model_matrix) +                                                   sizeof(((vgfx3d_draw_cmd_t *)0)->prev_model_matrix))
+
+/// @brief Byte-exact command equality ignoring the model/previous-model transforms.
+/// @details Equivalent to zeroing both matrices in copies and comparing whole
+///   structs, without materializing either copy. Padding is included exactly as
+///   before, because commands are zero-filled before use.
+/// @param a First borrowed command.
+/// @param b Second borrowed command.
+/// @return Nonzero when every byte outside the transform pair matches.
+static int canvas3d_draw_cmds_equal_outside_transforms(const vgfx3d_draw_cmd_t *a,
+                                                       const vgfx3d_draw_cmd_t *b) {
+    const unsigned char *pa = (const unsigned char *)a;
+    const unsigned char *pb = (const unsigned char *)b;
+    if (memcmp(pa, pb, CANVAS3D_CMD_TRANSFORMS_BEGIN) != 0)
+        return 0;
+    return memcmp(pa + CANVAS3D_CMD_TRANSFORMS_END,
+                  pb + CANVAS3D_CMD_TRANSFORMS_END,
+                  sizeof(vgfx3d_draw_cmd_t) - CANVAS3D_CMD_TRANSFORMS_END) == 0;
+}
+
 /// @brief Whether two state-sorted opaque draws can share one instanced submission.
 /// @details Requires the same stable geometry (key + revision), no skinning/morph
 ///   payloads, matching light slice and raster flags, and full command equality
@@ -253,18 +283,13 @@ static int canvas3d_draws_auto_instance_compatible(const deferred_draw_t *a,
         return 0;
     if (memcmp(a->ambient, b->ambient, sizeof(a->ambient)) != 0)
         return 0;
-    {
-        /* Command payloads are memset-zeroed at fill time, so padding bytes are
-         * deterministic and whole-struct comparison is exact. Normalize the two
-         * transform fields (the only allowed difference) before comparing. */
-        vgfx3d_draw_cmd_t na = *ca;
-        vgfx3d_draw_cmd_t nb = *cb;
-        memset(na.model_matrix, 0, sizeof(na.model_matrix));
-        memset(na.prev_model_matrix, 0, sizeof(na.prev_model_matrix));
-        memset(nb.model_matrix, 0, sizeof(nb.model_matrix));
-        memset(nb.prev_model_matrix, 0, sizeof(nb.prev_model_matrix));
-        return memcmp(&na, &nb, sizeof(na)) == 0;
-    }
+    /* Command payloads are memset-zeroed at fill time, so padding bytes are
+     * deterministic and whole-struct comparison is exact. The two transform
+     * fields are the only allowed difference and they are adjacent, so compare
+     * the bytes before and after them in place. The previous form normalized
+     * two ~1.2 KB stack copies per call; at thousands of opaque draws that was
+     * tens of MB of copying per frame purely to answer a boolean. */
+    return canvas3d_draw_cmds_equal_outside_transforms(ca, cb);
 }
 
 /// @brief Normalize only state that cannot affect static shadow depth/coverage.

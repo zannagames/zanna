@@ -711,6 +711,8 @@ typedef struct {
     int8_t overlay_used_this_frame;
     int8_t scene_composited_to_swapchain;
     int8_t presented_color_valid;
+    /// Nonzero when the caller declared that presented frames must stay readable.
+    int8_t capture_after_present;
     vgfx3d_postfx_chain_t gpu_postfx_chain;
     ID3D11Query *frame_time_disjoint_query;
     ID3D11Query *frame_time_start_query;
@@ -1643,6 +1645,22 @@ static uint64_t d3d11_get_frame_gpu_time_us(void *ctx_ptr) {
     return ctx->frame_gpu_time_us;
 }
 
+/// @brief Backend `set_capture_after_present` op - keep presented frames readable.
+/// @details This backend reads back from the swapchain back buffer, which Present
+///          leaves undefined, so it needs the hook for the same reason the Metal and
+///          OpenGL backends do. Disabling drops any retained frame so a later readback
+///          resolves against live targets instead of a stale copy.
+/// @param ctx_ptr Borrowed D3D11 backend context.
+/// @param enabled Nonzero to retain each presented frame for readback.
+static void d3d11_set_capture_after_present(void *ctx_ptr, int8_t enabled) {
+    d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
+    if (!ctx)
+        return;
+    ctx->capture_after_present = enabled ? 1 : 0;
+    if (!ctx->capture_after_present)
+        ctx->presented_color_valid = 0;
+}
+
 /// @brief Present the back buffer with vsync (sync interval = 1).
 ///
 /// Logs the HRESULT on failure but doesn't surface the error — present
@@ -1656,7 +1674,15 @@ static int d3d11_present_swapchain(d3d11_context_t *ctx) {
 
     if (!ctx || !ctx->swap_chain)
         return 0;
-    snapshot_ok = d3d11_snapshot_backbuffer_for_readback(ctx);
+    /* Present hands the back buffer to the display and leaves its contents
+     * undefined, so a readback taken afterwards has nothing to read. Keep a
+     * copy first only when the caller declared that presented frames must stay
+     * readable: retaining unconditionally charged every rendered frame a
+     * full-screen blit plus a bind round-trip for a capture that usually never
+     * comes. Metal and OpenGL have always gated this the same way. */
+    snapshot_ok = ctx->capture_after_present ? d3d11_snapshot_backbuffer_for_readback(ctx) : 0;
+    if (!ctx->capture_after_present)
+        ctx->presented_color_valid = 0;
     hr = IDXGISwapChain_Present(ctx->swap_chain, ctx->present_sync_interval, 0);
     if (hr != S_OK) {
         if (FAILED(hr)) {
@@ -3073,6 +3099,7 @@ const vgfx3d_backend_t vgfx3d_d3d11_backend = {
     .draw_skybox = d3d11_draw_skybox,
     .submit_draw_instanced = d3d11_submit_draw_instanced,
     .present = d3d11_present,
+    .set_capture_after_present = d3d11_set_capture_after_present,
     .readback_rgba = d3d11_readback_rgba,
     .present_postfx = d3d11_present_postfx,
     .resolve_opaque_targets = d3d11_resolve_opaque_targets,
