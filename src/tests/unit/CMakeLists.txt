@@ -148,11 +148,12 @@ if (WIN32 AND NOT TARGET test_windows_installer_update)
     zanna_add_test(test_windows_installer_update
             ${ZANNA_TESTS_DIR}/unit/test_windows_installer_update.cpp
             ${CMAKE_SOURCE_DIR}/src/tools/windows_installer/WindowsInstallerUpdate.cpp
-            ${CMAKE_SOURCE_DIR}/src/tools/windows_installer/WindowsInstallerVersion.cpp)
+            ${CMAKE_SOURCE_DIR}/src/tools/windows_installer/WindowsInstallerVersion.cpp
+            ${CMAKE_SOURCE_DIR}/src/tools/windows_installer/WindowsInstallerTheme.cpp)
     target_include_directories(test_windows_installer_update PRIVATE
             ${CMAKE_SOURCE_DIR}/src/tools/common/packaging)
     target_link_libraries(test_windows_installer_update PRIVATE
-            zanna_packaging bcrypt comctl32 shell32 user32 winhttp)
+            zanna_packaging bcrypt comctl32 dwmapi gdi32 shell32 user32 uxtheme winhttp)
     # Debug linking retains the uncalled TaskDialogIndirect UI path. Without a
     # v6 activation context Windows loads comctl32 v5 and fails before main.
     target_link_options(test_windows_installer_update PRIVATE
@@ -184,6 +185,23 @@ if (WIN32 AND NOT TARGET test_windows_installer_brand_validation)
             test_windows_installer_brand_validation)
     zanna_add_test_labels(test_windows_installer_brand_validation
             installer unit requires_windows)
+endif ()
+
+if (WIN32 AND NOT TARGET test_windows_installer_branding)
+    zanna_add_test(test_windows_installer_branding
+            ${ZANNA_TESTS_DIR}/unit/test_windows_installer_branding.cpp
+            ${CMAKE_SOURCE_DIR}/src/tools/windows_installer/WindowsInstallerTheme.cpp)
+    target_include_directories(test_windows_installer_branding PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/tools/windows_installer
+            ${CMAKE_SOURCE_DIR}/src/tools/common/packaging)
+    target_compile_definitions(test_windows_installer_branding PRIVATE
+            UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(test_windows_installer_branding PRIVATE
+            dwmapi uxtheme gdi32 user32)
+    zanna_add_ctest(test_windows_installer_branding
+            test_windows_installer_branding)
+    zanna_add_test_labels(test_windows_installer_branding
+            installer packaging requires_windows unit)
 endif ()
 
 if (WIN32 AND NOT TARGET test_windows_installer_cleanup_policy)

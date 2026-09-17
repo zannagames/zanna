@@ -2200,6 +2200,9 @@ bool verifyNativeOuterInventory(const ZipReader &outer,
         allowed.insert(metadata.licenseEntry);
     if (!metadata.readmeEntry.empty())
         allowed.insert(metadata.readmeEntry);
+    // Setup brands its own windows from this ICO; like the license and readme it is read
+    // by setup rather than installed, so it never appears in the outer-file inventory.
+    allowed.insert(kWindowsInstallerProductIconEntry);
     for (const auto &file : metadata.outerFiles)
         allowed.insert(file.overlayPath);
     for (const ZipEntry &entry : outer.entries()) {

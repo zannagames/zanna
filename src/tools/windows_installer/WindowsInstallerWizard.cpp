@@ -31,6 +31,7 @@
 #include <array>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <exception>
 #include <iomanip>
 #include <limits>
@@ -77,6 +78,60 @@ constexpr int kFinishQuickstart = 2033;
 constexpr int kFinishClose = 2034;
 constexpr int kFinishSamples = 2035;
 constexpr int kFinishCopyVerification = 2036;
+
+/// @brief Report whether a package installs the Zanna developer toolchain.
+/// @details Application packages reuse this setup host but must never present toolchain
+///          vocabulary, component presets, or the Zanna wordmark.
+/// @param package Verified package supplying product metadata.
+/// @return @c true for the toolchain package; @c false for an application package.
+bool isToolchainPackage(const HostPackage &package) noexcept {
+    return package.metadata.productKind == "toolchain";
+}
+
+/// @brief Return the product name used inside wizard sentences and action labels.
+/// @details The toolchain keeps its literal "Zanna" wording so its presentation is
+///          unchanged; an application package uses its own display name.
+/// @param package Verified package supplying display metadata.
+/// @return Product name in sentence case.
+std::wstring productName(const HostPackage &package) {
+    if (isToolchainPackage(package))
+        return L"Zanna";
+    return utf8ToWide(package.metadata.displayName);
+}
+
+/// @brief Return the upper-case product name used on owner-drawn action cards.
+/// @param package Verified package supplying display metadata.
+/// @return Product name mapped through the invariant locale's upper case.
+std::wstring productNameUpper(const HostPackage &package) {
+    std::wstring name = productName(package);
+    for (wchar_t &unit : name)
+        unit = static_cast<wchar_t>(std::towupper(static_cast<wint_t>(unit)));
+    return name;
+}
+
+/// @brief Install the packaged product's identity on every installer brand surface.
+/// @details Idempotent and called from each interactive entry point before a window
+///          exists. The toolchain keeps the built-in defaults.
+/// @param package Verified package supplying display metadata.
+void applyPackageBranding(const HostPackage &package) {
+    if (isToolchainPackage(package))
+        return;
+    // Every interactive entry point calls this; creating the icon once keeps the handle
+    // stable for windows that already reference it and avoids leaking duplicates.
+    if (installerBranding().icon)
+        return;
+    InstallerBranding branding;
+    branding.wordmark = productNameUpper(package);
+    branding.category = L"SETUP";
+    branding.tagline =
+        utf8ToWide(package.metadata.displayName) + L"\r\n" + utf8ToWide(package.metadata.version);
+    // The package overlay carries the product ICO, so the brand panel and every setup
+    // window show the application's own artwork instead of the toolchain's vector Z.
+    // The icon is owned for the process lifetime and outlives every window that uses it.
+    if (!package.productIconIco.empty())
+        branding.icon = createInstallerIconFromIco(package.productIconIco, 256);
+    setInstallerBranding(branding);
+}
 
 /// @brief Format a byte count using a compact binary unit.
 /// @param bytes Exact byte count.
@@ -607,11 +662,13 @@ void browseForDestination(CustomDialogContext &context) {
         }
     } release{dialog};
 
+    const std::wstring pickerTitle =
+        L"Choose the " + productName(*context.package) + L" installation folder";
     FILEOPENDIALOGOPTIONS flags{};
     if (FAILED(dialog->GetOptions(&flags)) ||
         FAILED(dialog->SetOptions(flags | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM |
                                   FOS_PATHMUSTEXIST | FOS_DONTADDTORECENT)) ||
-        FAILED(dialog->SetTitle(L"Choose the Zanna installation folder"))) {
+        FAILED(dialog->SetTitle(pickerTitle.c_str()))) {
         throw std::runtime_error("cannot configure the Windows folder picker");
     }
     fs::path initial(current);
@@ -915,7 +972,7 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
                     SetTextColor(dc, context->theme->textColor());
                     RECT name{scaled(70, dpi), scaled(8, dpi), scaled(222, dpi), scaled(29, dpi)};
                     DrawTextW(dc,
-                              L"ZANNA",
+                              installerBranding().wordmark.c_str(),
                               -1,
                               &name,
                               DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
@@ -1089,12 +1146,7 @@ ATOM registerCustomWindowClass(HINSTANCE instance) {
     windowClass.style = CS_DBLCLKS;
     windowClass.lpfnWndProc = customWindowProcedure;
     windowClass.hInstance = instance;
-    windowClass.hIcon = static_cast<HICON>(LoadImageW(instance,
-                                                      MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER),
-                                                      IMAGE_ICON,
-                                                      0,
-                                                      0,
-                                                      LR_DEFAULTSIZE | LR_SHARED));
+    windowClass.hIcon = loadPackagedInstallerIcon(instance);
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = L"ZannaInstallerOptionsWindowV2";
@@ -1174,9 +1226,12 @@ bool showCustomDialog(HINSTANCE instance,
         std::max(240, static_cast<int>(workArea.bottom - workArea.top) - scaled(24, dpi));
     const int windowWidth = std::min(requestedWidth, maximumWidth);
     const int windowHeight = std::min(requestedHeight, maximumHeight);
+    const std::wstring optionsTitle = isToolchainPackage(package)
+                                          ? std::wstring(L"Customize Zanna Tools Setup")
+                                          : L"Customize " + productName(package) + L" Setup";
     context.window = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
                                      L"ZannaInstallerOptionsWindowV2",
-                                     L"Customize Zanna Tools Setup",
+                                     optionsTitle.c_str(),
                                      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX |
                                          WS_MAXIMIZEBOX | WS_VSCROLL | WS_HSCROLL,
                                      CW_USEDEFAULT,
@@ -1192,9 +1247,10 @@ bool showCustomDialog(HINSTANCE instance,
     applyInstallerWindowTheme(context.window, *context.theme);
     setControlFont(context.window, context.theme->bodyFont());
 
-    const std::wstring introduction = utf8ToWide(package.metadata.displayName) + L" " +
-                                      utf8ToWide(package.metadata.version) +
-                                      L" — choose the developer setup you want.";
+    const std::wstring introduction =
+        utf8ToWide(package.metadata.displayName) + L" " + utf8ToWide(package.metadata.version) +
+        (isToolchainPackage(package) ? L" — choose the developer setup you want."
+                                     : L" — choose how it is installed.");
     HWND introductionControl = createControl(
         context, 0, L"STATIC", introduction.c_str(), SS_LEFT, 240, 18, 407, 28, -1, dpi);
     setControlFont(introductionControl, context.theme->monoFont());
@@ -1495,6 +1551,7 @@ bool configureInstallerWizard(HINSTANCE instance,
                               const std::set<std::string> &initialComponents,
                               bool installationPresent,
                               HostOptions &options) {
+    applyPackageBranding(package);
     options.scope = initialScope;
     options.destination = initialDestination;
     for (;;) {
@@ -1502,35 +1559,51 @@ bool configureInstallerWizard(HINSTANCE instance,
         if (package.metadata.packageMode == "maintenance") {
             BrandedInstallerPage maintenance;
             maintenance.windowTitle = title;
-            maintenance.eyebrow = L"// TOOLCHAIN CONTROL";
-            maintenance.heading = L"Keep the stack sharp.";
+            maintenance.eyebrow =
+                isToolchainPackage(package) ? L"// TOOLCHAIN CONTROL" : L"// INSTALLATION CONTROL";
+            maintenance.heading = isToolchainPackage(package) ? L"Keep the stack sharp."
+                                                              : L"Manage this installation.";
             maintenance.body =
-                L"Change the installed developer surface, restore it from the signed package, "
-                L"or remove only the files and registrations Zanna owns.";
+                isToolchainPackage(package)
+                    ? std::wstring(
+                          L"Change the installed developer surface, restore it from the signed "
+                          L"package, or remove only the files and registrations Zanna owns.")
+                    : L"Restore " + productName(package) +
+                          L" from the signed package, or remove only the files and registrations "
+                          L"it owns.";
             maintenance.metadata = L"VERSION " + utf8ToWide(package.metadata.version) + L"  |  " +
                                    utf8ToWide(package.metadata.architecture) + L"  |  " +
                                    utf8ToWide(package.metadata.channel);
             maintenance.actions = {
                 {kMaintenanceModify,
-                 L"MODIFY THE TOOLCHAIN",
-                 L"Choose components and developer integrations.",
+                 isToolchainPackage(package) ? std::wstring(L"MODIFY THE TOOLCHAIN")
+                                             : L"MODIFY THE INSTALLATION",
+                 isToolchainPackage(package)
+                     ? std::wstring(L"Choose components and developer integrations.")
+                     : L"Choose the destination and installed options.",
                  InstallerAccent::Green},
                 {kMaintenanceRepair,
-                 L"REPAIR ZANNA",
+                 L"REPAIR " + productNameUpper(package),
                  L"Verify and atomically restore the selected installation.",
                  InstallerAccent::Steel},
                 {kMaintenanceRemove,
-                 L"UNINSTALL ZANNA",
-                 L"Remove Zanna-owned files and registrations; preserve everything else.",
+                 L"UNINSTALL " + productNameUpper(package),
+                 L"Remove " + productName(package) +
+                     L"-owned files and registrations; preserve everything else.",
                  InstallerAccent::Danger}};
             if (!package.metadata.updateManifestUrl.empty())
-                maintenance.actions.push_back({kMaintenanceUpdate,
-                                               L"CHECK FOR UPDATES",
-                                               L"Query the pinned, signed Zanna update service.",
-                                               InstallerAccent::Teal});
+                maintenance.actions.push_back(
+                    {kMaintenanceUpdate,
+                     L"CHECK FOR UPDATES",
+                     L"Query the pinned, signed " + productName(package) + L" update service.",
+                     InstallerAccent::Teal});
             maintenance.defaultAction = kMaintenanceModify;
-            maintenance.detailsLabel = L"SYSTEM PROFILE";
-            maintenance.detailsText = dependencySummary();
+            // The developer-companion survey is toolchain-only; an application installer
+            // must not advertise Git, CMake, or Visual Studio to the person playing it.
+            if (isToolchainPackage(package)) {
+                maintenance.detailsLabel = L"SYSTEM PROFILE";
+                maintenance.detailsText = dependencySummary();
+            }
             const int selected = showBrandedInstallerPage(instance, maintenance).action;
             if (selected == IDCANCEL)
                 return false;
@@ -1557,39 +1630,64 @@ bool configureInstallerWizard(HINSTANCE instance,
             const std::wstring verb = installationPresent ? L"UPDATE" : L"INSTALL";
             BrandedInstallerPage welcome;
             welcome.windowTitle = title;
-            welcome.eyebrow = L"// ZANNA TOOLCHAIN · WINDOWS";
-            welcome.heading = L"Source in. Native code out.";
-            welcome.body =
-                L"A complete game-development toolchain, built from scratch. Choose a build "
-                L"profile and setup will wire the compiler, Studio, SDK, PATH, file actions, "
-                L"shortcuts, docs, and samples for you.";
+            if (isToolchainPackage(package)) {
+                welcome.eyebrow = L"// ZANNA TOOLCHAIN · WINDOWS";
+                welcome.heading = L"Source in. Native code out.";
+                welcome.body =
+                    L"A complete game-development toolchain, built from scratch. Choose a build "
+                    L"profile and setup will wire the compiler, Studio, SDK, PATH, file actions, "
+                    L"shortcuts, docs, and samples for you.";
+            } else {
+                welcome.eyebrow = L"// " + productNameUpper(package) + L" · WINDOWS";
+                welcome.heading = installationPresent ? L"Update " + productName(package) + L"."
+                                                      : L"Install " + productName(package) + L".";
+                welcome.body = package.metadata.description.empty()
+                                   ? L"Setup will install " + productName(package) +
+                                         L" and its shortcuts on this computer."
+                                   : utf8ToWide(package.metadata.description);
+            }
             welcome.metadata = L"VERSION " + utf8ToWide(package.metadata.version) + L"  |  " +
                                utf8ToWide(package.metadata.architecture) + L"  |  " +
                                utf8ToWide(package.metadata.channel);
-            welcome.actions = {{kWelcomeRecommended,
-                                verb + L" RECOMMENDED",
-                                L"Core tools, Studio, SDK, and available developer integrations.",
-                                InstallerAccent::Green},
-                               {kWelcomeSDK,
-                                verb + L" SDK TOOLS",
-                                L"Command-line toolchain and native development files.",
-                                InstallerAccent::Steel},
-                               {kWelcomeComplete,
-                                verb + L" EVERYTHING",
-                                L"Every packaged component, documentation set, and sample.",
-                                InstallerAccent::Teal},
-                               {kWelcomeCustom,
-                                L"CUSTOM BUILD",
-                                L"Choose scope, destination, components, and integrations.",
-                                InstallerAccent::Teal}};
+            if (isToolchainPackage(package)) {
+                welcome.actions = {
+                    {kWelcomeRecommended,
+                     verb + L" RECOMMENDED",
+                     L"Core tools, Studio, SDK, and available developer integrations.",
+                     InstallerAccent::Green},
+                    {kWelcomeSDK,
+                     verb + L" SDK TOOLS",
+                     L"Command-line toolchain and native development files.",
+                     InstallerAccent::Steel},
+                    {kWelcomeComplete,
+                     verb + L" EVERYTHING",
+                     L"Every packaged component, documentation set, and sample.",
+                     InstallerAccent::Teal},
+                    {kWelcomeCustom,
+                     L"CUSTOM BUILD",
+                     L"Choose scope, destination, components, and integrations.",
+                     InstallerAccent::Teal}};
+            } else {
+                welcome.actions = {{kWelcomeRecommended,
+                                    verb + L" " + productNameUpper(package),
+                                    L"Install to the recommended location with shortcuts.",
+                                    InstallerAccent::Green},
+                                   {kWelcomeCustom,
+                                    L"CHOOSE THE DESTINATION",
+                                    L"Pick the scope, install folder, and shortcuts.",
+                                    InstallerAccent::Teal}};
+            }
             if (!package.metadata.updateManifestUrl.empty())
-                welcome.actions.push_back({kWelcomeUpdate,
-                                           L"CHECK FOR UPDATES",
-                                           L"Query the pinned, signed Zanna update service.",
-                                           InstallerAccent::Steel});
+                welcome.actions.push_back(
+                    {kWelcomeUpdate,
+                     L"CHECK FOR UPDATES",
+                     L"Query the pinned, signed " + productName(package) + L" update service.",
+                     InstallerAccent::Steel});
             welcome.defaultAction = kWelcomeRecommended;
-            welcome.detailsLabel = L"DEVELOPER READINESS";
-            welcome.detailsText = dependencySummary();
+            if (isToolchainPackage(package)) {
+                welcome.detailsLabel = L"DEVELOPER READINESS";
+                welcome.detailsText = dependencySummary();
+            }
             const int selected = showBrandedInstallerPage(instance, welcome).action;
             if (selected == IDCANCEL)
                 return false;
@@ -1620,37 +1718,56 @@ bool configureInstallerWizard(HINSTANCE instance,
         ready.windowTitle = title;
         ready.eyebrow = L"// TRANSACTION READY";
         if (options.operation == Operation::Uninstall) {
-            ready.heading = L"Ready to remove Zanna.";
-            ready.body =
-                L"Setup will remove Zanna-owned files, shortcuts, PATH registration, and Open "
-                L"With entries. Files you added to the installation remain untouched.";
+            ready.heading = L"Ready to remove " + productName(package) + L".";
+            ready.body = L"Setup will remove " + productName(package) +
+                         L"-owned files, shortcuts, PATH registration, and Open "
+                         L"With entries. Files you added to the installation remain untouched.";
             ready.metadata = L"RECOVERABLE · OWNERSHIP-AWARE · NO UNOWNED FILE DELETION";
             ready.actions.push_back({kReadyContinue,
-                                     L"UNINSTALL ZANNA",
+                                     L"UNINSTALL " + productNameUpper(package),
                                      L"Begin the reversible removal transaction.",
                                      InstallerAccent::Danger});
         } else if (options.operation == Operation::Repair) {
-            ready.heading = L"Ready to restore the stack.";
-            ready.body = L"Setup will verify installed hashes and atomically restore the selected "
-                         L"toolchain from this signed, self-contained package.";
+            ready.heading = isToolchainPackage(package)
+                                ? std::wstring(L"Ready to restore the stack.")
+                                : L"Ready to repair " + productName(package) + L".";
+            ready.body =
+                isToolchainPackage(package)
+                    ? std::wstring(
+                          L"Setup will verify installed hashes and atomically restore the selected "
+                          L"toolchain from this signed, self-contained package.")
+                    : L"Setup will verify installed hashes and atomically restore " +
+                          productName(package) + L" from this signed, self-contained package.";
             ready.metadata = L"VERIFY · STAGE · COMMIT · ROLLBACK-SAFE";
-            ready.actions.push_back({kReadyContinue,
-                                     L"REPAIR ZANNA",
-                                     L"Verify and restore the installed developer surface.",
-                                     InstallerAccent::Green});
+            ready.actions.push_back(
+                {kReadyContinue,
+                 L"REPAIR " + productNameUpper(package),
+                 isToolchainPackage(package)
+                     ? std::wstring(L"Verify and restore the installed developer surface.")
+                     : L"Verify and restore the installed files.",
+                 InstallerAccent::Green});
         } else {
-            ready.heading = installationPresent ? L"Ready to evolve the toolchain."
-                                                : L"Ready to bring Zanna online.";
+            if (isToolchainPackage(package)) {
+                ready.heading = installationPresent ? L"Ready to evolve the toolchain."
+                                                    : L"Ready to bring Zanna online.";
+            } else {
+                ready.heading = (installationPresent ? L"Ready to update " : L"Ready to install ") +
+                                productName(package) + L".";
+            }
             ready.body = L"Location: " + options.destination.wstring() + L"\r\nScope: " +
                          std::wstring(*options.scope == InstallScope::User ? L"Current user"
                                                                            : L"All users") +
                          L"\r\nComponents: " +
                          selectedComponentSummary(package, options, initialComponents);
-            ready.metadata = L"SOURCE → IL → NATIVE · ATOMIC INSTALL · ZERO DOWNLOADS";
+            ready.metadata = isToolchainPackage(package)
+                                 ? L"SOURCE → IL → NATIVE · ATOMIC INSTALL · ZERO DOWNLOADS"
+                                 : L"ATOMIC INSTALL · ZERO DOWNLOADS";
             ready.actions.push_back(
                 {kReadyContinue,
-                 installationPresent ? L"UPDATE ZANNA" : L"INSTALL ZANNA",
-                 L"Stage, verify, and commit the complete developer setup.",
+                 (installationPresent ? L"UPDATE " : L"INSTALL ") + productNameUpper(package),
+                 isToolchainPackage(package)
+                     ? std::wstring(L"Stage, verify, and commit the complete developer setup.")
+                     : L"Stage, verify, and commit the complete installation.",
                  InstallerAccent::Green,
                  options.operation == Operation::Install && !package.licenseText.empty()});
         }
@@ -1662,7 +1779,8 @@ bool configureInstallerWizard(HINSTANCE instance,
         if (options.operation == Operation::Install && !package.licenseText.empty()) {
             ready.detailsLabel = L"LICENSE TERMS";
             ready.detailsText = utf8ToWide(package.licenseText);
-            ready.verificationText = L"I have read and accept the Zanna license terms.";
+            ready.verificationText =
+                L"I have read and accept the " + productName(package) + L" license terms.";
         }
         const int selected = showBrandedInstallerPage(instance, ready).action;
         if (selected == kReadyContinue)
@@ -1688,33 +1806,46 @@ int runInstallerProgress(HINSTANCE instance,
                          const std::function<int()> &work) {
     if (uiLevel == UiLevel::Quiet)
         return work();
+    applyPackageBranding(package);
     std::wstring eyebrow;
     std::wstring action;
     std::wstring body;
     switch (operation) {
         case Operation::Uninstall:
             eyebrow = L"// OWNERSHIP-AWARE REMOVAL";
-            action = L"Taking Zanna offline.";
+            action = L"Taking " + productName(package) + L" offline.";
             body = L"Removing owned files and registrations while preserving everything you "
                    L"added. If interrupted, setup restores the previous installation.";
             break;
         case Operation::Repair:
             eyebrow = L"// VERIFY · STAGE · RESTORE";
-            action = L"Restoring the toolchain.";
-            body = L"Checking every installed hash and atomically restoring the developer "
-                   L"surface from this self-contained package.";
+            action = isToolchainPackage(package) ? std::wstring(L"Restoring the toolchain.")
+                                                 : L"Restoring " + productName(package) + L".";
+            body = isToolchainPackage(package)
+                       ? std::wstring(L"Checking every installed hash and atomically restoring the "
+                                      L"developer surface from this self-contained package.")
+                       : L"Checking every installed hash and atomically restoring the installed "
+                         L"files from this self-contained package.";
             break;
         case Operation::Modify:
-            eyebrow = L"// RECONFIGURE THE STACK";
-            action = L"Shaping your Zanna build.";
+            eyebrow = isToolchainPackage(package) ? L"// RECONFIGURE THE STACK"
+                                                  : L"// RECONFIGURE THE INSTALLATION";
+            action = isToolchainPackage(package)
+                         ? std::wstring(L"Shaping your Zanna build.")
+                         : L"Updating your " + productName(package) + L" installation.";
             body = L"Applying the selected components and integrations as one recoverable "
                    L"transaction.";
             break;
         default:
-            eyebrow = L"// SOURCE → IL → NATIVE";
-            action = L"Bringing Zanna online.";
-            body = L"Staging, verifying, and committing the compiler, Studio, SDK, developer "
-                   L"integrations, documentation, and samples.";
+            eyebrow =
+                isToolchainPackage(package) ? L"// SOURCE → IL → NATIVE" : L"// ATOMIC INSTALL";
+            action = isToolchainPackage(package) ? std::wstring(L"Bringing Zanna online.")
+                                                 : L"Installing " + productName(package) + L".";
+            body = isToolchainPackage(package)
+                       ? std::wstring(L"Staging, verifying, and committing the compiler, Studio, "
+                                      L"SDK, developer integrations, documentation, and samples.")
+                       : L"Staging, verifying, and committing the application files, shortcuts, "
+                         L"and registrations.";
             break;
     }
     const std::wstring title = utf8ToWide(package.metadata.displayName) + L" Setup";
@@ -1732,6 +1863,7 @@ void showInstallerFinish(HINSTANCE instance,
                          const fs::path &installRoot,
                          const std::set<std::string> &,
                          HostOptions &options) {
+    applyPackageBranding(package);
     std::vector<BrandedInstallerAction> actions;
     actions.reserve(7U);
     const std::string launchRelative = package.metadata.productKind == "toolchain" &&
@@ -1742,10 +1874,12 @@ void showInstallerFinish(HINSTANCE instance,
     std::error_code fileError;
     if (fs::is_regular_file(primary, fileError) && !fileError) {
         actions.push_back({kFinishLaunch,
-                           package.metadata.productKind == "toolchain"
-                               ? L"LAUNCH ZANNA STUDIO"
+                           isToolchainPackage(package)
+                               ? std::wstring(L"LAUNCH ZANNA STUDIO")
                                : L"LAUNCH " + utf8ToWide(package.metadata.displayName),
-                           L"Start creating with the newly installed toolchain.",
+                           isToolchainPackage(package)
+                               ? std::wstring(L"Start creating with the newly installed toolchain.")
+                               : L"Start " + productName(package) + L" now.",
                            InstallerAccent::Green});
     }
     if (package.metadata.productKind == "toolchain") {
@@ -1772,19 +1906,27 @@ void showInstallerFinish(HINSTANCE instance,
     }
     actions.push_back({kFinishClose,
                        L"FINISH",
-                       L"Close setup. Your developer environment is ready.",
+                       isToolchainPackage(package)
+                           ? std::wstring(L"Close setup. Your developer environment is ready.")
+                           : L"Close setup. " + productName(package) + L" is ready.",
                        InstallerAccent::Green});
-    std::wstring content = L"The installation completed successfully. PATH and Open With "
-                           L"changes are available to new applications.";
+    std::wstring content =
+        isToolchainPackage(package)
+            ? std::wstring(L"The installation completed successfully. PATH and Open With "
+                           L"changes are available to new applications.")
+            : productName(package) +
+                  L" was installed successfully. Shortcuts are ready in the Start Menu.";
     for (;;) {
         BrandedInstallerPage finish;
         finish.windowTitle = utf8ToWide(package.metadata.displayName) + L" Setup";
-        finish.eyebrow = L"// TOOLCHAIN ONLINE";
-        finish.heading = L"Build something impossible.";
+        finish.eyebrow = isToolchainPackage(package) ? L"// TOOLCHAIN ONLINE" : L"// INSTALLED";
+        finish.heading = isToolchainPackage(package) ? L"Build something impossible."
+                                                     : L"Installation complete.";
         finish.body = content;
-        finish.metadata = L"VERSION " + utf8ToWide(package.metadata.version) + L"  |  " +
-                          utf8ToWide(package.metadata.architecture) +
-                          L"  |  READY FOR NEW TERMINALS";
+        finish.metadata =
+            L"VERSION " + utf8ToWide(package.metadata.version) + L"  |  " +
+            utf8ToWide(package.metadata.architecture) +
+            (isToolchainPackage(package) ? L"  |  READY FOR NEW TERMINALS" : L"  |  INSTALLED");
         finish.actions = actions;
         finish.defaultAction = actions.empty() ? kFinishClose : actions.front().id;
         finish.closeAction = kFinishClose;

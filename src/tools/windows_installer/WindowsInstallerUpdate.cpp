@@ -19,6 +19,7 @@
 
 #include "WindowsInstallerUpdate.hpp"
 #include "WindowsInstallerResources.h"
+#include "WindowsInstallerTheme.hpp"
 
 #include "PkgHash.hpp"
 
@@ -783,12 +784,7 @@ void showUpdateResult(HINSTANCE instance,
     config.pszMainInstruction = instruction.c_str();
     config.pszContent = content.c_str();
     config.dwFlags = TDF_SIZE_TO_CONTENT | TDF_USE_COMMAND_LINKS | TDF_USE_HICON_MAIN;
-    config.hMainIcon = static_cast<HICON>(LoadImageW(instance,
-                                                     MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER),
-                                                     IMAGE_ICON,
-                                                     0,
-                                                     0,
-                                                     LR_DEFAULTSIZE | LR_SHARED));
+    config.hMainIcon = loadPackagedInstallerIcon(instance);
     config.cButtons = buttonCount;
     config.pButtons = buttons.data();
     config.nDefaultButton = result.status == UpdateStatus::Available ? kOpenUpdate : IDCLOSE;

@@ -1961,8 +1961,15 @@ std::vector<uint8_t> buildNativeInstallerPair(ZipWriter &outer,
                                               const WindowsPeSigner &signer,
                                               const std::string &arch,
                                               std::string_view licenseText,
-                                              std::string_view readmeText) {
+                                              std::string_view readmeText,
+                                              const std::vector<uint8_t> &productIcon) {
     outer.addFile("meta/payload.zip", payload.data(), payload.size(), 0100644);
+    // Setup's own resource icon is the toolchain mark, so an application package ships its
+    // ICO here for the wizard's brand panel and window icons to use.
+    if (!productIcon.empty()) {
+        outer.addFile(
+            kWindowsInstallerProductIconEntry, productIcon.data(), productIcon.size(), 0100644);
+    }
     const std::vector<uint8_t> cleanup =
         signWindowsPayloadPe(signer, "installer-cleanup.exe", unsignedCleanup, arch);
     metadata.cleanupSha256 = sha256Hex(cleanup.data(), cleanup.size());
@@ -2481,7 +2488,8 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
                                                                               params.peSigner,
                                                                               params.archStr,
                                                                               layout.licenseText,
-                                                                              {});
+                                                                              {},
+                                                                              icoData);
         writePEToFile(nativeInstaller, params.outputPath);
         return;
     }
@@ -3070,7 +3078,8 @@ void buildWindowsToolchainInstaller(const WindowsToolchainBuildParams &params) {
                                                                               params.peSigner,
                                                                               params.archStr,
                                                                               layout.licenseText,
-                                                                              windowsReadmeText);
+                                                                              windowsReadmeText,
+                                                                              {});
         writePEToFile(nativeInstaller, params.outputPath);
         return;
     }

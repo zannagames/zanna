@@ -244,6 +244,9 @@ void requireOuterInventory(const zanna::pkg::ZipReader &outer,
         allowed.insert(metadata.licenseEntry);
     if (!metadata.readmeEntry.empty())
         allowed.insert(metadata.readmeEntry);
+    // Optional, like the license and readme: setup reads this ICO to brand its own
+    // windows, and never installs it, so it is allowed but not required.
+    allowed.insert(zanna::pkg::kWindowsInstallerProductIconEntry);
     for (const auto &file : metadata.outerFiles) {
         required.insert(file.overlayPath);
         allowed.insert(file.overlayPath);
@@ -1128,6 +1131,9 @@ HostPackage loadHostPackage(const fs::path &executablePath) {
         package.licenseText = bytesToString(outer.extract(*license));
     if (const zanna::pkg::ZipEntry *readme = outer.find(package.metadata.readmeEntry))
         package.readmeText = bytesToString(outer.extract(*readme));
+    if (const zanna::pkg::ZipEntry *icon =
+            outer.find(zanna::pkg::kWindowsInstallerProductIconEntry))
+        package.productIconIco = outer.extract(*icon);
     for (const auto &file : package.metadata.outerFiles) {
         const zanna::pkg::ZipEntry *entry = outer.find(file.overlayPath);
         if (!entry || entry->uncompressedSize != file.sizeBytes)

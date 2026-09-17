@@ -411,13 +411,17 @@ void paintCompactHeader(HDC dc, const RECT &client, const PageContext &context) 
     SelectObject(dc, context.theme.monoBoldFont());
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, context.theme.textColor());
-    DrawTextW(dc, L"ZANNA", -1, &name, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    DrawTextW(dc,
+              installerBranding().wordmark.c_str(),
+              -1,
+              &name,
+              DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
     RECT platform{
         name.left, name.bottom, name.right, name.bottom + scaled(26, context.theme.dpi())};
     SelectObject(dc, context.theme.monoFont());
     SetTextColor(dc, context.theme.accentColor(InstallerAccent::Green));
     DrawTextW(dc,
-              L"DEVELOPER PLATFORM",
+              installerBranding().category.c_str(),
               -1,
               &platform,
               DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
@@ -593,12 +597,7 @@ ATOM registerPageWindowClass(HINSTANCE instance) {
     windowClass.style = CS_DBLCLKS;
     windowClass.lpfnWndProc = pageWindowProcedure;
     windowClass.hInstance = instance;
-    windowClass.hIcon = static_cast<HICON>(LoadImageW(instance,
-                                                      MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER),
-                                                      IMAGE_ICON,
-                                                      0,
-                                                      0,
-                                                      LR_DEFAULTSIZE | LR_SHARED));
+    windowClass.hIcon = loadPackagedInstallerIcon(instance);
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = kPageClassName;
@@ -1036,12 +1035,7 @@ ATOM registerProgressWindowClass(HINSTANCE instance) {
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.lpfnWndProc = progressWindowProcedure;
     windowClass.hInstance = instance;
-    windowClass.hIcon = static_cast<HICON>(LoadImageW(instance,
-                                                      MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER),
-                                                      IMAGE_ICON,
-                                                      0,
-                                                      0,
-                                                      LR_DEFAULTSIZE | LR_SHARED));
+    windowClass.hIcon = loadPackagedInstallerIcon(instance);
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = kProgressClassName;

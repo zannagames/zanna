@@ -1607,11 +1607,13 @@ void handleFilesInUse(RestartManagerSession &restart,
     logger.warning(L"Files are in use by: " + names);
     bool close = options.closeApplications;
     if (!close && options.uiLevel == UiLevel::Full) {
-        const std::wstring message = L"Zanna files are in use by:\r\n\r\n" + names +
+        const std::wstring product = utf8ToWide(package.metadata.displayName);
+        const std::wstring message = product + L" files are in use by:\r\n\r\n" + names +
                                      L"\r\n\r\nClose these applications and continue?";
+        const std::wstring caption = product + L" Setup - Files in Use";
         close = MessageBoxW(nullptr,
                             message.c_str(),
-                            L"Zanna Tools Installer - Files in Use",
+                            caption.c_str(),
                             MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND) == IDYES;
     }
     if (!close)

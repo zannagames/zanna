@@ -124,6 +124,11 @@ struct HostPackage {
     std::vector<uint8_t> cleanupBytes;             ///< Verified detached cleanup executable.
     std::string licenseText;                       ///< Optional UTF-8 license text.
     std::string readmeText;                        ///< Optional UTF-8 readme text.
+    /// @brief Optional product ICO shown on setup's brand surfaces and windows.
+    /// @details Present for packages whose manifest supplied `package-icon`. The setup
+    ///          host's own resource icon is the Zanna toolchain mark, so an application
+    ///          installer must take its artwork from the package instead.
+    std::vector<uint8_t> productIconIco;
     /// @brief Verified auxiliary outer entries keyed by overlay path.
     std::map<std::string, std::vector<uint8_t>, std::less<>> outerFileBytes;
 };

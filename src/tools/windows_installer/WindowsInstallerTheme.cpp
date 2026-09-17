@@ -20,6 +20,8 @@
 
 #include "WindowsInstallerTheme.hpp"
 
+#include "WindowsInstallerResources.h"
+
 #include <dwmapi.h>
 #include <uxtheme.h>
 
@@ -667,6 +669,135 @@ void applyInstallerControlTheme(HWND control, const InstallerThemeResources &the
     SetWindowTheme(control, theme.highContrast() ? L"Explorer" : L"DarkMode_Explorer", nullptr);
 }
 
+/// @brief Return the mutable process-wide branding storage.
+/// @details Initialized to the Zanna toolchain identity so an installer that never calls
+///          @ref setInstallerBranding paints exactly what it painted before branding
+///          became configurable.
+/// @return Reference to the single branding record.
+static InstallerBranding &mutableInstallerBranding() noexcept {
+    static InstallerBranding branding{
+        L"ZANNA", L"DEVELOPER PLATFORM", L"CODE. CREATE.\r\nCOMPILE. CONQUER."};
+    return branding;
+}
+
+void setInstallerBranding(const InstallerBranding &branding) {
+    InstallerBranding &active = mutableInstallerBranding();
+    if (!branding.wordmark.empty())
+        active.wordmark = branding.wordmark;
+    if (!branding.category.empty())
+        active.category = branding.category;
+    if (!branding.tagline.empty())
+        active.tagline = branding.tagline;
+    if (branding.icon)
+        active.icon = branding.icon;
+}
+
+const InstallerBranding &installerBranding() noexcept {
+    return mutableInstallerBranding();
+}
+
+HICON loadPackagedInstallerIcon(HINSTANCE instance) noexcept {
+    // An application package supplies its artwork through the overlay, because the setup
+    // host's own resource icon is always the Zanna toolchain mark.
+    if (HICON packaged = installerBranding().icon)
+        return packaged;
+    return LoadIconW(instance, MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER));
+}
+
+HICON createInstallerIconFromIco(const std::vector<uint8_t> &ico, int desiredPixels) noexcept {
+    // ICONDIR: reserved(2) type(2) count(2), then count ICONDIRENTRY records of 16 bytes.
+    if (ico.size() < 6 || ico[0] != 0 || ico[1] != 0 || ico[2] != 1 || ico[3] != 0)
+        return nullptr;
+    const size_t count = static_cast<size_t>(ico[4]) | (static_cast<size_t>(ico[5]) << 8);
+    if (count == 0 || ico.size() < 6 + count * 16)
+        return nullptr;
+    size_t bestOffset = 0;
+    uint32_t bestSize = 0;
+    int bestWidth = -1;
+    for (size_t index = 0; index < count; ++index) {
+        const size_t entry = 6 + index * 16;
+        // A stored width of zero means 256 pixels.
+        const int width = ico[entry] == 0 ? 256 : static_cast<int>(ico[entry]);
+        const uint32_t bytes = static_cast<uint32_t>(ico[entry + 8]) |
+                               (static_cast<uint32_t>(ico[entry + 9]) << 8) |
+                               (static_cast<uint32_t>(ico[entry + 10]) << 16) |
+                               (static_cast<uint32_t>(ico[entry + 11]) << 24);
+        const uint32_t offset = static_cast<uint32_t>(ico[entry + 12]) |
+                                (static_cast<uint32_t>(ico[entry + 13]) << 8) |
+                                (static_cast<uint32_t>(ico[entry + 14]) << 16) |
+                                (static_cast<uint32_t>(ico[entry + 15]) << 24);
+        if (bytes == 0 || static_cast<uint64_t>(offset) + bytes > ico.size())
+            continue;
+        // Prefer the smallest image at or above the requested size; otherwise the largest.
+        const bool better = bestWidth < 0 || (bestWidth < desiredPixels
+                                                  ? width > bestWidth
+                                                  : width >= desiredPixels && width < bestWidth);
+        if (better) {
+            bestWidth = width;
+            bestOffset = offset;
+            bestSize = bytes;
+        }
+    }
+    if (bestWidth < 0)
+        return nullptr;
+    return CreateIconFromResourceEx(const_cast<PBYTE>(ico.data() + bestOffset),
+                                    bestSize,
+                                    TRUE,
+                                    0x00030000,
+                                    0,
+                                    0,
+                                    LR_DEFAULTCOLOR);
+}
+
+/// @brief Draw the brand wordmark so a long product name stays inside the panel.
+/// @details The heading font is used whenever the name fits on one line. Longer names
+///          step down to the monospaced bold face and then wrap, so a wide name is never
+///          clipped at the panel edges.
+/// @param dc Destination device context.
+/// @param bounds Rectangle the wordmark must stay within; receives the used height.
+/// @param text Wordmark to draw.
+/// @param theme Active fonts and colors.
+/// @return Bottom coordinate actually consumed by the wordmark.
+static int drawBrandWordmark(HDC dc,
+                             const RECT &bounds,
+                             const std::wstring &text,
+                             const InstallerThemeResources &theme) noexcept {
+    const int available = bounds.right - bounds.left;
+    const int length = static_cast<int>(text.size());
+    const std::array<HFONT, 3> candidates = {
+        theme.headingFont(), theme.monoBoldFont(), theme.bodyBoldFont()};
+    HFONT chosen = candidates.back();
+    bool singleLine = false;
+    for (HFONT font : candidates) {
+        const int saved = SaveDC(dc);
+        if (saved == 0)
+            break;
+        SelectObject(dc, font);
+        SIZE measure{};
+        const bool measured = GetTextExtentPoint32W(dc, text.c_str(), length, &measure) != FALSE;
+        RestoreDC(dc, saved);
+        if (measured && measure.cx <= available) {
+            chosen = font;
+            singleLine = true;
+            break;
+        }
+    }
+    RECT target = bounds;
+    const UINT format = singleLine ? (DT_CENTER | DT_SINGLELINE | DT_VCENTER)
+                                   : (DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL);
+    const int saved = SaveDC(dc);
+    if (saved == 0)
+        return bounds.bottom;
+    SelectObject(dc, chosen);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, theme.textColor());
+    const int height = DrawTextW(dc, text.c_str(), -1, &target, format);
+    RestoreDC(dc, saved);
+    if (singleLine || height <= 0)
+        return bounds.bottom;
+    return std::max(bounds.bottom, bounds.top + height);
+}
+
 /// @brief Paint the installer shell, compile rail, circuit field, and brand typography.
 /// @param dc Destination device context.
 /// @param bounds Full client bounds.
@@ -716,19 +847,12 @@ void drawInstallerBackdrop(HDC dc,
                     mark.bottom + scaled(30, theme.dpi()),
                     brand.right - scaled(24, theme.dpi()),
                     mark.bottom + scaled(70, theme.dpi())};
-    drawTextLine(dc,
-                 nameBounds,
-                 L"ZANNA",
-                 theme.headingFont(),
-                 theme.textColor(),
-                 DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    RECT platformBounds{nameBounds.left,
-                        nameBounds.bottom,
-                        nameBounds.right,
-                        nameBounds.bottom + scaled(30, theme.dpi())};
+    const int nameBottom = drawBrandWordmark(dc, nameBounds, installerBranding().wordmark, theme);
+    RECT platformBounds{
+        nameBounds.left, nameBottom, nameBounds.right, nameBottom + scaled(30, theme.dpi())};
     drawTextLine(dc,
                  platformBounds,
-                 L"DEVELOPER PLATFORM",
+                 installerBranding().category.c_str(),
                  theme.monoBoldFont(),
                  theme.accentColor(InstallerAccent::Green),
                  DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -738,7 +862,7 @@ void drawInstallerBackdrop(HDC dc,
                        platformBounds.bottom + scaled(70, theme.dpi())};
     drawTextLine(dc,
                  taglineBounds,
-                 L"CODE. CREATE.\r\nCOMPILE. CONQUER.",
+                 installerBranding().tagline.c_str(),
                  theme.monoFont(),
                  theme.textDimColor(),
                  DT_CENTER | DT_WORDBREAK);
@@ -755,6 +879,21 @@ void drawInstallerBrandMark(HDC dc,
     const int height = bounds.bottom - bounds.top;
     if (width <= 8 || height <= 8)
         return;
+    // A packaged application supplies its own icon; only the toolchain draws the vector Z.
+    if (HICON packaged = installerBranding().icon) {
+        const int side = std::min(width, height);
+        if (DrawIconEx(dc,
+                       bounds.left + (width - side) / 2,
+                       bounds.top + (height - side) / 2,
+                       packaged,
+                       side,
+                       side,
+                       0,
+                       nullptr,
+                       DI_NORMAL)) {
+            return;
+        }
+    }
     const int saved = SaveDC(dc);
     if (saved == 0)
         return;

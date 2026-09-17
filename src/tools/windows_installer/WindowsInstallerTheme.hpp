@@ -23,6 +23,8 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace zanna::installer {
 
@@ -131,6 +133,45 @@ uint32_t installerAccentRgb(InstallerAccent accent) noexcept;
 /// @brief Return whether Windows high-contrast presentation is active.
 /// @return @c true when the operating system reports high-contrast mode enabled.
 bool installerHighContrastEnabled() noexcept;
+
+/// @brief Product identity painted on installer brand surfaces.
+/// @invariant Every field is non-empty; setters reject empty replacements.
+struct InstallerBranding {
+    std::wstring wordmark; ///< Product wordmark beside the vector mark.
+    std::wstring category; ///< Accent category line beneath the wordmark.
+    std::wstring tagline;  ///< Brand-panel tagline; may contain CRLF line breaks.
+    HICON icon{nullptr};   ///< Borrowed packaged product icon, or null for the vector Z.
+};
+
+/// @brief Replace the process-wide installer branding.
+/// @details Application packages call this once, before any installer window exists, so
+///          every brand surface paints the packaged product instead of the toolchain
+///          defaults. Empty fields are ignored, which keeps the toolchain presentation
+///          byte-identical when a package supplies no override.
+/// @param branding Replacement identity; empty fields retain the current value.
+void setInstallerBranding(const InstallerBranding &branding);
+
+/// @brief Load the packaged product icon embedded in the running installer image.
+/// @details Package generation writes the product ICO as resource group 1, so an
+///          application installer shows its own icon. Development builds that were never
+///          packaged fall back to the built-in toolchain icon resource.
+/// @param instance Module whose resources are searched.
+/// @return Borrowed shared icon handle, or null when neither resource is present.
+HICON loadPackagedInstallerIcon(HINSTANCE instance) noexcept;
+
+/// @brief Create an icon from complete ICO file bytes shipped in the package overlay.
+/// @details Chooses the smallest stored image at or above @p desiredPixels, falling back
+///          to the largest available, so both the brand panel and the window icon stay
+///          sharp. The returned icon is owned by the caller for the process lifetime.
+/// @param ico Complete ICO file contents; malformed input yields null.
+/// @param desiredPixels Preferred square edge length in pixels.
+/// @return New icon handle, or null when no usable image is present.
+HICON createInstallerIconFromIco(const std::vector<uint8_t> &ico, int desiredPixels) noexcept;
+
+/// @brief Return the active installer branding.
+/// @details Defaults to the Zanna toolchain identity until @ref setInstallerBranding runs.
+/// @return Borrowed process-lifetime branding read by every paint routine.
+const InstallerBranding &installerBranding() noexcept;
 
 /// @brief Own the DPI-specific fonts and brushes for one installer window.
 class InstallerThemeResources {

@@ -39,6 +39,12 @@ namespace zanna::pkg {
 /// @brief Current native Windows installer metadata schema.
 inline constexpr uint32_t kWindowsInstallerMetadataSchema = 3;
 
+/// @brief Overlay entry holding the product ICO shown on setup's brand surfaces.
+/// @details Stored beside the license and readme entries rather than registered as an
+///          installed outer file: setup reads it to brand its own windows, and it must
+///          not change the installed file set or reported install size.
+inline constexpr const char *kWindowsInstallerProductIconEntry = "meta/product.ico";
+
 /// @brief One selectable payload component shown by the native wizard.
 struct WindowsInstallerComponentMetadata {
     std::string id;             ///< Stable lowercase identifier.
