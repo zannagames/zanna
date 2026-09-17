@@ -47,6 +47,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_zanna_win.ps1
 ```
 The macOS and Linux scripts are thin wrappers over `./scripts/build_zanna_unix.sh`, which you can also run directly on any Unix system.
 
+On macOS and Linux the install runs last, through its own script. If it fails (for
+example because the `sudo` password prompt timed out while the tests ran), finish it
+without rebuilding:
+
+```sh
+./scripts/install_zanna_mac.sh     # macOS
+./scripts/install_zanna_linux.sh   # Linux
+```
+
+To build and test now and install later, set `ZANNA_SKIP_INSTALL=1` on the build run
+and then run the install script. Both scripts use the same `ZANNA_BUILD_DIR` and
+`ZANNA_INSTALL_PREFIX` settings.
+
 ### Build Directory Layout
 
 The canonical day-to-day build tree is `build/`, produced by the platform build scripts.

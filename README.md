@@ -297,7 +297,7 @@ See the [Tools Reference](docs/tools/cli.md), [Debugging Guide](docs/tools/debug
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_zanna_win.ps1
 ```
 
-The scripts configure, build, test, and install Zanna. The Unix wrappers delegate to `scripts/build_zanna_unix.sh`.
+The scripts configure, build, test, and install Zanna. The Unix wrappers delegate to `scripts/build_zanna_unix.sh`, which hands the final install step to `scripts/install_zanna_unix.sh`. If the install fails (for example a timed-out `sudo` prompt), run `./scripts/install_zanna_mac.sh` or `./scripts/install_zanna_linux.sh` to finish it without rebuilding.
 
 Useful iteration knobs:
 
