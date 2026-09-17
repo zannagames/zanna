@@ -26,6 +26,7 @@
 #include "Backend.hpp"
 
 #include "AsmEmitter.hpp"
+
 #include "CallLowering.hpp"
 #include "FrameLowering.hpp"
 #include "ISel.hpp"
@@ -37,6 +38,7 @@
 #include "TargetX64.hpp"
 #include "binenc/X64BinaryEncoder.hpp"
 #include "codegen/common/Parallelism.hpp"
+#include "codegen/common/ReservedSymbolGuard.hpp"
 #include "codegen/common/ScalarBits.hpp"
 #include "codegen/common/objfile/DebugLineTable.hpp"
 #include "peephole/PeepholeCommon.hpp"
@@ -593,6 +595,22 @@ bool legalizeModuleToMIR(const ILModule &mod,
                 }
             }
         }
+
+        // Keep user symbols out of the C runtime's flat namespace before any
+        // emitter turns a name into an object symbol.
+        zanna::codegen::common::guardReservedSymbols(mir, [](MFunction &fn, const auto &visit) {
+            for (auto &block : fn.blocks) {
+                visit(block.label);
+                for (auto &instr : block.instructions) {
+                    for (auto &operand : instr.operands) {
+                        if (auto *label = std::get_if<OpLabel>(&operand))
+                            visit(label->name);
+                        else if (auto *ripLabel = std::get_if<OpRipLabel>(&operand))
+                            visit(ripLabel->name);
+                    }
+                }
+            }
+        });
     } catch (const std::exception &ex) {
         mir.clear();
         frames.clear();

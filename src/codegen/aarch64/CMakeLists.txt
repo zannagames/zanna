@@ -57,6 +57,7 @@ target_include_directories(il_codegen_aarch64 PUBLIC
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/zanna>)
 target_link_libraries(il_codegen_aarch64
         PUBLIC
+        zanna_common
         zanna_codegen_common
         il_transform
         il_tools_common

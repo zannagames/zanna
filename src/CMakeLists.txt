@@ -61,6 +61,7 @@ add_custom_target(generate_runtime_reference
 #===----------------------------------------------------------------------===//
 
 add_library(zanna_common STATIC
+        common/Mangle.cpp
         common/RunProcess.cpp)
 target_include_directories(zanna_common PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>

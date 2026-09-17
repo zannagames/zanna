@@ -23,6 +23,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "codegen/aarch64/passes/LoweringPass.hpp"
+#include "codegen/common/ReservedSymbolGuard.hpp"
 
 #include "codegen/aarch64/LowerILToMIR.hpp"
 #include "codegen/common/LabelUtil.hpp"
@@ -219,6 +220,20 @@ bool LoweringPass::run(AArch64Module &module, Diagnostics &diags) {
     }
 
     module.mir = std::move(lowered);
+
+    // Keep user symbols out of the C runtime's flat namespace before any emitter
+    // turns a name into an object symbol.
+    zanna::codegen::common::guardReservedSymbols(module.mir, [](MFunction &fn, const auto &visit) {
+        for (auto &block : fn.blocks) {
+            visit(block.name);
+            for (auto &instr : block.instrs) {
+                for (auto &op : instr.ops) {
+                    if (op.kind == MOperand::Kind::Label)
+                        visit(op.label);
+                }
+            }
+        }
+    });
     return true;
 }
 

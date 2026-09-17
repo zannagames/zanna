@@ -26,6 +26,8 @@
 
 #include "common/Mangle.hpp"
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 
 namespace zanna::common {
@@ -33,6 +35,87 @@ namespace {
 
 /// Prefix reserving the reversible escaped-symbol namespace.
 constexpr std::string_view kReservedPrefix = "vpr_";
+
+/// Prefix applied to a user symbol that would otherwise claim a C runtime name.
+/// @invariant Plain, lowercase, and not @ref kReservedPrefix, so @ref MangleLink
+///            maps a guarded name to itself and re-guarding is a no-op.
+constexpr std::string_view kRuntimeGuardPrefix = "zn_";
+
+/// Lowercase C and POSIX runtime symbol names that user code must never claim.
+/// @details A natively linked program shares one flat symbol namespace with the
+///          C runtime it links against, so a plain user symbol spelled like a
+///          library function satisfies that library's own internal reference to
+///          it.  A Zia `func floor` would then be called by the runtime's
+///          ellipse rasterizer in place of libm's `floor`, silently
+///          miscompiling the program instead of failing the link.  Names listed
+///          here are therefore pushed into the reserved escaped namespace.
+///          `main` is deliberately absent: it is the native entry point and must
+///          keep its plain spelling.  Zanna's own runtime is unaffected because
+///          every runtime export is `rt_`-prefixed.
+/// @invariant Sorted ascending so lookups can use binary search.
+// clang-format off: one name per line would make this table 443 lines long.
+constexpr std::string_view kReservedRuntimeSymbols[] = {
+    "abort", "abs", "accept", "access", "acos", "acosf", "acosh", "acoshf", "acoshl", "acosl",
+    "aligned_alloc", "alloca", "arc4random", "asctime", "asin", "asinf", "asinh", "asinhf",
+    "asinhl", "asinl", "at_quick_exit", "atan", "atan2", "atan2f", "atan2l", "atanf", "atanh",
+    "atanhf", "atanhl", "atanl", "atexit", "atof", "atoi", "atol", "atoll", "bcmp", "bcopy",
+    "bind", "bsearch", "bzero", "calloc", "cbrt", "cbrtf", "cbrtl", "ceil", "ceilf", "ceill",
+    "chdir", "chmod", "chown", "clearerr", "clock", "clock_gettime", "close", "closedir",
+    "connect", "copysign", "copysignf", "copysignl", "cos", "cosf", "cosh", "coshf", "coshl",
+    "cosl", "creat", "ctime", "difftime", "div", "drand48", "drem", "dup", "dup2", "erf",
+    "erfc", "erfcf", "erfcl", "erff", "erfl", "execl", "execle", "execlp", "execv", "execve",
+    "execvp", "exit", "exp", "exp2", "exp2f", "exp2l", "expf", "expl", "expm1", "expm1f",
+    "expm1l", "fabs", "fabsf", "fabsl", "fchmod", "fclose", "fcntl", "fdim", "fdimf", "fdiml",
+    "fdopen", "feof", "ferror", "fflush", "fgetc", "fgetpos", "fgets", "fileno", "finite",
+    "floor", "floorf", "floorl", "fma", "fmaf", "fmal", "fmax", "fmaxf", "fmaxl", "fmin",
+    "fminf", "fminl", "fmod", "fmodf", "fmodl", "fopen", "fork", "fprintf", "fputc", "fputs",
+    "fread", "free", "freopen", "frexp", "frexpf", "frexpl", "fscanf", "fseek", "fseeko",
+    "fsetpos", "fstat", "fsync", "ftell", "ftello", "ftruncate", "fwrite", "gamma", "getc",
+    "getchar", "getcwd", "getegid", "getenv", "geteuid", "getgid", "getline", "getpeername",
+    "getpid", "getppid", "gets", "getsockname", "getsockopt", "gettimeofday", "getuid",
+    "gmtime", "htonl", "htons", "hypot", "hypotf", "hypotl", "ilogb", "ilogbf", "ilogbl",
+    "index", "initstate", "ioctl", "isalnum", "isalpha", "isatty", "isblank", "iscntrl",
+    "isdigit", "isgraph", "islower", "isprint", "ispunct", "isspace", "isupper", "isxdigit",
+    "j0", "j1", "jn", "kill", "labs", "ldexp", "ldexpf", "ldexpl", "ldiv", "lgamma", "lgammaf",
+    "lgammal", "link", "listen", "llabs", "lldiv", "llrint", "llrintf", "llrintl", "llround",
+    "llroundf", "llroundl", "localeconv", "localtime", "log", "log10", "log10f", "log10l",
+    "log1p", "log1pf", "log1pl", "log2", "log2f", "log2l", "logb", "logbf", "logbl", "logf",
+    "logl", "longjmp", "lrand48", "lrint", "lrintf", "lrintl", "lround", "lroundf", "lroundl",
+    "lseek", "lstat", "malloc", "mblen", "mbstowcs", "mbtowc", "memccpy", "memchr", "memcmp",
+    "memcpy", "memmove", "mempcpy", "memset", "mkdir", "mkfifo", "mknod", "mkstemp", "mktemp",
+    "mktime", "mmap", "modf", "modff", "modfl", "munmap", "nan", "nanf", "nanl", "nanosleep",
+    "nearbyint", "nearbyintf", "nearbyintl", "nextafter", "nextafterf", "nextafterl",
+    "nexttoward", "nexttowardf", "nexttowardl", "ntohl", "ntohs", "open", "opendir", "pclose",
+    "perror", "pipe", "poll", "popen", "posix_memalign", "pow", "powf", "powl", "pread",
+    "printf", "putc", "putchar", "putenv", "puts", "pwrite", "qsort", "quick_exit", "raise",
+    "rand", "random", "read", "readdir", "readlink", "realloc", "realpath", "recv", "recvfrom",
+    "remainder", "remainderf", "remainderl", "remove", "remquo", "remquof", "remquol", "rename",
+    "rewind", "rindex", "rint", "rintf", "rintl", "rmdir", "round", "roundf", "roundl", "sbrk",
+    "scalbln", "scalblnf", "scalblnl", "scalbn", "scalbnf", "scalbnl", "scanf", "select",
+    "send", "sendto", "setbuf", "setenv", "setjmp", "setlocale", "setsockopt", "setstate",
+    "setvbuf", "shutdown", "siglongjmp", "signal", "significand", "sigsetjmp", "sin", "sinf",
+    "sinh", "sinhf", "sinhl", "sinl", "sleep", "snprintf", "socket", "socketpair", "sprintf",
+    "sqrt", "sqrtf", "sqrtl", "srand", "srand48", "srandom", "sscanf", "stat", "stpcpy",
+    "strcasecmp", "strcat", "strchr", "strcmp", "strcoll", "strcpy", "strcspn", "strdup",
+    "strerror", "strftime", "strlcat", "strlcpy", "strlen", "strncasecmp", "strncat", "strncmp",
+    "strncpy", "strndup", "strnlen", "strpbrk", "strrchr", "strsep", "strspn", "strstr",
+    "strtod", "strtof", "strtok", "strtol", "strtold", "strtoll", "strtoul", "strtoull",
+    "strxfrm", "symlink", "sync", "sysconf", "system", "tan", "tanf", "tanh", "tanhf", "tanhl",
+    "tanl", "tgamma", "tgammaf", "tgammal", "time", "tmpfile", "tmpnam", "tolower", "toupper",
+    "trunc", "truncf", "truncl", "umask", "ungetc", "unlink", "unsetenv", "usleep", "utime",
+    "valloc", "vfprintf", "vfscanf", "vprintf", "vscanf", "vsnprintf", "vsprintf", "vsscanf",
+    "wait", "waitpid", "wcstombs", "wctomb", "write", "y0", "y1", "yn",
+};
+// clang-format on
+
+/// @brief Return whether @p normalized names a C or POSIX runtime symbol.
+/// @param normalized Candidate symbol after ASCII case folding.
+/// @return True when the name appears in @ref kReservedRuntimeSymbols.
+[[nodiscard]] bool is_reserved_runtime_symbol(std::string_view normalized) noexcept {
+    const auto *first = std::begin(kReservedRuntimeSymbols);
+    const auto *last = std::end(kReservedRuntimeSymbols);
+    return std::binary_search(first, last, normalized);
+}
 
 /// @brief Return whether @p ch is an ASCII decimal digit.
 /// @param ch Byte to classify.
@@ -134,6 +217,30 @@ std::string MangleLink(std::string_view qualified) {
             out.append("_x");
             append_hex_byte(out, ch);
         }
+    }
+    return out;
+}
+
+/// @copydoc IsReservedRuntimeName()
+bool IsReservedRuntimeName(std::string_view name) {
+    std::string normalized;
+    normalized.reserve(name.size());
+    for (unsigned char ch : name) {
+        normalized.push_back(static_cast<char>(ascii_lower(ch)));
+    }
+    return is_reserved_runtime_symbol(normalized);
+}
+
+/// @copydoc GuardReservedRuntimeName()
+std::string GuardReservedRuntimeName(std::string_view name) {
+    if (!IsReservedRuntimeName(name)) {
+        return std::string(name);
+    }
+    std::string out;
+    out.reserve(kRuntimeGuardPrefix.size() + name.size());
+    out.append(kRuntimeGuardPrefix);
+    for (unsigned char ch : name) {
+        out.push_back(static_cast<char>(ascii_lower(ch)));
     }
     return out;
 }

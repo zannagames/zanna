@@ -2,7 +2,6 @@ add_library(zanna_codegen_x86_64 STATIC
         TargetX64.cpp
         MachineIR.cpp
         AsmEmitter.cpp
-        ../../common/Mangle.cpp
         asmfmt/Format.cpp
         ra/LiveIntervals.cpp
         ra/GlobalAllocator.cpp
