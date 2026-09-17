@@ -181,6 +181,17 @@ void *rt_rendertarget3d_as_pixels(void *o) {
     return NULL;
 }
 
+/// @brief Stub for `RenderTarget3D.AsDisplayPixels` — would normally copy the
+///        target's display-referred material mirror (ADR 0368).
+///
+/// @param o RenderTarget3D handle (ignored).
+///
+/// @return `NULL`.
+void *rt_rendertarget3d_as_display_pixels(void *o) {
+    (void)o;
+    return NULL;
+}
+
 /// @brief Stub for `Canvas3D.SetRenderTarget` — would normally redirect
 ///        subsequent 3D draws into the given offscreen target instead of
 ///        the on-screen framebuffer.

@@ -326,6 +326,7 @@ GPU backends now treat `RenderTarget3D` color buffers as lazily synchronized CPU
 - `ResetRenderTarget` and `Canvas3D` teardown ask the backend to detach the active RTT binding before destroying backend state; render-target sync callbacks are cleared with the binding so later CPU readback cannot call into stale GPU context
 - `RenderTarget3D.NewHdr()` keeps the GPU color attachment in `RGBA16F` on GPU backends; backend sync hooks now fill both a `Pixels`-compatible tonemapped RGBA8 mirror and a linear RGBA32F CPU mirror so CPU-supported render-target postfx can operate before final `AsPixels()` conversion
 - this avoids unconditional GPU stalls on RTT-heavy frames while preserving the `RenderTarget3D.AsPixels()` contract
+- `RenderTarget3D.AsDisplayPixels()` (ADR 0368) returns an owned copy of the target's display-referred material mirror — the last completed frame resolved through the post-FX chain it was rendered under (the ADR 0301 subset) — so a script can save or composite an offscreen render the way the same scene presents; `AsPixels()` / `CopyTo()` stay scene-referred
 
 ## Software Renderer Pipeline (vgfx3d_backend_sw.c)
 

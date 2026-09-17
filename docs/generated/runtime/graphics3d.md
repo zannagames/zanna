@@ -49,6 +49,7 @@ Constructor: `Zanna.Graphics3D.RenderTarget3D.New`
 |---|---|---|
 | <a id="zanna-graphics3d-rendertarget3d-newhdr"></a>`NewHdr` | `obj<Zanna.Graphics3D.RenderTarget3D>(i64,i64)` | `Zanna.Graphics3D.RenderTarget3D.NewHdr` |
 | <a id="zanna-graphics3d-rendertarget3d-aspixels"></a>`AsPixels` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics3D.RenderTarget3D.AsPixels` |
+| <a id="zanna-graphics3d-rendertarget3d-asdisplaypixels"></a>`AsDisplayPixels` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics3D.RenderTarget3D.AsDisplayPixels` |
 | <a id="zanna-graphics3d-rendertarget3d-copyto"></a>`CopyTo` | `void(obj)` | `Zanna.Graphics3D.RenderTarget3D.CopyTo` |
 | <a id="zanna-graphics3d-rendertarget3d-new"></a>`New` | `obj<Zanna.Graphics3D.RenderTarget3D>(i64,i64)` | `Zanna.Graphics3D.RenderTarget3D.New` |
 
@@ -2771,6 +2772,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-rendertarget3d-get-height"></a>`Zanna.Graphics3D.RenderTarget3D.get_Height` | `i64(obj)` | `rt_rendertarget3d_get_height` |
 | <a id="zanna-graphics3d-rendertarget3d-get-ishdr"></a>`Zanna.Graphics3D.RenderTarget3D.get_IsHdr` | `i1(obj)` | `rt_rendertarget3d_get_is_hdr` |
 | `Zanna.Graphics3D.RenderTarget3D.AsPixels` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_rendertarget3d_as_pixels` |
+| `Zanna.Graphics3D.RenderTarget3D.AsDisplayPixels` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_rendertarget3d_as_display_pixels` |
 | `Zanna.Graphics3D.RenderTarget3D.CopyTo` | `void(obj,obj)` | `rt_rendertarget3d_copy_to` |
 | `Zanna.Graphics3D.Canvas3D.SetRenderTarget` | `void(obj,obj)` | `rt_canvas3d_set_render_target` |
 | `Zanna.Graphics3D.Canvas3D.ResetRenderTarget` | `void(obj)` | `rt_canvas3d_reset_render_target` |

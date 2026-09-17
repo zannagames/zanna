@@ -874,6 +874,15 @@ int32_t rt_rendertarget3d_get_is_hdr(void *obj);
 /// @param obj Borrowed RenderTarget3D handle.
 /// @return GC-managed Pixels representation of the current color attachment, or NULL on failure.
 void *rt_rendertarget3d_as_pixels(void *obj);
+/// @brief Get a DISPLAY-REFERRED Pixels copy of the render target (ADR 0368).
+/// @details The frame resolved through the post-FX chain it was rendered under
+///   (tone curve + exposure + gamma, colour grade, LUT, FXAA, sharpen — the
+///   ADR 0301 material-mirror subset), so an offscreen render reads back the
+///   way the same scene presents on screen. A target whose last frame ended on
+///   a canvas without a usable chain returns the same bytes as `as_pixels`.
+/// @param obj Borrowed RenderTarget3D handle.
+/// @return New GC-managed Pixels copy, or NULL on failure.
+void *rt_rendertarget3d_as_display_pixels(void *obj);
 /// @brief Allocation-free readback into an existing same-size Pixels buffer.
 /// @param obj Borrowed RenderTarget3D handle.
 /// @param pixels Borrowed writable same-size Pixels destination.

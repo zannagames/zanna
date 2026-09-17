@@ -6510,6 +6510,7 @@ static void test_rendertarget_null_safety() {
     EXPECT_TRUE(rt_rendertarget3d_get_is_hdr(NULL) == 0,
                 "RenderTarget3D.IsHdr returns false for null");
     assert(rt_rendertarget3d_as_pixels(NULL) == NULL);
+    assert(rt_rendertarget3d_as_display_pixels(NULL) == NULL);
     rt_canvas3d_set_render_target(NULL, NULL);
     rt_canvas3d_reset_render_target(NULL);
     PASS();
@@ -8506,6 +8507,15 @@ static void test_canvas_material_mirror_is_display_referred() {
     if (plain && mirror0 && plain->data && mirror0->data) {
         EXPECT_TRUE(memcmp(plain->data, mirror0->data, 16u * sizeof(uint32_t)) == 0,
                     "without a chain the mirror equals AsPixels");
+        /* ADR 0368: and so does the owned display copy. */
+        auto *display0 = (pixels_view_t *)rt_rendertarget3d_as_display_pixels(target);
+        EXPECT_TRUE(display0 && display0->data, "AsDisplayPixels exists without a chain");
+        if (display0 && display0->data) {
+            EXPECT_TRUE(memcmp(plain->data, display0->data, 16u * sizeof(uint32_t)) == 0,
+                        "without a chain AsDisplayPixels equals AsPixels");
+            if (rt_obj_release_check0(display0))
+                rt_obj_free(display0);
+        }
     }
 
     /* Frame 2: explicit mode-0 tonemap (gamma-out only, exposure 1). 0.5 linear
@@ -8528,6 +8538,18 @@ static void test_canvas_material_mirror_is_display_referred() {
         auto *again = (pixels_view_t *)rt_rendertarget3d_material_pixels(target);
         EXPECT_TRUE(again && again->data && again->data[5] == first,
                     "a repeated mirror read does not re-encode");
+        /* ADR 0368: AsDisplayPixels is an OWNED copy of that mirror. */
+        auto *display = (pixels_view_t *)rt_rendertarget3d_as_display_pixels(target);
+        EXPECT_TRUE(display && display->data, "AsDisplayPixels returns a copy");
+        if (display && display->data) {
+            EXPECT_TRUE(display != mirror, "AsDisplayPixels is not the borrowed mirror");
+            EXPECT_TRUE(memcmp(display->data, mirror->data, 16u * sizeof(uint32_t)) == 0,
+                        "AsDisplayPixels equals the display-encoded mirror");
+            EXPECT_TRUE(((display->data[5] >> 24) & 0xFFu) >= 184u,
+                        "AsDisplayPixels is display-encoded, not the scene bytes");
+            if (rt_obj_release_check0(display))
+                rt_obj_free(display);
+        }
     }
     if (plain && rt_obj_release_check0(plain))
         rt_obj_free(plain);

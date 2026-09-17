@@ -517,6 +517,27 @@ void *rt_rendertarget3d_as_pixels(void *obj) {
     return pixels;
 }
 
+/// @brief Copy the render target's DISPLAY-REFERRED contents into a new Pixels object.
+/// @details ADR 0368: the material mirror (`rt_rendertarget3d_material_pixels`) is
+///          the frame encoded through the chain recorded when its last frame ended
+///          (ADR 0301) — tonemap + exposure + gamma, grade, LUT, FXAA and sharpen in
+///          chain order. This returns an owned copy of that mirror, so a script can
+///          save or composite an offscreen render that reads the way the same scene
+///          presents on screen; `as_pixels` stays scene-referred for the callers
+///          that want linear bytes. Without a recorded chain the copy equals
+///          `as_pixels`. The mirror is resolved at most once per completed frame.
+/// @param obj Render target handle.
+/// @return New Pixels handle, or NULL on failure.
+void *rt_rendertarget3d_as_display_pixels(void *obj) {
+    rt_rendertarget3d *rtd = rendertarget3d_checked(obj);
+    if (!rtd || !rtd->target)
+        return NULL;
+    void *mirror = rt_rendertarget3d_material_pixels(obj);
+    if (!mirror)
+        return NULL;
+    return rt_pixels_clone(mirror);
+}
+
 /// @brief Sync the target's CPU color mirror and convert it into @p pv's uint32 buffer.
 /// @param rtd RenderTarget3D whose backend color storage is read.
 /// @param pv Existing same-size Pixels implementation receiving packed RGBA values.

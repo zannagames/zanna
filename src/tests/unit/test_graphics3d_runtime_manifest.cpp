@@ -79,10 +79,10 @@ namespace {
 // ADR 0326: Mesh3D.LoftHeight adds one function and one method.
 // ADR 0328: lossless cluster fallback pressure adds one function/property.
 // ADR 0341: Material3D.TemporalWeight adds two accessors and one property.
-constexpr std::size_t kExpectedFunctionCount = 2301;
+constexpr std::size_t kExpectedFunctionCount = 2302;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 842;
-constexpr std::size_t kExpectedMethodCount = 1242;
+constexpr std::size_t kExpectedMethodCount = 1243;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -305,7 +305,8 @@ int main() {
     // ADR 0350: AnimController3D.BlendTreeWeight getter + property; previous 0ee92fd98acea706.
     // ADR 0351: Mesh3D.BoneCount / Skeleton, SceneNode.SelectedLod,
     // AnimController3D.AnimationLodSkips; previous 21009b37c905fdc8.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xdf2087700f2b917c);
+    // ADR 0368: RenderTarget3D.AsDisplayPixels; previous df2087700f2b917c.
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x5cdee3440c5c171b);
     /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
                                                                    AnimController3D.SetBlendTreeFade
                                                                    + SetTransitionContinuity */

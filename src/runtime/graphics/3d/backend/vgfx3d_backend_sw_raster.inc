@@ -1729,6 +1729,18 @@ static int sw_shade_fragment(
         }
     }
 
+    /* An unlit PBR-workflow material skips the lighting branch, which is
+     * where the PBR path adds its emissive term; add it here so an unlit
+     * emissive reads the same as on the GPU shaders
+     * (`unlitColor = baseColor + emissive`). Legacy unlit materials already
+     * take their emissive map in the albedo pass above. */
+    if (cmd && cmd->unlit && cmd->workflow == RT_MATERIAL3D_WORKFLOW_PBR &&
+        cmd->emissive_intensity > 0.0f) {
+        fr += cmd->emissive_color[0] * cmd->emissive_intensity;
+        fg += cmd->emissive_color[1] * cmd->emissive_intensity;
+        fb_c += cmd->emissive_color[2] * cmd->emissive_intensity;
+    }
+
     if (cmd && cmd->env_map && cmd->reflectivity > 0.0001f) {
         sw_apply_environment_reflection(cmd,
                                         normal_map,

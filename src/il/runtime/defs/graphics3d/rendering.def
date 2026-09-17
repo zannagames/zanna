@@ -52,6 +52,7 @@ RT_FUNC(RenderTarget3DGetWidth,       rt_rendertarget3d_get_width,      "Zanna.G
 RT_FUNC(RenderTarget3DGetHeight,      rt_rendertarget3d_get_height,     "Zanna.Graphics3D.RenderTarget3D.get_Height",     "i64(obj)")
 RT_FUNC(RenderTarget3DGetIsHdr,       rt_rendertarget3d_get_is_hdr,     "Zanna.Graphics3D.RenderTarget3D.get_IsHdr",      "i1(obj)")
 RT_FUNC(RenderTarget3DAsPixels, rt_rendertarget3d_as_pixels, "Zanna.Graphics3D.RenderTarget3D.AsPixels", "obj<Zanna.Graphics.Pixels>(obj)", owned)
+RT_FUNC(RenderTarget3DAsDisplayPixels, rt_rendertarget3d_as_display_pixels, "Zanna.Graphics3D.RenderTarget3D.AsDisplayPixels", "obj<Zanna.Graphics.Pixels>(obj)", owned)
 RT_FUNC(RenderTarget3DCopyTo,         rt_rendertarget3d_copy_to,        "Zanna.Graphics3D.RenderTarget3D.CopyTo",         "void(obj,obj)")
 RT_FUNC(Canvas3DSetRenderTarget,      rt_canvas3d_set_render_target,    "Zanna.Graphics3D.Canvas3D.SetRenderTarget",      "void(obj,obj)")
 RT_FUNC(Canvas3DResetRenderTarget,    rt_canvas3d_reset_render_target,  "Zanna.Graphics3D.Canvas3D.ResetRenderTarget",    "void(obj)")
@@ -67,6 +68,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.RenderTarget3D", RenderTarget3D, "obj", RenderT
     RT_PROP("Height", "i64", RenderTarget3DGetHeight, none)
     RT_METHOD("NewHdr", "obj<Zanna.Graphics3D.RenderTarget3D>(i64,i64)", RenderTarget3DNewHdr)
     RT_METHOD("AsPixels", "obj<Zanna.Graphics.Pixels>()", RenderTarget3DAsPixels)
+    RT_METHOD("AsDisplayPixels", "obj<Zanna.Graphics.Pixels>()", RenderTarget3DAsDisplayPixels)
     // Allocation-free readback into an existing same-size Pixels.
     RT_METHOD("CopyTo", "void(obj)", RenderTarget3DCopyTo)
 RT_CLASS_END()
