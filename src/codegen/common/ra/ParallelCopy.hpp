@@ -70,10 +70,25 @@ struct CopyLoc {
         return kind == Kind::Reg;
     }
 
+    /// @brief Endpoint identity.
+    /// @details A REGISTER is identified by its class and ordinal: GPR 0 and
+    ///          FPR 0 are different registers that share an ordinal. A FRAME
+    ///          SLOT is identified by its slot ALONE — a slot is untyped
+    ///          storage, and a backend whose spill slots come from one pool
+    ///          shared by every class (AArch64: "every class shares one
+    ///          8-byte slot pool") will hand the same slot to a GPR value and
+    ///          an FPR value whose live ranges do not intersect. Comparing
+    ///          the class as well made those two endpoints look like two
+    ///          different locations, so the sequentializer below could not
+    ///          see that one task's destination was another task's source and
+    ///          emitted the write first: the FPR store landed on the slot
+    ///          before the GPR read of it, and the reader got the other
+    ///          value's bits. (ZB-46: a Float's bit pattern surfaced in an
+    ///          Integer at -O1.)
     [[nodiscard]] bool operator==(const CopyLoc &other) const noexcept {
-        if (kind != other.kind || cls != other.cls)
+        if (kind != other.kind)
             return false;
-        return kind == Kind::Reg ? reg == other.reg : slot == other.slot;
+        return kind == Kind::Reg ? (cls == other.cls && reg == other.reg) : slot == other.slot;
     }
 
     [[nodiscard]] bool operator!=(const CopyLoc &other) const noexcept {
@@ -202,13 +217,35 @@ std::size_t sequentializeParallelCopy(std::vector<ParallelCopyTask> tasks, Emitt
             }
         }
         const CopyLoc source = tasks[seed].src;
-        const CopyLoc scratch = emit.cycleScratch(source.cls);
-        emit.move(scratch, source);
-        ++moves;
-        scratches.push_back(scratch);
-        for (auto &pending : tasks) {
-            if (pending.src == source)
-                pending.src = scratch;
+        // A frame slot is untyped storage, so the pending readers of a MEMORY
+        // source may not all belong to one class. Each class gets its own
+        // scratch, read from the slot with that class's load: retargeting a
+        // GPR task on to an FPR scratch would move the bits with the wrong
+        // instruction. A register source is class-qualified by its identity,
+        // so it can only ever have one class of reader and this loop runs
+        // once.
+        std::vector<unsigned> readerClasses;
+        for (const auto &pending : tasks) {
+            if (pending.src != source)
+                continue;
+            bool seen = false;
+            for (unsigned c : readerClasses)
+                if (c == pending.dst.cls)
+                    seen = true;
+            if (!seen)
+                readerClasses.push_back(pending.dst.cls);
+        }
+        for (unsigned cls : readerClasses) {
+            const CopyLoc scratch = emit.cycleScratch(cls);
+            emit.move(scratch, source);
+            ++moves;
+            scratches.push_back(scratch);
+            for (auto &pending : tasks) {
+                // Already-retargeted tasks no longer compare equal to the
+                // original source, so each class is rewritten exactly once.
+                if (pending.src == source && pending.dst.cls == cls)
+                    pending.src = scratch;
+            }
         }
     }
 
