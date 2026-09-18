@@ -2230,12 +2230,8 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
     std::ostringstream payloadManifest;
 
     std::vector<uint8_t> icoData;
-    if (!pkg.iconPath.empty()) {
-        fs::path iconSrc = resolvePackageSourcePath(projectRoot, pkg.iconPath, "package icon");
-        if (!fs::is_regular_file(iconSrc))
-            throw std::runtime_error("package icon not found: " + pkg.iconPath);
-        auto srcImage = pngRead(zanna::filesystem::pathToUtf8(iconSrc));
-        icoData = generateIco(srcImage);
+    if (!pkg.iconPaths.empty()) {
+        icoData = generateIco(loadIconSources(projectRoot, pkg.iconPaths, "package-icon"));
     } else {
         icoData = generateIco(defaultZannaToolchainIconImage());
     }

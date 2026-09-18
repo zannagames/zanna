@@ -48,7 +48,7 @@ Creates a new pixel buffer initialized to transparent black (0x00000000). Negati
 | `GetColor(x, y)`                  | `Integer(Integer, Integer)`                                          | Get pixel at (x, y) as a `Color`-compatible value; use `Color.Get*` to read components |
 | `Grayscale()`                     | `Pixels()`                                                           | Return a grayscale copy of the image                                              |
 | `Invert()`                        | `Pixels()`                                                           | Return a copy with all colors inverted (255 minus each channel)                   |
-| `Resize(width, height)`           | `Pixels(Integer, Integer)`                                           | Return an endpoint-preserving scaled copy using alpha-aware bilinear interpolation; target dimensions must be positive |
+| `Resize(width, height)`           | `Pixels(Integer, Integer)`                                           | Return a scaled copy: shrinking axes are area-averaged, growing axes use endpoint-preserving bilinear interpolation, both alpha-aware; target dimensions must be positive |
 | `Rotate(angle)`                   | `Pixels(Double)`                                                     | Return a copy rotated around its pixel center by degrees (positive = clockwise); non-finite angles trap |
 | `Rotate180()`                     | `Pixels()`                                                           | Return a 180-degree rotated copy                                                  |
 | `RotateCounterClockwise()`                     | `Pixels()`                                                           | Return a 90-degree counter-clockwise rotated copy (swaps dimensions)              |
@@ -280,7 +280,7 @@ DIM scaled AS Zanna.Graphics.Pixels
 scaled = pixels.Scale(128, 128)  ' Scale to 128x128
 scaled = pixels.Scale(pixels.Width * 2, pixels.Height * 2)  ' Double size
 
-' Resize with bilinear interpolation (smoother)
+' Resize with area averaging (shrink) or bilinear interpolation (grow)
 DIM resized AS Zanna.Graphics.Pixels
 resized = pixels.Resize(128, 128)
 
@@ -316,7 +316,7 @@ pixels.SavePng("output.png")
 - RotateCW and RotateCCW swap width and height dimensions
 - `Rotate(angle)` rotates around the image's pixel center and expands the output just enough to contain the rotated pixel centers
 - Scale uses endpoint-preserving nearest-neighbor interpolation (fast, no blending)
-- Resize uses endpoint-preserving, alpha-aware bilinear interpolation (smoother, better for non-integer scale factors)
+- Resize averages every source pixel an output pixel covers when an axis shrinks (weighted by coverage and alpha, so detail is filtered rather than skipped and transparent pixels never tint their neighbours), and uses endpoint-preserving, alpha-aware bilinear interpolation when an axis grows; all arithmetic is integer, so every host produces identical pixels ([ADR 0373](../../adr/0373-pixels-resize-area-filters-every-downscale.md))
 - Image processing methods (Invert, Grayscale, Tint, Blur) return new Pixels objects
 - Tint multiplies RGB by the provided color and multiplies alpha when the color includes alpha
 - Blur accumulates the complete two-dimensional box footprint in premultiplied-alpha form and quantizes only the final pixel, so low-alpha colors are not lost between its horizontal and vertical passes

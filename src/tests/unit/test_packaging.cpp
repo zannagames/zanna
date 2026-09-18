@@ -67,8 +67,13 @@
 #include <initializer_list>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <utility>
+
+#if ZANNA_HOST_MACOS
+#include <sys/xattr.h>
+#endif
 
 using namespace zanna::pkg;
 
@@ -2147,6 +2152,326 @@ TEST(Icon, RejectsTinyOrNonSquareSources) {
     EXPECT_THROWS(generateIco(img), PNGError);
 }
 
+/// @brief Build a square RGBA test image from a per-pixel generator.
+static PkgImage makeTestImage(uint32_t width,
+                              uint32_t height,
+                              const std::function<std::array<uint8_t, 4>(uint32_t, uint32_t)> &fn) {
+    PkgImage img;
+    img.width = width;
+    img.height = height;
+    img.pixels.resize(static_cast<size_t>(width) * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            const auto px = fn(x, y);
+            std::memcpy(img.at(x, y), px.data(), 4);
+        }
+    }
+    return img;
+}
+
+/// @brief One parsed ICNS record.
+struct TestIcnsEntry {
+    std::string type;
+    std::vector<uint8_t> payload;
+};
+
+/// @brief Split an ICNS container into its records.
+static std::vector<TestIcnsEntry> parseTestIcns(const std::vector<uint8_t> &icns) {
+    std::vector<TestIcnsEntry> entries;
+    size_t pos = 8;
+    while (pos + 8 <= icns.size()) {
+        const uint32_t length = readBE32(icns.data() + pos + 4);
+        if (length < 8 || pos + length > icns.size())
+            break;
+        entries.push_back(
+            {std::string(reinterpret_cast<const char *>(icns.data() + pos), 4),
+             std::vector<uint8_t>(icns.begin() + static_cast<std::ptrdiff_t>(pos + 8),
+                                  icns.begin() + static_cast<std::ptrdiff_t>(pos + length))});
+        pos += length;
+    }
+    return entries;
+}
+
+/// @brief Decode an ICNS ARGB record into straight RGBA pixels.
+static std::vector<uint8_t> decodeTestIcnsArgb(const std::vector<uint8_t> &payload, size_t count) {
+    std::vector<uint8_t> rgba(count * 4, 0);
+    if (payload.size() < 4 || std::memcmp(payload.data(), "ARGB", 4) != 0)
+        return {};
+    size_t pos = 4;
+    const size_t channels[4] = {3, 0, 1, 2};
+    for (const size_t channel : channels) {
+        size_t written = 0;
+        while (written < count && pos < payload.size()) {
+            const uint8_t control = payload[pos++];
+            if (control >= 0x80) {
+                const size_t run = static_cast<size_t>(control) - 125;
+                for (size_t i = 0; i < run && written < count; ++i)
+                    rgba[(written++) * 4 + channel] = payload[pos];
+                ++pos;
+            } else {
+                const size_t literal = static_cast<size_t>(control) + 1;
+                for (size_t i = 0; i < literal && written < count; ++i)
+                    rgba[(written++) * 4 + channel] = payload[pos++];
+            }
+        }
+        if (written != count)
+            return {};
+    }
+    return pos == payload.size() ? rgba : std::vector<uint8_t>{};
+}
+
+TEST(Icon, ResizeAreaAveragesCheckerboard) {
+    const PkgImage board = makeTestImage(1024, 1024, [](uint32_t x, uint32_t y) {
+        const uint8_t v = ((x + y) % 2 == 0) ? 0 : 255;
+        return std::array<uint8_t, 4>{v, v, v, 255};
+    });
+    const PkgImage small = imageResize(board, 32, 32);
+    ASSERT_EQ(small.width, static_cast<uint32_t>(32));
+    for (uint32_t y = 0; y < 32; ++y) {
+        for (uint32_t x = 0; x < 32; ++x) {
+            const uint8_t *px = small.at(x, y);
+            EXPECT_GE(px[0], 127);
+            EXPECT_LE(px[0], 129);
+            EXPECT_EQ(px[3], 255);
+        }
+    }
+}
+
+TEST(Icon, ResizeIsCenterAligned) {
+    const auto symmetric = [](uint32_t size) {
+        return [size](uint32_t x, uint32_t) {
+            const uint32_t d = x < size / 2 ? x : size - 1 - x;
+            return std::array<uint8_t, 4>{static_cast<uint8_t>(d * 7), 40, 90, 255};
+        };
+    };
+    const PkgImage shrunk = imageResize(makeTestImage(64, 64, symmetric(64)), 20, 20);
+    const PkgImage grown = imageResize(makeTestImage(7, 7, symmetric(7)), 16, 16);
+    for (uint32_t x = 0; x < 20; ++x)
+        EXPECT_EQ(shrunk.at(x, 5)[0], shrunk.at(19 - x, 5)[0]);
+    for (uint32_t x = 0; x < 16; ++x)
+        EXPECT_EQ(grown.at(x, 5)[0], grown.at(15 - x, 5)[0]);
+}
+
+TEST(Icon, ResizeNoDarkFringe) {
+    const PkgImage halfRed = makeTestImage(4, 4, [](uint32_t x, uint32_t) {
+        return x < 2 ? std::array<uint8_t, 4>{255, 0, 0, 255} : std::array<uint8_t, 4>{0, 0, 0, 0};
+    });
+    for (const uint32_t size : {3u, 2u, 7u}) {
+        const PkgImage resized = imageResize(halfRed, size, size);
+        for (uint32_t y = 0; y < size; ++y) {
+            for (uint32_t x = 0; x < size; ++x) {
+                const uint8_t *px = resized.at(x, y);
+                if (px[3] == 0)
+                    continue;
+                EXPECT_GE(px[0], 250);
+                EXPECT_LE(px[1], 5);
+                EXPECT_LE(px[2], 5);
+            }
+        }
+    }
+    // The middle column of a 4 -> 3 shrink covers red and transparent equally.
+    EXPECT_EQ(imageResize(halfRed, 3, 3).at(1, 1)[3], 128);
+}
+
+TEST(Icon, ResizeIdentityAndKnownVector) {
+    const PkgImage src = makeTestImage(4, 4, [](uint32_t x, uint32_t y) {
+        static const uint8_t reds[4][4] = {
+            {10, 20, 1, 2}, {30, 40, 2, 2}, {0, 0, 200, 100}, {0, 4, 50, 50}};
+        return std::array<uint8_t, 4>{reds[y][x], static_cast<uint8_t>(x * 60), 7, 255};
+    });
+    const PkgImage same = imageResize(src, 4, 4);
+    EXPECT_TRUE(same.pixels == src.pixels);
+
+    const PkgImage half = imageResize(src, 2, 2);
+    EXPECT_EQ(half.at(0, 0)[0], 25);  // (10 + 20 + 30 + 40) / 4
+    EXPECT_EQ(half.at(1, 0)[0], 2);   // (1 + 2 + 2 + 2) / 4 = 1.75
+    EXPECT_EQ(half.at(0, 1)[0], 1);   // (0 + 0 + 0 + 4) / 4
+    EXPECT_EQ(half.at(1, 1)[0], 100); // (200 + 100 + 50 + 50) / 4
+    EXPECT_EQ(half.at(1, 1)[1], 150); // (120 + 180) / 2 across each row
+    EXPECT_EQ(half.at(1, 1)[3], 255);
+}
+
+TEST(Icon, IcnsHasCompleteSlotSet) {
+    const PkgImage src = makeTestImage(64, 64, [](uint32_t x, uint32_t y) {
+        return std::array<uint8_t, 4>{
+            static_cast<uint8_t>(x * 4), static_cast<uint8_t>(y * 4), 90, 255};
+    });
+    const auto icns = generateIcns(src);
+    const auto entries = parseTestIcns(icns);
+    const std::vector<std::pair<std::string, uint32_t>> expected = {{"ic04", 16},
+                                                                    {"ic05", 32},
+                                                                    {"ic11", 32},
+                                                                    {"ic12", 64},
+                                                                    {"ic07", 128},
+                                                                    {"ic13", 256},
+                                                                    {"ic08", 256},
+                                                                    {"ic14", 512},
+                                                                    {"ic09", 512},
+                                                                    {"ic10", 1024}};
+    ASSERT_EQ(entries.size(), expected.size());
+    for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(entries[i].type, expected[i].first);
+        if (i < 2) {
+            EXPECT_TRUE(entries[i].payload.size() > 4 &&
+                        std::memcmp(entries[i].payload.data(), "ARGB", 4) == 0);
+        } else {
+            const PngInfo info = pngReadInfo(entries[i].payload.data(), entries[i].payload.size());
+            EXPECT_EQ(info.width, expected[i].second);
+            EXPECT_EQ(info.height, expected[i].second);
+        }
+    }
+    EXPECT_NO_THROW(validateIcns(icns));
+}
+
+TEST(Icon, IcnsArgbRoundTrips) {
+    const PkgImage src = makeTestImage(64, 64, [](uint32_t x, uint32_t y) {
+        const bool inside = x >= 8 && x < 56 && y >= 8 && y < 56;
+        return std::array<uint8_t, 4>{static_cast<uint8_t>(x * 4),
+                                      static_cast<uint8_t>(255 - y * 4),
+                                      static_cast<uint8_t>((x * y) & 0xFF),
+                                      static_cast<uint8_t>(inside ? 255 : x * 3)};
+    });
+    const IconSourceSet set = iconSourceSetFromImage(src);
+    const auto entries = parseTestIcns(generateIcns(set));
+    ASSERT_GE(entries.size(), static_cast<size_t>(2));
+    const std::pair<size_t, uint32_t> argbSlots[] = {{0, 16}, {1, 32}};
+    for (const auto &[index, size] : argbSlots) {
+        const auto decoded = decodeTestIcnsArgb(entries[index].payload, size_t(size) * size);
+        const PkgImage expected = iconImageForSize(set, size);
+        ASSERT_EQ(decoded.size(), expected.pixels.size());
+        EXPECT_TRUE(decoded == expected.pixels);
+    }
+}
+
+TEST(Icon, SourceSetUsesExactSizeVerbatim) {
+    std::vector<IconSource> sources;
+    std::map<uint32_t, std::vector<uint8_t>> pngs;
+    for (const uint32_t size : {1024u, 128u, 512u, 256u}) {
+        const PkgImage img = makeTestImage(size, size, [size](uint32_t x, uint32_t y) {
+            return std::array<uint8_t, 4>{static_cast<uint8_t>(size / 8),
+                                          static_cast<uint8_t>(x & 0xFF),
+                                          static_cast<uint8_t>(y & 0xFF),
+                                          255};
+        });
+        pngs[size] = pngEncode(img);
+        sources.push_back(
+            makeIconSource(pngs[size], std::to_string(size) + ".png", "package-icon"));
+    }
+    const IconSourceSet set = makeIconSourceSet(sources, "package-icon");
+    ASSERT_EQ(set.sources.size(), static_cast<size_t>(4));
+    EXPECT_EQ(set.sources.front().image.width, static_cast<uint32_t>(128));
+    EXPECT_EQ(set.largestSize(), static_cast<uint32_t>(1024));
+
+    std::map<std::string, std::vector<uint8_t>> byType;
+    for (const auto &entry : parseTestIcns(generateIcns(set)))
+        byType[entry.type] = entry.payload;
+    EXPECT_TRUE(byType["ic07"] == pngs[128]);
+    EXPECT_TRUE(byType["ic13"] == pngs[256]);
+    EXPECT_TRUE(byType["ic08"] == pngs[256]);
+    EXPECT_TRUE(byType["ic14"] == pngs[512]);
+    EXPECT_TRUE(byType["ic09"] == pngs[512]);
+    EXPECT_TRUE(byType["ic10"] == pngs[1024]);
+    // Smaller slots come from the smallest larger source: 128 -> 64 keeps its red channel.
+    const PngInfo ic12 = pngReadInfo(byType["ic12"].data(), byType["ic12"].size());
+    EXPECT_EQ(ic12.width, static_cast<uint32_t>(64));
+    EXPECT_EQ(iconImageForSize(set, 64).at(3, 3)[0], 16);
+    EXPECT_EQ(iconImageForSize(set, 200).at(3, 3)[0], 32);
+
+    const auto linux = generateMultiSizePngs(set);
+    EXPECT_TRUE(linux.at(128) == pngs[128]);
+    EXPECT_TRUE(linux.at(256) == pngs[256]);
+    EXPECT_TRUE(iconPngForSize(set, 256, true) == pngs[256]);
+}
+
+TEST(Icon, SourceSetRejectsInvalidSources) {
+    const auto pngOf = [](uint32_t w, uint32_t h) {
+        return pngEncode(makeTestImage(
+            w, h, [](uint32_t, uint32_t) { return std::array<uint8_t, 4>{1, 2, 3, 255}; }));
+    };
+    const auto messageOf = [](const std::function<void()> &fn) -> std::string {
+        try {
+            fn();
+        } catch (const std::exception &ex) {
+            return ex.what();
+        }
+        return "";
+    };
+    EXPECT_CONTAINS(
+        messageOf([&] { (void)makeIconSource(pngOf(64, 32), "wide.png", "package-icon"); }),
+        "package-icon 'wide.png' must be a square PNG (got 64x32)");
+    EXPECT_CONTAINS(
+        messageOf([&] { (void)makeIconSource(pngOf(8, 8), "tiny.png", "package-icon"); }),
+        "package-icon 'tiny.png' must be at least 16x16 pixels");
+    EXPECT_CONTAINS(messageOf([&] { (void)makeIconSource({1, 2, 3}, "junk.png", "package-icon"); }),
+                    "package-icon 'junk.png' is not a readable PNG");
+    EXPECT_CONTAINS(messageOf([&] {
+                        std::vector<IconSource> twins;
+                        twins.push_back(makeIconSource(pngOf(64, 64), "a.png", "package-icon"));
+                        twins.push_back(makeIconSource(pngOf(64, 64), "b.png", "package-icon"));
+                        (void)makeIconSourceSet(twins, "package-icon");
+                    }),
+                    "package-icon sources 'a.png' and 'b.png' are both 64x64; each size may "
+                    "appear once");
+    EXPECT_CONTAINS(messageOf([&] {
+                        std::vector<IconSource> small;
+                        small.push_back(makeIconSource(pngOf(16, 16), "s.png", "package-icon"));
+                        (void)makeIconSourceSet(small, "package-icon");
+                    }),
+                    "package-icon needs a source of at least 32x32 pixels (largest is 16x16)");
+}
+
+TEST(Icon, ValidateIcnsRejectsMalformed) {
+    const auto messageOf = [](const std::vector<uint8_t> &bytes) -> std::string {
+        try {
+            validateIcns(bytes);
+        } catch (const std::exception &ex) {
+            return ex.what();
+        }
+        return "";
+    };
+    EXPECT_EQ(messageOf({'i', 'c', 'o', 'n', 0, 0, 0, 8}), std::string("missing 'icns' magic"));
+    EXPECT_EQ(messageOf({'i', 'c', 'n', 's', 0, 0, 0, 9}),
+              std::string("declared size 9 does not match file size 8"));
+    EXPECT_EQ(messageOf({'i', 'c', 'n', 's', 0, 0, 0, 16, 'i', 'c', '0', '7', 0, 0, 0, 99}),
+              std::string("entry 'ic07' overruns the file"));
+    EXPECT_EQ(messageOf({'i', 'c', 'n', 's', 0, 0, 0, 8}), std::string("contains no icon entries"));
+}
+
+TEST(Icon, DefaultToolchainIconIsNative1024) {
+    const PkgImage icon = defaultZannaToolchainIconImage();
+    ASSERT_EQ(icon.width, static_cast<uint32_t>(1024));
+    ASSERT_EQ(icon.height, static_cast<uint32_t>(1024));
+    EXPECT_EQ(icon.at(0, 0)[3], 0);
+    EXPECT_EQ(icon.at(1023, 0)[3], 0);
+    EXPECT_EQ(icon.at(0, 1023)[3], 0);
+    EXPECT_EQ(icon.at(1023, 1023)[3], 0);
+    EXPECT_EQ(icon.at(512, 0)[3], 255);
+    EXPECT_EQ(icon.at(0, 512)[3], 255);
+    EXPECT_EQ(icon.at(512, 512)[3], 255);
+}
+
+TEST(PNG, EncodeFilteredRoundTrips) {
+    const PkgImage src = makeTestImage(256, 64, [](uint32_t x, uint32_t y) {
+        return std::array<uint8_t, 4>{static_cast<uint8_t>(x),
+                                      static_cast<uint8_t>(y * 3),
+                                      static_cast<uint8_t>((x + y) & 0xFF),
+                                      static_cast<uint8_t>(255 - (y & 0x3F))};
+    });
+    const auto png = pngEncode(src);
+    const PkgImage back = pngReadMemory(png.data(), png.size());
+    EXPECT_TRUE(back.pixels == src.pixels);
+
+    const size_t stride = static_cast<size_t>(src.width) * 4;
+    std::vector<uint8_t> unfiltered;
+    for (uint32_t y = 0; y < src.height; ++y) {
+        unfiltered.push_back(0);
+        unfiltered.insert(unfiltered.end(),
+                          src.pixels.begin() + static_cast<std::ptrdiff_t>(y * stride),
+                          src.pixels.begin() + static_cast<std::ptrdiff_t>((y + 1) * stride));
+    }
+    EXPECT_LT(png.size(), deflate(unfiltered.data(), unfiltered.size()).size());
+}
+
 TEST(PNG, RejectsBadChunkCrc) {
     PkgImage img;
     img.width = 1;
@@ -4190,7 +4515,7 @@ TEST(WindowsPackageBuilder, BuildsInstallerWithCompressedPayloadOverlay) {
     pkg.author = "Zanna";
     pkg.shortcutDesktop = true;
     pkg.shortcutMenu = true;
-    pkg.iconPath = "icon.png";
+    pkg.iconPaths = {"icon.png"};
     pkg.assets.push_back({"assets", "data"});
     pkg.fileAssociations.push_back({".zia", "Zia Source", "text/x-zia", ""});
 
@@ -4340,7 +4665,7 @@ TEST(AppImage, BuildsVerifiableApplicationImage) {
     PackageConfig pkg;
     pkg.displayName = "Space Game";
     pkg.description = "A test game";
-    pkg.iconPath = "icon.png";
+    pkg.iconPaths = {"icon.png"};
     pkg.assets.push_back({"assets", "data"});
 
     const fs::path outPath = tmpRoot / "SpaceGame-x86_64.AppImage";
@@ -4825,6 +5150,202 @@ TEST(MacOSAppDmg, BuildsVerifiableDiskImage) {
     EXPECT_EQ(dmg[n - 509], static_cast<uint8_t>('y'));
 
     fs::remove_all(tmpRoot);
+#endif
+}
+
+TEST(MacOSVolumeIcon, RejectsUnsupportedFiles) {
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot = fs::temp_directory_path() / "zanna_packaging_volume_icon_formats";
+    fs::remove_all(tmpRoot);
+    fs::create_directories(tmpRoot);
+    const auto write = [&](const std::string &name, const std::vector<uint8_t> &bytes) {
+        std::ofstream out(tmpRoot / name, std::ios::binary);
+        out.write(reinterpret_cast<const char *>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        return tmpRoot / name;
+    };
+    const auto messageOf = [](const std::function<void()> &fn) -> std::string {
+        try {
+            fn();
+        } catch (const std::exception &ex) {
+            return ex.what();
+        }
+        return "";
+    };
+    const fs::path jpeg = write("icon.jpg", {0xFF, 0xD8, 0xFF});
+    const fs::path badIcns = write("icon.icns", {'n', 'o', 'p', 'e', 0, 0, 0, 8});
+    const fs::path png = write("icon.png", pngEncode(makeTestImage(64, 64, [](uint32_t, uint32_t) {
+                                   return std::array<uint8_t, 4>{9, 8, 7, 255};
+                               })));
+    EXPECT_EQ(messageOf([&] { (void)loadMacOSVolumeIcon(jpeg, "icon.jpg", "macos-dmg-icon"); }),
+              std::string("macos-dmg-icon 'icon.jpg' must be a .icns or .png file"));
+    EXPECT_EQ(
+        messageOf([&] { validateMacOSVolumeIcon(badIcns, "icon.icns", "macos-dmg-icon"); }),
+        std::string("macos-dmg-icon 'icon.icns' is not a valid ICNS file: missing 'icns' magic"));
+    const auto icns = loadMacOSVolumeIcon(png, "icon.png", "macos-dmg-icon");
+    EXPECT_NO_THROW(validateIcns(icns));
+    fs::remove_all(tmpRoot);
+}
+
+#if ZANNA_HOST_MACOS
+/// @brief What a finished DMG holds for its volume icon.
+struct DmgVolumeIconProbe {
+    bool mounted = false;        ///< The image attached read-only.
+    std::vector<uint8_t> icon;   ///< `.VolumeIcon.icns` bytes; empty when absent.
+    uint16_t rootFlags = 0;      ///< Big-endian Finder flags of the volume root.
+    std::vector<uint8_t> inside; ///< Optional file read from inside the image.
+};
+
+/// @brief Mount a finished DMG where Finder cannot see it and read its volume icon.
+static DmgVolumeIconProbe probeDmgVolumeIcon(const std::filesystem::path &dmg,
+                                             const std::filesystem::path &scratch,
+                                             const std::string &insideFile = "") {
+    namespace fs = std::filesystem;
+    DmgVolumeIconProbe probe;
+    const fs::path mount = scratch / "probe-mount";
+    fs::create_directories(mount);
+    const RunResult attach = run_process({"hdiutil",
+                                          "attach",
+                                          "-readonly",
+                                          "-nobrowse",
+                                          "-noautoopen",
+                                          "-mountpoint",
+                                          mount.string(),
+                                          dmg.string()});
+    if (attach.exit_code != 0)
+        return probe;
+    probe.mounted = true;
+    std::error_code ec;
+    if (fs::is_regular_file(mount / ".VolumeIcon.icns", ec))
+        probe.icon = readFile(mount / ".VolumeIcon.icns");
+    if (!insideFile.empty() && fs::is_regular_file(mount / insideFile, ec))
+        probe.inside = readFile(mount / insideFile);
+    uint8_t info[32] = {};
+    if (getxattr(mount.c_str(), "com.apple.FinderInfo", info, sizeof(info), 0, 0) == 32)
+        probe.rootFlags = static_cast<uint16_t>((info[8] << 8) | info[9]);
+    (void)run_process({"hdiutil", "detach", "-force", mount.string()});
+    return probe;
+}
+
+/// @brief Create a minimal app project: a Mach-O stand-in and three square PNGs.
+static void prepareVolumeIconTestProject(const std::filesystem::path &root) {
+    namespace fs = std::filesystem;
+    fs::remove_all(root);
+    fs::create_directories(root);
+    std::vector<uint8_t> macho(256, 0);
+    macho[0] = 0xCF;
+    macho[1] = 0xFA;
+    macho[2] = 0xED;
+    macho[3] = 0xFE; // MH_MAGIC_64 (little-endian)
+    {
+        std::ofstream exe(root / "game", std::ios::binary);
+        exe.write(reinterpret_cast<const char *>(macho.data()),
+                  static_cast<std::streamsize>(macho.size()));
+    }
+    const auto writePng = [&](const std::string &name, uint32_t size, uint8_t tint) {
+        const auto png = pngEncode(makeTestImage(size, size, [tint](uint32_t x, uint32_t y) {
+            return std::array<uint8_t, 4>{
+                tint, static_cast<uint8_t>(x), static_cast<uint8_t>(y), 255};
+        }));
+        std::ofstream out(root / name, std::ios::binary);
+        out.write(reinterpret_cast<const char *>(png.data()),
+                  static_cast<std::streamsize>(png.size()));
+    };
+    writePng("icon-64.png", 64, 200);
+    writePng("icon-128.png", 128, 180);
+    writePng("volume.png", 128, 40);
+}
+
+/// @brief Build an unsigned app DMG from a prepared project.
+static std::filesystem::path buildVolumeIconTestDmg(const std::filesystem::path &root,
+                                                    PackageConfig pkg) {
+    pkg.displayName = "Icon Game";
+    pkg.identifier = "com.example.icongame";
+    pkg.macosSignMode = "none";
+    MacOSBuildParams params;
+    params.projectName = "icongame";
+    params.version = "1.0.0";
+    params.executablePath = (root / "game").string();
+    params.projectRoot = root.string();
+    params.pkgConfig = pkg;
+    params.outputPath = (root / "IconGame.dmg").string();
+    buildMacOSAppDmg(params);
+    return params.outputPath;
+}
+#endif
+
+TEST(MacOSAppDmg, InstallsVolumeIcon) {
+#if !ZANNA_HOST_MACOS
+    // hdiutil is macOS-only; nothing to build or verify on other hosts.
+    return;
+#else
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "zanna_packaging_dmg_volume_icon";
+
+    // A PNG volume icon is converted to ICNS, installed, and flagged.
+    prepareVolumeIconTestProject(root);
+    std::vector<IconSource> sources;
+    sources.push_back(
+        makeIconSource(readFile(root / "volume.png"), "volume.png", "macos-dmg-icon"));
+    const auto expected = generateIcns(makeIconSourceSet(sources, "macos-dmg-icon"));
+    PackageConfig pngIcon;
+    pngIcon.macosDmgIcon = "volume.png";
+    const DmgVolumeIconProbe fromPng =
+        probeDmgVolumeIcon(buildVolumeIconTestDmg(root, pngIcon), root);
+    ASSERT_TRUE(fromPng.mounted);
+    EXPECT_TRUE(fromPng.icon == expected);
+    EXPECT_EQ(fromPng.rootFlags & 0x0400, 0x0400);
+
+    // A ready-made ICNS is installed byte for byte.
+    prepareVolumeIconTestProject(root);
+    {
+        std::ofstream out(root / "volume.icns", std::ios::binary);
+        out.write(reinterpret_cast<const char *>(expected.data()),
+                  static_cast<std::streamsize>(expected.size()));
+    }
+    PackageConfig icnsIcon;
+    icnsIcon.macosDmgIcon = "volume.icns";
+    const DmgVolumeIconProbe fromIcns =
+        probeDmgVolumeIcon(buildVolumeIconTestDmg(root, icnsIcon), root);
+    ASSERT_TRUE(fromIcns.mounted);
+    EXPECT_TRUE(fromIcns.icon == expected);
+    EXPECT_EQ(fromIcns.rootFlags & 0x0400, 0x0400);
+    fs::remove_all(root);
+#endif
+}
+
+TEST(MacOSAppDmg, DefaultsVolumeIconToPackageIcon) {
+#if !ZANNA_HOST_MACOS
+    return;
+#else
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "zanna_packaging_dmg_default_icon";
+    prepareVolumeIconTestProject(root);
+    PackageConfig pkg;
+    pkg.iconPaths = {"icon-128.png", "icon-64.png"};
+    const DmgVolumeIconProbe probe = probeDmgVolumeIcon(
+        buildVolumeIconTestDmg(root, pkg), root, "Icon Game.app/Contents/Resources/icongame.icns");
+    ASSERT_TRUE(probe.mounted);
+    ASSERT_FALSE(probe.inside.empty());
+    EXPECT_TRUE(probe.icon == probe.inside);
+    EXPECT_EQ(probe.rootFlags & 0x0400, 0x0400);
+    fs::remove_all(root);
+#endif
+}
+
+TEST(MacOSAppDmg, OmitsVolumeIconWithoutAnyIcon) {
+#if !ZANNA_HOST_MACOS
+    return;
+#else
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "zanna_packaging_dmg_no_icon";
+    prepareVolumeIconTestProject(root);
+    const DmgVolumeIconProbe probe =
+        probeDmgVolumeIcon(buildVolumeIconTestDmg(root, PackageConfig{}), root);
+    ASSERT_TRUE(probe.mounted);
+    EXPECT_TRUE(probe.icon.empty());
+    EXPECT_EQ(probe.rootFlags & 0x0400, 0);
+    fs::remove_all(root);
 #endif
 }
 
@@ -6247,6 +6768,11 @@ TEST(MacOSToolchainDmgBuilder, WrapsPkgIntoValidUdifImage) {
     const size_t off = bytes.size() - 512;
     EXPECT_TRUE(bytes[off] == 'k' && bytes[off + 1] == 'o' && bytes[off + 2] == 'l' &&
                 bytes[off + 3] == 'y');
+    // The generated Zanna mark is the volume icon, and survives Finder styling.
+    const DmgVolumeIconProbe probe = probeDmgVolumeIcon(params.outputPath, tmpRoot);
+    ASSERT_TRUE(probe.mounted);
+    EXPECT_TRUE(probe.icon == generateIcns(defaultZannaToolchainIconImage()));
+    EXPECT_EQ(probe.rootFlags & 0x0400, 0x0400);
     fs::remove_all(tmpRoot);
 }
 #endif

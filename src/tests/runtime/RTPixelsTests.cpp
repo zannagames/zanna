@@ -2033,7 +2033,7 @@ static void test_resize_alpha_aware_preserves_edge_color() {
     printf("test_resize_alpha_aware_preserves_edge_color: PASSED\n");
 }
 
-static void test_resize_preserves_source_endpoints() {
+static void test_resize_two_to_one_area_averages() {
     void *p = rt_pixels_new(4, 1);
     rt_pixels_set(p, 0, 0, pack_rgba(10, 0, 0, 255));
     rt_pixels_set(p, 1, 0, pack_rgba(80, 0, 0, 255));
@@ -2042,9 +2042,43 @@ static void test_resize_preserves_source_endpoints() {
 
     void *resized = rt_pixels_resize(p, 2, 1);
     assert(resized != nullptr);
-    assert(rt_pixels_get(resized, 0, 0) == pack_rgba(10, 0, 0, 255));
-    assert(rt_pixels_get(resized, 1, 0) == pack_rgba(250, 0, 0, 255));
-    printf("test_resize_preserves_source_endpoints: PASSED\n");
+    assert(rt_pixels_get(resized, 0, 0) == pack_rgba(45, 0, 0, 255));
+    assert(rt_pixels_get(resized, 1, 0) == pack_rgba(205, 0, 0, 255));
+    printf("test_resize_two_to_one_area_averages: PASSED\n");
+}
+
+static void test_resize_mild_shrink_uses_coverage() {
+    void *p = rt_pixels_new(3, 1);
+    rt_pixels_set_rgba(p, 0, 0, pack_rgba(0, 0, 0, 255));
+    rt_pixels_set_rgba(p, 1, 0, pack_rgba(100, 0, 0, 255));
+    rt_pixels_set_rgba(p, 2, 0, pack_rgba(200, 0, 0, 255));
+
+    // Output 0 covers pixel 0 and half of pixel 1; output 1 the other half and pixel 2.
+    void *resized = rt_pixels_resize(p, 2, 1);
+    assert(resized != nullptr);
+    assert(channel_r(rt_pixels_get(resized, 0, 0)) == 33);
+    assert(channel_r(rt_pixels_get(resized, 1, 0)) == 167);
+    printf("test_resize_mild_shrink_uses_coverage: PASSED\n");
+}
+
+static void test_resize_checkerboard_two_to_one_is_gray() {
+    void *p = rt_pixels_new(16, 16);
+    for (int64_t y = 0; y < 16; y++) {
+        for (int64_t x = 0; x < 16; x++) {
+            const int v = ((x + y) % 2 == 0) ? 0 : 255;
+            rt_pixels_set_rgba(p, x, y, pack_rgba(v, v, v, 255));
+        }
+    }
+    void *resized = rt_pixels_resize(p, 8, 8);
+    assert(resized != nullptr);
+    for (int64_t y = 0; y < 8; y++) {
+        for (int64_t x = 0; x < 8; x++) {
+            const int64_t rgba = rt_pixels_get(resized, x, y);
+            assert(channel_r(rgba) >= 127 && channel_r(rgba) <= 128);
+            assert(channel_a(rgba) == 255);
+        }
+    }
+    printf("test_resize_checkerboard_two_to_one_is_gray: PASSED\n");
 }
 
 static void test_resize_odd_ratio_uses_rounded_area_filter() {
@@ -2055,9 +2089,11 @@ static void test_resize_odd_ratio_uses_rounded_area_filter() {
     rt_pixels_set_rgba(p, 3, 0, pack_rgba(1, 0, 0, 255));
     rt_pixels_set_rgba(p, 4, 0, pack_rgba(1, 0, 0, 255));
 
+    // Exact coverage: output 0 covers pixels 0-1 and half of pixel 2 ((0+100+0)/2.5 = 40);
+    // output 1 covers the rest of pixel 2 and pixels 3-4 ((0+1+1)/2.5 = 0.8, rounds to 1).
     void *resized = rt_pixels_resize(p, 2, 1);
     assert(resized != nullptr);
-    assert(channel_r(rt_pixels_get(resized, 0, 0)) == 50);
+    assert(channel_r(rt_pixels_get(resized, 0, 0)) == 40);
     assert(channel_r(rt_pixels_get(resized, 1, 0)) == 1);
     printf("test_resize_odd_ratio_uses_rounded_area_filter: PASSED\n");
 }
@@ -2658,7 +2694,9 @@ int main() {
     test_opaque_blur_reuses_alpha_classification();
     test_resize_rgba_channel_order();
     test_resize_alpha_aware_preserves_edge_color();
-    test_resize_preserves_source_endpoints();
+    test_resize_two_to_one_area_averages();
+    test_resize_mild_shrink_uses_coverage();
+    test_resize_checkerboard_two_to_one_is_gray();
     test_resize_odd_ratio_uses_rounded_area_filter();
     test_resize_hybrid_preserves_upscaled_axis_interpolation();
     test_alpha_preserving_transforms_reuse_classification();

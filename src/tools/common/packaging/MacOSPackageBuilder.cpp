@@ -13,7 +13,11 @@
 //   - .app/Contents/MacOS/<name> has mode 0100755.
 //   - All other regular files have 0100644.
 //   - Directories have 040755.
-//   - ICNS icon generated from source PNG with multiple resolutions.
+//   - ICNS icon generated from the package-icon source set.
+//   - A DMG volume icon is written last, on a mount Finder cannot see, after
+//     code signing: a Finder styling session deletes .VolumeIcon.icns, and
+//     codesign fails on a bundle whose volume root holds one. The finished
+//     image is re-mounted and must contain the icon and the custom-icon flag.
 //
 // Ownership/Lifetime:
 //   - Single-use builder, writes output ZIP file.
@@ -42,12 +46,21 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <thread>
+
+#if ZANNA_HOST_MACOS
+#include <sys/xattr.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -385,7 +398,8 @@ std::string validateDmgItemName(std::string name, const char *fieldName) {
 /// @brief Run optional Finder styling and surface failures without invalidating the image.
 /// @param args Executable and argument vector.
 /// @param what Human-readable styling operation printed with warnings.
-void runBestEffortMacOSStyling(const std::vector<std::string> &args, const std::string &what) {
+/// @return True when the command succeeded.
+bool runBestEffortMacOSStyling(const std::vector<std::string> &args, const std::string &what) {
     const RunResult result = run_process(args);
     if (result.exit_code != 0) {
         std::cerr << "warning: " << what << " was skipped (exit " << result.exit_code << ")";
@@ -395,20 +409,114 @@ void runBestEffortMacOSStyling(const std::vector<std::string> &args, const std::
             std::cerr << "\n";
         if (!result.err.empty() && result.err.back() != '\n')
             std::cerr << "\n";
+        return false;
     }
+    return true;
 }
 
+/// @brief Finder flag marking a file, folder, or volume root as having a custom icon.
+constexpr uint16_t kFinderHasCustomIcon = 0x0400;
+
+/// @brief Byte offset of the big-endian Finder flags inside the 32-byte Finder info.
+constexpr size_t kFinderFlagsOffset = 8;
+
+/// @brief Read the 32-byte `com.apple.FinderInfo` of a file or directory.
+/// @param path Existing file or directory.
+/// @return The Finder info; all zeros when the path has none.
+/// @throws std::runtime_error If the attribute cannot be read or is malformed.
+std::array<uint8_t, 32> readFinderInfo(const fs::path &path) {
+    std::array<uint8_t, 32> info{};
+#if ZANNA_HOST_MACOS
+    const ssize_t length =
+        getxattr(path.c_str(), XATTR_FINDERINFO_NAME, info.data(), info.size(), 0, 0);
+    if (length < 0) {
+        if (errno == ENOATTR)
+            return {};
+        throw std::runtime_error("cannot read Finder info of " + path.string() + ": " +
+                                 std::strerror(errno));
+    }
+    if (static_cast<size_t>(length) != info.size())
+        throw std::runtime_error("unexpected Finder info size on " + path.string());
+#else
+    (void)path;
+#endif
+    return info;
+}
+
+/// @brief Replace the 32-byte `com.apple.FinderInfo` of a file or directory.
+/// @param path Existing file or directory on a writable volume.
+/// @param info New Finder info.
+/// @throws std::runtime_error If the attribute cannot be written, or off macOS.
+void writeFinderInfo(const fs::path &path, const std::array<uint8_t, 32> &info) {
+#if ZANNA_HOST_MACOS
+    if (setxattr(path.c_str(), XATTR_FINDERINFO_NAME, info.data(), info.size(), 0, 0) != 0)
+        throw std::runtime_error(std::string("macOS .dmg volume icon could not be installed: ") +
+                                 std::strerror(errno));
+#else
+    (void)path;
+    (void)info;
+    throw std::runtime_error("macOS .dmg volume icons require a macOS host");
+#endif
+}
+
+/// @brief Read the big-endian Finder flags from Finder info.
+/// @param info 32-byte Finder info.
+/// @return The flags word.
+uint16_t finderFlags(const std::array<uint8_t, 32> &info) {
+    return static_cast<uint16_t>((info[kFinderFlagsOffset] << 8) | info[kFinderFlagsOffset + 1]);
+}
+
+/// @brief Mark a volume root as carrying the custom icon in its `.VolumeIcon.icns`.
+/// @details Writes the icon file, gives it the `icns` type and `icnC` creator the
+///          classic tools use, and ORs kHasCustomIcon into the root's Finder flags
+///          while preserving the rest of the root's Finder info. This replaces
+///          `SetFile`, which needs the Xcode command-line tools.
+/// @param mountPoint Mounted, writable volume root.
+/// @param icns Complete ICNS bytes.
+/// @throws std::runtime_error If writing the file or either Finder info fails.
+void installDmgVolumeIcon(const fs::path &mountPoint, const std::vector<uint8_t> &icns) {
+    const fs::path iconPath = mountPoint / ".VolumeIcon.icns";
+    try {
+        writeFileBytes(iconPath,
+                       icns,
+                       fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
+                           fs::perms::others_read);
+    } catch (const std::exception &ex) {
+        throw std::runtime_error(std::string("macOS .dmg volume icon could not be installed: ") +
+                                 ex.what());
+    }
+    std::array<uint8_t, 32> iconInfo = readFinderInfo(iconPath);
+    std::memcpy(iconInfo.data(), "icns", 4);
+    std::memcpy(iconInfo.data() + 4, "icnC", 4);
+    writeFinderInfo(iconPath, iconInfo);
+
+    std::array<uint8_t, 32> rootInfo = readFinderInfo(mountPoint);
+    const uint16_t flags = finderFlags(rootInfo) | kFinderHasCustomIcon;
+    rootInfo[kFinderFlagsOffset] = static_cast<uint8_t>(flags >> 8);
+    rootInfo[kFinderFlagsOffset + 1] = static_cast<uint8_t>(flags & 0xFF);
+    writeFinderInfo(mountPoint, rootInfo);
+    if ((finderFlags(readFinderInfo(mountPoint)) & kFinderHasCustomIcon) == 0)
+        throw std::runtime_error(
+            "macOS .dmg volume icon could not be installed: the volume kept no custom-icon flag");
+}
+
+/// @brief Root contents a finished DMG must contain.
+struct DmgExpectations {
+    std::vector<std::string> regularFiles; ///< Non-empty regular-file leaf names.
+    std::vector<std::string> directories;  ///< Directory leaf names.
+    std::vector<std::string> symlinks;     ///< Symbolic-link leaf names.
+    std::vector<uint8_t> volumeIcon;       ///< Expected `.VolumeIcon.icns` bytes; empty for none.
+};
+
 /// @brief Mount a completed DMG read-only and verify its expected root items.
+/// @details When a volume icon is expected, `.VolumeIcon.icns` must hold exactly those
+///          bytes and the volume root must carry the custom-icon Finder flag.
 /// @param dmgPath Completed disk image to inspect.
-/// @param regularFiles Expected non-empty regular-file leaf names.
-/// @param directories Expected directory leaf names.
-/// @param symlinks Expected symbolic-link leaf names.
+/// @param expect Root items, and the volume icon, the image must contain.
 /// @param what Human-readable operation name used in diagnostics.
 /// @throws std::runtime_error If mounting, content validation, or detachment fails.
 void verifyMountedMacOSDmgContents(const fs::path &dmgPath,
-                                   const std::vector<std::string> &regularFiles,
-                                   const std::vector<std::string> &directories,
-                                   const std::vector<std::string> &symlinks,
+                                   const DmgExpectations &expect,
                                    const std::string &what) {
     const fs::path tmpRoot = uniqueTempPackagingDir("zanna-dmg-verify");
     TempDirGuard cleanup(tmpRoot);
@@ -426,7 +534,7 @@ void verifyMountedMacOSDmgContents(const fs::path &dmgPath,
 
     std::string contentError;
     std::error_code ec;
-    for (const std::string &name : regularFiles) {
+    for (const std::string &name : expect.regularFiles) {
         const fs::path path = mountPoint / validateDmgItemName(name, "DMG expected filename");
         if (!fs::is_regular_file(path, ec) || ec) {
             contentError = "missing expected regular file '" + name + "'";
@@ -438,7 +546,7 @@ void verifyMountedMacOSDmgContents(const fs::path &dmgPath,
         }
     }
     if (contentError.empty()) {
-        for (const std::string &name : directories) {
+        for (const std::string &name : expect.directories) {
             const fs::path path = mountPoint / validateDmgItemName(name, "DMG expected directory");
             if (!fs::is_directory(path, ec) || ec) {
                 contentError = "missing expected directory '" + name + "'";
@@ -447,11 +555,26 @@ void verifyMountedMacOSDmgContents(const fs::path &dmgPath,
         }
     }
     if (contentError.empty()) {
-        for (const std::string &name : symlinks) {
+        for (const std::string &name : expect.symlinks) {
             const fs::path path = mountPoint / validateDmgItemName(name, "DMG expected symlink");
             if (!fs::is_symlink(fs::symlink_status(path, ec)) || ec) {
                 contentError = "missing expected symlink '" + name + "'";
                 break;
+            }
+        }
+    }
+    if (contentError.empty() && !expect.volumeIcon.empty()) {
+        const fs::path iconPath = mountPoint / ".VolumeIcon.icns";
+        if (!fs::is_regular_file(iconPath, ec) || ec) {
+            contentError = "missing volume icon '.VolumeIcon.icns'";
+        } else {
+            try {
+                if (readFile(iconPath) != expect.volumeIcon)
+                    contentError = "volume icon bytes differ from the requested icon";
+                else if ((finderFlags(readFinderInfo(mountPoint)) & kFinderHasCustomIcon) == 0)
+                    contentError = "volume root is missing the custom-icon flag";
+            } catch (const std::exception &ex) {
+                contentError = ex.what();
             }
         }
     }
@@ -462,6 +585,133 @@ void verifyMountedMacOSDmgContents(const fs::path &dmgPath,
     }
     if (!contentError.empty())
         throw std::runtime_error(what + " mounted-content verification failed: " + contentError);
+}
+
+/// @brief Detach a mounted disk image, retrying once with `-force` if it is busy.
+/// @param mountPoint Mounted volume path.
+/// @param what Human-readable operation name used in failures.
+/// @throws std::runtime_error If the forced retry also fails.
+void detachMacOSDmg(const fs::path &mountPoint, const std::string &what) {
+    if (run_process({"hdiutil", "detach", mountPoint.string()}).exit_code != 0)
+        runChecked({"hdiutil", "detach", "-force", mountPoint.string()}, what + " detach");
+}
+
+/// @brief Detaches a mounted disk image on scope exit unless detach() already succeeded.
+class DmgMountGuard {
+  public:
+    /// @brief Take responsibility for detaching @p mountPoint.
+    /// @param mountPoint Mounted volume path.
+    /// @param what Human-readable operation name used in failures.
+    DmgMountGuard(fs::path mountPoint, std::string what)
+        : mountPoint_(std::move(mountPoint)), what_(std::move(what)) {}
+
+    DmgMountGuard(const DmgMountGuard &) = delete;
+    DmgMountGuard &operator=(const DmgMountGuard &) = delete;
+
+    /// @brief Force-detach a volume that an error path left mounted.
+    ~DmgMountGuard() {
+        if (!detached_)
+            (void)run_process({"hdiutil", "detach", "-force", mountPoint_.string()});
+    }
+
+    /// @brief Detach now, reporting failure.
+    /// @throws std::runtime_error If the volume cannot be detached.
+    void detach() {
+        detachMacOSDmg(mountPoint_, what_);
+        detached_ = true;
+    }
+
+  private:
+    fs::path mountPoint_;
+    std::string what_;
+    bool detached_ = false;
+};
+
+/// @brief Wait up to five seconds for Finder to save a styled window's `.DS_Store`.
+/// @param mountPoint Mounted volume Finder just styled.
+/// @return True once the layout file exists.
+bool waitForFinderLayout(const fs::path &mountPoint) {
+    std::error_code ec;
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        if (fs::exists(mountPoint / ".DS_Store", ec))
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return fs::exists(mountPoint / ".DS_Store", ec);
+}
+
+/// @brief Style, finish, compress, and checksum a staged read-write disk image.
+/// @details Phase A attaches the image where Finder can see it and runs the
+///          styling AppleScript (best effort, so headless builds still succeed).
+///          Phase B re-attaches it where Finder cannot see it, runs @p finish
+///          (for example code signing), and only then writes the volume icon:
+///          a Finder styling session deletes `.VolumeIcon.icns`, and codesign
+///          fails on a bundle whose volume root holds one. The image is then
+///          compressed to UDZO and checked with `hdiutil verify`.
+/// @param tmpRoot Private scratch directory for the hidden mount point.
+/// @param rwDmg Read-write image created from the staged contents.
+/// @param styleScript Builds the AppleScript for the Finder disk name it is given.
+/// @param finish Work done on the hidden mount before the icon; may be empty.
+/// @param volumeIcon ICNS bytes for the volume icon; empty for none.
+/// @param outputPath Final compressed image path.
+/// @param what Human-readable image kind used in messages, e.g. "macOS app .dmg".
+/// @throws std::runtime_error If attaching, finishing, the icon, detaching,
+///         compression, or verification fails.
+void finishStyledMacOSDmg(const fs::path &tmpRoot,
+                          const fs::path &rwDmg,
+                          const std::function<std::string(const std::string &)> &styleScript,
+                          const std::function<void(const fs::path &)> &finish,
+                          const std::vector<uint8_t> &volumeIcon,
+                          const std::string &outputPath,
+                          const std::string &what) {
+    {
+        const fs::path mountPoint =
+            attachMacOSDmgForStyling(rwDmg, what + " Finder-visible attach");
+        DmgMountGuard guard(mountPoint, what);
+        const bool styled = runBestEffortMacOSStyling(
+            {"osascript", "-e", styleScript(mountPoint.filename().string())},
+            what + " Finder styling");
+        if (styled && !waitForFinderLayout(mountPoint))
+            std::cerr << "warning: Finder did not save the DMG window layout within 5 s; the "
+                         "disk will open with default Finder settings\n";
+        runChecked({"sync"}, what + " filesystem flush");
+        guard.detach();
+    }
+    {
+        const fs::path mountPoint = tmpRoot / "finish";
+        fs::create_directories(mountPoint);
+        runChecked({"hdiutil",
+                    "attach",
+                    rwDmg.string(),
+                    "-nobrowse",
+                    "-noautoopen",
+                    "-noverify",
+                    "-mountpoint",
+                    mountPoint.string()},
+                   what + " hidden attach");
+        DmgMountGuard guard(mountPoint, what);
+        if (finish)
+            finish(mountPoint);
+        if (!volumeIcon.empty())
+            installDmgVolumeIcon(mountPoint, volumeIcon);
+        runChecked({"sync"}, what + " filesystem flush");
+        guard.detach();
+    }
+
+    std::error_code ec;
+    fs::remove(outputPath, ec);
+    runChecked({"hdiutil",
+                "convert",
+                rwDmg.string(),
+                "-format",
+                "UDZO",
+                "-imagekey",
+                "zlib-level=9",
+                "-ov",
+                "-o",
+                outputPath},
+               what + " compression");
+    runChecked({"hdiutil", "verify", outputPath}, what + " verification");
 }
 
 /// @brief Return true when a regular file begins with a supported Mach-O magic value.
@@ -1679,7 +1929,65 @@ void signMacOSNestedCode(const fs::path &file, const PackageConfig &pkg) {
 #endif
 }
 
+/// @brief Read and check a DMG volume icon, optionally converting a PNG to ICNS.
+/// @param path Resolved icon path.
+/// @param label Path as the user wrote it, used in diagnostics.
+/// @param fieldName Setting name used in diagnostics.
+/// @param convert When false, a PNG is only validated and no ICNS is produced.
+/// @return ICNS bytes, or an empty vector for a validated PNG when @p convert is false.
+/// @throws std::runtime_error On an unsupported extension, malformed ICNS, or invalid PNG.
+std::vector<uint8_t> checkedMacOSVolumeIcon(const fs::path &path,
+                                            const std::string &label,
+                                            const char *fieldName,
+                                            bool convert) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (extension == ".icns") {
+        std::vector<uint8_t> bytes = readFile(path);
+        try {
+            validateIcns(bytes);
+        } catch (const std::exception &ex) {
+            throw std::runtime_error(std::string(fieldName) + " '" + label +
+                                     "' is not a valid ICNS file: " + ex.what());
+        }
+        return bytes;
+    }
+    if (extension == ".png") {
+        std::vector<IconSource> sources;
+        sources.push_back(makeIconSource(readFile(path), label, fieldName));
+        const IconSourceSet set = makeIconSourceSet(std::move(sources), fieldName);
+        return convert ? generateIcns(set) : std::vector<uint8_t>{};
+    }
+    throw std::runtime_error(std::string(fieldName) + " '" + label +
+                             "' must be a .icns or .png file");
+}
+
 } // namespace
+
+/// @brief Load a DMG volume icon as ICNS bytes.
+/// @param path Resolved icon path.
+/// @param label Path as the user wrote it, used in diagnostics.
+/// @param fieldName Setting name used in diagnostics.
+/// @return The validated ICNS file, or the ICNS generated from a PNG.
+/// @throws std::runtime_error On an unsupported extension, malformed ICNS, or invalid PNG.
+std::vector<uint8_t> loadMacOSVolumeIcon(const fs::path &path,
+                                         const std::string &label,
+                                         const char *fieldName) {
+    return checkedMacOSVolumeIcon(path, label, fieldName, true);
+}
+
+/// @brief Validate a DMG volume icon without generating ICNS data.
+/// @param path Resolved icon path.
+/// @param label Path as the user wrote it, used in diagnostics.
+/// @param fieldName Setting name used in diagnostics.
+/// @throws std::runtime_error On an unsupported extension, malformed ICNS, or invalid PNG.
+void validateMacOSVolumeIcon(const fs::path &path,
+                             const std::string &label,
+                             const char *fieldName) {
+    (void)checkedMacOSVolumeIcon(path, label, fieldName, false);
+}
 
 //=============================================================================
 // MacOS Package Builder
@@ -1687,8 +1995,9 @@ void signMacOSNestedCode(const fs::path &file, const PackageConfig &pkg) {
 
 /// @brief Result of staging a macOS .app bundle on disk.
 struct StagedMacOSApp {
-    fs::path appPath;    ///< Absolute path to the staged <name>.app bundle.
-    fs::path stagedExec; ///< Absolute path to the bundle's Contents/MacOS/<exe>.
+    fs::path appPath;          ///< Absolute path to the staged <name>.app bundle.
+    fs::path stagedExec;       ///< Absolute path to the bundle's Contents/MacOS/<exe>.
+    std::vector<uint8_t> icns; ///< The bundle's generated ICNS; empty without package-icon.
 };
 
 /// @brief Stage a macOS .app bundle into @p stageRoot and optionally code-sign it.
@@ -1743,13 +2052,15 @@ static StagedMacOSApp stageMacOSAppBundle(const MacOSBuildParams &params,
                        fs::perms::others_exec);
 
     std::string iconFileName;
-    if (!pkg.iconPath.empty()) {
-        fs::path iconSrc =
-            resolvePackageSourcePath(params.projectRoot, pkg.iconPath, "package icon");
-        if (!fs::is_regular_file(iconSrc))
-            throw std::runtime_error("package icon not found: " + pkg.iconPath);
-        auto srcImage = pngRead(iconSrc.string());
-        auto icnsData = generateIcns(srcImage);
+    std::vector<uint8_t> icnsData;
+    if (!pkg.iconPaths.empty()) {
+        const IconSourceSet icons =
+            loadIconSources(params.projectRoot, pkg.iconPaths, "package-icon");
+        if (icons.largestSize() < 1024) {
+            std::cerr << "warning: largest package-icon is " << icons.largestSize() << "x"
+                      << icons.largestSize() << "; icon slots up to 1024x1024 will be upscaled\n";
+        }
+        icnsData = generateIcns(icons);
         iconFileName = execName;
         writeFileBytes(resourcesDir / (execName + ".icns"),
                        icnsData,
@@ -1797,22 +2108,23 @@ static StagedMacOSApp stageMacOSAppBundle(const MacOSBuildParams &params,
 
     if (signBundle)
         signMacOSBundle(stageRoot, appPath, stagedExec, params.projectRoot, pkg);
-    return {appPath, stagedExec};
+    return {appPath, stagedExec, std::move(icnsData)};
 }
 
 /// @brief Wrap a staged .app bundle in a compressed drag-to-install .dmg.
 /// @details Stages the app, an `/Applications` symlink, and optional visual
-///          assets from package metadata. The image is created read-write,
-///          styled best-effort through Finder when a macOS desktop session is
-///          available, then compressed to the final UDZO output. If styling
-///          commands fail in headless CI, the package remains valid.
+///          assets from package metadata, then hands the read-write image to
+///          finishStyledMacOSDmg(): Finder styling runs best-effort on a visible
+///          mount, and the bundle is signed and the volume icon written on a
+///          hidden one. The volume icon is `macos-dmg-icon` when set, else the
+///          app's own icon. The finished image is re-mounted and verified.
 /// @param params Original app build parameters carrying project root and DMG metadata.
-/// @param appPath Path to the already-staged signed `.app` bundle.
+/// @param staged The already-staged, unsigned `.app` bundle and its generated ICNS.
 /// @param volumeName Mounted volume name and Finder window title.
 /// @param outputPath Final `.dmg` output path.
-/// @throws std::runtime_error on staging, hdiutil, or required visual asset failures.
+/// @throws std::runtime_error on staging, hdiutil, signing, icon, or verification failures.
 static void addStagedAppToDmg(const MacOSBuildParams &params,
-                              const fs::path &appPath,
+                              const StagedMacOSApp &staged,
                               const std::string &volumeName,
                               const std::string &outputPath) {
     // hdiutil is macOS-only; off-platform it is simply absent and runChecked surfaces a
@@ -1822,6 +2134,7 @@ static void addStagedAppToDmg(const MacOSBuildParams &params,
         throw std::runtime_error(
             "macOS .dmg volume name must be non-empty and free of '/' and ':'");
 
+    const fs::path &appPath = staged.appPath;
     const fs::path tmpRoot = uniqueTempPackagingDir("zanna-app-dmg");
     TempDirGuard cleanup(tmpRoot);
     const fs::path stage = tmpRoot / "stage";
@@ -1849,19 +2162,16 @@ static void addStagedAppToDmg(const MacOSBuildParams &params,
         haveBackground = true;
     }
 
-    bool haveVolumeIcon = false;
+    std::vector<uint8_t> volumeIcon = staged.icns;
     if (!params.pkgConfig.macosDmgIcon.empty()) {
         const fs::path iconSrc = resolvePackageSourcePath(
             params.projectRoot, params.pkgConfig.macosDmgIcon, "macOS DMG icon");
         if (!fs::is_regular_file(iconSrc))
             throw std::runtime_error("macOS DMG icon is not a regular file: " +
                                      params.pkgConfig.macosDmgIcon);
-        fs::copy_file(iconSrc, stage / ".VolumeIcon.icns", fs::copy_options::overwrite_existing);
-        haveVolumeIcon = true;
+        volumeIcon = loadMacOSVolumeIcon(iconSrc, params.pkgConfig.macosDmgIcon, "macos-dmg-icon");
     }
 
-    std::error_code rmEc;
-    fs::remove(outputPath, rmEc);
     const fs::path rwDmg = tmpRoot / "rw.dmg";
     runChecked({"hdiutil",
                 "create",
@@ -1877,14 +2187,11 @@ static void addStagedAppToDmg(const MacOSBuildParams &params,
                 rwDmg.string()},
                "macOS app .dmg read-write image creation");
 
-    const fs::path mountPoint =
-        attachMacOSDmgForStyling(rwDmg, "macOS app .dmg Finder-visible attach");
-
-    {
-        const std::string appFileName =
-            validateDmgItemName(appPath.filename().string(), "macOS app DMG item name");
-        const std::string volumeLiteral = appleScriptStringLiteral(
-            mountPoint.filename().string(), "macOS app DMG mounted volume name");
+    const std::string appFileName =
+        validateDmgItemName(appPath.filename().string(), "macOS app DMG item name");
+    const auto styleScript = [&](const std::string &diskName) {
+        const std::string volumeLiteral =
+            appleScriptStringLiteral(diskName, "macOS app DMG mounted volume name");
         const std::string appLiteral =
             appleScriptStringLiteral(appFileName, "macOS app DMG item name");
         std::ostringstream s;
@@ -1909,38 +2216,27 @@ static void addStagedAppToDmg(const MacOSBuildParams &params,
           << "  end tell\n"
           << "end tell\n"
           << "end timeout\n";
-        runBestEffortMacOSStyling({"osascript", "-e", s.str()}, "macOS app DMG Finder styling");
-    }
-    if (haveVolumeIcon)
-        runBestEffortMacOSStyling({"SetFile", "-a", "C", mountPoint.string()},
-                                  "macOS app DMG volume icon styling");
+        return s.str();
+    };
     // HFS+ normalizes Unicode filenames while it copies the staged bundle into the image. Sign
     // only after that copy, or CodeResources can retain the pre-normalized spelling and cause
-    // Gatekeeper to report a freshly downloaded DMG as damaged. This is also the last mutation
-    // of the bundle before the image is detached and compressed.
-    const fs::path mountedApp = mountPoint / appPath.filename();
-    const fs::path mountedExec =
-        mountedApp / "Contents" / "MacOS" / normalizeExecName(params.projectName);
-    signMacOSBundle(tmpRoot, mountedApp, mountedExec, params.projectRoot, params.pkgConfig);
-    runChecked({"sync"}, "macOS app DMG filesystem flush");
+    // Gatekeeper to report a freshly downloaded DMG as damaged. Signing is the last change to
+    // the bundle; the volume icon is written after it because codesign fails on a bundle whose
+    // volume root already holds `.VolumeIcon.icns`.
+    const auto signMountedApp = [&](const fs::path &mountPoint) {
+        const fs::path mountedApp = mountPoint / appPath.filename();
+        const fs::path mountedExec =
+            mountedApp / "Contents" / "MacOS" / normalizeExecName(params.projectName);
+        signMacOSBundle(tmpRoot, mountedApp, mountedExec, params.projectRoot, params.pkgConfig);
+    };
+    finishStyledMacOSDmg(
+        tmpRoot, rwDmg, styleScript, signMountedApp, volumeIcon, outputPath, "macOS app .dmg");
 
-    if (run_process({"hdiutil", "detach", mountPoint.string()}).exit_code != 0)
-        runChecked({"hdiutil", "detach", "-force", mountPoint.string()}, "macOS app .dmg detach");
-
-    runChecked({"hdiutil",
-                "convert",
-                rwDmg.string(),
-                "-format",
-                "UDZO",
-                "-imagekey",
-                "zlib-level=9",
-                "-ov",
-                "-o",
-                outputPath},
-               "macOS app .dmg compression");
-    runChecked({"hdiutil", "verify", outputPath}, "macOS app .dmg verification");
-    verifyMountedMacOSDmgContents(
-        outputPath, {}, {appPath.filename().string()}, {"Applications"}, "macOS app .dmg");
+    DmgExpectations expect;
+    expect.directories = {appPath.filename().string()};
+    expect.symlinks = {"Applications"};
+    expect.volumeIcon = std::move(volumeIcon);
+    verifyMountedMacOSDmgContents(outputPath, expect, "macOS app .dmg");
 }
 
 /// @brief Build a macOS .app bundle inside a ZIP archive from the given build parameters.
@@ -1971,7 +2267,7 @@ void buildMacOSAppDmg(const MacOSBuildParams &params) {
     // HFS+ can normalize a resource filename while copying into the image. Defer signing until
     // addStagedAppToDmg has placed the app on that final filesystem.
     const StagedMacOSApp staged = stageMacOSAppBundle(params, stageRoot, false);
-    addStagedAppToDmg(params, staged.appPath, displayName, params.outputPath);
+    addStagedAppToDmg(params, staged, displayName, params.outputPath);
 }
 
 /// @brief Stage an application bundle into a directory and sign nested code first.
@@ -2317,7 +2613,6 @@ void buildMacOSToolchainDmg(const MacOSToolchainDmgParams &params) {
         throw std::runtime_error(
             "macOS .dmg volume name must be non-empty and free of '/' and ':'");
 
-    std::error_code ec;
     const fs::path tmpRoot = uniqueTempPackagingDir("zanna-dmg");
     TempDirGuard cleanup(tmpRoot);
     const fs::path stage = tmpRoot / "stage";
@@ -2345,21 +2640,16 @@ void buildMacOSToolchainDmg(const MacOSToolchainDmgParams &params) {
                            fs::perms::others_read);
     }
 
-    bool haveVolumeIcon = true;
+    std::vector<uint8_t> volumeIcon;
     if (!params.volumeIcns.empty()) {
         if (!fs::is_regular_file(params.volumeIcns))
             throw std::runtime_error("macOS .dmg volume icon not found: " + params.volumeIcns);
-        fs::copy_file(
-            params.volumeIcns, stage / ".VolumeIcon.icns", fs::copy_options::overwrite_existing);
+        volumeIcon = loadMacOSVolumeIcon(params.volumeIcns, params.volumeIcns, "--macos-dmg-icon");
     } else {
-        const std::vector<uint8_t> icon = generateIcns(defaultZannaToolchainIconImage());
-        writeFileBytes(stage / ".VolumeIcon.icns",
-                       icon,
-                       fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
-                           fs::perms::others_read);
+        volumeIcon = generateIcns(defaultZannaToolchainIconImage());
     }
 
-    // 1) Read-write image sized to the staged contents.
+    // Read-write image sized to the staged contents.
     const fs::path rwDmg = tmpRoot / "rw.dmg";
     runChecked({"hdiutil",
                 "create",
@@ -2375,14 +2665,9 @@ void buildMacOSToolchainDmg(const MacOSToolchainDmgParams &params) {
                 rwDmg.string()},
                "macOS .dmg read-write image creation");
 
-    // 2) Attach for styling.
-    const fs::path mountPoint =
-        attachMacOSDmgForStyling(rwDmg, "macOS toolchain .dmg Finder-visible attach");
-
-    // 3) Best-effort Finder styling — the image stays valid even if this fails (headless/CI).
-    {
-        const std::string volumeLiteral = appleScriptStringLiteral(mountPoint.filename().string(),
-                                                                   "macOS DMG mounted volume name");
+    const auto styleScript = [&](const std::string &diskName) {
+        const std::string volumeLiteral =
+            appleScriptStringLiteral(diskName, "macOS DMG mounted volume name");
         const std::string packageLiteral =
             appleScriptStringLiteral(pkgName, "macOS DMG package display name");
         std::ostringstream s;
@@ -2406,37 +2691,19 @@ void buildMacOSToolchainDmg(const MacOSToolchainDmgParams &params) {
           << "  end tell\n"
           << "end tell\n"
           << "end timeout\n";
-        runBestEffortMacOSStyling({"osascript", "-e", s.str()},
-                                  "macOS toolchain DMG Finder styling");
-    }
-    if (haveVolumeIcon)
-        runBestEffortMacOSStyling({"SetFile", "-a", "C", mountPoint.string()},
-                                  "macOS toolchain DMG volume icon styling");
-    runChecked({"sync"}, "macOS toolchain DMG filesystem flush");
+        return s.str();
+    };
 
-    // 4) Detach (force-retry once if the volume is briefly busy).
-    if (run_process({"hdiutil", "detach", mountPoint.string()}).exit_code != 0)
-        runChecked({"hdiutil", "detach", "-force", mountPoint.string()}, "macOS .dmg detach");
-
-    // 5) Compress to a read-only UDZO image at the output path.
     const fs::path outputPath(params.outputPath);
     if (!outputPath.parent_path().empty())
         fs::create_directories(outputPath.parent_path());
-    fs::remove(outputPath, ec);
-    runChecked({"hdiutil",
-                "convert",
-                rwDmg.string(),
-                "-format",
-                "UDZO",
-                "-imagekey",
-                "zlib-level=9",
-                "-ov",
-                "-o",
-                params.outputPath},
-               "macOS .dmg compression");
+    finishStyledMacOSDmg(
+        tmpRoot, rwDmg, styleScript, {}, volumeIcon, params.outputPath, "macOS toolchain .dmg");
 
-    runChecked({"hdiutil", "verify", params.outputPath}, "macOS .dmg verification");
-    verifyMountedMacOSDmgContents(params.outputPath, {pkgName}, {}, {}, "macOS toolchain .dmg");
+    DmgExpectations expect;
+    expect.regularFiles = {pkgName};
+    expect.volumeIcon = std::move(volumeIcon);
+    verifyMountedMacOSDmgContents(params.outputPath, expect, "macOS toolchain .dmg");
 #endif
 }
 

@@ -13,7 +13,9 @@
 //   - Produces a ZIP containing a valid .app bundle structure.
 //   - Executable has Unix mode 0755 in ZIP external attributes.
 //   - All other files have 0644, directories have 040755.
-//   - ICNS icon is generated from source PNG if package-icon is specified.
+//   - ICNS icon is generated from the package-icon source set when present.
+//   - A DMG that declares a volume icon (or inherits the app icon) always
+//     contains .VolumeIcon.icns and the root custom-icon flag, or the build fails.
 //   - Generated .zpak packs are copied into Contents/Resources (ADR 0355).
 //   - Nested code added to a directory-staged bundle is signed before the
 //     bundle that contains it.
@@ -22,7 +24,8 @@
 //   - Free functions stage temporary trees and write one requested artifact.
 //
 // Links: ZipWriter.hpp, PlistGenerator.hpp, PkgPNG.hpp, PackageConfig.hpp,
-//        MacOSEntitlements.hpp, StoreDepotBuilder.hpp
+//        MacOSEntitlements.hpp, StoreDepotBuilder.hpp, IconGenerator.hpp,
+//        docs/adr/0372-package-icon-sources-and-dmg-volume-icons.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,10 +39,35 @@
 #include "PackageConfig.hpp"
 #include "ToolchainInstallManifest.hpp"
 
+#include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace zanna::pkg {
+
+/// @brief Load a DMG volume icon as ICNS bytes.
+/// @details A `.icns` file is framing-checked and returned unchanged; a `.png` file
+///          must be a square image of at least 32x32 pixels and is converted with
+///          generateIcns().
+/// @param path Resolved icon path.
+/// @param label Path as the user wrote it, used in diagnostics.
+/// @param fieldName Setting name used in diagnostics, e.g. "macos-dmg-icon".
+/// @return ICNS file bytes.
+/// @throws std::runtime_error "<field> '<label>' must be a .icns or .png file",
+///         "<field> '<label>' is not a valid ICNS file: <reason>", or a PNG source error.
+std::vector<uint8_t> loadMacOSVolumeIcon(const std::filesystem::path &path,
+                                         const std::string &label,
+                                         const char *fieldName);
+
+/// @brief Validate a DMG volume icon as loadMacOSVolumeIcon() would, without converting it.
+/// @param path Resolved icon path.
+/// @param label Path as the user wrote it, used in diagnostics.
+/// @param fieldName Setting name used in diagnostics.
+/// @throws std::runtime_error With the same messages as loadMacOSVolumeIcon().
+void validateMacOSVolumeIcon(const std::filesystem::path &path,
+                             const std::string &label,
+                             const char *fieldName);
 
 /// @brief Parameters for building a macOS .app-in-.zip package.
 struct MacOSBuildParams {
@@ -61,7 +89,8 @@ void buildMacOSPackage(const MacOSBuildParams &params);
 
 /// @brief Build a macOS .app bundle wrapped in a drag-to-install .dmg (macOS-only, hdiutil).
 /// @details Stages and signs the bundle exactly like buildMacOSPackage, then wraps it (with an
-///          /Applications symlink) into a compressed .dmg. `params.outputPath` is the .dmg path.
+///          /Applications symlink) into a compressed .dmg. The volume icon is `macos-dmg-icon`
+///          when set, otherwise the app's own icon. `params.outputPath` is the .dmg path.
 /// @param params Build parameters.
 /// @throws std::runtime_error on failure or when run off macOS.
 void buildMacOSAppDmg(const MacOSBuildParams &params);
@@ -130,12 +159,13 @@ struct MacOSToolchainDmgParams {
     std::string volumeName{"Zanna Toolchain"};         ///< Mounted-volume and Finder-window title.
     std::string pkgDisplayName{"Zanna Toolchain.pkg"}; ///< Installer leaf name inside the image.
     std::string backgroundPng; ///< Optional absolute Finder-window background PNG path.
-    std::string volumeIcns;    ///< Optional absolute volume-icon ICNS path.
+    std::string volumeIcns;    ///< Optional absolute volume-icon path (.icns or .png).
 };
 
 /// @brief Wrap a built toolchain `.pkg` in a compressed, styled `.dmg` ("double-click to install").
-/// @details macOS-only: shells to `hdiutil`, with best-effort `osascript`/`SetFile` styling so a
-///          headless run still yields a valid image.
+/// @details macOS-only: shells to `hdiutil`, with best-effort `osascript` Finder styling so a
+///          headless run still yields a valid image. The volume icon (the Zanna mark unless
+///          `volumeIcns` is set) is required and verified in the finished image.
 /// @param params Input/output paths, names, and optional styling assets.
 /// @throws std::runtime_error on failure or when run off macOS.
 void buildMacOSToolchainDmg(const MacOSToolchainDmgParams &params);

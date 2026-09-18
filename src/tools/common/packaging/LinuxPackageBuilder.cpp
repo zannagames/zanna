@@ -2018,15 +2018,11 @@ static std::vector<DataFile> collectAppLinuxDataFiles(const LinuxBuildParams &pa
 
     // Icon PNGs at standard sizes (via IconGenerator). Menu-visible apps get a
     // generated fallback so Icon=<exeName> never points at a missing theme icon.
-    if (!pkg.iconPath.empty() || needDesktopEntry) {
+    if (!pkg.iconPaths.empty() || needDesktopEntry) {
         std::map<uint32_t, std::vector<uint8_t>> pngs;
-        if (!pkg.iconPath.empty()) {
-            fs::path iconSrc =
-                resolvePackageSourcePath(params.projectRoot, pkg.iconPath, "package icon");
-            if (!fs::is_regular_file(iconSrc))
-                throw std::runtime_error("package icon not found: " + pkg.iconPath);
-            auto srcImage = pngRead(iconSrc.string());
-            pngs = generateMultiSizePngs(srcImage);
+        if (!pkg.iconPaths.empty()) {
+            pngs = generateMultiSizePngs(
+                loadIconSources(params.projectRoot, pkg.iconPaths, "package-icon"));
         } else {
             pngs = generateMultiSizePngs(defaultZannaToolchainIconImage());
         }
@@ -2514,16 +2510,14 @@ void buildAppImage(const LinuxBuildParams &params) {
         tar.addFileString("usr/share/metainfo/" + pkgName + ".metainfo.xml", appstream, 0644);
     }
 
-    // Icon at the payload root (<exe>.png); falls back to a generated default icon.
+    // Icon at the payload root (<exe>.png): the largest package-icon source, unchanged,
+    // or a generated default icon.
     {
         std::vector<uint8_t> iconPng;
-        if (!pkg.iconPath.empty()) {
-            const fs::path iconSrc =
-                resolvePackageSourcePath(params.projectRoot, pkg.iconPath, "package icon");
-            if (!fs::is_regular_file(iconSrc))
-                throw std::runtime_error("package icon not found: " + pkg.iconPath);
-            const auto srcImage = pngRead(iconSrc.string());
-            iconPng = pngEncode(srcImage);
+        if (!pkg.iconPaths.empty()) {
+            iconPng = loadIconSources(params.projectRoot, pkg.iconPaths, "package-icon")
+                          .sources.back()
+                          .png;
         } else {
             iconPng = defaultZannaAppImageIconPng();
         }

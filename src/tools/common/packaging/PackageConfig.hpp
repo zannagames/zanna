@@ -78,7 +78,8 @@ struct PackageConfig {
     std::string readmeFilePath;  ///< package-readme (relative path to packaged README text)
     std::string welcomeText;     ///< package-welcome (single-line installer/package summary text)
     std::string identifier;      ///< package-identifier (reverse DNS)
-    std::string iconPath;        ///< package-icon (relative path to PNG)
+    /// package-icon lines: project-relative square PNGs, one per supplied size.
+    std::vector<std::string> iconPaths;
 
     std::vector<AssetEntry> assets;          ///< Extra files to bundle (source -> target).
     std::vector<FileAssoc> fileAssociations; ///< File-type associations to register.
@@ -101,7 +102,7 @@ struct PackageConfig {
         false};                       ///< Opt out of the otherwise default-on hardened runtime.
     int macosNotaryTimeoutSeconds{0}; ///< notarytool --timeout in seconds (0 = built-in 30m).
     std::string macosDmgBackground;   ///< macos-dmg-background (project-relative PNG).
-    std::string macosDmgIcon;         ///< macos-dmg-icon (project-relative .icns volume icon).
+    std::string macosDmgIcon; ///< macos-dmg-icon (project-relative .icns or .png volume icon).
 
     std::string windowsInstallScope;  ///< Installation scope: machine (default) or user.
     std::string windowsInstallDir;    ///< Optional install directory override.
@@ -143,7 +144,7 @@ struct PackageConfig {
         return !displayName.empty() || !author.empty() || !description.empty() ||
                !homepage.empty() || !license.empty() || !licenseFilePath.empty() ||
                !readmeFilePath.empty() || !welcomeText.empty() || !identifier.empty() ||
-               !iconPath.empty() || !assets.empty() || !fileAssociations.empty() ||
+               !iconPaths.empty() || !assets.empty() || !fileAssociations.empty() ||
                shortcutDesktop || !shortcutMenu || allowHomeDesktopShortcuts ||
                !minOsWindows.empty() || !minOsMacos.empty() || !macosSignMode.empty() ||
                !macosSignIdentity.empty() || !macosEntitlements.empty() || macosHardenedRuntime ||

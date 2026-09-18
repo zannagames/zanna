@@ -20,9 +20,9 @@
 //     beyond the source bounds.
 //   - Box blur uses separable convolution (horizontal then vertical); the kernel
 //     is a uniform (2r+1) box, not a Gaussian.
-//   - Resize uses endpoint-aligned bilinear interpolation for mild changes and
-//     a source-footprint box average when either destination axis is strictly
-//     less than half its source axis.
+//   - Resize area-averages every shrinking axis with exact integer coverage
+//     weights (each source pixel counts by how much of the output pixel it
+//     covers) and uses endpoint-aligned bilinear interpolation on growing axes.
 //   - Pixel format is 32-bit RGBA: 0xRRGGBBAA in row-major order.
 //
 // Ownership/Lifetime:
@@ -350,28 +350,6 @@ static pixels_axis_sample pixels_map_sample(int64_t dst, int64_t src_size, int64
     if (pixels_unsigned_mul_div(remainder, 256u, divisor, 255u, &fraction, &unused))
         sample.fraction = (int64_t)fraction;
     return sample;
-}
-
-/// @brief Map an endpoint boundary with exact floor division.
-/// @param dst Boundary index in `[0, dst_size]`.
-/// @param src_size Positive source dimension.
-/// @param dst_size Positive destination dimension.
-/// @return `floor(dst * src_size / dst_size)`, clamped to @p src_size.
-static int64_t pixels_map_boundary(int64_t dst, int64_t src_size, int64_t dst_size) {
-    uint64_t quotient = 0;
-    uint64_t remainder = 0;
-    if (dst <= 0 || src_size <= 0 || dst_size <= 0)
-        return 0;
-    if (dst >= dst_size)
-        return src_size;
-    if (!pixels_unsigned_mul_div((uint64_t)dst,
-                                 (uint64_t)src_size,
-                                 (uint64_t)dst_size,
-                                 (uint64_t)src_size,
-                                 &quotient,
-                                 &remainder))
-        return src_size;
-    return (int64_t)quotient;
 }
 
 /// @brief Convert a positive long-double extent (output dimension) to an int64
@@ -1202,15 +1180,6 @@ void *rt_pixels_blur(void *pixels, int64_t radius) {
     return result;
 }
 
-/// @brief Return whether shrinking @p source to @p destination exceeds 2:1.
-/// @details Uses `destination < ceil(source / 2)` instead of multiplying the
-///          destination by two, which would overflow near `INT64_MAX`.
-static int8_t pixels_is_heavy_downscale(int64_t source, int64_t destination) {
-    if (source <= 0 || destination <= 0 || destination >= source)
-        return 0;
-    return destination < source / 2 + source % 2;
-}
-
 /// @brief Release an internal transform result after a later stage fails.
 static void pixels_release_transform_result(rt_pixels_impl *result) {
     if (result && rt_obj_release_check0(result))
@@ -1263,53 +1232,139 @@ static rt_pixels_impl *pixels_resize_bilinear(const rt_pixels_impl *p,
     return result;
 }
 
+/// @brief Area-filter taps for one axis: output x uses taps [first[x], first[x + 1]).
+typedef struct pixels_area_axis {
+    int64_t *index;   ///< Source pixel index of each tap.
+    uint64_t *weight; ///< Coverage weight of each tap, in units of 1/destination.
+    int64_t *first;   ///< Per output pixel, the first tap; `dst_size + 1` entries.
+    uint64_t total;   ///< Sum of the weights of every output pixel.
+} pixels_area_axis;
+
+/// @brief Release the arrays of an area-filter axis.
+static void pixels_area_axis_free(pixels_area_axis *axis) {
+    free(axis->index);
+    free(axis->weight);
+    free(axis->first);
+    axis->index = NULL;
+    axis->weight = NULL;
+    axis->first = NULL;
+}
+
+/// @brief Build exact-coverage area-filter taps for one axis.
+/// @details Output pixel x covers the source interval [x*src/dst, (x+1)*src/dst).
+///          Measured in units of 1/dst, source pixel s spans [s*dst, (s+1)*dst)
+///          and output pixel x spans [x*src, (x+1)*src), so every weight is an
+///          exact integer overlap and each output's weights sum to src. An
+///          unchanged axis maps each pixel to itself with weight 1.
+/// @param src_size Positive source length.
+/// @param dst_size Positive destination length, at most @p src_size.
+/// @param axis Receives the taps; release with pixels_area_axis_free().
+/// @return 1 on success, 0 on allocation failure or unrepresentable sizes.
+static int8_t pixels_area_axis_build(int64_t src_size, int64_t dst_size, pixels_area_axis *axis) {
+    const uint64_t src = (uint64_t)src_size;
+    const uint64_t dst = (uint64_t)dst_size;
+    memset(axis, 0, sizeof(*axis));
+    if (src > UINT64_MAX / dst)
+        return 0;
+    /* One output pixel touches at most floor(src/dst) + 2 source pixels. */
+    const uint64_t per_output = src == dst ? 1u : src / dst + 2u;
+    if (per_output > SIZE_MAX / sizeof(uint64_t) / dst || dst + 1u > SIZE_MAX / sizeof(int64_t))
+        return 0;
+    const size_t capacity = (size_t)(per_output * dst);
+    axis->index = (int64_t *)malloc(capacity * sizeof(int64_t));
+    axis->weight = (uint64_t *)malloc(capacity * sizeof(uint64_t));
+    axis->first = (int64_t *)malloc((size_t)(dst + 1u) * sizeof(int64_t));
+    if (!axis->index || !axis->weight || !axis->first) {
+        pixels_area_axis_free(axis);
+        return 0;
+    }
+
+    int64_t count = 0;
+    if (src == dst) {
+        for (int64_t x = 0; x < dst_size; x++) {
+            axis->first[x] = x;
+            axis->index[x] = x;
+            axis->weight[x] = 1;
+        }
+        axis->first[dst_size] = dst_size;
+        axis->total = 1;
+        return 1;
+    }
+    for (uint64_t x = 0; x < dst; x++) {
+        const uint64_t lo = x * src;
+        const uint64_t hi = lo + src;
+        axis->first[x] = count;
+        for (uint64_t s = lo / dst; s < (hi + dst - 1u) / dst; s++) {
+            const uint64_t from = lo > s * dst ? lo : s * dst;
+            const uint64_t to = hi < (s + 1u) * dst ? hi : (s + 1u) * dst;
+            if (to > from) {
+                axis->index[count] = (int64_t)s;
+                axis->weight[count] = to - from;
+                count++;
+            }
+        }
+    }
+    axis->first[dst_size] = count;
+    axis->total = src;
+    return 1;
+}
+
 /// @brief Area-filter one or both axes of a nonempty source.
 /// @details Each output dimension is no larger than its source counterpart.
-///          Exact integer boundary mapping prevents multiplication overflow.
-///          Accumulator bounds are checked before any output is allocated.
+///          Color is the alpha-weighted mean of the covered source pixels and
+///          alpha is their plain mean, both rounded, so transparent pixels never
+///          tint their neighbours. Accumulator bounds are checked before any
+///          output is allocated.
 static rt_pixels_impl *pixels_resize_area(const rt_pixels_impl *p,
                                           int64_t new_width,
                                           int64_t new_height) {
-    uint64_t max_x_span = (uint64_t)(p->width / new_width + (p->width % new_width != 0));
-    uint64_t max_y_span = (uint64_t)(p->height / new_height + (p->height % new_height != 0));
-    const uint64_t max_safe_samples = UINT64_MAX / UINT64_C(65153);
-    if (max_x_span > max_safe_samples / max_y_span) {
+    const uint64_t total_x = new_width < p->width ? (uint64_t)p->width : 1u;
+    const uint64_t total_y = new_height < p->height ? (uint64_t)p->height : 1u;
+    const uint64_t max_safe_total = UINT64_MAX / UINT64_C(65025);
+    if (total_x > max_safe_total / total_y) {
         rt_trap("Pixels.Resize: source footprint too large");
         return NULL;
     }
 
-    rt_pixels_impl *result = pixels_alloc(new_width, new_height);
-    if (!result)
+    pixels_area_axis x_axis;
+    pixels_area_axis y_axis;
+    if (!pixels_area_axis_build(p->width, new_width, &x_axis))
         return NULL;
+    if (!pixels_area_axis_build(p->height, new_height, &y_axis)) {
+        pixels_area_axis_free(&x_axis);
+        return NULL;
+    }
+    rt_pixels_impl *result = pixels_alloc(new_width, new_height);
+    if (!result) {
+        pixels_area_axis_free(&x_axis);
+        pixels_area_axis_free(&y_axis);
+        return NULL;
+    }
 
+    const uint64_t total = x_axis.total * y_axis.total;
     for (int64_t y = 0; y < new_height; y++) {
-        int64_t sy0 = pixels_map_boundary(y, p->height, new_height);
-        int64_t sy1 = pixels_map_boundary(y + 1, p->height, new_height);
         for (int64_t x = 0; x < new_width; x++) {
-            int64_t sx0 = pixels_map_boundary(x, p->width, new_width);
-            int64_t sx1 = pixels_map_boundary(x + 1, p->width, new_width);
             uint64_t sum_ra = 0;
             uint64_t sum_ga = 0;
             uint64_t sum_ba = 0;
             uint64_t sum_a = 0;
-            uint64_t count = 0;
 
-            for (int64_t sy = sy0; sy < sy1; sy++) {
-                const uint32_t *row = p->data + sy * p->width;
-                for (int64_t sx = sx0; sx < sx1; sx++) {
-                    uint32_t color = row[sx];
-                    uint64_t alpha = color & 0xFFu;
-                    sum_ra += (uint64_t)((color >> 24) & 0xFFu) * alpha;
-                    sum_ga += (uint64_t)((color >> 16) & 0xFFu) * alpha;
-                    sum_ba += (uint64_t)((color >> 8) & 0xFFu) * alpha;
-                    sum_a += alpha;
-                    count++;
+            for (int64_t ty = y_axis.first[y]; ty < y_axis.first[y + 1]; ty++) {
+                const uint32_t *row = p->data + y_axis.index[ty] * p->width;
+                const uint64_t wy = y_axis.weight[ty];
+                for (int64_t tx = x_axis.first[x]; tx < x_axis.first[x + 1]; tx++) {
+                    uint32_t color = row[x_axis.index[tx]];
+                    uint64_t weighted_alpha = wy * x_axis.weight[tx] * (color & 0xFFu);
+                    sum_ra += weighted_alpha * ((color >> 24) & 0xFFu);
+                    sum_ga += weighted_alpha * ((color >> 16) & 0xFFu);
+                    sum_ba += weighted_alpha * ((color >> 8) & 0xFFu);
+                    sum_a += weighted_alpha;
                 }
             }
 
             uint32_t output = 0;
-            if (count > 0 && sum_a > 0) {
-                uint32_t alpha = (uint32_t)((sum_a + count / 2u) / count);
+            if (sum_a > 0) {
+                uint32_t alpha = (uint32_t)((sum_a + total / 2u) / total);
                 uint32_t red = (uint32_t)((sum_ra + sum_a / 2u) / sum_a);
                 uint32_t green = (uint32_t)((sum_ga + sum_a / 2u) / sum_a);
                 uint32_t blue = (uint32_t)((sum_ba + sum_a / 2u) / sum_a);
@@ -1318,16 +1373,19 @@ static rt_pixels_impl *pixels_resize_area(const rt_pixels_impl *p,
             result->data[y * new_width + x] = output;
         }
     }
+    pixels_area_axis_free(&x_axis);
+    pixels_area_axis_free(&y_axis);
     return result;
 }
 
-/// @brief Resize with alpha-correct bilinear or source-footprint filtering.
-/// @details Axes shrinking by more than 2:1 are area-filtered first. Any other
-///          axis is then resized with endpoint-aligned bilinear interpolation,
-///          so a large horizontal shrink does not degrade a simultaneous
-///          vertical upscale (and vice versa). All mapping uses deterministic
-///          integer quotient/remainder arithmetic. A source with either empty
-///          dimension produces a transparent result of the requested size.
+/// @brief Resize with alpha-correct area averaging or bilinear interpolation.
+/// @details Every shrinking axis is area-filtered first with exact coverage
+///          weights. A growing axis is then resized with endpoint-aligned
+///          bilinear interpolation, so a horizontal shrink does not degrade a
+///          simultaneous vertical upscale (and vice versa). All arithmetic is
+///          integer, so every host produces identical pixels. A source with
+///          either empty dimension produces a transparent result of the
+///          requested size.
 /// @param pixels Opaque source Pixels handle; null or invalid input traps.
 /// @param new_width Positive destination width.
 /// @param new_height Positive destination height.
@@ -1344,8 +1402,8 @@ void *rt_pixels_resize(void *pixels, int64_t new_width, int64_t new_height) {
     if (p->width <= 0 || p->height <= 0)
         return pixels_alloc(new_width, new_height);
 
-    int8_t area_x = pixels_is_heavy_downscale(p->width, new_width);
-    int8_t area_y = pixels_is_heavy_downscale(p->height, new_height);
+    int8_t area_x = new_width < p->width;
+    int8_t area_y = new_height < p->height;
     if (!area_x && !area_y)
         return pixels_resize_bilinear(p, new_width, new_height);
 

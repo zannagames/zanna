@@ -845,3 +845,58 @@ if (NOT _packs_text_rv EQUAL 0)
     message(FATAL_ERROR "pack text dry-run should succeed\nstdout:\n${_packs_text_out}\nstderr:\n${_packs_text_err}")
 endif ()
 _expect_contains("${_packs_text_out}" "  Pack: Levels -> packsproject-levels.zpak" "pack dry-run text")
+
+# ---------------------------------------------------------------------------
+# Icon source sets (ADR 0369): package-icon repeats, one PNG size per line, and
+# macos-dmg-icon accepts only .icns or .png files.
+# ---------------------------------------------------------------------------
+
+get_filename_component(_repo_root "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(_icons_project "${TEST_WORK_DIR}/icons-project")
+file(MAKE_DIRECTORY "${_icons_project}/icons" "${_icons_project}/art")
+configure_file("${_repo_root}/misc/images/zannalogo2.png" "${_icons_project}/icons/a.png" COPYONLY)
+configure_file("${_repo_root}/examples/games/crackman/packaging/icon.png"
+        "${_icons_project}/icons/b.png" COPYONLY)
+file(WRITE "${_icons_project}/art/volume.jpg" "not an icon\n")
+file(WRITE "${_icons_project}/main.zia" "func start() {}\n")
+set(_icons_manifest_head "project iconsproject
+version 1.0.0
+lang zia
+entry main.zia
+package-icon icons/a.png
+")
+file(WRITE "${_icons_project}/zanna.project" "${_icons_manifest_head}package-icon icons/b.png\n")
+
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_icons_project}" --target tarball --dry-run --json
+        RESULT_VARIABLE _icons_json_rv
+        OUTPUT_VARIABLE _icons_json_out
+        ERROR_VARIABLE _icons_json_err)
+if (NOT _icons_json_rv EQUAL 0)
+    message(FATAL_ERROR "icon-set dry-run should succeed\nstdout:\n${_icons_json_out}\nstderr:\n${_icons_json_err}")
+endif ()
+_expect_contains("${_icons_json_out}" "\"icons\": [\"icons/a.png\", \"icons/b.png\"]" "icon-set dry-run JSON")
+
+file(WRITE "${_icons_project}/zanna.project" "${_icons_manifest_head}package-icon icons/a.png\n")
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_icons_project}" --target tarball --dry-run
+        RESULT_VARIABLE _icons_dup_rv
+        OUTPUT_VARIABLE _icons_dup_out
+        ERROR_VARIABLE _icons_dup_err)
+if (_icons_dup_rv EQUAL 0)
+    message(FATAL_ERROR "a repeated package-icon path should fail\nstdout:\n${_icons_dup_out}")
+endif ()
+_expect_contains("${_icons_dup_out}${_icons_dup_err}" "duplicate package-icon path 'icons/a.png'"
+        "duplicate package-icon path")
+
+file(WRITE "${_icons_project}/zanna.project" "${_icons_manifest_head}macos-dmg-icon art/volume.jpg\n")
+execute_process(
+        COMMAND "${ZANNA_BIN}" package "${_icons_project}" --target macos --dry-run
+        RESULT_VARIABLE _icons_dmg_rv
+        OUTPUT_VARIABLE _icons_dmg_out
+        ERROR_VARIABLE _icons_dmg_err)
+if (_icons_dmg_rv EQUAL 0)
+    message(FATAL_ERROR "a .jpg macos-dmg-icon should fail\nstdout:\n${_icons_dmg_out}")
+endif ()
+_expect_contains("${_icons_dmg_out}${_icons_dmg_err}"
+        "macos-dmg-icon 'art/volume.jpg' must be a .icns or .png file" "macos-dmg-icon extension")

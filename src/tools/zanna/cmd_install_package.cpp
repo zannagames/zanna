@@ -207,7 +207,7 @@ void installPackageUsage() {
         << "  --homepage <url>      Project homepage URL for deb/rpm metadata\n"
         << "  --macos-dmg          Also wrap the macOS .pkg in a styled .dmg disk image\n"
         << "  --macos-dmg-background <path> Background image (PNG) for the .dmg window\n"
-        << "  --macos-dmg-icon <path> Volume icon (.icns) for the .dmg\n"
+        << "  --macos-dmg-icon <path> Volume icon (.icns, or a square .png) for the .dmg\n"
         << "  --macos-pkg-license <path> License text shown in the .pkg installer\n"
         << "  --macos-pkg-background <path> Background image for the .pkg installer pane\n"
         << "  --windows-sign        Authenticode-sign generated Windows installer\n"
@@ -1132,8 +1132,16 @@ bool parseInstallPackageArgs(int argc, char **argv, InstallPackageArgs &args) {
             }
         } else if (arg == "--macos-dmg-icon" && i + 1 < expandedArgs.size()) {
             args.macosDmgIcon = expandedArgs[++i];
-            if (!fs::is_regular_file(zanna::filesystem::pathFromUtf8(args.macosDmgIcon))) {
+            const fs::path iconPath = zanna::filesystem::pathFromUtf8(args.macosDmgIcon);
+            if (!fs::is_regular_file(iconPath)) {
                 std::cerr << "error: --macos-dmg-icon not found: " << args.macosDmgIcon << "\n";
+                return false;
+            }
+            try {
+                zanna::pkg::validateMacOSVolumeIcon(
+                    iconPath, args.macosDmgIcon, "--macos-dmg-icon");
+            } catch (const std::exception &ex) {
+                std::cerr << "error: " << ex.what() << "\n";
                 return false;
             }
         } else if (arg == "--macos-pkg-license" && i + 1 < expandedArgs.size()) {

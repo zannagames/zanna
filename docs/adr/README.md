@@ -154,6 +154,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0369](0369-canvas3d-target-frame-rate.md) — Canvas3D.SetTargetFrameRate (Display-Snapped Frame Pacing)
 - [ADR 0370](0370-custom-shaders.md) — Custom Shaders as Raw Per-Backend Source (`Shader3D`)
 - [ADR 0371](0371-canvas3d-render-thread.md) — Canvas3D Render Thread (Deferred Frame Execution Off the Sim Thread) — draft
+- [ADR 0372](0372-package-icon-sources-and-dmg-volume-icons.md) — Package Icon Sources and DMG Volume Icons
+- [ADR 0373](0373-pixels-resize-area-filters-every-downscale.md) — Pixels.Resize Area-Filters Every Downscale
 
 ## GUI & IDE
 

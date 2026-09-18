@@ -6,14 +6,18 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/tools/common/packaging/PkgPNG.cpp
-// Purpose: PNG read/write and bilinear image resize. Ported from
+// Purpose: PNG read/write and deterministic image resize. Ported from
 //          src/runtime/graphics/rt_pixels.c with GC dependencies removed.
 //
 // Key invariants:
 //   - Reader supports 8-bit grayscale, palette, RGB, grayscale-alpha, and RGBA
 //     (color_type=0,2,3,4,6), tRNS transparency, and Adam7 interlace.
 //   - Reader handles all 5 PNG filter types (None, Sub, Up, Average, Paeth).
-//   - Writer always uses RGBA (color_type=6) with filter=0.
+//   - Writer always uses RGBA (color_type=6) and, per scanline, the filter whose
+//     output has the smallest sum of absolute signed bytes (ties: lowest type).
+//   - Resize area-filters shrinking axes with exact integer coverage weights and
+//     bilinearly interpolates growing axes at pixel centers, both on
+//     alpha-weighted samples; no floating point is involved.
 //   - Zlib framing: CMF=0x78, FLG=0x01, + DEFLATE + Adler-32.
 //   - CRC-32 per chunk uses rt_crc32_compute.
 //
@@ -25,7 +29,7 @@
 //===----------------------------------------------------------------------===//
 
 /// @file
-/// @brief Implements bounded PNG decoding, RGBA encoding, and bilinear resizing.
+/// @brief Implements bounded PNG decoding, RGBA encoding, and deterministic resizing.
 /// @details Validates chunk order/checksums and zlib framing, supports the five
 ///          filters and Adam7, and normalizes decoded pixels to owned RGBA storage.
 
@@ -170,6 +174,27 @@ static size_t expectedPngRawBytes(uint32_t width,
 //=============================================================================
 // PNG Reader
 //=============================================================================
+
+/// @brief Read the leading IHDR fields of a PNG stream without decoding pixels.
+/// @param data Borrowed PNG file bytes.
+/// @param len Input length.
+/// @return Width, height, bit depth, color type, and interlace method.
+/// @throws PNGError If the signature is wrong or the first chunk is not a 13-byte IHDR.
+PngInfo pngReadInfo(const uint8_t *data, size_t len) {
+    if (!data)
+        throw PNGError("PNG: null input buffer");
+    if (len < 33 || std::memcmp(data, kPNGSignature, 8) != 0)
+        throw PNGError("PNG: invalid signature");
+    if (readBE32(data + 8) != 13 || std::memcmp(data + 12, "IHDR", 4) != 0)
+        throw PNGError("PNG: first chunk is not IHDR");
+    PngInfo info;
+    info.width = readBE32(data + 16);
+    info.height = readBE32(data + 20);
+    info.bitDepth = data[24];
+    info.colorType = data[25];
+    info.interlace = data[28];
+    return info;
+}
 
 /// @brief Decode a PNG from a byte array. Validates the signature, iterates all chunks
 /// (verifying CRC-32 per chunk), decompresses the IDAT zlib stream, unfilters
@@ -545,9 +570,52 @@ static void writeChunk(std::vector<uint8_t> &buf,
     buf.insert(buf.end(), crcBuf, crcBuf + 4);
 }
 
-/// @brief Encode a PkgImage as a PNG byte stream. Always writes RGBA (color_type=6) with
-/// filter=None on every scanline, then wraps the DEFLATE output in a zlib envelope
-/// (CMF=0x78, FLG=0x01, Adler-32) and emits IHDR/IDAT/IEND chunks.
+/// @brief Filter one RGBA scanline with the PNG filter that predicts it best.
+/// @details Tries None, Sub, Up, Average, and Paeth, and keeps the output whose
+///          bytes, read as signed values, have the smallest absolute sum (the
+///          libpng heuristic). Ties keep the lower filter type, so the choice is
+///          deterministic.
+/// @param cur Current scanline pixel bytes.
+/// @param prev Previous scanline pixel bytes, or null for the first row.
+/// @param stride Scanline length in bytes.
+/// @param out Destination of `stride + 1` bytes: the filter type, then the filtered row.
+/// @param scratch Reusable buffer of at least `5 * stride` bytes.
+static void filterScanline(const uint8_t *cur,
+                           const uint8_t *prev,
+                           size_t stride,
+                           uint8_t *out,
+                           std::vector<uint8_t> &scratch) {
+    constexpr size_t kBytesPerPixel = 4;
+    uint64_t scores[5] = {0, 0, 0, 0, 0};
+    for (size_t i = 0; i < stride; ++i) {
+        const uint8_t x = cur[i];
+        const uint8_t a = i >= kBytesPerPixel ? cur[i - kBytesPerPixel] : 0;
+        const uint8_t b = prev ? prev[i] : 0;
+        const uint8_t c = (prev && i >= kBytesPerPixel) ? prev[i - kBytesPerPixel] : 0;
+        const uint8_t filtered[5] = {
+            x,
+            static_cast<uint8_t>(x - a),
+            static_cast<uint8_t>(x - b),
+            static_cast<uint8_t>(x - ((static_cast<unsigned>(a) + b) >> 1)),
+            static_cast<uint8_t>(x - paethPredict(a, b, c)),
+        };
+        for (size_t type = 0; type < 5; ++type) {
+            scratch[type * stride + i] = filtered[type];
+            scores[type] += filtered[type] < 128 ? filtered[type] : 256u - filtered[type];
+        }
+    }
+    size_t best = 0;
+    for (size_t type = 1; type < 5; ++type) {
+        if (scores[type] < scores[best])
+            best = type;
+    }
+    out[0] = static_cast<uint8_t>(best);
+    std::memcpy(out + 1, scratch.data() + best * stride, stride);
+}
+
+/// @brief Encode a PkgImage as a PNG byte stream. Always writes RGBA (color_type=6),
+/// filtering each scanline with filterScanline(), then wraps the DEFLATE output in a
+/// zlib envelope (CMF=0x78, FLG=0x01, Adler-32) and emits IHDR/IDAT/IEND chunks.
 /// @param img Source dimensions and row-major RGBA pixels.
 /// @return Complete PNG file bytes.
 /// @throws PNGError If dimensions or pixel storage are invalid or exceed limits.
@@ -579,14 +647,17 @@ std::vector<uint8_t> pngEncode(const PkgImage &img) {
     ihdr[12] = 0; // interlace
     writeChunk(result, "IHDR", ihdr, 13);
 
-    // Build raw scanlines with filter=0
+    // Build filtered scanlines, each led by its filter type byte.
     size_t stride = static_cast<size_t>(img.width) * 4;
     size_t rawLen = (stride + 1) * img.height;
     std::vector<uint8_t> raw(rawLen);
+    std::vector<uint8_t> scratch(stride * 5);
 
     for (uint32_t y = 0; y < img.height; y++) {
-        raw[y * (stride + 1)] = 0; // Filter: None
-        std::memcpy(raw.data() + y * (stride + 1) + 1, img.pixels.data() + y * stride, stride);
+        const uint8_t *cur = img.pixels.data() + static_cast<size_t>(y) * stride;
+        const uint8_t *prev = y == 0 ? nullptr : cur - stride;
+        filterScanline(
+            cur, prev, stride, raw.data() + static_cast<size_t>(y) * (stride + 1), scratch);
     }
 
     // Compress with DEFLATE
@@ -625,14 +696,211 @@ void pngWrite(const std::string &path, const PkgImage &img) {
 }
 
 //=============================================================================
-// Bilinear Image Resize
+// Image Resize
 //=============================================================================
 
-/// @brief Resize an RGBA image to newWidth×newHeight using bilinear interpolation.
-/// Each output channel is computed as a weighted blend of the four nearest
-/// source pixels (top-left, top-right, bottom-left, bottom-right), with
-/// 8-bit fractional coordinates scaled by 256 to avoid floating-point math.
-/// Edge pixels clamp rather than wrap.
+namespace {
+
+/// @brief One weighted source pixel contributing to an output pixel along one axis.
+struct ResizeTap {
+    uint32_t index;  ///< Source pixel index on the axis.
+    uint64_t weight; ///< Coverage weight in units of 1/destination-size.
+};
+
+/// @brief The contiguous taps that make up one output pixel on an axis.
+struct ResizeSpan {
+    size_t first = 0; ///< Index of the first tap.
+    size_t count = 0; ///< Number of taps.
+};
+
+/// @brief Area-filter taps for every output pixel of one axis.
+struct AreaAxis {
+    std::vector<ResizeTap> taps;   ///< All taps, grouped by output pixel.
+    std::vector<ResizeSpan> spans; ///< One span per output pixel.
+    uint64_t total = 1;            ///< Sum of the weights of every span.
+};
+
+/// @brief Build exact-coverage area-filter taps for one axis.
+/// @details Output pixel x covers the source interval [x*src/dst, (x+1)*src/dst).
+///          Measured in units of 1/dst, source pixel s spans [s*dst, (s+1)*dst) and
+///          output pixel x spans [x*src, (x+1)*src), so each weight is an exact
+///          integer overlap and the weights of every output pixel sum to src. An
+///          unchanged axis maps each pixel to itself with weight 1.
+/// @param src Source length in pixels (nonzero).
+/// @param dst Destination length in pixels, at most @p src.
+/// @return Taps, spans, and the per-span weight total.
+AreaAxis buildAreaAxis(uint32_t src, uint32_t dst) {
+    AreaAxis axis;
+    axis.spans.resize(dst);
+    if (src == dst) {
+        axis.taps.reserve(dst);
+        for (uint32_t x = 0; x < dst; ++x) {
+            axis.taps.push_back({x, 1});
+            axis.spans[x] = {x, 1};
+        }
+        return axis;
+    }
+    axis.total = src;
+    for (uint32_t x = 0; x < dst; ++x) {
+        const uint64_t lo = static_cast<uint64_t>(x) * src;
+        const uint64_t hi = lo + src;
+        const uint64_t firstSource = lo / dst;
+        const uint64_t endSource = (hi + dst - 1) / dst;
+        axis.spans[x].first = axis.taps.size();
+        for (uint64_t sourceIndex = firstSource; sourceIndex < endSource; ++sourceIndex) {
+            const uint64_t from = std::max(lo, sourceIndex * dst);
+            const uint64_t to = std::min(hi, (sourceIndex + 1) * dst);
+            if (to > from)
+                axis.taps.push_back({static_cast<uint32_t>(sourceIndex), to - from});
+        }
+        axis.spans[x].count = axis.taps.size() - axis.spans[x].first;
+    }
+    return axis;
+}
+
+/// @brief Area-filter an image to a size no larger than the source on either axis.
+/// @details Color is the alpha-weighted mean of the covered source pixels and alpha
+///          is their plain mean, both rounded; a fully transparent footprint yields
+///          transparent black.
+/// @param src Nonempty source image with consistent storage.
+/// @param dstWidth Destination width, at most `src.width`.
+/// @param dstHeight Destination height, at most `src.height`.
+/// @return The filtered image.
+PkgImage areaResize(const PkgImage &src, uint32_t dstWidth, uint32_t dstHeight) {
+    const AreaAxis xAxis = buildAreaAxis(src.width, dstWidth);
+    const AreaAxis yAxis = buildAreaAxis(src.height, dstHeight);
+    const uint64_t total = xAxis.total * yAxis.total;
+
+    PkgImage result;
+    result.width = dstWidth;
+    result.height = dstHeight;
+    result.pixels.assign(static_cast<size_t>(dstWidth) * dstHeight * 4, 0);
+    for (uint32_t y = 0; y < dstHeight; ++y) {
+        const ResizeSpan &ySpan = yAxis.spans[y];
+        for (uint32_t x = 0; x < dstWidth; ++x) {
+            const ResizeSpan &xSpan = xAxis.spans[x];
+            uint64_t sumA = 0;
+            uint64_t sumR = 0;
+            uint64_t sumG = 0;
+            uint64_t sumB = 0;
+            for (size_t j = 0; j < ySpan.count; ++j) {
+                const ResizeTap &yTap = yAxis.taps[ySpan.first + j];
+                for (size_t i = 0; i < xSpan.count; ++i) {
+                    const ResizeTap &xTap = xAxis.taps[xSpan.first + i];
+                    const uint8_t *px = src.at(xTap.index, yTap.index);
+                    const uint64_t weightedAlpha = xTap.weight * yTap.weight * px[3];
+                    sumA += weightedAlpha;
+                    sumR += weightedAlpha * px[0];
+                    sumG += weightedAlpha * px[1];
+                    sumB += weightedAlpha * px[2];
+                }
+            }
+            if (sumA == 0)
+                continue;
+            uint8_t *dst = result.at(x, y);
+            dst[0] = static_cast<uint8_t>((sumR + sumA / 2) / sumA);
+            dst[1] = static_cast<uint8_t>((sumG + sumA / 2) / sumA);
+            dst[2] = static_cast<uint8_t>((sumB + sumA / 2) / sumA);
+            dst[3] = static_cast<uint8_t>((sumA + total / 2) / total);
+        }
+    }
+    return result;
+}
+
+/// @brief The two source pixels and blend fraction that feed one output pixel.
+struct BilinearSample {
+    uint32_t first;    ///< Nearer-origin source index.
+    uint32_t second;   ///< Following source index (clamped at the edge).
+    uint32_t fraction; ///< Weight of @ref second in units of 1/65536.
+};
+
+/// @brief Map every output pixel center of one axis onto the source pixel centers.
+/// @details Output pixel x samples source position ((2x+1)*src - dst) / (2*dst),
+///          where source pixel centers sit at integer positions. Positions before
+///          the first center or past the last one clamp to the edge pixel, and an
+///          unchanged axis maps every pixel exactly onto itself.
+/// @param src Source length in pixels (nonzero).
+/// @param dst Destination length in pixels (nonzero).
+/// @return One sample per output pixel.
+std::vector<BilinearSample> buildBilinearAxis(uint32_t src, uint32_t dst) {
+    std::vector<BilinearSample> samples(dst);
+    const uint64_t denominator = 2ull * dst;
+    for (uint32_t x = 0; x < dst; ++x) {
+        const uint64_t scaled = (2ull * x + 1) * src;
+        if (scaled <= dst) {
+            samples[x] = {0, 0, 0};
+            continue;
+        }
+        const uint64_t numerator = scaled - dst;
+        const uint64_t index = numerator / denominator;
+        if (index + 1 >= src) {
+            samples[x] = {src - 1, src - 1, 0};
+            continue;
+        }
+        const uint64_t remainder = numerator % denominator;
+        samples[x] = {static_cast<uint32_t>(index),
+                      static_cast<uint32_t>(index + 1),
+                      static_cast<uint32_t>((remainder << 16) / denominator)};
+    }
+    return samples;
+}
+
+/// @brief Bilinearly resample an image at output pixel centers.
+/// @details Blends the four neighbouring pixels with alpha-weighted (premultiplied)
+///          arithmetic, then rounds color and alpha back to straight RGBA.
+/// @param src Nonempty source image with consistent storage.
+/// @param dstWidth Destination width.
+/// @param dstHeight Destination height.
+/// @return The resampled image.
+PkgImage bilinearResize(const PkgImage &src, uint32_t dstWidth, uint32_t dstHeight) {
+    const std::vector<BilinearSample> xSamples = buildBilinearAxis(src.width, dstWidth);
+    const std::vector<BilinearSample> ySamples = buildBilinearAxis(src.height, dstHeight);
+
+    PkgImage result;
+    result.width = dstWidth;
+    result.height = dstHeight;
+    result.pixels.assign(static_cast<size_t>(dstWidth) * dstHeight * 4, 0);
+    for (uint32_t y = 0; y < dstHeight; ++y) {
+        const BilinearSample &ys = ySamples[y];
+        const uint64_t y1 = ys.fraction;
+        const uint64_t y0 = 65536u - y1;
+        for (uint32_t x = 0; x < dstWidth; ++x) {
+            const BilinearSample &xs = xSamples[x];
+            const uint64_t x1 = xs.fraction;
+            const uint64_t x0 = 65536u - x1;
+            const uint8_t *taps[4] = {src.at(xs.first, ys.first),
+                                      src.at(xs.second, ys.first),
+                                      src.at(xs.first, ys.second),
+                                      src.at(xs.second, ys.second)};
+            const uint64_t weights[4] = {x0 * y0, x1 * y0, x0 * y1, x1 * y1};
+            uint64_t sumA = 0;
+            uint64_t sumR = 0;
+            uint64_t sumG = 0;
+            uint64_t sumB = 0;
+            for (int k = 0; k < 4; ++k) {
+                const uint64_t weightedAlpha = weights[k] * taps[k][3];
+                sumA += weightedAlpha;
+                sumR += weightedAlpha * taps[k][0];
+                sumG += weightedAlpha * taps[k][1];
+                sumB += weightedAlpha * taps[k][2];
+            }
+            if (sumA == 0)
+                continue;
+            uint8_t *dst = result.at(x, y);
+            dst[0] = static_cast<uint8_t>((sumR + sumA / 2) / sumA);
+            dst[1] = static_cast<uint8_t>((sumG + sumA / 2) / sumA);
+            dst[2] = static_cast<uint8_t>((sumB + sumA / 2) / sumA);
+            dst[3] = static_cast<uint8_t>((sumA + (1ull << 31)) >> 32);
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+/// @brief Resize an RGBA image with alpha-weighted area filtering and bilinear growth.
+/// @details Shrinking axes are area-filtered first (exact integer coverage), then any
+///          growing axis is interpolated at pixel centers; an unchanged size is a copy.
 /// @param src Source dimensions and row-major RGBA pixels.
 /// @param newWidth Requested output width; zero is normalized to one.
 /// @param newHeight Requested output height; zero is normalized to one.
@@ -643,71 +911,33 @@ PkgImage imageResize(const PkgImage &src, uint32_t newWidth, uint32_t newHeight)
         newWidth = 1;
     if (newHeight == 0)
         newHeight = 1;
-
-    PkgImage result;
-    result.width = newWidth;
-    result.height = newHeight;
     if (newWidth > kMaxDecodedPngBytes / 4 ||
         newHeight > kMaxDecodedPngBytes / (static_cast<size_t>(newWidth) * 4))
         throw PNGError("PNG: resized image dimensions are too large");
-    result.pixels.resize(static_cast<size_t>(newWidth) * newHeight * 4);
 
     if (src.width == 0 || src.height == 0) {
-        std::memset(result.pixels.data(), 0, result.pixels.size());
-        return result;
+        PkgImage empty;
+        empty.width = newWidth;
+        empty.height = newHeight;
+        empty.pixels.assign(static_cast<size_t>(newWidth) * newHeight * 4, 0);
+        return empty;
     }
     if (src.width > kMaxDecodedPngBytes / 4 ||
         src.height > kMaxDecodedPngBytes / (static_cast<size_t>(src.width) * 4) ||
         src.pixels.size() != static_cast<size_t>(src.width) * src.height * 4)
         throw PNGError("PNG: source RGBA pixel buffer size does not match dimensions");
 
-    for (uint32_t y = 0; y < newHeight; y++) {
-        // Map dest y to source y with 8-bit fractional part
-        int64_t srcY256 = (static_cast<int64_t>(y) * src.height * 256) / newHeight;
-        int64_t srcY = srcY256 >> 8;
-        int64_t fracY = srcY256 & 0xFF;
+    if (newWidth == src.width && newHeight == src.height)
+        return src;
 
-        if (srcY >= src.height)
-            srcY = src.height - 1;
-        if (srcY < 0)
-            srcY = 0;
-        int64_t sy1 = (srcY + 1 < src.height) ? srcY + 1 : srcY;
-        if (srcY >= static_cast<int64_t>(src.height) - 1)
-            fracY = 255;
-
-        for (uint32_t x = 0; x < newWidth; x++) {
-            int64_t srcX256 = (static_cast<int64_t>(x) * src.width * 256) / newWidth;
-            int64_t srcX = srcX256 >> 8;
-            int64_t fracX = srcX256 & 0xFF;
-
-            if (srcX >= src.width)
-                srcX = src.width - 1;
-            if (srcX < 0)
-                srcX = 0;
-            int64_t sx1 = (srcX + 1 < src.width) ? srcX + 1 : srcX;
-            if (srcX >= static_cast<int64_t>(src.width) - 1)
-                fracX = 255;
-
-            // Four neighboring pixels (RGBA bytes)
-            const uint8_t *p00 = src.at(srcX, srcY);
-            const uint8_t *p10 = src.at(sx1, srcY);
-            const uint8_t *p01 = src.at(srcX, sy1);
-            const uint8_t *p11 = src.at(sx1, sy1);
-
-            int64_t invFracX = 256 - fracX;
-            int64_t invFracY = 256 - fracY;
-
-            uint8_t *dst = result.at(x, y);
-            for (int ch = 0; ch < 4; ch++) {
-                int64_t v = (p00[ch] * invFracX * invFracY + p10[ch] * fracX * invFracY +
-                             p01[ch] * invFracX * fracY + p11[ch] * fracX * fracY) >>
-                            16;
-                dst[ch] = static_cast<uint8_t>(v & 0xFF);
-            }
-        }
-    }
-
-    return result;
+    const uint32_t areaWidth = std::min(newWidth, src.width);
+    const uint32_t areaHeight = std::min(newHeight, src.height);
+    if (areaWidth == src.width && areaHeight == src.height)
+        return bilinearResize(src, newWidth, newHeight);
+    PkgImage shrunk = areaResize(src, areaWidth, areaHeight);
+    if (areaWidth == newWidth && areaHeight == newHeight)
+        return shrunk;
+    return bilinearResize(shrunk, newWidth, newHeight);
 }
 
 } // namespace zanna::pkg

@@ -40,6 +40,7 @@
 #include "common/RunProcess.hpp"
 #include "tools/common/asset/AssetCompiler.hpp"
 #include "tools/common/native_compiler.hpp"
+#include "tools/common/packaging/IconGenerator.hpp"
 #include "tools/common/packaging/LinuxPackageBuilder.hpp"
 #include "tools/common/packaging/LinuxRuntimeStubGen.hpp"
 #include "tools/common/packaging/MacOSPackageBuilder.hpp"
@@ -1388,9 +1389,12 @@ bool validatePackageConfigForTarget(const ProjectConfig &proj,
             if (!validatePackageSourcePathExists(proj, asset.sourcePath, "asset source path"))
                 return false;
         }
-        if (!pkg.iconPath.empty() &&
-            !validatePackageSourcePathExists(proj, pkg.iconPath, "package icon", false))
-            return false;
+        for (const auto &iconPath : pkg.iconPaths) {
+            if (!validatePackageSourcePathExists(proj, iconPath, "package icon", false))
+                return false;
+        }
+        if (!pkg.iconPaths.empty())
+            (void)zanna::pkg::loadIconSources(proj.rootDir, pkg.iconPaths, "package-icon");
         if (!pkg.licenseFilePath.empty() &&
             !validatePackageSourcePathExists(
                 proj, pkg.licenseFilePath, "package license file", false))
@@ -1448,10 +1452,16 @@ bool validatePackageConfigForTarget(const ProjectConfig &proj,
                         proj, pkg.macosDmgBackground, "macOS DMG background", false)) {
                     return false;
                 }
-                if (!pkg.macosDmgIcon.empty() &&
-                    !validatePackageSourcePathExists(
-                        proj, pkg.macosDmgIcon, "macOS DMG icon", false)) {
-                    return false;
+                if (!pkg.macosDmgIcon.empty()) {
+                    if (!validatePackageSourcePathExists(
+                            proj, pkg.macosDmgIcon, "macOS DMG icon", false)) {
+                        return false;
+                    }
+                    zanna::pkg::validateMacOSVolumeIcon(
+                        zanna::pkg::resolvePackageSourcePath(
+                            proj.rootDir, pkg.macosDmgIcon, "macOS DMG icon"),
+                        pkg.macosDmgIcon,
+                        "macos-dmg-icon");
                 }
                 break;
             case PackageTarget::Linux: {
@@ -2109,7 +2119,13 @@ int cmdPackage(int argc, char **argv) {
                       << "\",\n";
             std::cout << "  \"prebuiltExecutable\": "
                       << (args.executablePath.empty() ? "false" : "true") << ",\n";
-            std::cout << "  \"icon\": \"" << jsonEscape(proj.packageConfig.iconPath) << "\",\n";
+            std::cout << "  \"icons\": [";
+            for (size_t i = 0; i < proj.packageConfig.iconPaths.size(); ++i) {
+                if (i != 0)
+                    std::cout << ", ";
+                std::cout << "\"" << jsonEscape(proj.packageConfig.iconPaths[i]) << "\"";
+            }
+            std::cout << "],\n";
             std::cout << "  \"assets\": [";
             for (size_t i = 0; i < proj.packageConfig.assets.size(); ++i) {
                 const auto &asset = proj.packageConfig.assets[i];
@@ -2180,12 +2196,12 @@ int cmdPackage(int argc, char **argv) {
             dryOut << "  Executable: " << args.executablePath << " (prebuilt)\n";
         else
             dryOut << "  Executable: " << proj.name << " (build)\n";
-        if (!proj.packageConfig.iconPath.empty()) {
+        for (const auto &iconSource : proj.packageConfig.iconPaths) {
             fs::path iconPath;
-            dryOut << "  Icon: " << proj.packageConfig.iconPath;
+            dryOut << "  Icon: " << iconSource;
             try {
-                iconPath = zanna::pkg::resolvePackageSourcePath(
-                    proj.rootDir, proj.packageConfig.iconPath, "package icon");
+                iconPath =
+                    zanna::pkg::resolvePackageSourcePath(proj.rootDir, iconSource, "package icon");
             } catch (const std::exception &ex) {
                 dryOut << " [INVALID: " << ex.what() << "]";
             }
@@ -2435,8 +2451,8 @@ int cmdPackage(int argc, char **argv) {
             std::cerr << " (size unavailable: " << sizeEc.message() << ")";
         std::cerr << "\n";
         std::cerr << "  Output: " << args.outputPath << "\n";
-        if (!proj.packageConfig.iconPath.empty())
-            std::cerr << "  Icon: " << proj.packageConfig.iconPath << "\n";
+        for (const auto &iconPath : proj.packageConfig.iconPaths)
+            std::cerr << "  Icon: " << iconPath << "\n";
         for (const auto &asset : proj.packageConfig.assets)
             std::cerr << "  Asset: " << asset.sourcePath << " -> " << asset.targetPath << "\n";
     }

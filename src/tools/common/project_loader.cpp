@@ -1193,11 +1193,25 @@ il::support::Expected<bool> parsePackageDirective(ProjectConfig &config,
             return il::support::Expected<bool>(scalar.error());
         config.packageConfig.identifier = scalar.value();
     } else if (directive == "package-icon") {
-        auto scalar =
-            parsePackageScalar(packageScalarDirectives, directive, value, manifestPath, lineNum);
-        if (!scalar)
-            return il::support::Expected<bool>(scalar.error());
-        config.packageConfig.iconPath = scalar.value();
+        // Repeatable: each line adds one square PNG size to the icon source set.
+        auto tokens = requireManifestTokenCount(value, manifestPath, lineNum, directive, 1);
+        if (!tokens)
+            return il::support::Expected<bool>(tokens.error());
+        try {
+            std::string iconPath =
+                zanna::pkg::sanitizePackageRelativePath(tokens.value()[0], "package-icon path");
+            if (iconPath.empty())
+                return makeManifestErr(
+                    manifestPath, lineNum, "package-icon path must not be empty");
+            auto &iconPaths = config.packageConfig.iconPaths;
+            if (std::find(iconPaths.begin(), iconPaths.end(), iconPath) != iconPaths.end()) {
+                return makeManifestErr(
+                    manifestPath, lineNum, "duplicate package-icon path '" + iconPath + "'");
+            }
+            iconPaths.push_back(std::move(iconPath));
+        } catch (const std::exception &ex) {
+            return makeManifestErr(manifestPath, lineNum, ex.what());
+        }
     } else if (directive == "macos-sign-mode") {
         auto scalar =
             parsePackageScalar(packageScalarDirectives, directive, value, manifestPath, lineNum);
