@@ -1133,6 +1133,15 @@ void vgfx_warp_cursor(vgfx_window_t window, int32_t x, int32_t y);
 /// @param out_h Receives the display height in logical pixels (may be NULL)
 void vgfx_get_display_size(int32_t *out_w, int32_t *out_h);
 
+/// @brief Query the refresh rate of the display showing @p window.
+/// @details macOS reads the window's screen (`maximumFramesPerSecond`, so a
+///          ProMotion panel reports 120); Windows reads the primary display's
+///          `VREFRESH`; X11, Wayland and the mock platform report unknown.
+/// @param window Window whose display is queried; NULL means the main display.
+/// @param out_hz Receives the refresh rate in Hz when known.
+/// @return 1 when @p out_hz holds a refresh rate of at least 1 Hz, otherwise 0.
+int vgfx_get_display_refresh_hz(vgfx_window_t window, double *out_hz);
+
 /// @brief Enable or disable relative (raw) mouse mode for FPS mouse-look.
 /// @details While enabled, platform backends that support raw motion deliver
 ///          unbounded, sub-pixel motion deltas (drained via

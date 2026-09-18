@@ -54,14 +54,16 @@ static atomic_int g_backend = ATOMIC_VAR_INIT(VGFX_LINUX_BACKEND_UNSELECTED);
     void prefix##_vgfx_platform_yield(void);                                                       \
     float prefix##_vgfx_platform_get_display_scale(void);                                          \
     int prefix##_vgfx_platform_get_display_logical_size(int32_t *, int32_t *);                     \
+    int prefix##_vgfx_platform_get_display_refresh_hz(struct vgfx_window *, double *);             \
     int prefix##_vgfx_platform_init_window(struct vgfx_window *, const vgfx_window_params_t *);    \
     void prefix##_vgfx_platform_destroy_window(struct vgfx_window *);                              \
     int prefix##_vgfx_platform_wait_events(struct vgfx_window *, int32_t);                         \
-    int prefix##_vgfx_platform_wake_events(struct vgfx_window *);                                 \
+    int prefix##_vgfx_platform_wake_events(struct vgfx_window *);                                  \
     int prefix##_vgfx_platform_process_events(struct vgfx_window *);                               \
     int prefix##_vgfx_platform_present(struct vgfx_window *);                                      \
     void prefix##_vgfx_platform_set_title(struct vgfx_window *, const char *);                     \
-    void prefix##_vgfx_platform_set_icon(struct vgfx_window *, const uint32_t *, int32_t, int32_t); \
+    void prefix##_vgfx_platform_set_icon(                                                          \
+        struct vgfx_window *, const uint32_t *, int32_t, int32_t);                                 \
     int prefix##_vgfx_platform_set_fullscreen(struct vgfx_window *, int);                          \
     int prefix##_vgfx_platform_is_fullscreen(struct vgfx_window *);                                \
     void prefix##_vgfx_platform_minimize(struct vgfx_window *);                                    \
@@ -229,6 +231,12 @@ DISPATCH_RET(float, vgfx_platform_get_display_scale, (void), (), 1.0f)
 /// @param h Receives logical display height when non-NULL.
 /// @return 1 on success, or 0 when no selected adapter can answer.
 DISPATCH_RET(int, vgfx_platform_get_display_logical_size, (int32_t *w, int32_t *h), (w, h), 0)
+/// @brief Query the display refresh rate through the selected Linux adapter.
+/// @param w Window whose display is queried.
+/// @param hz Receives the rate in Hz when known.
+/// @return 1 when known, or 0 when no selected adapter can answer.
+DISPATCH_RET(
+    int, vgfx_platform_get_display_refresh_hz, (struct vgfx_window * w, double *hz), (w, hz), 0)
 /// @copydoc vgfx_platform_destroy_window
 DISPATCH_VOID(vgfx_platform_destroy_window, (struct vgfx_window * w), (w))
 /// @copydoc vgfx_platform_wait_events

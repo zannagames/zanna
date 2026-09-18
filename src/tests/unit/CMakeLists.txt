@@ -953,6 +953,14 @@ function(zanna_add_runtime_tests)
     target_link_libraries(test_rt_canvas3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     target_compile_definitions(test_rt_canvas3d PRIVATE ZANNA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     zanna_add_ctest(test_rt_canvas3d test_rt_canvas3d)
+
+    zanna_add_test(test_rt_canvas3d_pacing ${ZANNA_TESTS_DIR}/unit/test_rt_canvas3d_pacing.cpp)
+    target_link_libraries(test_rt_canvas3d_pacing PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_canvas3d_pacing test_rt_canvas3d_pacing)
+
+    zanna_add_test(test_rt_shader3d ${ZANNA_TESTS_DIR}/unit/test_rt_shader3d.cpp)
+    target_link_libraries(test_rt_shader3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_shader3d test_rt_shader3d)
     zanna_add_test_labels(test_rt_canvas3d graphics3d unit)
     set_tests_properties(test_rt_canvas3d PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
@@ -2726,6 +2734,10 @@ function(zanna_add_runtime_tests)
     zanna_add_test(test_rt_heap_alloc ${ZANNA_TESTS_DIR}/runtime/RTHeapAllocTests.cpp)
     target_link_libraries(test_rt_heap_alloc PRIVATE ${ZANNA_RUNTIME_TEST_LIBS} Threads::Threads)
     zanna_add_ctest(test_rt_heap_alloc test_rt_heap_alloc)
+
+    zanna_add_test(test_rt_heap_registry ${ZANNA_TESTS_DIR}/runtime/RTHeapRegistryTests.cpp)
+    target_link_libraries(test_rt_heap_registry PRIVATE ${ZANNA_RUNTIME_TEST_LIBS} Threads::Threads)
+    zanna_add_ctest(test_rt_heap_registry test_rt_heap_registry)
 
     zanna_add_test(test_rt_object_introspect ${ZANNA_TESTS_DIR}/runtime/RTObjectIntrospectTests.cpp)
     target_link_libraries(test_rt_object_introspect PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})

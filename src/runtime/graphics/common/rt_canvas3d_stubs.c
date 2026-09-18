@@ -3226,6 +3226,24 @@ void rt_canvas3d_set_vsync(void *o, int8_t a1) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetVSync: graphics support not compiled in");
 }
 
+/// @brief Trapping stub for `Canvas3D.SetTargetFrameRate` (graphics-disabled build).
+/// @param o  Canvas3D handle (ignored before trapping).
+/// @param a1 Target frame rate (ignored before trapping).
+void rt_canvas3d_set_target_frame_rate(void *o, int64_t a1) {
+    (void)o;
+    (void)a1;
+    RT_GRAPHICS_TRAP_VOID("Canvas3D.SetTargetFrameRate: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `Canvas3D.get_TargetFrameRate` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
+int64_t rt_canvas3d_get_target_frame_rate(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Canvas3D.get_TargetFrameRate: graphics support not compiled in",
+                                  0);
+}
+
 /// @brief Silent fallback stub for `Canvas3D.TrySetRenderScale` (graphics-disabled build).
 /// @param o  Canvas3D handle (ignored).
 /// @param a1 Requested render scale (ignored).
@@ -3425,4 +3443,256 @@ int rt_rendertarget3d_try_read_rgba(void *o, uint8_t *dst, int64_t width, int64_
     (void)width;
     (void)height;
     return 0;
+}
+
+//=============================================================================
+// ADR 0370: Shader3D and material shader binding
+//=============================================================================
+
+/// @brief Trapping stub for `Shader3D.Load` (graphics-disabled build).
+/// @param path Shader path (ignored before trapping).
+/// @return Never returns normally.
+void *rt_shader3d_load(rt_string path) {
+    (void)path;
+    rt_graphics_unavailable_("Shader3D.Load: graphics support not compiled in");
+    return NULL;
+}
+
+/// @brief Trapping stub for `Shader3D.LoadAsset` (graphics-disabled build).
+/// @param asset_path Asset name (ignored before trapping).
+/// @return Never returns normally.
+void *rt_shader3d_load_asset(rt_string asset_path) {
+    (void)asset_path;
+    rt_graphics_unavailable_("Shader3D.LoadAsset: graphics support not compiled in");
+    return NULL;
+}
+
+/// @brief Trapping stub for `Shader3D.FromSource` (graphics-disabled build).
+/// @param text Shader text (ignored before trapping).
+/// @return Never returns normally.
+void *rt_shader3d_from_source(rt_string text) {
+    (void)text;
+    rt_graphics_unavailable_("Shader3D.FromSource: graphics support not compiled in");
+    return NULL;
+}
+
+/// @brief Trapping stub for `Shader3D.Reload` (graphics-disabled build).
+/// @param o Shader handle (ignored before trapping).
+void rt_shader3d_reload(void *o) {
+    (void)o;
+    RT_GRAPHICS_TRAP_VOID("Shader3D.Reload: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `Shader3D.get_Name` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @return An empty string.
+rt_string rt_shader3d_get_name(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.get_Name: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for `Shader3D.get_Mode` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @return `0`.
+int64_t rt_shader3d_get_mode(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.get_Mode: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `Shader3D.get_Status` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @return `3` (unsupported).
+int64_t rt_shader3d_get_status(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.get_Status: graphics support not compiled in", 3);
+}
+
+/// @brief Silent fallback stub for `Shader3D.get_IsReady` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @return `0`.
+int8_t rt_shader3d_get_is_ready(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.get_IsReady: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `Shader3D.get_Error` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @return An empty string.
+rt_string rt_shader3d_get_error(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.get_Error: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for `Shader3D.get_ParamCount` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @return `0`.
+int64_t rt_shader3d_get_param_count(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.get_ParamCount: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `Shader3D.ParamName` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @param a1 Parameter index (ignored).
+/// @return An empty string.
+rt_string rt_shader3d_param_name(void *o, int64_t a1) {
+    (void)o;
+    (void)a1;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.ParamName: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for `Shader3D.ParamType` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @param a1 Parameter index (ignored).
+/// @return An empty string.
+rt_string rt_shader3d_param_type(void *o, int64_t a1) {
+    (void)o;
+    (void)a1;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.ParamType: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for `Shader3D.get_TextureCount` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @return `0`.
+int64_t rt_shader3d_get_texture_count(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.get_TextureCount: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `Shader3D.TextureName` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @param a1 Texture index (ignored).
+/// @return An empty string.
+rt_string rt_shader3d_texture_name(void *o, int64_t a1) {
+    (void)o;
+    (void)a1;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.TextureName: graphics support not compiled in",
+                                  rt_const_cstr(""));
+}
+
+/// @brief Silent fallback stub for `Shader3D.HasBackend` (graphics-disabled build).
+/// @param o Shader handle (ignored).
+/// @param a1 Backend name (ignored).
+/// @return `0`.
+int8_t rt_shader3d_has_backend(void *o, rt_string a1) {
+    (void)o;
+    (void)a1;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Shader3D.HasBackend: graphics support not compiled in", 0);
+}
+
+/// @brief Trapping stub for `Material3D.SetShader` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+/// @param a1 Shader handle (ignored before trapping).
+void rt_material3d_set_shader(void *o, void *a1) {
+    (void)o;
+    (void)a1;
+    RT_GRAPHICS_TRAP_VOID("Material3D.SetShader: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `Material3D.get_Shader` (graphics-disabled build).
+/// @param o Material handle (ignored).
+/// @return `NULL`.
+void *rt_material3d_get_shader(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Material3D.get_Shader: graphics support not compiled in", NULL);
+}
+
+/// @brief Trapping stub for `Material3D.ClearShader` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+void rt_material3d_clear_shader(void *o) {
+    (void)o;
+    RT_GRAPHICS_TRAP_VOID("Material3D.ClearShader: graphics support not compiled in");
+}
+
+/// @brief Trapping stub for `Material3D.SetShaderParam` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+/// @param a1 Parameter name (ignored before trapping).
+/// @param a2 Value (ignored before trapping).
+void rt_material3d_set_shader_param(void *o, rt_string a1, double a2) {
+    (void)o;
+    (void)a1;
+    (void)a2;
+    RT_GRAPHICS_TRAP_VOID("Material3D.SetShaderParam: graphics support not compiled in");
+}
+
+/// @brief Trapping stub for `Material3D.SetShaderParam2` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+/// @param a1 Parameter name (ignored before trapping).
+/// @param a2 First component (ignored before trapping).
+/// @param a3 Second component (ignored before trapping).
+void rt_material3d_set_shader_param2(void *o, rt_string a1, double a2, double a3) {
+    (void)o;
+    (void)a1;
+    (void)a2;
+    (void)a3;
+    RT_GRAPHICS_TRAP_VOID("Material3D.SetShaderParam2: graphics support not compiled in");
+}
+
+/// @brief Trapping stub for `Material3D.SetShaderParam3` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+/// @param a1 Parameter name (ignored before trapping).
+/// @param a2 First component (ignored before trapping).
+/// @param a3 Second component (ignored before trapping).
+/// @param a4 Third component (ignored before trapping).
+void rt_material3d_set_shader_param3(void *o, rt_string a1, double a2, double a3, double a4) {
+    (void)o;
+    (void)a1;
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    RT_GRAPHICS_TRAP_VOID("Material3D.SetShaderParam3: graphics support not compiled in");
+}
+
+/// @brief Trapping stub for `Material3D.SetShaderParam4` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+/// @param a1 Parameter name (ignored before trapping).
+/// @param a2 First component (ignored before trapping).
+/// @param a3 Second component (ignored before trapping).
+/// @param a4 Third component (ignored before trapping).
+/// @param a5 Fourth component (ignored before trapping).
+void rt_material3d_set_shader_param4(
+    void *o, rt_string a1, double a2, double a3, double a4, double a5) {
+    (void)o;
+    (void)a1;
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
+    RT_GRAPHICS_TRAP_VOID("Material3D.SetShaderParam4: graphics support not compiled in");
+}
+
+/// @brief Trapping stub for `Material3D.SetShaderInt` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+/// @param a1 Parameter name (ignored before trapping).
+/// @param a2 Value (ignored before trapping).
+void rt_material3d_set_shader_int(void *o, rt_string a1, int64_t a2) {
+    (void)o;
+    (void)a1;
+    (void)a2;
+    RT_GRAPHICS_TRAP_VOID("Material3D.SetShaderInt: graphics support not compiled in");
+}
+
+/// @brief Silent fallback stub for `Material3D.ShaderParam` (graphics-disabled build).
+/// @param o Material handle (ignored).
+/// @param a1 Parameter name (ignored).
+/// @return `0.0`.
+double rt_material3d_get_shader_param(void *o, rt_string a1) {
+    (void)o;
+    (void)a1;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("Material3D.ShaderParam: graphics support not compiled in", 0.0);
+}
+
+/// @brief Trapping stub for `Material3D.SetShaderTexture` (graphics-disabled build).
+/// @param o Material handle (ignored before trapping).
+/// @param a1 Texture name (ignored before trapping).
+/// @param a2 Texture source (ignored before trapping).
+void rt_material3d_set_shader_texture(void *o, rt_string a1, void *a2) {
+    (void)o;
+    (void)a1;
+    (void)a2;
+    RT_GRAPHICS_TRAP_VOID("Material3D.SetShaderTexture: graphics support not compiled in");
 }

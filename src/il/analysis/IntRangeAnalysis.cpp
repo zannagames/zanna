@@ -46,6 +46,7 @@
 #include <cstdlib>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -517,18 +518,128 @@ std::optional<IntRange> matchPow2ModuloRange(const BasicBlock &block,
 
 namespace {
 
+/// @brief Temps that always carry the same value: block params whose every
+///        incoming edge passes one identical temp, joined with that temp.
+/// @details The inliner and CFG threading forward a value that already
+///          dominates a block through a block parameter, so one use of the
+///          value reads the parameter and another reads the original temp.
+///          A branch fact learned on either name is a fact about the other.
+///          `members` lists every temp in a group; `groupOf` maps a temp to
+///          its group index.
+struct ValueAliasGroups {
+    std::unordered_map<unsigned, size_t> groupOf;
+    std::vector<std::vector<unsigned>> members;
+};
+
+/// @brief Build the alias groups for @p fn (union-find over param/arg pairs).
+/// @param fn Function whose branch arguments are scanned.
+/// @return Groups with at least two members; temps outside any group are absent.
+ValueAliasGroups computeValueAliases(const Function &fn) {
+    std::unordered_map<std::string, const BasicBlock *> byLabel;
+    for (const auto &block : fn.blocks)
+        byLabel[block.label] = &block;
+
+    // For every block param: the single temp passed on every in-edge, or a
+    // conflict marker (UINT_MAX) once two edges disagree or pass a non-temp.
+    constexpr unsigned kConflict = std::numeric_limits<unsigned>::max();
+    std::unordered_map<unsigned, unsigned> sourceOf;
+    std::unordered_map<unsigned, unsigned> edgeCount;
+    for (const auto &block : fn.blocks) {
+        if (block.instructions.empty())
+            continue;
+        const Instr &term = block.instructions.back();
+        for (size_t branchIndex = 0; branchIndex < term.labels.size(); ++branchIndex) {
+            auto it = byLabel.find(term.labels[branchIndex]);
+            if (it == byLabel.end())
+                continue;
+            const BasicBlock &target = *it->second;
+            for (size_t i = 0; i < target.params.size(); ++i) {
+                const unsigned paramId = target.params[i].id;
+                unsigned source = kConflict;
+                if (branchIndex < term.brArgs.size() && i < term.brArgs[branchIndex].size()) {
+                    const Value &arg = term.brArgs[branchIndex][i];
+                    if (arg.kind == Value::Kind::Temp && arg.id != paramId)
+                        source = arg.id;
+                }
+                ++edgeCount[paramId];
+                auto found = sourceOf.find(paramId);
+                if (found == sourceOf.end())
+                    sourceOf[paramId] = source;
+                else if (found->second != source)
+                    found->second = kConflict;
+            }
+        }
+    }
+
+    std::unordered_map<unsigned, unsigned> parent;
+    auto find = [&](unsigned id) {
+        auto it = parent.find(id);
+        if (it == parent.end())
+            return id;
+        unsigned root = id;
+        while (true) {
+            auto next = parent.find(root);
+            if (next == parent.end() || next->second == root)
+                break;
+            root = next->second;
+        }
+        parent[id] = root;
+        return root;
+    };
+    for (const auto &[paramId, source] : sourceOf) {
+        if (source == kConflict || edgeCount[paramId] == 0)
+            continue;
+        const unsigned a = find(paramId);
+        const unsigned b = find(source);
+        if (a != b)
+            parent[a] = b;
+    }
+
+    ValueAliasGroups groups;
+    std::unordered_map<unsigned, size_t> groupOfRoot;
+    for (const auto &[paramId, source] : sourceOf) {
+        if (source == kConflict)
+            continue;
+        for (unsigned id : {paramId, source}) {
+            const unsigned root = find(id);
+            auto slot = groupOfRoot.find(root);
+            if (slot == groupOfRoot.end()) {
+                slot = groupOfRoot.emplace(root, groups.members.size()).first;
+                groups.members.emplace_back();
+            }
+            if (groups.groupOf.emplace(id, slot->second).second)
+                groups.members[slot->second].push_back(id);
+        }
+    }
+    return groups;
+}
+
+/// @brief Intersect a fact into @p facts for one temp id.
+void refineFact(RangeMap &facts, unsigned id, const IntRange &range) {
+    auto it = facts.find(id);
+    if (it != facts.end()) {
+        if (auto tighter = intersectRanges(it->second, range))
+            it->second = *tighter;
+    } else {
+        facts[id] = range;
+    }
+}
+
 /// @brief Compute the fact map carried by one CFG edge.
 /// @param pred Source block whose exit state is @p outState.
 /// @param term Terminator of @p pred.
 /// @param branchIndex Index of the edge within the terminator's label list.
 /// @param target Destination block (for param binding).
 /// @param outState Exit range state of @p pred.
+/// @param aliases Value alias groups of the function (branch facts apply to
+///        every alias of the constrained temp).
 /// @return Edge-refined facts with destination parameters rebound.
 RangeMap edgeFacts(const BasicBlock &pred,
                    const Instr &term,
                    size_t branchIndex,
                    const BasicBlock &target,
-                   const RangeMap &outState) {
+                   const RangeMap &outState,
+                   const ValueAliasGroups &aliases) {
     RangeMap facts = outState;
 
     // Branch-condition refinement for conditional branches.
@@ -546,12 +657,13 @@ RangeMap edgeFacts(const BasicBlock &pred,
             Value constrained;
             IntRange range;
             if (deriveCompareBranchRange(*cmp, branchIndex, constrained, range)) {
-                auto it = facts.find(constrained.id);
-                if (it != facts.end()) {
-                    if (auto tighter = intersectRanges(it->second, range))
-                        it->second = *tighter;
-                } else {
-                    facts[constrained.id] = range;
+                refineFact(facts, constrained.id, range);
+                auto group = aliases.groupOf.find(constrained.id);
+                if (group != aliases.groupOf.end()) {
+                    for (unsigned alias : aliases.members[group->second]) {
+                        if (alias != constrained.id)
+                            refineFact(facts, alias, range);
+                    }
                 }
             }
         }
@@ -636,6 +748,7 @@ IntRangeInfo computeIntRanges(const Function &fn) {
         return info;
 
     const size_t blockCount = fn.blocks.size();
+    const ValueAliasGroups aliases = computeValueAliases(fn);
     std::unordered_map<std::string, size_t> indexOf;
     indexOf.reserve(blockCount);
     for (size_t i = 0; i < blockCount; ++i)
@@ -744,7 +857,8 @@ IntRangeInfo computeIntRanges(const Function &fn) {
                 if (succIt == indexOf.end())
                     continue;
                 const size_t succIdx = succIt->second;
-                RangeMap facts = edgeFacts(block, term, branchIndex, fn.blocks[succIdx], out);
+                RangeMap facts =
+                    edgeFacts(block, term, branchIndex, fn.blocks[succIdx], out, aliases);
                 if (incoming[succIdx])
                     mergeMapInto(*incoming[succIdx], facts);
                 else

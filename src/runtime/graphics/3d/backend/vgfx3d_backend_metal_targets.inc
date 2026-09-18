@@ -18,6 +18,38 @@
 //===----------------------------------------------------------------------===//
 
 /// @file
+/// @brief Forget the fragment textures recorded for the previous encoder.
+/// @details Every `renderCommandEncoderWithDescriptor:` starts with no argument
+///          state, so the bind table must start empty with it.
+/// @param ctx Borrowed Metal context whose encoder bind table is cleared.
+static void metal_reset_encoder_binds(VGFXMetalContext *ctx) {
+    if (!ctx)
+        return;
+    memset(ctx->_encoderFragTex, 0, sizeof(ctx->_encoderFragTex));
+    ctx->_shadowOpaqueMatBound = 0;
+}
+
+/// @brief Bind a fragment texture only when the slot does not already hold it.
+/// @details Metal keeps encoder argument state across draws; the scene draw path
+///          used to re-bind ~20 textures per draw regardless. Identity compares are
+///          enough because every texture that reaches a slot is retained by a cache
+///          or the context for at least the encoder's lifetime.
+/// @param ctx Borrowed Metal context with an active encoder.
+/// @param texture Texture to bind; nil is ignored.
+/// @param slot Fragment texture slot.
+static inline void metal_bind_frag_texture(VGFXMetalContext *ctx,
+                                           id<MTLTexture> texture,
+                                           NSUInteger slot) {
+    if (!ctx || !texture)
+        return;
+    if (slot < VGFX3D_METAL_FRAG_TEXTURE_SLOTS) {
+        if (ctx->_encoderFragTex[slot] == texture)
+            return;
+        ctx->_encoderFragTex[slot] = texture;
+    }
+    [ctx.encoder setFragmentTexture:texture atIndex:slot];
+}
+
 /// @brief Implements Metal attachment allocation, target caching, pass setup, and texture copies.
 /// @details This implementation fragment owns the GPU resources that back window scenes and
 ///          runtime render targets. It also maintains clustered-light buffers, shadow-slot
@@ -301,7 +333,7 @@ static int metal_cmd_ibl_draw(VGFXMetalContext *ctx,
         return 0;
     }
     generation = vgfx3d_get_cubemap_generation(env_cm);
-    entry = ctx.cubemapCache[[NSValue valueWithPointer:env_cm]];
+    entry = ctx.cubemapCache[metal_ptr_key(env_cm)];
     if (!entry || !entry.texture || entry.generation != generation || entry.uploadInProgress ||
         entry.appliedIblIdentity != env_cm->ibl_identity) {
         return 0;
@@ -412,7 +444,7 @@ static void metal_prune_texture_cache(VGFXMetalContext *ctx) {
     if (!ctx || !ctx.textureCache)
         return;
     keys_to_remove = [NSMutableArray array];
-    for (NSValue *key in ctx.textureCache) {
+    for (NSNumber *key in ctx.textureCache) {
         VGFXMetalTextureCacheEntry *entry = ctx.textureCache[key];
         if (!entry || (!entry.texture && entry.failedGeneration == 0) ||
             vgfx3d_metal_should_prune_cache_entry(
@@ -431,7 +463,7 @@ static void metal_prune_cubemap_cache(VGFXMetalContext *ctx) {
     if (!ctx || !ctx.cubemapCache)
         return;
     keys_to_remove = [NSMutableArray array];
-    for (NSValue *key in ctx.cubemapCache) {
+    for (NSNumber *key in ctx.cubemapCache) {
         VGFXMetalCubemapCacheEntry *entry = ctx.cubemapCache[key];
         if (!entry || (!entry.texture && entry.failedGeneration == 0) ||
             vgfx3d_metal_should_prune_cache_entry(
@@ -450,7 +482,7 @@ static void metal_prune_morph_cache(VGFXMetalContext *ctx) {
     if (!ctx || !ctx.morphCache)
         return;
     keys_to_remove = [NSMutableArray array];
-    for (NSValue *key in ctx.morphCache) {
+    for (NSNumber *key in ctx.morphCache) {
         VGFXMetalMorphCacheEntry *entry = ctx.morphCache[key];
         if (!entry || !entry.deltaBuffer ||
             vgfx3d_metal_should_prune_cache_entry(
@@ -865,6 +897,7 @@ static id<MTLRenderCommandEncoder> metal_ensure_scene_encoder(VGFXMetalContext *
         return nil;
     ctx.encoder = [ctx.cmdBuf renderCommandEncoderWithDescriptor:rp];
     ctx->_encoderLightsRevision = 0; /* fresh encoder: no constants encoded yet */
+    metal_reset_encoder_binds(ctx);
     if (!ctx.encoder)
         return nil;
     ctx->_scenePassPending = 0;

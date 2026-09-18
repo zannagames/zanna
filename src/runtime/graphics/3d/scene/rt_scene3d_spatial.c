@@ -275,17 +275,20 @@ static int scene3d_spatial_parent_chain_valid(rt_scene_node3d *node) {
     rt_scene_node3d *slow = node;
     rt_scene_node3d *fast = node;
     int32_t steps = 0;
+    /* Parents own their children and detach clears the back-pointer, so every
+     * link on the chain is a retained node: the header check is enough here,
+     * and this walk runs per drawn entry per frame. */
     while (fast && steps++ < SCENE3D_SPATIAL_ANCESTOR_MAX) {
-        if (!rt_g3d_has_class(fast, RT_G3D_SCENENODE3D_CLASS_ID))
+        if (!rt_g3d_has_class_retained(fast, RT_G3D_SCENENODE3D_CLASS_ID))
             return 0;
         fast = fast->parent;
         if (fast) {
-            if (!rt_g3d_has_class(fast, RT_G3D_SCENENODE3D_CLASS_ID))
+            if (!rt_g3d_has_class_retained(fast, RT_G3D_SCENENODE3D_CLASS_ID))
                 return 0;
             fast = fast->parent;
         }
         if (slow) {
-            if (!rt_g3d_has_class(slow, RT_G3D_SCENENODE3D_CLASS_ID))
+            if (!rt_g3d_has_class_retained(slow, RT_G3D_SCENENODE3D_CLASS_ID))
                 return 0;
             slow = slow->parent;
         }
@@ -1395,8 +1398,8 @@ void *scene3d_effective_animator(rt_scene_node3d *node) {
     if (!scene3d_spatial_parent_chain_valid(node))
         return NULL;
     while (current && steps++ < SCENE3D_SPATIAL_ANCESTOR_MAX) {
-        void *animator =
-            rt_g3d_checked_or_null(current->bound_animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
+        void *animator = rt_g3d_checked_or_null_retained(current->bound_animator,
+                                                         RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
         if (animator)
             return animator;
         current = current->parent;

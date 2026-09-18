@@ -151,6 +151,9 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0366](0366-platform-services-workshop.md) — Platform Services Workshop (Steam Workshop First)
 - [ADR 0367](0367-canvas-fullscreen-letterbox-and-query.md) — 2D Canvas Fullscreen Presentation (Centered Letterbox, Last Request Wins, IsFullscreen)
 - [ADR 0368](0368-rendertarget-display-pixels.md) — RenderTarget3D.AsDisplayPixels (Display-Referred Offscreen Readback)
+- [ADR 0369](0369-canvas3d-target-frame-rate.md) — Canvas3D.SetTargetFrameRate (Display-Snapped Frame Pacing)
+- [ADR 0370](0370-custom-shaders.md) — Custom Shaders as Raw Per-Backend Source (`Shader3D`)
+- [ADR 0371](0371-canvas3d-render-thread.md) — Canvas3D Render Thread (Deferred Frame Execution Off the Sim Thread) — draft
 
 ## GUI & IDE
 

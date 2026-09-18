@@ -10,6 +10,10 @@ last-verified: 2026-08-03
 
 Proposed (decision recorded; implementation is its own program)
 
+Partially superseded by [ADR 0370](0370-custom-shaders.md): user-authored
+per-backend shader source is now accepted through `Shader3D`; the
+parameterized vocabulary below remains a possible layer on top of it.
+
 ## Context
 
 Zanna ships six fixed shading models with all shaders compiled in as

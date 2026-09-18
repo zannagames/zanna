@@ -39,6 +39,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dxgi1_6.h>
 #include <windows.h>
 
 #include "rt_textureasset3d.h"
@@ -414,6 +415,17 @@ typedef struct {
     ID3D11Device *device;
     ID3D11DeviceContext *ctx;
     IDXGISwapChain *swap_chain;
+    /* Plan 127: flip-model presentation. `swap_chain_flags` are the creation
+     * flags ResizeBuffers must repeat; `tearing_supported` allows an unpaced
+     * Present to tear instead of queueing; the waitable object is signalled when
+     * DXGI can accept the next frame, so the CPU blocks at the start of a frame
+     * (before input and simulation) instead of inside Present. */
+    UINT swap_chain_flags;
+    int8_t tearing_supported;
+    int8_t flip_model;
+    HANDLE frame_latency_waitable;
+    /* Adapter the device runs on (narrowed DXGI description), for diagnostics. */
+    char adapter_name[128];
     ID3D11RenderTargetView *rtv;
     ID3D11Texture2D *depth_tex;
     ID3D11DepthStencilView *dsv;
@@ -1683,7 +1695,12 @@ static int d3d11_present_swapchain(d3d11_context_t *ctx) {
     snapshot_ok = ctx->capture_after_present ? d3d11_snapshot_backbuffer_for_readback(ctx) : 0;
     if (!ctx->capture_after_present)
         ctx->presented_color_valid = 0;
-    hr = IDXGISwapChain_Present(ctx->swap_chain, ctx->present_sync_interval, 0);
+    /* Plan 127: an unpaced present on a flip-model chain tears instead of queueing. */
+    hr = IDXGISwapChain_Present(ctx->swap_chain,
+                                ctx->present_sync_interval,
+                                (ctx->present_sync_interval == 0 && ctx->tearing_supported)
+                                    ? DXGI_PRESENT_ALLOW_TEARING
+                                    : 0u);
     if (hr != S_OK) {
         if (FAILED(hr)) {
             d3d11_log_hresult("IDXGISwapChain::Present", hr);

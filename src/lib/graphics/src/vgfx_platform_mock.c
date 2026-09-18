@@ -522,6 +522,16 @@ int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     return 0;
 }
 
+/// @brief Display refresh rate is not reported on this platform.
+/// @param win Unused.
+/// @param out_hz Unused.
+/// @return Always 0 (unknown).
+int vgfx_platform_get_display_refresh_hz(struct vgfx_window *win, double *out_hz) {
+    (void)win;
+    (void)out_hz;
+    return 0;
+}
+
 /// @brief Mock relative mouse mode: always reports native raw support.
 /// @details Tests drive the accumulators deterministically through
 ///          vgfx_mock_push_relative_delta(), exercising the exact code path

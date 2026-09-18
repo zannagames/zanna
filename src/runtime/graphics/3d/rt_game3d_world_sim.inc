@@ -367,7 +367,10 @@ static void game3d_animation_job_run(void *arg) {
         return;
     for (int32_t i = job->start; i < job->end; ++i) {
         void *anim = job->animators[i];
-        if (rt_obj_is_instance(anim, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID, sizeof(rt_game3d_animator)))
+        /* Animators reach here through entity slots the world retains; the
+         * worker jobs must not contend on the registry for a class check. */
+        if (rt_obj_is_instance_retained(
+                anim, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID, sizeof(rt_game3d_animator)))
             rt_game3d_animator_update(anim, job->dt);
     }
 }
@@ -397,7 +400,7 @@ static void game3d_update_animator_list_serial(void **animators, int32_t count, 
     if (!animators || count <= 0 || (uint32_t)count > RT_GAME3D_MAX_ENTITY_NODES || !isfinite(dt))
         return;
     for (int32_t i = 0; i < count; ++i) {
-        if (rt_obj_is_instance(
+        if (rt_obj_is_instance_retained(
                 animators[i], RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID, sizeof(rt_game3d_animator)))
             rt_game3d_animator_update(animators[i], dt);
     }
@@ -564,9 +567,9 @@ static void game3d_world_update_animations(rt_game3d_world *world, double dt) {
         seen_cap <<= 1;
     seen = game3d_world_prepare_animation_seen_set(world, seen_cap);
     for (int32_t i = 0; i < entity_count; ++i) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         void *anim = game3d_entity_anim_ref(entity);
@@ -1022,6 +1025,61 @@ static int game3d_entity_id_set_insert(game3d_entity_id_set *set, int64_t id) {
 
 /// @brief Release an operation-local stable-ID set.
 /// @param set Set to clear; NULL is accepted.
+/// @brief Membership test for a stable id (no insertion).
+/// @param set Borrowed set; an empty set contains nothing.
+/// @param id Candidate stable id.
+/// @return 1 when present, otherwise 0.
+static int game3d_entity_id_set_contains(const game3d_entity_id_set *set, int64_t id) {
+    size_t mask;
+    size_t slot;
+    if (!set || !set->slots || set->capacity == 0u || id <= 0)
+        return 0;
+    mask = set->capacity - 1u;
+    slot = game3d_entity_id_hash(id) & mask;
+    while (set->slots[slot] != 0) {
+        if (set->slots[slot] == id)
+            return 1;
+        slot = (slot + 1u) & mask;
+    }
+    return 0;
+}
+
+/// @brief Borrow the world's persistent stable-id set as a set value.
+static void game3d_world_stable_ids_borrow(rt_game3d_world *world, game3d_entity_id_set *out) {
+    memset(out, 0, sizeof(*out));
+    if (!world)
+        return;
+    out->slots = world->stable_id_slots;
+    out->count = world->stable_id_count;
+    out->capacity = world->stable_id_capacity;
+}
+
+/// @brief Store a borrowed set value back into the world (the set may have grown).
+static void game3d_world_stable_ids_store(rt_game3d_world *world, const game3d_entity_id_set *set) {
+    if (!world || !set)
+        return;
+    world->stable_id_slots = set->slots;
+    world->stable_id_count = set->count;
+    world->stable_id_capacity = set->capacity;
+}
+
+/// @brief Forget the persistent stable-id set; the next preflight rebuilds it.
+static void game3d_world_stable_ids_invalidate(rt_game3d_world *world) {
+    if (world)
+        world->stable_ids_valid = 0;
+}
+
+/// @brief Release the persistent stable-id set.
+static void game3d_world_stable_ids_free(rt_game3d_world *world) {
+    if (!world)
+        return;
+    free(world->stable_id_slots);
+    world->stable_id_slots = NULL;
+    world->stable_id_count = 0;
+    world->stable_id_capacity = 0;
+    world->stable_ids_valid = 0;
+}
+
 static void game3d_entity_id_set_free(game3d_entity_id_set *set) {
     if (!set)
         return;
@@ -1137,6 +1195,7 @@ static void game3d_world_despawn_entity_one_internal(rt_game3d_world *world,
     entity->spawned = 0;
     entity->world = NULL;
     game3d_world_registry_remove_no_rebuild(world, entity);
+    game3d_world_stable_ids_invalidate(world);
     if (mark_destroyed) {
         game3d_entity_mark_dead(entity);
         if (rt_obj_release_check0(entity))
@@ -1266,6 +1325,7 @@ static int game3d_world_preflight_spawn_tree(rt_game3d_world *world,
     game3d_entity_tree_item *stack = NULL;
     game3d_entity_visit_set visited;
     game3d_entity_id_set ids;
+    game3d_entity_id_set registry_ids;
     int32_t count = 0;
     int32_t capacity = 0;
     int32_t existing_count;
@@ -1275,32 +1335,52 @@ static int game3d_world_preflight_spawn_tree(rt_game3d_world *world,
     const char *error = "Game3D.World3D.spawn: validation failed";
     memset(&visited, 0, sizeof(visited));
     memset(&ids, 0, sizeof(ids));
+    memset(&registry_ids, 0, sizeof(registry_ids));
     if (!world || !root) {
         error = "Game3D.World3D.spawn: invalid entity graph";
         goto cleanup;
     }
 
     existing_count = game3d_world_repair_entity_count(world);
-    for (int32_t i = 0; i < existing_count; ++i) {
-        rt_game3d_entity *existing = rt_obj_is_instance(world->entities[i],
-                                                        RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                        sizeof(rt_game3d_entity))
-                                         ? world->entities[i]
-                                         : NULL;
-        if (!existing || existing->id <= 0) {
-            error = "Game3D.World3D.spawn: corrupt entity registry stable id";
-            goto cleanup;
+    if (!world->stable_ids_valid) {
+        /* Plan 127: rebuild the persistent registry-id set only when a despawn or
+         * rollback invalidated it; a spawn extends it after it succeeds. */
+        game3d_entity_id_set rebuilt;
+        game3d_world_stable_ids_borrow(world, &rebuilt);
+        world->stable_id_slots = NULL;
+        world->stable_id_count = 0;
+        world->stable_id_capacity = 0;
+        if (rebuilt.slots)
+            memset(rebuilt.slots, 0, rebuilt.capacity * sizeof(*rebuilt.slots));
+        rebuilt.count = 0;
+        for (int32_t i = 0; i < existing_count; ++i) {
+            rt_game3d_entity *existing = rt_obj_is_instance_retained(world->entities[i],
+                                                                     RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                                     sizeof(rt_game3d_entity))
+                                             ? world->entities[i]
+                                             : NULL;
+            int inserted;
+            if (!existing || existing->id <= 0) {
+                game3d_entity_id_set_free(&rebuilt);
+                error = "Game3D.World3D.spawn: corrupt entity registry stable id";
+                goto cleanup;
+            }
+            inserted = game3d_entity_id_set_insert(&rebuilt, existing->id);
+            if (inserted == 0) {
+                game3d_entity_id_set_free(&rebuilt);
+                error = "Game3D.World3D.spawn: duplicate stable entity id";
+                goto cleanup;
+            }
+            if (inserted < 0) {
+                game3d_entity_id_set_free(&rebuilt);
+                error = "Game3D.World3D.spawn: stable-id validation allocation failed";
+                goto cleanup;
+            }
         }
-        int inserted = game3d_entity_id_set_insert(&ids, existing->id);
-        if (inserted == 0) {
-            error = "Game3D.World3D.spawn: duplicate stable entity id";
-            goto cleanup;
-        }
-        if (inserted < 0) {
-            error = "Game3D.World3D.spawn: stable-id validation allocation failed";
-            goto cleanup;
-        }
+        game3d_world_stable_ids_store(world, &rebuilt);
+        world->stable_ids_valid = 1;
     }
+    game3d_world_stable_ids_borrow(world, &registry_ids);
 
     if (game3d_entity_visit_set_insert(&visited, root) < 0 ||
         !game3d_entity_tree_push(&stack, &count, &capacity, root, 0, 0)) {
@@ -1337,7 +1417,12 @@ static int game3d_world_preflight_spawn_tree(rt_game3d_world *world,
             goto cleanup;
         }
         if (entity->id > 0) {
-            int inserted = game3d_entity_id_set_insert(&ids, entity->id);
+            int inserted;
+            if (game3d_entity_id_set_contains(&registry_ids, entity->id)) {
+                error = "Game3D.World3D.spawn: duplicate stable entity id";
+                goto cleanup;
+            }
+            inserted = game3d_entity_id_set_insert(&ids, entity->id);
             if (inserted == 0) {
                 error = "Game3D.World3D.spawn: duplicate stable entity id";
                 goto cleanup;
@@ -1369,7 +1454,12 @@ static int game3d_world_preflight_spawn_tree(rt_game3d_world *world,
         }
         int64_t candidate = *next_id;
         for (size_t i = 0; i < unassigned_count; ++i, ++candidate) {
-            int inserted = game3d_entity_id_set_insert(&ids, candidate);
+            int inserted;
+            if (game3d_entity_id_set_contains(&registry_ids, candidate)) {
+                error = "Game3D.World3D.spawn: duplicate stable entity id";
+                goto cleanup;
+            }
+            inserted = game3d_entity_id_set_insert(&ids, candidate);
             if (inserted == 0) {
                 error = "Game3D.World3D.spawn: duplicate stable entity id";
                 goto cleanup;
@@ -1593,6 +1683,19 @@ int game3d_world_spawn_entity_tree(rt_game3d_world *world,
             }
         }
     }
+    if (world->stable_ids_valid) {
+        game3d_entity_id_set registry_ids;
+        game3d_world_stable_ids_borrow(world, &registry_ids);
+        for (int32_t i = 0; i < spawned_entities.count; ++i) {
+            rt_game3d_entity *spawned_entity = spawned_entities.items[i].entity;
+            if (!spawned_entity || spawned_entity->id <= 0 ||
+                game3d_entity_id_set_insert(&registry_ids, spawned_entity->id) < 0) {
+                world->stable_ids_valid = 0;
+                break;
+            }
+        }
+        game3d_world_stable_ids_store(world, &registry_ids);
+    }
     free(stack);
     game3d_entity_visit_set_free(&visited);
     game3d_spawned_entity_list_free(&spawned_entities);
@@ -1606,6 +1709,7 @@ int game3d_world_spawn_entity_tree(rt_game3d_world *world,
 static void game3d_world_release_runtime(rt_game3d_world *world, int mark_entities_destroyed) {
     if (!world)
         return;
+    game3d_world_stable_ids_free(world);
     game3d_world_repair_entity_count(world);
     while (world->entity_count > 0) {
         rt_game3d_entity *entity = world->entities[world->entity_count - 1];

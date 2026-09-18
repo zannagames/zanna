@@ -1094,12 +1094,256 @@ static HRESULT d3d11_create_context_skybox_buffer(d3d11_context_t *ctx) {
 static void d3d11_release_device_attempt(d3d11_context_t *ctx) {
     if (!ctx)
         return;
+    if (ctx->frame_latency_waitable) {
+        CloseHandle(ctx->frame_latency_waitable);
+        ctx->frame_latency_waitable = NULL;
+    }
+    ctx->swap_chain_flags = 0;
+    ctx->tearing_supported = 0;
+    ctx->flip_model = 0;
     SAFE_RELEASE(ctx->ctx);
     SAFE_RELEASE(ctx->swap_chain);
     SAFE_RELEASE(ctx->device);
 }
 
+/* Plan 127: DXGI interface ids kept inline, like the factory id above, because
+ * Zanna's native link does not consume dxguid.lib. */
+static const GUID k_d3d11_iid_dxgi_device = {
+    0x54ec77fa, 0x1377, 0x44e6, {0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c}};
+static const GUID k_d3d11_iid_dxgi_adapter1 = {
+    0x29038f61, 0x3839, 0x4626, {0x91, 0xfd, 0x08, 0x68, 0x79, 0x01, 0x1a, 0x05}};
+static const GUID k_d3d11_iid_dxgi_factory2 = {
+    0x50c83a1c, 0xe072, 0x4c48, {0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0}};
+static const GUID k_d3d11_iid_dxgi_factory5 = {
+    0x7632e1f5, 0xee65, 0x4dca, {0x87, 0xfd, 0x84, 0xcd, 0x75, 0xf8, 0x83, 0x8d}};
+static const GUID k_d3d11_iid_dxgi_factory6 = {
+    0xc1b6694f, 0xff09, 0x44a9, {0xb0, 0x3c, 0x77, 0x90, 0x0a, 0x0a, 0x1d, 0x17}};
+static const GUID k_d3d11_iid_dxgi_swapchain2 = {
+    0xa8be2ac4, 0x199f, 0x4946, {0xb3, 0x31, 0x79, 0x59, 0x9f, 0xb9, 0x8d, 0xe7}};
+
+/// @brief Narrow a DXGI adapter description into the context's diagnostic name and log it.
+/// @param[in,out] ctx Context receiving the adapter name.
+/// @param[in] desc Adapter description; NULL clears the name.
+static void d3d11_note_adapter(d3d11_context_t *ctx, const DXGI_ADAPTER_DESC1 *desc) {
+    char buffer[256] = {0};
+    size_t n = 0;
+    if (!ctx)
+        return;
+    memset(ctx->adapter_name, 0, sizeof(ctx->adapter_name));
+    if (!desc)
+        return;
+    for (n = 0; n + 1 < sizeof(ctx->adapter_name) && desc->Description[n] != 0; n++) {
+        WCHAR wc = desc->Description[n];
+        ctx->adapter_name[n] = (wc > 0 && wc < 127) ? (char)wc : '?';
+    }
+    d3d11_format_log_message(buffer,
+                             sizeof(buffer),
+                             "[vgfx3d_d3d11] adapter: %s (dedicated %lu MB%s)\n",
+                             ctx->adapter_name,
+                             (unsigned long)(desc->DedicatedVideoMemory / (1024u * 1024u)),
+                             (desc->Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? ", software" : "");
+    OutputDebugStringA(buffer);
+    fputs(buffer, stderr);
+}
+
+/// @brief Move a freshly created hardware device onto the high-performance adapter.
+/// @details `D3D11CreateDevice(NULL, HARDWARE)` uses the default adapter, which on a
+///   hybrid laptop is the integrated GPU unless the user pinned the executable in
+///   the OS graphics settings. Zanna's native linker emits no export table, so the
+///   `NvOptimusEnablement` convention is unavailable; instead the factory behind the
+///   probe device is asked for its `DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE` adapter
+///   (`IDXGIFactory6`, Windows 10 1803+) and, when that is a different adapter, the
+///   device is recreated on it with `D3D_DRIVER_TYPE_UNKNOWN`. Failure at any step
+///   keeps the probe device. No new DLL import is taken: every call is a COM method
+///   reached from the device.
+/// @param[in,out] ctx Context whose device/immediate context may be replaced.
+/// @param[in] flags Device creation flags to reuse.
+/// @param[in] feature_level Requested feature level to reuse.
+static void d3d11_prefer_high_performance_adapter(d3d11_context_t *ctx,
+                                                  UINT flags,
+                                                  D3D_FEATURE_LEVEL feature_level) {
+    IDXGIDevice *dxgi_device = NULL;
+    IDXGIAdapter *current = NULL;
+    IDXGIAdapter1 *preferred = NULL;
+    IDXGIFactory6 *factory6 = NULL;
+    DXGI_ADAPTER_DESC current_desc;
+    DXGI_ADAPTER_DESC1 preferred_desc;
+    HRESULT hr;
+
+    if (!ctx || !ctx->device)
+        return;
+    memset(&current_desc, 0, sizeof(current_desc));
+    memset(&preferred_desc, 0, sizeof(preferred_desc));
+    hr = ID3D11Device_QueryInterface(ctx->device, &k_d3d11_iid_dxgi_device, (void **)&dxgi_device);
+    if (FAILED(hr) || !dxgi_device)
+        goto done;
+    hr = IDXGIDevice_GetAdapter(dxgi_device, &current);
+    if (FAILED(hr) || !current)
+        goto done;
+    (void)IDXGIAdapter_GetDesc(current, &current_desc);
+    hr = IDXGIAdapter_GetParent(current, &k_d3d11_iid_dxgi_factory6, (void **)&factory6);
+    if (FAILED(hr) || !factory6)
+        goto done;
+    hr = IDXGIFactory6_EnumAdapterByGpuPreference(factory6,
+                                                  0,
+                                                  DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                  &k_d3d11_iid_dxgi_adapter1,
+                                                  (void **)&preferred);
+    if (FAILED(hr) || !preferred)
+        goto done;
+    hr = IDXGIAdapter1_GetDesc1(preferred, &preferred_desc);
+    if (FAILED(hr))
+        goto done;
+    if (preferred_desc.AdapterLuid.LowPart == current_desc.AdapterLuid.LowPart &&
+        preferred_desc.AdapterLuid.HighPart == current_desc.AdapterLuid.HighPart)
+        goto done;
+    {
+        ID3D11Device *device = NULL;
+        ID3D11DeviceContext *context = NULL;
+        D3D_FEATURE_LEVEL created = (D3D_FEATURE_LEVEL)0;
+        hr = D3D11CreateDevice((IDXGIAdapter *)preferred,
+                               D3D_DRIVER_TYPE_UNKNOWN,
+                               NULL,
+                               flags,
+                               &feature_level,
+                               1,
+                               D3D11_SDK_VERSION,
+                               &device,
+                               &created,
+                               &context);
+        if (SUCCEEDED(hr) && device && context && created == feature_level) {
+            SAFE_RELEASE(ctx->ctx);
+            SAFE_RELEASE(ctx->device);
+            ctx->device = device;
+            ctx->ctx = context;
+        } else {
+            d3d11_log_hresult("D3D11CreateDevice(high-performance adapter)", hr);
+            SAFE_RELEASE(context);
+            SAFE_RELEASE(device);
+        }
+    }
+done:
+    if (ctx->device) {
+        IDXGIDevice *final_device = NULL;
+        IDXGIAdapter *final_adapter = NULL;
+        IDXGIAdapter1 *final_adapter1 = NULL;
+        DXGI_ADAPTER_DESC1 final_desc;
+        memset(&final_desc, 0, sizeof(final_desc));
+        if (SUCCEEDED(ID3D11Device_QueryInterface(
+                ctx->device, &k_d3d11_iid_dxgi_device, (void **)&final_device)) &&
+            final_device && SUCCEEDED(IDXGIDevice_GetAdapter(final_device, &final_adapter)) &&
+            final_adapter &&
+            SUCCEEDED(IDXGIAdapter_QueryInterface(
+                final_adapter, &k_d3d11_iid_dxgi_adapter1, (void **)&final_adapter1)) &&
+            final_adapter1 && SUCCEEDED(IDXGIAdapter1_GetDesc1(final_adapter1, &final_desc)))
+            d3d11_note_adapter(ctx, &final_desc);
+        SAFE_RELEASE(final_adapter1);
+        SAFE_RELEASE(final_adapter);
+        SAFE_RELEASE(final_device);
+    }
+    SAFE_RELEASE(preferred);
+    SAFE_RELEASE(factory6);
+    SAFE_RELEASE(current);
+    SAFE_RELEASE(dxgi_device);
+}
+
+/// @brief Create a flip-model swap chain for @p hwnd on the context's device.
+/// @details `DXGI_SWAP_EFFECT_FLIP_DISCARD` with three buffers presents through the
+///   compositor without the blt-model copy; the frame-latency waitable object with a
+///   maximum latency of one keeps the CPU one frame ahead at most and moves the wait
+///   from Present to the start of the next frame; `ALLOW_TEARING` is requested when
+///   the factory supports it so an unpaced present (vsync off) never queues. The
+///   factory comes from the device's adapter, so no new import is needed.
+/// @param[in,out] ctx Context receiving the swap chain and its pacing state.
+/// @param[in] hwnd Window receiving the swap chain.
+/// @param[in] width Backbuffer width in pixels.
+/// @param[in] height Backbuffer height in pixels.
+/// @return S_OK on success, otherwise the first failing HRESULT.
+static HRESULT d3d11_create_flip_swap_chain(d3d11_context_t *ctx,
+                                            HWND hwnd,
+                                            int32_t width,
+                                            int32_t height) {
+    IDXGIDevice *dxgi_device = NULL;
+    IDXGIAdapter *adapter = NULL;
+    IDXGIFactory2 *factory2 = NULL;
+    IDXGIFactory5 *factory5 = NULL;
+    IDXGISwapChain1 *swap_chain1 = NULL;
+    IDXGISwapChain2 *swap_chain2 = NULL;
+    DXGI_SWAP_CHAIN_DESC1 desc;
+    BOOL allow_tearing = FALSE;
+    HRESULT hr;
+
+    if (!ctx || !ctx->device || !hwnd)
+        return E_INVALIDARG;
+    hr = ID3D11Device_QueryInterface(ctx->device, &k_d3d11_iid_dxgi_device, (void **)&dxgi_device);
+    if (FAILED(hr) || !dxgi_device)
+        goto fail;
+    hr = IDXGIDevice_GetAdapter(dxgi_device, &adapter);
+    if (FAILED(hr) || !adapter)
+        goto fail;
+    hr = IDXGIAdapter_GetParent(adapter, &k_d3d11_iid_dxgi_factory2, (void **)&factory2);
+    if (FAILED(hr) || !factory2)
+        goto fail;
+    if (SUCCEEDED(IDXGIFactory2_QueryInterface(
+            factory2, &k_d3d11_iid_dxgi_factory5, (void **)&factory5)) &&
+        factory5) {
+        if (FAILED(IDXGIFactory5_CheckFeatureSupport(factory5,
+                                                     DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                                                     &allow_tearing,
+                                                     sizeof(allow_tearing))))
+            allow_tearing = FALSE;
+    }
+
+    memset(&desc, 0, sizeof(desc));
+    desc.Width = (UINT)width;
+    desc.Height = (UINT)height;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 3;
+    desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
+                 (allow_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u);
+    hr = IDXGIFactory2_CreateSwapChainForHwnd(
+        factory2, (IUnknown *)ctx->device, hwnd, &desc, NULL, NULL, &swap_chain1);
+    if (FAILED(hr) || !swap_chain1)
+        goto fail;
+    ctx->swap_chain = (IDXGISwapChain *)swap_chain1;
+    swap_chain1 = NULL;
+    ctx->swap_chain_flags = desc.Flags;
+    ctx->tearing_supported = allow_tearing ? 1 : 0;
+    ctx->flip_model = 1;
+    if (SUCCEEDED(IDXGISwapChain_QueryInterface(
+            ctx->swap_chain, &k_d3d11_iid_dxgi_swapchain2, (void **)&swap_chain2)) &&
+        swap_chain2) {
+        if (FAILED(IDXGISwapChain2_SetMaximumFrameLatency(swap_chain2, 1)))
+            d3d11_log_hresult("IDXGISwapChain2::SetMaximumFrameLatency", E_FAIL);
+        ctx->frame_latency_waitable = IDXGISwapChain2_GetFrameLatencyWaitableObject(swap_chain2);
+    }
+    hr = S_OK;
+    goto cleanup;
+
+fail:
+    if (SUCCEEDED(hr))
+        hr = E_FAIL;
+cleanup:
+    SAFE_RELEASE(swap_chain2);
+    SAFE_RELEASE(swap_chain1);
+    SAFE_RELEASE(factory5);
+    SAFE_RELEASE(factory2);
+    SAFE_RELEASE(adapter);
+    SAFE_RELEASE(dxgi_device);
+    return hr;
+}
+
 /// @brief Attempt one feature-level-11 device/swapchain creation transaction.
+/// @details Hardware devices are created without a swap chain, moved to the
+///   high-performance adapter when the system has one, and paired with a flip-model
+///   swap chain; if the flip path is unavailable the legacy
+///   `D3D11CreateDeviceAndSwapChain` blt-model path is used exactly as before. WARP
+///   always takes the legacy path.
 /// @param[in,out] ctx Backend context receiving the created core interfaces.
 /// @param[in] driver_type Hardware or fallback D3D11 driver type to try.
 /// @param[in] swap_desc Prepared windowed swap-chain descriptor.
@@ -1114,6 +1358,34 @@ static HRESULT d3d11_try_create_device(d3d11_context_t *ctx,
     if (!ctx || !swap_desc)
         return E_INVALIDARG;
     d3d11_release_device_attempt(ctx);
+    if (driver_type == D3D_DRIVER_TYPE_HARDWARE) {
+        hr = D3D11CreateDevice(NULL,
+                               driver_type,
+                               NULL,
+                               D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                               &requested_feature_level,
+                               1,
+                               D3D11_SDK_VERSION,
+                               &ctx->device,
+                               &created_feature_level,
+                               &ctx->ctx);
+        if (SUCCEEDED(hr) && ctx->device && ctx->ctx &&
+            created_feature_level == requested_feature_level) {
+            d3d11_prefer_high_performance_adapter(
+                ctx, D3D11_CREATE_DEVICE_BGRA_SUPPORT, requested_feature_level);
+            hr = d3d11_create_flip_swap_chain(ctx,
+                                              swap_desc->OutputWindow,
+                                              (int32_t)swap_desc->BufferDesc.Width,
+                                              (int32_t)swap_desc->BufferDesc.Height);
+            if (SUCCEEDED(hr) && ctx->swap_chain &&
+                d3d11_device_context_belongs_to_device(ctx->ctx, ctx->device) &&
+                d3d11_swap_chain_belongs_to_device(ctx->swap_chain, ctx->device))
+                return S_OK;
+            d3d11_log_hresult("IDXGIFactory2::CreateSwapChainForHwnd(flip)", hr);
+        }
+        d3d11_release_device_attempt(ctx);
+        created_feature_level = (D3D_FEATURE_LEVEL)0;
+    }
     hr = D3D11CreateDeviceAndSwapChain(NULL,
                                        driver_type,
                                        NULL,
@@ -1168,6 +1440,9 @@ static HRESULT d3d11_try_create_headless_device(d3d11_context_t *ctx, D3D_DRIVER
         hr = E_POINTER;
     if (SUCCEEDED(hr) && created_feature_level != requested_feature_level)
         hr = E_FAIL;
+    if (SUCCEEDED(hr) && driver_type == D3D_DRIVER_TYPE_HARDWARE)
+        d3d11_prefer_high_performance_adapter(
+            ctx, D3D11_CREATE_DEVICE_BGRA_SUPPORT, requested_feature_level);
     if (SUCCEEDED(hr) && !d3d11_device_context_belongs_to_device(ctx->ctx, ctx->device))
         hr = E_FAIL;
     if (FAILED(hr))
@@ -1234,7 +1509,7 @@ static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) 
     }
     if (hwnd)
         d3d11_disable_implicit_fullscreen(ctx, hwnd);
-    if (ctx->swap_chain)
+    if (ctx->swap_chain && !ctx->flip_model)
         d3d11_set_max_frame_latency(ctx);
 
     if (ctx->swap_chain) {
@@ -1404,6 +1679,10 @@ static void d3d11_destroy_ctx(void *ctx_ptr) {
     SAFE_RELEASE(ctx->dsv);
     SAFE_RELEASE(ctx->depth_tex);
     SAFE_RELEASE(ctx->rtv);
+    if (ctx->frame_latency_waitable) {
+        CloseHandle(ctx->frame_latency_waitable);
+        ctx->frame_latency_waitable = NULL;
+    }
     SAFE_RELEASE(ctx->swap_chain);
     SAFE_RELEASE(ctx->ctx);
     SAFE_RELEASE(ctx->device);

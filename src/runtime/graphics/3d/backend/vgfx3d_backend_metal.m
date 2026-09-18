@@ -58,6 +58,26 @@ extern void rt_obj_free(void *obj);
 // Objective-C wrapper to hold Metal objects under ARC
 //=============================================================================
 
+/// @brief Fragment texture slots the scene shaders bind (0-19).
+#define VGFX3D_METAL_FRAG_TEXTURE_SLOTS 20
+/// @brief Distinct bone palettes remembered per command buffer.
+#define VGFX3D_METAL_PALETTE_CACHE_SLOTS 128
+/// @brief Distinct shadow instance uploads remembered per command buffer.
+#define VGFX3D_METAL_SHADOW_INST_CACHE_SLOTS 1024
+/// @brief Hash slots for the shadow instance cache (power of two, > cache slots).
+#define VGFX3D_METAL_SHADOW_INST_HASH_SLOTS 4096
+
+/// @brief Dictionary key for a cache identity pointer.
+/// @details Plan 127: `NSValue valueWithPointer:` allocates an object and compares
+///          objCType strings on every hash and isEqual; the sampled profile showed
+///          that under every draw's geometry, texture and morph lookups. A 64-bit
+///          NSNumber is a tagged pointer on arm64/x86-64: no allocation, value hash.
+/// @param ptr Identity pointer (never dereferenced).
+/// @return Autoreleased tagged-pointer key.
+static inline NSNumber *metal_ptr_key(const void *ptr) {
+    return [NSNumber numberWithUnsignedLongLong:(unsigned long long)(uintptr_t)ptr];
+}
+
 @interface VGFXMetalContext : NSObject {
   @public
     float _view[16];
@@ -128,6 +148,47 @@ extern void rt_obj_free(void *obj);
     /* Ambient last encoded into the per-scene constants; ambient is a per-draw
      * parameter, so it participates in the lights-revision dirty check. */
     float _encoderAmbient[3];
+    /* Plan 127: fragment textures bound on the active encoder, by slot. Encoder
+     * argument state persists across draws, so a draw re-binds only the slots
+     * that changed. Unretained on purpose: every texture stored here is kept
+     * alive by a cache or the context for the encoder's lifetime, and the
+     * table is cleared whenever an encoder is created. */
+    __unsafe_unretained id<MTLTexture> _encoderFragTex[VGFX3D_METAL_FRAG_TEXTURE_SLOTS];
+    /* Plan 127: nonzero while the active shadow encoder holds the neutral
+     * material block that opaque casters share (cleared per encoder and by any
+     * alpha-masked caster that binds its own). */
+    int8_t _shadowOpaqueMatBound;
+    /* Plan 127: the light snapshot sanitized once per (source, count, revision,
+     * shadow count) instead of once per draw; consecutive draws of a pass share
+     * one snapshot, so the per-draw copy of up to 64 lights was pure waste. */
+    vgfx3d_light_params_t _sanitizedLights[VGFX3D_MAX_LIGHTS];
+    const vgfx3d_light_params_t *_sanitizedLightsSource;
+    int32_t _sanitizedLightsSourceCount;
+    int32_t _sanitizedLightsCount;
+    int32_t _sanitizedLightsShadowCount;
+    uint32_t _sanitizedLightsRevision;
+    /* Plan 127: bone palettes already uploaded into the current transient ring
+     * slot, keyed by palette address and bone count. An actor's submeshes and
+     * every shadow slot that draws it share one 16 KB pack + upload per command
+     * buffer. Reset when the ring rotates (each command buffer gets a fresh
+     * slot, and frame-arena palette storage is only reused across frames). */
+    const float *_paletteCacheKey[VGFX3D_METAL_PALETTE_CACHE_SLOTS];
+    int32_t _paletteCacheBones[VGFX3D_METAL_PALETTE_CACHE_SLOTS];
+    NSUInteger _paletteCacheOffset[VGFX3D_METAL_PALETTE_CACHE_SLOTS];
+    id<MTLBuffer> _paletteCacheBuffer[VGFX3D_METAL_PALETTE_CACHE_SLOTS];
+    int32_t _paletteCacheCount;
+    /* Plan 127: shadow-pass instance uploads keyed by the matrices' address and
+     * count. Every shadow slot re-submits the same retained cells and auto-
+     * instanced runs (the canvas gives each run frame-arena storage, so an
+     * address is unique for the frame); packing 24k instances per frame three
+     * or four times over was the shadow pass's largest CPU cost. Open-addressed
+     * pointer hash into the entry arrays; reset when the ring rotates. */
+    const float *_shadowInstKey[VGFX3D_METAL_SHADOW_INST_CACHE_SLOTS];
+    int32_t _shadowInstCount[VGFX3D_METAL_SHADOW_INST_CACHE_SLOTS];
+    NSUInteger _shadowInstOffset[VGFX3D_METAL_SHADOW_INST_CACHE_SLOTS];
+    id<MTLBuffer> _shadowInstBuffer[VGFX3D_METAL_SHADOW_INST_CACHE_SLOTS];
+    int16_t _shadowInstHash[VGFX3D_METAL_SHADOW_INST_HASH_SLOTS];
+    int32_t _shadowInstEntries;
     /* Scene-depth probes (lens flares): NDC points registered during frame
      * building are blitted from the scene depth texture into a frame-ring buffer at
      * commit, and the completed handler publishes them into _depthProbeResults

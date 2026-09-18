@@ -1566,6 +1566,16 @@ int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     return 1;
 }
 
+/// @brief Display refresh rate is not reported on X11 (no XRandR dependency).
+/// @param win Unused.
+/// @param out_hz Unused.
+/// @return Always 0 (unknown).
+int vgfx_platform_get_display_refresh_hz(struct vgfx_window *win, double *out_hz) {
+    (void)win;
+    (void)out_hz;
+    return 0;
+}
+
 /// @brief Initialize platform-specific window resources for X11.
 /// @details Opens connection to X server, creates X11 window with appropriate
 ///          attributes, sets up WM_DELETE_WINDOW protocol for close button,

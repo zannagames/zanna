@@ -189,50 +189,20 @@ static int32_t canvas3d_filter_shadow_draw_indices(rt_canvas3d *c,
     return count;
 }
 
-/// @brief Ensure the auto-instancing matrix scratch holds @p needed instance matrices.
-/// @details Grows the canvas-owned contiguous matrix array geometrically and preserves
-///   its previous allocation if growth fails. Existing matrix contents are scratch
-///   data and have no lifetime guarantee across a successful call.
-/// @param c Canvas that owns the reusable matrix scratch allocation.
-/// @param needed Positive number of 4-by-4 matrices required by the pending batch.
-/// @return Nonzero when capacity is available; zero for invalid input, overflow, or
-///   allocation failure.
-static int canvas3d_reserve_auto_instance_matrices(rt_canvas3d *c, int32_t needed) {
-    int32_t new_capacity;
-    float *grown;
-    if (!c || needed <= 0)
-        return 0;
-    if (c->auto_instance_matrix_capacity >= needed)
-        return 1;
-    new_capacity = c->auto_instance_matrix_capacity > 0 ? c->auto_instance_matrix_capacity : 64;
-    while (new_capacity < needed) {
-        if (new_capacity > INT32_MAX / 2) {
-            new_capacity = needed;
-            break;
-        }
-        new_capacity *= 2;
-    }
-    if ((size_t)new_capacity > SIZE_MAX / (sizeof(float) * 16u))
-        return 0;
-    grown = (float *)realloc(c->auto_instance_matrices, (size_t)new_capacity * sizeof(float) * 16u);
-    if (!grown)
-        return 0;
-    c->auto_instance_matrices = grown;
-    c->auto_instance_matrix_capacity = new_capacity;
-    return 1;
-}
-
 /* The instanced path carries one cmd-level transform pair, so batching compares
  * every command byte except those two matrices. They must stay adjacent for the
  * two-segment compare below to cover the whole struct. */
-typedef char canvas3d_assert_transform_fields_adjacent
-    [(offsetof(vgfx3d_draw_cmd_t, prev_model_matrix) ==
-      offsetof(vgfx3d_draw_cmd_t, model_matrix) + sizeof(((vgfx3d_draw_cmd_t *)0)->model_matrix))
-         ? 1
-         : -1];
+typedef char
+    canvas3d_assert_transform_fields_adjacent[(offsetof(vgfx3d_draw_cmd_t, prev_model_matrix) ==
+                                               offsetof(vgfx3d_draw_cmd_t, model_matrix) +
+                                                   sizeof(((vgfx3d_draw_cmd_t *)0)->model_matrix))
+                                                  ? 1
+                                                  : -1];
 
 #define CANVAS3D_CMD_TRANSFORMS_BEGIN offsetof(vgfx3d_draw_cmd_t, model_matrix)
-#define CANVAS3D_CMD_TRANSFORMS_END                                                                    (offsetof(vgfx3d_draw_cmd_t, prev_model_matrix) +                                                   sizeof(((vgfx3d_draw_cmd_t *)0)->prev_model_matrix))
+#define CANVAS3D_CMD_TRANSFORMS_END                                                                \
+    (offsetof(vgfx3d_draw_cmd_t, prev_model_matrix) +                                              \
+     sizeof(((vgfx3d_draw_cmd_t *)0)->prev_model_matrix))
 
 /// @brief Byte-exact command equality ignoring the model/previous-model transforms.
 /// @details Equivalent to zeroing both matrices in copies and comparing whole
@@ -326,14 +296,20 @@ static void canvas3d_submit_shadow_indices(rt_canvas3d *c,
                    canvas3d_shadow_batch_compatible(first, &cmds[indices[i + run]]))
                 run++;
         }
-        if (run > 1 && canvas3d_reserve_auto_instance_matrices(c, run)) {
+        /* Plan 127: each run's matrices come from the frame arena, so the
+         * address identifies the run for the frame and a backend may reuse one
+         * upload across every shadow slot that resubmits it. */
+        float *run_matrices =
+            run > 1 ? (float *)canvas3d_frame_arena_alloc(c, (size_t)run * sizeof(float) * 16u)
+                    : NULL;
+        if (run_matrices) {
             for (int32_t j = 0; j < run; j++)
-                memcpy(c->auto_instance_matrices + (size_t)j * 16u,
+                memcpy(run_matrices + (size_t)j * 16u,
                        cmds[indices[i + j]].cmd.model_matrix,
                        sizeof(float) * 16u);
             deferred_draw_t batch = *first;
             batch.kind = DEFERRED_DRAW_INSTANCED;
-            batch.instance_matrices = c->auto_instance_matrices;
+            batch.instance_matrices = run_matrices;
             batch.instance_count = run;
             canvas3d_shadow_deferred(c, &batch);
             i += run;
@@ -1321,14 +1297,18 @@ static void canvas3d_render_main_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
                            canvas3d_draws_auto_instance_compatible(&opaque[i], &opaque[i + run]))
                         run++;
                 }
-                if (run >= 2 && canvas3d_reserve_auto_instance_matrices(c, run)) {
+                float *run_matrices =
+                    run >= 2
+                        ? (float *)canvas3d_frame_arena_alloc(c, (size_t)run * sizeof(float) * 16u)
+                        : NULL;
+                if (run_matrices) {
                     deferred_draw_t inst = opaque[i];
                     for (int32_t k = 0; k < run; k++)
-                        memcpy(c->auto_instance_matrices + (size_t)k * 16u,
+                        memcpy(run_matrices + (size_t)k * 16u,
                                opaque[i + k].cmd.model_matrix,
                                sizeof(float) * 16u);
                     inst.kind = DEFERRED_DRAW_INSTANCED;
-                    inst.instance_matrices = c->auto_instance_matrices;
+                    inst.instance_matrices = run_matrices;
                     inst.instance_count = run;
                     canvas3d_submit_deferred(c, &inst);
                     c->last_auto_instanced_draws += run;

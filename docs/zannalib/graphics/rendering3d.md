@@ -723,6 +723,8 @@ paths are not GPU occlusion queries or Hi-Z culling.
 | `SetOcclusionCulling(enabled)` | `Void(Boolean)` | Toggle conservative CPU occlusion skips (independent of frustum culling) |
 | `SetVSync(enabled)` | `Void(Boolean)` | Present pacing: vsync defaults on; GPU backends use their native display-sync clock, software presentation uses the window frame limiter, and disabling removes the active limiter for lowest latency |
 | `VSync` | `Boolean` | Requested vsync state |
+| `SetTargetFrameRate(fps)` | `Void(Integer)` | ADR 0369: pace every `Present` to `fps` (clamped to `[1, 1000]`; `0` removes the cap, the default). The wait is snapped to the display refresh when the target divides it (60 on a 120 Hz panel presents on every second refresh), so the presented cadence and `DeltaTime` stay uniform instead of straddling refresh intervals. Synthetic clocks never pace. |
+| `TargetFrameRate` | `Integer` | Current target frame rate, `0` when uncapped |
 | `TrySetRenderScale(scale)` | `Boolean(Double)` | Render the window-backed 3D scene at `scale` x output size (`[0.25, 1]`) and upscale before full-size overlays, readback, and presentation; reduced scales require `BackendSupports("render-scale")`. `>= 1` requests native rendering even on fixed-scale backends. A capable backend can return `false` during an active frame/present transaction or if target allocation fails; the previous scale remains active. Explicit render targets retain their authored size. |
 | `RenderScale` | `Double` | Currently requested render scale (`1` = native) |
 | `DrawCount` | `Integer` | Main 3D draw submissions queued by the latest ended frame |
@@ -1134,6 +1136,14 @@ sprite draws.
 | `ClearAlbedoRenderTarget()` | `Void()` | Detach a render-target albedo binding |
 | `SetEmissiveRenderTarget(rt)` | `Void(Object)` | Bind a `RenderTarget3D`'s live contents as the emissive map (glowing monitors) |
 | `GetCustomParam(index)` | `Double(Integer)` | Read a shading-model custom parameter set by `SetCustomParam` (zero out of range) |
+| `SetShader(shader)` | `Void(Object)` | Bind a `Shader3D` (ADR 0370); the material's shader parameters reset to the shader's declared defaults. A shader the active backend cannot compile leaves the material on its built-in shading model |
+| `Shader` | `Object` | The bound `Shader3D` (borrowed), or null |
+| `ClearShader()` | `Void()` | Detach the bound shader |
+| `SetShaderParam(name, x)` | `Void(String, Double)` | Set a scalar (or the first lane of a vector) parameter declared in the `.zshader` header; unknown names trap with `Material3D.SetShaderParam: unknown param '<name>'` |
+| `SetShaderParam2(name, x, y)` / `SetShaderParam3(name, x, y, z)` / `SetShaderParam4(name, x, y, z, w)` | `Void(String, Double...)` | Set vector parameters; writing more components than the declared type traps with `Material3D.SetShaderParamN: param '<name>' is <type>` |
+| `SetShaderInt(name, value)` | `Void(String, Integer)` | Set an `int` parameter |
+| `ShaderParam(name)` | `Double(String)` | Read the first lane of a parameter (zero when no shader is bound or the name is unknown) |
+| `SetShaderTexture(name, source)` | `Void(String, Object)` | Bind `Pixels`, `TextureAsset3D` or `RenderTarget3D` to one of the shader's declared user textures (at most four) |
 
 Texture map methods accept `Pixels` or `TextureAsset3D` handles with either an
 active RGBA8 fallback or retained native mip blocks. KTX2 BC1, BC3, BC4/BC5,
@@ -1204,6 +1214,55 @@ the previous completed frame, which makes self-referential setups (a monitor
 visible inside its own feed) safe by construction.
 
 ---
+
+### Zanna.Graphics3D.Shader3D
+
+User-authored shader sources bound to a `Material3D` (ADR 0370). A `.zshader`
+file is an engine-parsed header followed by raw `[metal]`, `[hlsl]` and `[glsl]`
+sections; the engine owns the parameter block layout, texture slots and the
+prelude each backend compiles the section against.
+
+**Type:** Instance (obj)
+**Constructor:** `Shader3D.Load(path)`
+
+```
+zshader 1
+name Hologram
+mode surface              # surface | full
+blend alpha               # opaque | alpha | additive | material
+cull none                 # back | front | none | material
+param float  scanSpeed 2.0
+param float3 tint 0.2 0.8 1.0
+texture noiseTex
+[metal]
+...raw MSL...
+```
+
+#### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Name` | `String` | The header's `name`, or empty |
+| `Mode` | `Integer` | `0` surface, `1` full |
+| `Status` | `Integer` | `0` pending, `1` ready, `2` failed (see `Error`), `3` unsupported on the active backend (the material falls back to its built-in shading) |
+| `IsReady` | `Boolean` | `Status == 1` |
+| `Error` | `String` | Parse or compile diagnostic, or empty |
+| `ParamCount` / `TextureCount` | `Integer` | Declared parameter and user-texture counts |
+
+#### Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `Load(path)` / `LoadAsset(assetPath)` / `FromSource(text)` | `Object(String)` | Parse a `.zshader` from disk, the asset manager, or memory. Failures never trap: `Status` becomes `2` and `Error` carries one of `Shader3D.Load: cannot read '<path>'`, `Shader3D: missing 'zshader 1' header`, `Shader3D: line <n>: unknown directive '<word>'`, `Shader3D: param '<name>' redeclared`, `Shader3D: more than 4 textures`, `Shader3D: params exceed 64 floats` |
+| `Reload()` | `Void()` | Re-read and re-parse from the recorded path (Studio hot reload) |
+| `ParamName(i)` / `ParamType(i)` | `String(Integer)` | Declared parameter name and type keyword (`float`, `float2`, `float3`, `float4`, `int`) |
+| `TextureName(i)` | `String(Integer)` | Declared user texture name |
+| `HasBackend(name)` | `Boolean(String)` | Whether the file carries a `metal`, `hlsl` or `glsl` section |
+
+Parameters pack into a 64-float block in declaration order with 16-byte block
+rules (`float`/`int` one lane, `float2` two, `float3`/`float4` a fresh four-lane
+block), and the generated `ZsParams` declaration names them identically on
+every backend.
 
 ### Zanna.Graphics3D.Light3D
 

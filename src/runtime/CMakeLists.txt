@@ -349,6 +349,7 @@ set(RT_GRAPHICS_SOURCES
         graphics/3d/render/rt_mesh3d.c
         graphics/3d/render/rt_camera3d.c
         graphics/3d/render/rt_material3d.c
+        graphics/3d/render/rt_shader3d.c
         graphics/3d/render/rt_light3d.c
         graphics/3d/render/rt_cubemap3d.c
         graphics/3d/render/rt_rendertarget3d.c

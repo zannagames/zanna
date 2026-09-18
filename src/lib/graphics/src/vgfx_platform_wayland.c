@@ -146,6 +146,16 @@ int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     return 0;
 }
 
+/// @brief Display refresh rate is not reported on this platform.
+/// @param win Unused.
+/// @param out_hz Unused.
+/// @return Always 0 (unknown).
+int vgfx_platform_get_display_refresh_hz(struct vgfx_window *win, double *out_hz) {
+    (void)win;
+    (void)out_hz;
+    return 0;
+}
+
 /// @brief Publish a Wayland platform failure through the shared error channel.
 /// @param message Descriptive message, or NULL for a generic fallback.
 static void vgfx_wayland_set_error(const char *message) {
@@ -211,11 +221,10 @@ static int vgfx_wayland_dispatch_available(vgfx_wayland_platform_t *platform, in
         api->display_cancel_read(platform->connection.display);
         return 0;
     }
-    struct pollfd descriptors[2] = {
-        {.fd = api->display_get_fd(platform->connection.display),
-         .events = (short)(POLLIN | (flush_blocked ? POLLOUT : 0)),
-         .revents = 0},
-        {.fd = platform->wake_read_fd, .events = POLLIN, .revents = 0}};
+    struct pollfd descriptors[2] = {{.fd = api->display_get_fd(platform->connection.display),
+                                     .events = (short)(POLLIN | (flush_blocked ? POLLOUT : 0)),
+                                     .revents = 0},
+                                    {.fd = platform->wake_read_fd, .events = POLLIN, .revents = 0}};
     nfds_t descriptor_count = platform->wake_read_fd >= 0 ? 2 : 1;
     int result;
     do {
@@ -225,8 +234,7 @@ static int vgfx_wayland_dispatch_available(vgfx_wayland_platform_t *platform, in
         api->display_cancel_read(platform->connection.display);
         return 0;
     }
-    int was_woken = result > 0 && descriptor_count > 1 &&
-                     (descriptors[1].revents & POLLIN) != 0;
+    int was_woken = result > 0 && descriptor_count > 1 && (descriptors[1].revents & POLLIN) != 0;
     if (was_woken)
         vgfx_wayland_wake_pipe_drain(platform);
     if (result > 0 && (descriptors[0].revents & POLLIN)) {
@@ -507,7 +515,6 @@ int vgfx_platform_present(struct vgfx_window *win) {
     size_t size = (size_t)win->stride * (size_t)win->height;
     return vgfx_wayland_shm_present(&platform->presenter, win->pixels, size);
 }
-
 
 /// @brief The toplevel app id: `org.zanna.<executable basename>` (ADR 0317).
 /// @details Wayland compositors match a toplevel to its desktop entry (and so to its icon)

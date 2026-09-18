@@ -53,6 +53,41 @@ Constructor: `Zanna.Graphics3D.RenderTarget3D.New`
 | <a id="zanna-graphics3d-rendertarget3d-copyto"></a>`CopyTo` | `void(obj)` | `Zanna.Graphics3D.RenderTarget3D.CopyTo` |
 | <a id="zanna-graphics3d-rendertarget3d-new"></a>`New` | `obj<Zanna.Graphics3D.RenderTarget3D>(i64,i64)` | `Zanna.Graphics3D.RenderTarget3D.New` |
 
+<a id="zanna-graphics3d-shader3d"></a>
+### `Zanna.Graphics3D.Shader3D`
+
+Provides user-authored per-backend shader sources for Material3D.
+
+Create `Zanna.Graphics3D.Shader3D` values with `Load`, `LoadAsset` or `FromSource` from a
+`.zshader` document (an engine-parsed header of params, textures, mode, blend and cull, then
+raw `[metal]`, `[hlsl]` and `[glsl]` sections). Bind one to a material with
+`Material3D.SetShader`; `Status` reports 0 pending, 1 ready, 2 failed, 3 unsupported.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-graphics3d-shader3d-name"></a>`Name` | `str` | read-only |
+| <a id="zanna-graphics3d-shader3d-mode"></a>`Mode` | `i64` | read-only |
+| <a id="zanna-graphics3d-shader3d-status"></a>`Status` | `i64` | read-only |
+| <a id="zanna-graphics3d-shader3d-isready"></a>`IsReady` | `i1` | read-only |
+| <a id="zanna-graphics3d-shader3d-error"></a>`Error` | `str` | read-only |
+| <a id="zanna-graphics3d-shader3d-paramcount"></a>`ParamCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-shader3d-texturecount"></a>`TextureCount` | `i64` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-graphics3d-shader3d-load"></a>`Load` | `obj<Zanna.Graphics3D.Shader3D>(str)` | `Zanna.Graphics3D.Shader3D.Load` |
+| <a id="zanna-graphics3d-shader3d-loadasset"></a>`LoadAsset` | `obj<Zanna.Graphics3D.Shader3D>(str)` | `Zanna.Graphics3D.Shader3D.LoadAsset` |
+| <a id="zanna-graphics3d-shader3d-fromsource"></a>`FromSource` | `obj<Zanna.Graphics3D.Shader3D>(str)` | `Zanna.Graphics3D.Shader3D.FromSource` |
+| <a id="zanna-graphics3d-shader3d-reload"></a>`Reload` | `void()` | `Zanna.Graphics3D.Shader3D.Reload` |
+| <a id="zanna-graphics3d-shader3d-paramname"></a>`ParamName` | `str(i64)` | `Zanna.Graphics3D.Shader3D.ParamName` |
+| <a id="zanna-graphics3d-shader3d-paramtype"></a>`ParamType` | `str(i64)` | `Zanna.Graphics3D.Shader3D.ParamType` |
+| <a id="zanna-graphics3d-shader3d-texturename"></a>`TextureName` | `str(i64)` | `Zanna.Graphics3D.Shader3D.TextureName` |
+| <a id="zanna-graphics3d-shader3d-hasbackend"></a>`HasBackend` | `i1(str)` | `Zanna.Graphics3D.Shader3D.HasBackend` |
+
 <a id="zanna-graphics3d-canvas3d"></a>
 ### `Zanna.Graphics3D.Canvas3D`
 
@@ -165,6 +200,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-iblintensity"></a>`IblIntensity` | `f64` | read/write |
 | <a id="zanna-graphics3d-canvas3d-shadowdistance"></a>`ShadowDistance` | `f64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-vsync"></a>`VSync` | `i1` | read-only |
+| <a id="zanna-graphics3d-canvas3d-targetframerate"></a>`TargetFrameRate` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-captureafterpresent"></a>`CaptureAfterPresent` | `i1` | read-only |
 | <a id="zanna-graphics3d-canvas3d-renderscale"></a>`RenderScale` | `f64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-heightfogenabled"></a>`HeightFogEnabled` | `i1` | read-only |
@@ -258,6 +294,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-setshadowdistance"></a>`SetShadowDistance` | `void(f64)` | `Zanna.Graphics3D.Canvas3D.SetShadowDistance` |
 | <a id="zanna-graphics3d-canvas3d-setvsync"></a>`SetVSync` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetVSync` |
 | <a id="zanna-graphics3d-canvas3d-setcaptureafterpresent"></a>`SetCaptureAfterPresent` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetCaptureAfterPresent` |
+| <a id="zanna-graphics3d-canvas3d-settargetframerate"></a>`SetTargetFrameRate` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetTargetFrameRate` |
 | <a id="zanna-graphics3d-canvas3d-trysetrenderscale"></a>`TrySetRenderScale` | `i1(f64)` | `Zanna.Graphics3D.Canvas3D.TrySetRenderScale` |
 | <a id="zanna-graphics3d-canvas3d-drawinstanced"></a>`DrawInstanced` | `void(obj)` | `Zanna.Graphics3D.Canvas3D.DrawInstanced` |
 | <a id="zanna-graphics3d-canvas3d-drawinstancedskinned"></a>`DrawInstancedSkinned` | `void(obj,obj)` | `Zanna.Graphics3D.Canvas3D.DrawInstancedSkinned` |
@@ -508,6 +545,7 @@ Constructor: `Zanna.Graphics3D.Material3D.New`
 | <a id="zanna-graphics3d-material3d-hasambientocclusionmap"></a>`HasAmbientOcclusionMap` | `i1` | read-only |
 | <a id="zanna-graphics3d-material3d-hasenvmap"></a>`HasEnvMap` | `i1` | read-only |
 | <a id="zanna-graphics3d-material3d-haslightmap"></a>`HasLightmap` | `i1` | read-only |
+| <a id="zanna-graphics3d-material3d-shader"></a>`Shader` | `obj<Zanna.Graphics3D.Shader3D>` | read-only |
 | <a id="zanna-graphics3d-material3d-reflectivity"></a>`Reflectivity` | `f64` | read/write |
 | <a id="zanna-graphics3d-material3d-ssrenabled"></a>`SsrEnabled` | `i1` | read/write |
 | <a id="zanna-graphics3d-material3d-temporalweight"></a>`TemporalWeight` | `f64` | read/write |
@@ -543,6 +581,15 @@ Constructor: `Zanna.Graphics3D.Material3D.New`
 | <a id="zanna-graphics3d-material3d-setemissivecolor"></a>`SetEmissiveColor` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Material3D.SetEmissiveColor` |
 | <a id="zanna-graphics3d-material3d-setshadingmodel"></a>`SetShadingModel` | `void(i64)` | `Zanna.Graphics3D.Material3D.SetShadingModel` |
 | <a id="zanna-graphics3d-material3d-setcustomparam"></a>`SetCustomParam` | `void(i64,f64)` | `Zanna.Graphics3D.Material3D.SetCustomParam` |
+| <a id="zanna-graphics3d-material3d-setshader"></a>`SetShader` | `void(obj)` | `Zanna.Graphics3D.Material3D.SetShader` |
+| <a id="zanna-graphics3d-material3d-clearshader"></a>`ClearShader` | `void()` | `Zanna.Graphics3D.Material3D.ClearShader` |
+| <a id="zanna-graphics3d-material3d-setshaderparam"></a>`SetShaderParam` | `void(str,f64)` | `Zanna.Graphics3D.Material3D.SetShaderParam` |
+| <a id="zanna-graphics3d-material3d-setshaderparam2"></a>`SetShaderParam2` | `void(str,f64,f64)` | `Zanna.Graphics3D.Material3D.SetShaderParam2` |
+| <a id="zanna-graphics3d-material3d-setshaderparam3"></a>`SetShaderParam3` | `void(str,f64,f64,f64)` | `Zanna.Graphics3D.Material3D.SetShaderParam3` |
+| <a id="zanna-graphics3d-material3d-setshaderparam4"></a>`SetShaderParam4` | `void(str,f64,f64,f64,f64)` | `Zanna.Graphics3D.Material3D.SetShaderParam4` |
+| <a id="zanna-graphics3d-material3d-setshaderint"></a>`SetShaderInt` | `void(str,i64)` | `Zanna.Graphics3D.Material3D.SetShaderInt` |
+| <a id="zanna-graphics3d-material3d-shaderparam"></a>`ShaderParam` | `f64(str)` | `Zanna.Graphics3D.Material3D.ShaderParam` |
+| <a id="zanna-graphics3d-material3d-setshadertexture"></a>`SetShaderTexture` | `void(str,obj)` | `Zanna.Graphics3D.Material3D.SetShaderTexture` |
 | <a id="zanna-graphics3d-material3d-setenvmap"></a>`SetEnvMap` | `void(obj)` | `Zanna.Graphics3D.Material3D.SetEnvMap` |
 | <a id="zanna-graphics3d-material3d-setdepthbias"></a>`SetDepthBias` | `void(f64,f64)` | `Zanna.Graphics3D.Material3D.SetDepthBias` |
 | <a id="zanna-graphics3d-material3d-new"></a>`New` | `obj<Zanna.Graphics3D.Material3D>()` | `Zanna.Graphics3D.Material3D.New` |
@@ -2926,6 +2973,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-shadowdistance"></a>`Zanna.Graphics3D.Canvas3D.get_ShadowDistance` | `f64(obj)` | `rt_canvas3d_get_shadow_distance` |
 | `Zanna.Graphics3D.Canvas3D.SetVSync` | `void(obj,i1)` | `rt_canvas3d_set_vsync` |
 | <a id="zanna-graphics3d-canvas3d-get-vsync"></a>`Zanna.Graphics3D.Canvas3D.get_VSync` | `i1(obj)` | `rt_canvas3d_get_vsync` |
+| `Zanna.Graphics3D.Canvas3D.SetTargetFrameRate` | `void(obj,i64)` | `rt_canvas3d_set_target_frame_rate` |
+| <a id="zanna-graphics3d-canvas3d-get-targetframerate"></a>`Zanna.Graphics3D.Canvas3D.get_TargetFrameRate` | `i64(obj)` | `rt_canvas3d_get_target_frame_rate` |
 | `Zanna.Graphics3D.Canvas3D.SetCaptureAfterPresent` | `void(obj,i1)` | `rt_canvas3d_set_capture_after_present` |
 | <a id="zanna-graphics3d-canvas3d-get-captureafterpresent"></a>`Zanna.Graphics3D.Canvas3D.get_CaptureAfterPresent` | `i1(obj)` | `rt_canvas3d_get_capture_after_present` |
 | `Zanna.Graphics3D.Canvas3D.TrySetRenderScale` | `i1(obj,f64)` | `rt_canvas3d_try_set_render_scale` |
@@ -3078,6 +3127,31 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Material3D.SetShadingModel` | `void(obj,i64)` | `rt_material3d_set_shading_model` |
 | <a id="zanna-graphics3d-material3d-get-shadingmodel"></a>`Zanna.Graphics3D.Material3D.get_ShadingModel` | `i64(obj)` | `rt_material3d_get_shading_model` |
 | `Zanna.Graphics3D.Material3D.SetCustomParam` | `void(obj,i64,f64)` | `rt_material3d_set_custom_param` |
+| `Zanna.Graphics3D.Material3D.SetShader` | `void(obj,obj)` | `rt_material3d_set_shader` |
+| <a id="zanna-graphics3d-material3d-get-shader"></a>`Zanna.Graphics3D.Material3D.get_Shader` | `obj<Zanna.Graphics3D.Shader3D>(obj)` | `rt_material3d_get_shader` |
+| `Zanna.Graphics3D.Material3D.ClearShader` | `void(obj)` | `rt_material3d_clear_shader` |
+| `Zanna.Graphics3D.Material3D.SetShaderParam` | `void(obj,str,f64)` | `rt_material3d_set_shader_param` |
+| `Zanna.Graphics3D.Material3D.SetShaderParam2` | `void(obj,str,f64,f64)` | `rt_material3d_set_shader_param2` |
+| `Zanna.Graphics3D.Material3D.SetShaderParam3` | `void(obj,str,f64,f64,f64)` | `rt_material3d_set_shader_param3` |
+| `Zanna.Graphics3D.Material3D.SetShaderParam4` | `void(obj,str,f64,f64,f64,f64)` | `rt_material3d_set_shader_param4` |
+| `Zanna.Graphics3D.Material3D.SetShaderInt` | `void(obj,str,i64)` | `rt_material3d_set_shader_int` |
+| `Zanna.Graphics3D.Material3D.ShaderParam` | `f64(obj,str)` | `rt_material3d_get_shader_param` |
+| `Zanna.Graphics3D.Material3D.SetShaderTexture` | `void(obj,str,obj)` | `rt_material3d_set_shader_texture` |
+| `Zanna.Graphics3D.Shader3D.Load` | `obj<Zanna.Graphics3D.Shader3D>(str)` | `rt_shader3d_load` |
+| `Zanna.Graphics3D.Shader3D.LoadAsset` | `obj<Zanna.Graphics3D.Shader3D>(str)` | `rt_shader3d_load_asset` |
+| `Zanna.Graphics3D.Shader3D.FromSource` | `obj<Zanna.Graphics3D.Shader3D>(str)` | `rt_shader3d_from_source` |
+| `Zanna.Graphics3D.Shader3D.Reload` | `void(obj)` | `rt_shader3d_reload` |
+| <a id="zanna-graphics3d-shader3d-get-name"></a>`Zanna.Graphics3D.Shader3D.get_Name` | `str(obj)` | `rt_shader3d_get_name` |
+| <a id="zanna-graphics3d-shader3d-get-mode"></a>`Zanna.Graphics3D.Shader3D.get_Mode` | `i64(obj)` | `rt_shader3d_get_mode` |
+| <a id="zanna-graphics3d-shader3d-get-status"></a>`Zanna.Graphics3D.Shader3D.get_Status` | `i64(obj)` | `rt_shader3d_get_status` |
+| <a id="zanna-graphics3d-shader3d-get-isready"></a>`Zanna.Graphics3D.Shader3D.get_IsReady` | `i1(obj)` | `rt_shader3d_get_is_ready` |
+| <a id="zanna-graphics3d-shader3d-get-error"></a>`Zanna.Graphics3D.Shader3D.get_Error` | `str(obj)` | `rt_shader3d_get_error` |
+| <a id="zanna-graphics3d-shader3d-get-paramcount"></a>`Zanna.Graphics3D.Shader3D.get_ParamCount` | `i64(obj)` | `rt_shader3d_get_param_count` |
+| `Zanna.Graphics3D.Shader3D.ParamName` | `str(obj,i64)` | `rt_shader3d_param_name` |
+| `Zanna.Graphics3D.Shader3D.ParamType` | `str(obj,i64)` | `rt_shader3d_param_type` |
+| <a id="zanna-graphics3d-shader3d-get-texturecount"></a>`Zanna.Graphics3D.Shader3D.get_TextureCount` | `i64(obj)` | `rt_shader3d_get_texture_count` |
+| `Zanna.Graphics3D.Shader3D.TextureName` | `str(obj,i64)` | `rt_shader3d_texture_name` |
+| `Zanna.Graphics3D.Shader3D.HasBackend` | `i1(obj,str)` | `rt_shader3d_has_backend` |
 | <a id="zanna-graphics3d-material3d-set-alpha"></a>`Zanna.Graphics3D.Material3D.set_Alpha` | `void(obj,f64)` | `rt_material3d_set_alpha` |
 | <a id="zanna-graphics3d-material3d-get-alpha"></a>`Zanna.Graphics3D.Material3D.get_Alpha` | `f64(obj)` | `rt_material3d_get_alpha` |
 | <a id="zanna-graphics3d-material3d-set-metallic"></a>`Zanna.Graphics3D.Material3D.set_Metallic` | `void(obj,f64)` | `rt_material3d_set_metallic` |

@@ -500,6 +500,7 @@ enum class RuntimeTypeId : std::size_t {
     // Graphics 3D
     RTCLS_CubeMap3D,
     RTCLS_RenderTarget3D,
+    RTCLS_Shader3D,
     RTCLS_Canvas3D,
     RTCLS_Mesh3D,
     RTCLS_Camera3D,

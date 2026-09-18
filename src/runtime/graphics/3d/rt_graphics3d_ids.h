@@ -48,6 +48,7 @@
 extern "C" {
 #endif
 extern int64_t rt_obj_class_id(void *p);
+extern int64_t rt_obj_class_id_retained(const void *p);
 #ifdef __cplusplus
 }
 #endif
@@ -160,6 +161,7 @@ extern int64_t rt_obj_class_id(void *p);
 #define RT_G3D_CLOTH3D_CLASS_ID INT64_C(-0x603065)
 #define RT_G3D_GAME3D_MINIMAP_CLASS_ID INT64_C(-0x603066)
 #define RT_G3D_VEHICLE3D_CLASS_ID INT64_C(-0x603067)
+#define RT_G3D_SHADER3D_CLASS_ID INT64_C(-0x603068)
 /// @}
 
 #if defined(RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE) && RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE &&       \
@@ -189,6 +191,27 @@ static inline int32_t rt_g3d_has_class(void *obj, int64_t class_id) {
 /// @return The unchanged borrowed handle on a class match, otherwise `NULL`.
 static inline void *rt_g3d_checked_or_null(void *obj, int64_t class_id) {
     return rt_g3d_has_class(obj, class_id) ? obj : NULL;
+}
+
+/// @brief Registry-free class check for a slot the runtime itself retains.
+/// @details Per-frame traversals (binding sync, culling, LOD selection, entity
+///          sweeps) read class ids from retained slots thousands of times per
+///          frame; the registry probe behind @ref rt_g3d_has_class is a DRAM miss
+///          each time. This reads the header the slot's own retain keeps alive.
+///          Never use it on a handle supplied by program code.
+/// @param obj Borrowed retained runtime handle.
+/// @param class_id Expected stable runtime class identifier.
+/// @return Nonzero when the handle is non-null and matches the expected class.
+static inline int32_t rt_g3d_has_class_retained(const void *obj, int64_t class_id) {
+    return obj && rt_obj_class_id_retained(obj) == class_id;
+}
+
+/// @brief Return @p obj if its retained header carries class @p class_id, else NULL.
+/// @param obj Borrowed retained runtime handle.
+/// @param class_id Expected stable runtime class identifier.
+/// @return The unchanged borrowed handle on a class match, otherwise `NULL`.
+static inline void *rt_g3d_checked_or_null_retained(void *obj, int64_t class_id) {
+    return rt_g3d_has_class_retained(obj, class_id) ? obj : NULL;
 }
 
 /// @brief True if @p obj is a plain (class-less) heap value of exactly

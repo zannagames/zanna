@@ -1855,6 +1855,26 @@ int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     return 1;
 }
 
+/// @brief Refresh rate of the primary display (`VREFRESH`).
+/// @param win Unused; the primary display is queried.
+/// @param out_hz Receives the rate in Hz.
+/// @return 1 when the driver reports a real rate (values of 0 and 1 mean "default").
+int vgfx_platform_get_display_refresh_hz(struct vgfx_window *win, double *out_hz) {
+    HDC hdc;
+    int hz;
+    (void)win;
+    hdc = GetDC(NULL);
+    if (!hdc)
+        return 0;
+    hz = GetDeviceCaps(hdc, VREFRESH);
+    (void)win32_release_dc(NULL, hdc, "Failed to release Win32 display DC");
+    if (hz <= 1)
+        return 0;
+    if (out_hz)
+        *out_hz = (double)hz;
+    return 1;
+}
+
 /// @brief Initialize platform-specific window resources for Win32.
 /// @details Registers window class (once), creates Win32 window, sets up DIB
 ///          section for framebuffer, and makes window visible.  The DIB section

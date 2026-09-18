@@ -1985,10 +1985,84 @@ static void canvas3d_apply_window_pacing(rt_canvas3d *c) {
 
     if (!c || !c->gfx_win)
         return;
+    if (c->target_frame_rate > 0) {
+        /* ADR 0369: the canvas pacer owns the cadence; a second, millisecond-
+         * resolution limiter in vgfx would only add jitter. */
+        vgfx_set_fps(c->gfx_win, -1);
+        return;
+    }
     software_backend = c->backend == &vgfx3d_software_backend;
     vgfx_set_fps(
         c->gfx_win,
         canvas3d_window_pacing_fps(software_backend, c->vsync_enabled, c->software_frame_limit));
+}
+
+int64_t canvas3d_pace_interval_us(int32_t target_fps, double refresh_hz) {
+    double base_us;
+    if (target_fps <= 0)
+        return 0;
+    base_us = 1000000.0 / (double)target_fps;
+    if (isfinite(refresh_hz) && refresh_hz >= 1.0) {
+        double refresh_us = 1000000.0 / refresh_hz;
+        double periods = floor(base_us / refresh_us + 0.5);
+        if (periods >= 1.0) {
+            double snapped = periods * refresh_us;
+            if (fabs(snapped - base_us) <= base_us * 0.1)
+                return (int64_t)floor(snapped + 0.5);
+        }
+    }
+    return (int64_t)floor(base_us + 0.5);
+}
+
+/// @brief Re-read the display refresh rate and derive the paced interval.
+/// @param c Canvas whose pacing interval is refreshed.
+static void canvas3d_refresh_pace_interval(rt_canvas3d *c) {
+    double hz = 0.0;
+    if (!c)
+        return;
+    if (c->gfx_win && vgfx_get_display_refresh_hz(c->gfx_win, &hz) && hz >= 1.0)
+        c->display_refresh_hz = hz;
+    else
+        c->display_refresh_hz = 0.0;
+    c->pace_interval_us = canvas3d_pace_interval_us(c->target_frame_rate, c->display_refresh_hz);
+}
+
+/// @brief Hold the frame until its paced deadline (ADR 0369).
+/// @details Runs after Present and the event pump, before the live clock samples
+///          the frame, so DeltaTime reports the paced interval. Sleeps in short
+///          chunks until just under a millisecond remains, then spins on the
+///          monotonic clock for the last stretch. A frame that is more than one
+///          interval late resyncs the schedule instead of sprinting to catch up:
+///          a burst of unpaced frames is exactly the judder this removes.
+///          Synthetic clocks (probes) never pace.
+/// @param c Canvas whose Present was just issued.
+static void canvas3d_pace_frame(rt_canvas3d *c) {
+    const int64_t spin_window_us = 800;
+    const int64_t max_sleep_chunk_us = 4000;
+    int64_t now_us;
+    int64_t deadline;
+    int64_t interval;
+    if (!c || c->target_frame_rate <= 0 || c->clock_source == 1)
+        return;
+    if ((c->pace_frames_since_refresh++ & 127u) == 0u)
+        canvas3d_refresh_pace_interval(c);
+    interval = c->pace_interval_us;
+    if (interval <= 0)
+        return;
+    now_us = rt_clock_ticks_us();
+    if (c->pace_deadline_us <= 0 || now_us > c->pace_deadline_us + interval) {
+        c->pace_deadline_us = now_us + interval;
+        return;
+    }
+    deadline = c->pace_deadline_us;
+    while (now_us + spin_window_us < deadline) {
+        int64_t remaining = deadline - now_us - spin_window_us;
+        rt_sleep_us(remaining > max_sleep_chunk_us ? max_sleep_chunk_us : remaining);
+        now_us = rt_clock_ticks_us();
+    }
+    while (now_us < deadline)
+        now_us = rt_clock_ticks_us();
+    c->pace_deadline_us = deadline + interval;
 }
 
 /// @brief Create a new 3D rendering canvas (window + backend context).
@@ -2588,6 +2662,7 @@ void rt_canvas3d_flip(void *obj) {
     /* Always call vgfx_update to keep the window alive and process display
      * refresh. GPU backends own the final on-screen present path. */
     vgfx_update(c->gfx_win);
+    canvas3d_pace_frame(c);
     canvas3d_reset_finalized_frame_state(c);
 
     if (c->frame_timing_updated_by_poll) {
@@ -3849,6 +3924,36 @@ void rt_canvas3d_set_vsync(void *obj, int8_t enabled) {
 int8_t rt_canvas3d_get_vsync(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->vsync_enabled : 1;
+}
+
+/// @brief Pace presentation to a target frame rate (ADR 0369).
+/// @details Zero (the default) leaves presentation uncapped; vsync then paces GPU
+///   backends and the window limiter paces the software backend. A positive rate
+///   is clamped to `[1, 1000]`; each Present then waits for a deadline snapped to
+///   the display refresh, and `DeltaTime` reports the paced interval.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param fps Target frames per second, or zero to remove the cap.
+void rt_canvas3d_set_target_frame_rate(void *obj, int64_t fps) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return;
+    if (fps < 0)
+        fps = 0;
+    if (fps > 1000)
+        fps = 1000;
+    c->target_frame_rate = (int32_t)fps;
+    c->pace_deadline_us = 0;
+    c->pace_frames_since_refresh = 0;
+    canvas3d_refresh_pace_interval(c);
+    canvas3d_apply_window_pacing(c);
+}
+
+/// @brief Target frame rate (zero when uncapped).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return The clamped target, or zero for invalid input.
+int64_t rt_canvas3d_get_target_frame_rate(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? c->target_frame_rate : 0;
 }
 
 /// @brief Request capture of every presented frame for post-present readback.

@@ -109,6 +109,14 @@ static void metal_rotate_transient_ring(VGFXMetalContext *ctx) {
     ctx.dynamicVertexWriteOffset = 0;
     ctx.dynamicIndexWriteOffset = 0;
     ctx.instanceWriteOffset = 0;
+    /* Plan 127: palette and shadow-instance uploads live in the slot being retired. */
+    for (int32_t i = 0; i < ctx->_paletteCacheCount; i++)
+        ctx->_paletteCacheBuffer[i] = nil;
+    ctx->_paletteCacheCount = 0;
+    for (int32_t i = 0; i < ctx->_shadowInstEntries; i++)
+        ctx->_shadowInstBuffer[i] = nil;
+    ctx->_shadowInstEntries = 0;
+    memset(ctx->_shadowInstHash, -1, sizeof(ctx->_shadowInstHash));
 }
 
 /// @brief Create a context command buffer, throttled to the frames-in-flight budget.
@@ -516,10 +524,10 @@ typedef enum {
 /// @param[out] out_offset Optional destination for the byte offset of the uploaded slice.
 /// @return The shared buffer containing the slice, or nil when validation or allocation fails.
 static id<MTLBuffer> metal_reserve_transient_slice(VGFXMetalContext *ctx,
-                                                  vgfx3d_metal_transient_stream_t stream,
-                                                  size_t length,
-                                                  NSUInteger *out_offset,
-                                                  void **out_pointer) {
+                                                   vgfx3d_metal_transient_stream_t stream,
+                                                   size_t length,
+                                                   NSUInteger *out_offset,
+                                                   void **out_pointer) {
     id<MTLBuffer> buffer;
     NSUInteger capacity;
     NSUInteger write_offset;
@@ -635,13 +643,12 @@ static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
 /// @brief Run the texture/cubemap/morph cache pruning passes once per frame.
 /// @param ctx Borrowed Metal context whose geometry cache may evict its least-recently-used entry.
 static void metal_cache_evict_if_needed(VGFXMetalContext *ctx) {
-    NSValue *oldestKey = nil;
+    NSNumber *oldestKey = nil;
     VGFXMetalGeometryCacheEntry *oldestEntry = nil;
 
-    if (!ctx || !ctx.geometryCache ||
-        ctx.geometryCache.count < VGFX3D_STATIC_MESH_CACHE_CAPACITY)
+    if (!ctx || !ctx.geometryCache || ctx.geometryCache.count < VGFX3D_STATIC_MESH_CACHE_CAPACITY)
         return;
-    for (NSValue *key in ctx.geometryCache) {
+    for (NSNumber *key in ctx.geometryCache) {
         VGFXMetalGeometryCacheEntry *entry = ctx.geometryCache[key];
         if (!oldestEntry || entry.lastUsedFrame < oldestEntry.lastUsedFrame) {
             oldestEntry = entry;
@@ -684,7 +691,7 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
 
     if (cmd->geometry_key && cmd->geometry_identity != 0 && cmd->geometry_revision != 0) {
         BOOL wants_compact = (cmd->compact_vertex_stream && ctx.compactPipelinesReady) ? YES : NO;
-        NSValue *key = [NSValue valueWithPointer:cmd->geometry_key];
+        NSNumber *key = metal_ptr_key(cmd->geometry_key);
         VGFXMetalGeometryCacheEntry *entry = ctx.geometryCache[key];
         if (!entry ||
             !vgfx3d_cache_identity_matches(

@@ -91,9 +91,9 @@ typedef struct rt_heap_hdr_s {
 
 /// @brief Lock-bounded copy of heap metadata for borrowed-pointer inspection.
 /// @details Unlike @ref rt_heap_hdr_t this structure never aliases live heap
-///          storage. @ref rt_heap_get_info fills it while holding the allocation
-///          registry lock, so callers may inspect an untrusted or merely
-///          borrowed pointer without retaining an unpinned header address.
+///          storage. @ref rt_heap_get_info fills it from a lock-free registry
+///          probe, so callers may inspect an untrusted or merely borrowed
+///          pointer without retaining an unpinned header address.
 ///          The reference count is an observation only and must not be used as
 ///          a substitute for @ref rt_heap_try_retain_live.
 typedef struct rt_heap_info {

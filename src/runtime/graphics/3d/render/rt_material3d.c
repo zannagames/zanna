@@ -53,6 +53,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define MATERIAL3D_UV_TRANSFORM_ABS_MAX 1000000.0
@@ -153,6 +154,14 @@ static void rt_material3d_finalize(void *obj) {
     material_release_texture_slot(&mat->ao_map);
     material_release_texture_slot(&mat->lightmap);
     material_release_env_map_slot(&mat->env_map);
+    for (int32_t i = 0; i < RT_SHADER3D_MAX_TEXTURES; i++)
+        material_release_texture_slot(&mat->shader_textures[i]);
+    if (mat->shader) {
+        if (rt_g3d_has_class(mat->shader, RT_G3D_SHADER3D_CLASS_ID))
+            material_release_ref(&mat->shader);
+        else
+            rt_g3d_ref_slot_clear_unowned(&mat->shader);
+    }
 }
 
 /// @brief Retain-then-release swap for a texture slot: if `value` differs from the
@@ -389,6 +398,13 @@ static int material_texture_ref_valid_or_trap(void *texture, const char *method)
     if (!texture)
         return 1;
     if (rt_g3d_has_class(texture, RT_G3D_TEXTUREASSET3D_CLASS_ID))
+        return 1;
+    /* Plan 127: a RenderTarget3D is accepted by class. Resolving its Pixels
+     * here forced a GPU readback plus a CPU display resolve on every
+     * DrawImage2D(rt) and SetTexture(rt), even on backends that sample the
+     * target natively; draw submission resolves the mirror only where it is
+     * actually needed. */
+    if (rt_g3d_has_class(texture, RT_G3D_RENDERTARGET3D_CLASS_ID))
         return 1;
     if (rt_material3d_resolve_texture_pixels(texture))
         return 1;
@@ -822,6 +838,12 @@ static void *material_clone_like(void *obj) {
     dst->decal_projector_set = src->decal_projector_set;
     material_assign_ref(&dst->lightmap, src->lightmap);
     material_assign_ref(&dst->env_map, src->env_map);
+    if (src->shader && rt_g3d_has_class(src->shader, RT_G3D_SHADER3D_CLASS_ID)) {
+        material_assign_ref(&dst->shader, src->shader);
+        memcpy(dst->shader_params, src->shader_params, sizeof(dst->shader_params));
+        for (int32_t i = 0; i < RT_SHADER3D_MAX_TEXTURES; i++)
+            material_assign_ref(&dst->shader_textures[i], src->shader_textures[i]);
+    }
     return dst;
 }
 
@@ -2076,3 +2098,194 @@ double rt_material3d_get_custom_param(void *obj, int64_t index) {
 #else
 typedef int rt_graphics_disabled_tu_guard;
 #endif /* ZANNA_ENABLE_GRAPHICS */
+
+//=============================================================================
+// ADR 0370: user shader binding
+//=============================================================================
+
+/// @brief Borrowed bound shader after repairing a stale slot.
+static rt_shader3d *material_shader_ref(rt_material3d *mat) {
+    if (!mat || !mat->shader)
+        return NULL;
+    if (!rt_g3d_has_class(mat->shader, RT_G3D_SHADER3D_CLASS_ID)) {
+        rt_g3d_ref_slot_clear_unowned(&mat->shader);
+        return NULL;
+    }
+    return (rt_shader3d *)mat->shader;
+}
+
+/// @brief Reset the packed block to the shader's declared defaults.
+static void material_shader_reset_params(rt_material3d *mat, const rt_shader3d *shader) {
+    memset(mat->shader_params, 0, sizeof(mat->shader_params));
+    if (!shader)
+        return;
+    for (int32_t i = 0; i < shader->param_count; i++) {
+        const rt_shader3d_param *p = &shader->params[i];
+        int32_t components = rt_shader3d_type_components(p->type);
+        for (int32_t lane = 0; lane < components && p->offset + lane < RT_SHADER3D_PARAM_FLOATS;
+             lane++)
+            mat->shader_params[p->offset + lane] = p->defaults[lane];
+    }
+}
+
+void rt_material3d_set_shader(void *obj, void *shader) {
+    rt_material3d *mat = material_checked(obj);
+    if (!mat)
+        return;
+    if (shader && !rt_g3d_has_class(shader, RT_G3D_SHADER3D_CLASS_ID)) {
+        rt_trap("Material3D.SetShader: shader must be a Shader3D");
+        return;
+    }
+    (void)material_shader_ref(mat);
+    material_assign_ref(&mat->shader, shader);
+    material_shader_reset_params(mat, (const rt_shader3d *)shader);
+    for (int32_t i = 0; i < RT_SHADER3D_MAX_TEXTURES; i++)
+        material_release_texture_slot(&mat->shader_textures[i]);
+}
+
+void *rt_material3d_get_shader(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? material_shader_ref(mat) : NULL;
+}
+
+void rt_material3d_clear_shader(void *obj) {
+    rt_material3d_set_shader(obj, NULL);
+}
+
+/// @brief Resolve a named parameter for a setter, trapping with the plan's exact messages.
+/// @param wanted Components the setter writes (0 for a read, -1 for an int write).
+/// @return The parameter, or NULL after trapping.
+static const rt_shader3d_param *material_shader_param_for(rt_material3d *mat,
+                                                          rt_string name,
+                                                          const char *method,
+                                                          int32_t wanted) {
+    const rt_shader3d *shader = mat ? material_shader_ref(mat) : NULL;
+    const char *cname = name ? rt_string_cstr(name) : NULL;
+    char message[192];
+    int32_t index;
+    if (!mat)
+        return NULL;
+    if (!shader) {
+        snprintf(message, sizeof(message), "Material3D.%s: material has no shader", method);
+        rt_trap(message);
+        return NULL;
+    }
+    index = rt_shader3d_find_param(shader, cname);
+    if (index < 0) {
+        snprintf(message,
+                 sizeof(message),
+                 "Material3D.%s: unknown param '%s'",
+                 method,
+                 cname ? cname : "");
+        rt_trap(message);
+        return NULL;
+    }
+    if (wanted < 0 && shader->params[index].type != RT_SHADER3D_PARAM_INT) {
+        snprintf(message,
+                 sizeof(message),
+                 "Material3D.%s: param '%s' is %s",
+                 method,
+                 cname,
+                 rt_shader3d_type_name(shader->params[index].type));
+        rt_trap(message);
+        return NULL;
+    }
+    if (wanted > rt_shader3d_type_components(shader->params[index].type)) {
+        snprintf(message,
+                 sizeof(message),
+                 "Material3D.%s: param '%s' is %s",
+                 method,
+                 cname,
+                 rt_shader3d_type_name(shader->params[index].type));
+        rt_trap(message);
+        return NULL;
+    }
+    return &shader->params[index];
+}
+
+/// @brief Write up to four finite components into a parameter's lanes.
+static void material_shader_write(rt_material3d *mat,
+                                  const rt_shader3d_param *param,
+                                  const double *values,
+                                  int32_t count) {
+    if (!mat || !param)
+        return;
+    for (int32_t lane = 0; lane < count && param->offset + lane < RT_SHADER3D_PARAM_FLOATS;
+         lane++) {
+        double v = values[lane];
+        mat->shader_params[param->offset + lane] = isfinite(v) ? v : 0.0;
+    }
+}
+
+void rt_material3d_set_shader_param(void *obj, rt_string name, double x) {
+    rt_material3d *mat = material_checked(obj);
+    const rt_shader3d_param *param = material_shader_param_for(mat, name, "SetShaderParam", 1);
+    double values[1] = {x};
+    material_shader_write(mat, param, values, 1);
+}
+
+void rt_material3d_set_shader_param2(void *obj, rt_string name, double x, double y) {
+    rt_material3d *mat = material_checked(obj);
+    const rt_shader3d_param *param = material_shader_param_for(mat, name, "SetShaderParam2", 2);
+    double values[2] = {x, y};
+    material_shader_write(mat, param, values, 2);
+}
+
+void rt_material3d_set_shader_param3(void *obj, rt_string name, double x, double y, double z) {
+    rt_material3d *mat = material_checked(obj);
+    const rt_shader3d_param *param = material_shader_param_for(mat, name, "SetShaderParam3", 3);
+    double values[3] = {x, y, z};
+    material_shader_write(mat, param, values, 3);
+}
+
+void rt_material3d_set_shader_param4(
+    void *obj, rt_string name, double x, double y, double z, double w) {
+    rt_material3d *mat = material_checked(obj);
+    const rt_shader3d_param *param = material_shader_param_for(mat, name, "SetShaderParam4", 4);
+    double values[4] = {x, y, z, w};
+    material_shader_write(mat, param, values, 4);
+}
+
+void rt_material3d_set_shader_int(void *obj, rt_string name, int64_t value) {
+    rt_material3d *mat = material_checked(obj);
+    const rt_shader3d_param *param = material_shader_param_for(mat, name, "SetShaderInt", -1);
+    double values[1] = {(double)value};
+    material_shader_write(mat, param, values, 1);
+}
+
+double rt_material3d_get_shader_param(void *obj, rt_string name) {
+    rt_material3d *mat = material_checked(obj);
+    const rt_shader3d *shader = mat ? material_shader_ref(mat) : NULL;
+    const char *cname = name ? rt_string_cstr(name) : NULL;
+    int32_t index = shader ? rt_shader3d_find_param(shader, cname) : -1;
+    if (index < 0 || shader->params[index].offset >= RT_SHADER3D_PARAM_FLOATS)
+        return 0.0;
+    return mat->shader_params[shader->params[index].offset];
+}
+
+void rt_material3d_set_shader_texture(void *obj, rt_string name, void *source) {
+    rt_material3d *mat = material_checked(obj);
+    const rt_shader3d *shader = mat ? material_shader_ref(mat) : NULL;
+    const char *cname = name ? rt_string_cstr(name) : NULL;
+    char message[192];
+    int32_t index;
+    if (!mat)
+        return;
+    if (!shader) {
+        rt_trap("Material3D.SetShaderTexture: material has no shader");
+        return;
+    }
+    index = rt_shader3d_find_texture(shader, cname);
+    if (index < 0) {
+        snprintf(message,
+                 sizeof(message),
+                 "Material3D.SetShaderTexture: unknown texture '%s'",
+                 cname ? cname : "");
+        rt_trap(message);
+        return;
+    }
+    (void)material_assign_texture_ref_checked(
+        &mat->shader_textures[index],
+        source,
+        "Material3D.SetShaderTexture: texture must be Pixels, TextureAsset3D, or RenderTarget3D");
+}

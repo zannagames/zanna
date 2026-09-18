@@ -1048,9 +1048,9 @@ static void game3d_world_apply_origin_rebase(rt_game3d_world *world, const doubl
 
     int32_t entity_count = game3d_world_safe_entity_count(world);
     for (int32_t i = 0; i < entity_count; ++i) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         if (!entity || !entity->alive || entity->destroyed)
@@ -2039,9 +2039,9 @@ static void game3d_world_sweep_entities(rt_game3d_world *world,
         /* Stamp wrapped: clear every entity stamp so nothing aliases. */
         int32_t count = game3d_world_safe_entity_count(world);
         for (int32_t i = 0; i < count; i++) {
-            rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                          RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                          sizeof(rt_game3d_entity))
+            rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                                   RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                                   sizeof(rt_game3d_entity))
                                            ? world->entities[i]
                                            : NULL;
             if (entity)
@@ -2058,11 +2058,11 @@ static void game3d_world_sweep_entities(rt_game3d_world *world,
              * registry) and bounded by capacity so corrupt counts from
              * robustness fixtures cannot walk past the array. */
             for (int32_t i = 0; i < game3d_world_safe_entity_count(world); i++) {
-                rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                              RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                              sizeof(rt_game3d_entity))
-                                               ? world->entities[i]
-                                               : NULL;
+                rt_game3d_entity *entity =
+                    rt_obj_is_instance_retained(
+                        world->entities[i], RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity))
+                        ? world->entities[i]
+                        : NULL;
                 if (!entity || entity->sim_tick_stamp == stamp)
                     continue;
                 entity->sim_tick_stamp = stamp;
@@ -2135,9 +2135,9 @@ static void game3d_world_capture_interpolation_poses(rt_game3d_world *world) {
         return;
     count = game3d_world_safe_entity_count(world);
     for (int32_t i = 0; i < count; i++) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         rt_scene_node3d *node;
@@ -2168,9 +2168,9 @@ static void game3d_world_invalidate_interpolation_poses(rt_game3d_world *world) 
         return;
     count = game3d_world_safe_entity_count(world);
     for (int32_t i = 0; i < count; i++) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         if (entity)
@@ -2195,9 +2195,9 @@ static int game3d_world_apply_render_interpolation(rt_game3d_world *world) {
     t = alpha;
     count = game3d_world_safe_entity_count(world);
     for (int32_t i = 0; i < count; i++) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         rt_scene_node3d *node;
@@ -2259,9 +2259,9 @@ static void game3d_world_restore_render_interpolation(rt_game3d_world *world) {
         return;
     count = game3d_world_safe_entity_count(world);
     for (int32_t i = 0; i < count; i++) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         rt_scene_node3d *node;
@@ -2291,9 +2291,9 @@ static void game3d_world_step_ragdolls(rt_game3d_world *world, double dt) {
         return;
     int32_t entity_count = game3d_world_safe_entity_count(world);
     for (int32_t i = 0; i < entity_count; ++i) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         if (!entity || !entity->alive || !entity->spawned || !entity->ragdoll)
@@ -2422,9 +2422,9 @@ static void game3d_world_debug_draw_physics(rt_game3d_world *world) {
         return;
     int32_t entity_count = game3d_world_safe_entity_count(world);
     for (int32_t i = 0; i < entity_count; ++i) {
-        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
-                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
-                                                      sizeof(rt_game3d_entity))
+        rt_game3d_entity *entity = rt_obj_is_instance_retained(world->entities[i],
+                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                               sizeof(rt_game3d_entity))
                                        ? world->entities[i]
                                        : NULL;
         void *body = entity ? game3d_entity_body_ref(entity) : NULL;

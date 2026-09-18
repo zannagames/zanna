@@ -88,6 +88,11 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
     if (!ctx || !cam || ctx->frame_active || !ctx->ctx)
         return;
     prior_pending_present = ctx->frame_pending_present;
+    /* Plan 127: the first pass of a window frame waits for DXGI to have a free
+     * back buffer here, before any CPU work for the frame, rather than blocking
+     * inside Present after the work is done. One second bounds a lost display. */
+    if (ctx->frame_latency_waitable && !ctx->rtt_active && !prior_pending_present)
+        (void)WaitForSingleObject(ctx->frame_latency_waitable, 1000);
     vgfx3d_sanitize_camera_params(cam, &safe_cam);
     cam = &safe_cam;
     ctx->frame_active = 1;
@@ -715,7 +720,8 @@ static void d3d11_resize(void *ctx_ptr, int32_t w, int32_t h) {
     d3d11_release_swapchain_main_targets(ctx);
     d3d11_clear_current_target_bindings(ctx);
 
-    hr = IDXGISwapChain_ResizeBuffers(ctx->swap_chain, 0, (UINT)w, (UINT)h, DXGI_FORMAT_UNKNOWN, 0);
+    hr = IDXGISwapChain_ResizeBuffers(
+        ctx->swap_chain, 0, (UINT)w, (UINT)h, DXGI_FORMAT_UNKNOWN, ctx->swap_chain_flags);
     if (FAILED(hr)) {
         d3d11_log_hresult("IDXGISwapChain::ResizeBuffers", hr);
         d3d11_log_device_removed_reason(ctx, "IDXGISwapChain::ResizeBuffers", hr);

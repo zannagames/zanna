@@ -763,8 +763,89 @@ typedef struct {
     double decal_forward[3]; /* unit projector forward; surfaces with dot(n, f) < 0 take it */
     double decal_opacity;    /* [0,1] multiplier on the decal alpha, default 1 */
     int8_t decal_projector_set;
+    /* ADR 0370: user shader bound to this material (retained; NULL = built-in
+     * shading models), its packed parameter block in declaration order, and the
+     * user texture slots. The block is copied into the draw command as floats. */
+    void *shader;
+    double shader_params[64];
+    void *shader_textures[4];
     uint64_t identity_serial; /* allocation generation (see rt_mesh3d.identity_serial) */
 } rt_material3d;
+
+/// @name Shader3D (ADR 0370)
+/// @{
+#define RT_SHADER3D_PARAM_FLOATS 64
+#define RT_SHADER3D_MAX_PARAMS 32
+#define RT_SHADER3D_MAX_TEXTURES 4
+#define RT_SHADER3D_NAME_MAX 64
+#define RT_SHADER3D_BACKEND_METAL 0
+#define RT_SHADER3D_BACKEND_HLSL 1
+#define RT_SHADER3D_BACKEND_GLSL 2
+#define RT_SHADER3D_BACKEND_COUNT 3
+#define RT_SHADER3D_MODE_SURFACE 0
+#define RT_SHADER3D_MODE_FULL 1
+#define RT_SHADER3D_STATUS_PENDING 0
+#define RT_SHADER3D_STATUS_READY 1
+#define RT_SHADER3D_STATUS_FAILED 2
+#define RT_SHADER3D_STATUS_UNSUPPORTED 3
+#define RT_SHADER3D_PARAM_FLOAT 1
+#define RT_SHADER3D_PARAM_FLOAT2 2
+#define RT_SHADER3D_PARAM_FLOAT3 3
+#define RT_SHADER3D_PARAM_FLOAT4 4
+#define RT_SHADER3D_PARAM_INT 5
+
+/// @brief One declared shader parameter and its slot in the packed block.
+typedef struct {
+    char name[RT_SHADER3D_NAME_MAX];
+    int32_t type;   /* RT_SHADER3D_PARAM_* */
+    int32_t offset; /* first float lane inside the packed block */
+    int32_t lanes;  /* lanes reserved (float3 reserves four) */
+    double defaults[4];
+} rt_shader3d_param;
+
+/// @brief Shader3D payload: the parsed `.zshader` header plus raw per-backend sections.
+/// @invariant Section strings, source_path and error are malloc-owned; params pack with
+///   16-byte block rules identical on every backend.
+/// @ownership Materials retain the shader; the finalizer frees owned text.
+typedef struct {
+    void *vptr;
+    char name[RT_SHADER3D_NAME_MAX];
+    int32_t mode;
+    int32_t blend; /* -1 material, 0 opaque, 1 alpha, 2 additive */
+    int32_t cull;  /* -1 material, 0 back, 1 front, 2 none */
+    rt_shader3d_param params[RT_SHADER3D_MAX_PARAMS];
+    int32_t param_count;
+    int32_t param_floats;
+    char texture_names[RT_SHADER3D_MAX_TEXTURES][RT_SHADER3D_NAME_MAX];
+    int32_t texture_count;
+    char *sources[RT_SHADER3D_BACKEND_COUNT];
+    char *source_path;
+    int8_t source_is_asset;
+    int32_t status;
+    char *error;
+    uint64_t identity_serial;
+    uint64_t revision;
+} rt_shader3d;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+/// @brief Index of the parameter named @p name, or -1.
+int32_t rt_shader3d_find_param(const rt_shader3d *shader, const char *name);
+/// @brief Index of the user texture named @p name, or -1.
+int32_t rt_shader3d_find_texture(const rt_shader3d *shader, const char *name);
+/// @brief Raw section text for a backend index, or NULL when the shader has none.
+const char *rt_shader3d_backend_source(const rt_shader3d *shader, int32_t backend);
+/// @brief Generated parameter-block declaration for a backend (malloc-owned; caller frees).
+char *rt_shader3d_params_declaration(const rt_shader3d *shader, int32_t backend);
+/// @brief Components a parameter type carries (1..4).
+int32_t rt_shader3d_type_components(int32_t type);
+/// @brief Keyword for a parameter type ("float", "float3", "int", ...).
+const char *rt_shader3d_type_name(int32_t type);
+#ifdef __cplusplus
+}
+#endif
+/// @}
 
 /// @brief Monotonic allocation generation for pointer-keyed history salting
 ///   (rt_canvas3d_motion.c). Never returns 0 and is safe across construction threads.
@@ -1603,6 +1684,15 @@ typedef struct {
      * readback after Present() sees the shown frame (SetCaptureAfterPresent). */
     int8_t capture_after_present;
     int32_t software_frame_limit;
+    /* ADR 0369 frame pacing: a target frame rate (0 = uncapped, the default) paces
+     * every Present with a sleep-then-spin wait to a deadline snapped to the
+     * display refresh, so the presented cadence and DeltaTime stay uniform
+     * instead of straddling refresh intervals. */
+    int32_t target_frame_rate;
+    int64_t pace_interval_us;
+    int64_t pace_deadline_us;
+    double display_refresh_hz;
+    uint32_t pace_frames_since_refresh;
 
     /* Requested scene render scale (1 = native); applied through the backend
      * set_render_scale hook when supported. */
@@ -2751,6 +2841,22 @@ static inline int32_t canvas3d_window_pacing_fps(int software_backend,
                                                  int32_t software_frame_limit) {
     return software_backend && vsync_enabled ? software_frame_limit : -1;
 }
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+/// @brief Present interval for a target frame rate, snapped to the display refresh.
+/// @details When the refresh rate is known and the target divides it within ten
+///          percent (60 on a 120 Hz panel, 30 on 60 Hz), the interval is a whole
+///          number of refresh periods so every presented frame lands on the same
+///          phase; otherwise it is the plain reciprocal of the target.
+/// @param target_fps Requested frame rate; non-positive disables pacing (returns 0).
+/// @param refresh_hz Display refresh rate in Hz, or a value below one when unknown.
+/// @return Interval in microseconds, or zero when pacing is off.
+int64_t canvas3d_pace_interval_us(int32_t target_fps, double refresh_hz);
+#ifdef __cplusplus
+}
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -128,6 +128,78 @@ exit(%res: i64):
 }
 )";
 
+// The inliner forwards a value that already dominates its continuation block
+// through a block parameter: the guarding compare reads the parameter while a
+// later block divides by the original temp (Legacy Baseball emitWalkOffTo at
+// O2). Both names carry one value, so a branch fact on either must reach the
+// other or CheckOpt's demotion becomes unverifiable.
+const char *const kForwardedParamGuard = R"(il 0.3.0
+func @f(i64 %a, i64 %b) -> i64 {
+entry(%a: i64, %b: i64):
+  %d = iadd.ovf %a, %b
+  br cont(%d)
+cont(%dd: i64):
+  %c = scmp_gt %dd, 80
+  cbr %c, then, else
+then:
+  %q = sdiv.chk0 %b, %d
+  ret %q
+else:
+  ret 0
+}
+)";
+
+TEST(IntRangeAnalysis, BranchFactOnForwardedParamReachesTheSourceTemp) {
+    Module module = parseModule(kForwardedParamGuard);
+    Function &fn = module.functions.front();
+    auto info = zanna::analysis::computeIntRanges(fn);
+
+    const auto *then = info.entryFor("then");
+    ASSERT_TRUE(then != nullptr);
+    unsigned dId = 0;
+    for (const auto &instr : fn.blocks[0].instructions)
+        if (instr.op == Opcode::IAddOvf && instr.result)
+            dId = *instr.result;
+    auto it = then->find(dId);
+    ASSERT_TRUE(it != then->end());
+    ASSERT_TRUE(it->second.lower.has_value());
+    EXPECT_EQ(*it->second.lower, 81);
+    /* The parameter keeps its own fact. */
+    auto param = then->find(paramId(fn, "cont", 0));
+    ASSERT_TRUE(param != then->end());
+    EXPECT_EQ(*param->second.lower, 81);
+    /* The else edge bounds both names from above. */
+    const auto *elseBlock = info.entryFor("else");
+    ASSERT_TRUE(elseBlock != nullptr);
+    auto upper = elseBlock->find(dId);
+    ASSERT_TRUE(upper != elseBlock->end());
+    EXPECT_EQ(*upper->second.upper, 80);
+}
+
+TEST(IntRangeAnalysis, DemotedDivisionThroughForwardedParamStillVerifies) {
+    Module module = parseModule(kForwardedParamGuard);
+    runCheckOpt(module);
+    const Function &fn = module.functions.front();
+    EXPECT_EQ(countOpcode(fn, Opcode::SDivChk0), (size_t)0);
+    EXPECT_EQ(countOpcode(fn, Opcode::SDiv), (size_t)1);
+    auto verified = il::verify::Verifier::verify(module);
+    EXPECT_TRUE(static_cast<bool>(verified));
+}
+
+TEST(IntRangeAnalysis, LoopCarriedParamIsNotAliasedToOneIncomingTemp) {
+    /* body's %i0 receives %i on every edge, but %i itself merges 0 and %next_i:
+       the alias joins %i0 with %i only, and %i keeps its merged bound. */
+    Module module = parseModule(kCountedLoop);
+    Function &fn = module.functions.front();
+    auto info = zanna::analysis::computeIntRanges(fn);
+    const auto *body = info.entryFor("body");
+    ASSERT_TRUE(body != nullptr);
+    auto it = body->find(paramId(fn, "loop", 1));
+    ASSERT_TRUE(it != body->end());
+    EXPECT_EQ(*it->second.lower, 0);
+    EXPECT_EQ(*it->second.upper, 999);
+}
+
 TEST(IntRangeAnalysis, CountedLoopGuardBoundsInductionVariable) {
     Module module = parseModule(kCountedLoop);
     Function &fn = module.functions.front();

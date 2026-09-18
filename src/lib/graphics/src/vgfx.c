@@ -1152,6 +1152,19 @@ void vgfx_get_display_size(int32_t *out_w, int32_t *out_h) {
         *out_h = h;
 }
 
+/// @copydoc vgfx_get_display_refresh_hz
+int vgfx_get_display_refresh_hz(vgfx_window_t window, double *out_hz) {
+    extern int vgfx_platform_get_display_refresh_hz(struct vgfx_window * win, double *hz);
+    double hz = 0.0;
+    if (!out_hz)
+        return 0;
+    *out_hz = 0.0;
+    if (!vgfx_platform_get_display_refresh_hz(window, &hz) || !(hz >= 1.0))
+        return 0;
+    *out_hz = hz;
+    return 1;
+}
+
 /// @brief Create a new window with the specified parameters.
 /// @details Allocates a window structure, framebuffer, and platform resources.
 ///          The window is immediately visible and ready for rendering.  Returns

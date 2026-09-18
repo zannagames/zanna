@@ -54,7 +54,13 @@ static void *scene3d_auto_lod_mesh(rt_scene_node3d *node,
 /// @param mesh Borrowed candidate Mesh3D handle.
 /// @return Nonzero when the handle exists and its payload is resident.
 static int scene3d_mesh_resident(void *mesh) {
-    return mesh && rt_mesh3d_get_resident(mesh) != 0;
+    /* LOD slots retain their meshes; the per-level residency read on the draw
+     * path must not pay a registry probe per level per node per frame. */
+    const rt_mesh3d *m =
+        rt_obj_is_instance_retained(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))
+            ? (const rt_mesh3d *)mesh
+            : NULL;
+    return m && m->resident;
 }
 
 /// @brief Reset all per-view LOD and impostor hysteresis state on a node.
@@ -353,8 +359,9 @@ static void *scene3d_resolve_draw_mesh(rt_scene_node3d *current,
                                        float out_min[3],
                                        float out_max[3],
                                        float *out_radius) {
-    void *draw_mesh = rt_g3d_checked_or_null(current->mesh, RT_G3D_MESH3D_CLASS_ID);
-    void *draw_material = rt_g3d_checked_or_null(current->material, RT_G3D_MATERIAL3D_CLASS_ID);
+    void *draw_mesh = rt_g3d_checked_or_null_retained(current->mesh, RT_G3D_MESH3D_CLASS_ID);
+    void *draw_material =
+        rt_g3d_checked_or_null_retained(current->material, RT_G3D_MATERIAL3D_CLASS_ID);
     double camera_distance = 0.0;
     int has_camera_distance = 0;
     rt_scene3d_lod_view_state *lod_state = scene3d_node_lod_view_state(current, canvas, cam);
@@ -632,8 +639,8 @@ static void scene3d_submit_node_draw(rt_scene_node3d *current,
                                      const float draw_max[3],
                                      float draw_radius,
                                      int32_t *visible_nodes) {
-    draw_mesh = rt_g3d_checked_or_null(draw_mesh, RT_G3D_MESH3D_CLASS_ID);
-    draw_material = rt_g3d_checked_or_null(draw_material, RT_G3D_MATERIAL3D_CLASS_ID);
+    draw_mesh = rt_g3d_checked_or_null_retained(draw_mesh, RT_G3D_MESH3D_CLASS_ID);
+    draw_material = rt_g3d_checked_or_null_retained(draw_material, RT_G3D_MATERIAL3D_CLASS_ID);
     if (!(draw_mesh && draw_material))
         return;
     if (visible_nodes)
@@ -815,7 +822,8 @@ static void scene3d_draw_spatial_entry(rt_scene3d_spatial_entry *entry,
     recompute_world_matrix(current);
     draw_mesh = scene3d_resolve_draw_mesh(
         current, canvas, cam, cam_pos, &draw_material, draw_min, draw_max, &draw_radius);
-    draw_mesh_impl = (rt_mesh3d *)rt_g3d_checked_or_null(draw_mesh, RT_G3D_MESH3D_CLASS_ID);
+    draw_mesh_impl =
+        (rt_mesh3d *)rt_g3d_checked_or_null_retained(draw_mesh, RT_G3D_MESH3D_CLASS_ID);
     use_cached_bounds = draw_mesh_impl && entry->cullable &&
                         !scene3d_mesh_has_dynamic_deformation(draw_mesh_impl, effective_animator);
     if (use_cached_bounds) {
@@ -885,8 +893,8 @@ static void draw_node(rt_scene_node3d *node,
         if (!current->visible)
             continue;
 
-        effective_animator =
-            rt_g3d_checked_or_null(current->bound_animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
+        effective_animator = rt_g3d_checked_or_null_retained(current->bound_animator,
+                                                             RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
         if (!effective_animator)
             effective_animator = item.inherited_animator;
         scene3d_draw_node_self(current,

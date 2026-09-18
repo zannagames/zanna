@@ -263,6 +263,37 @@ int8_t rt_obj_is_instance(void *p, int64_t class_id, size_t min_payload_bytes) {
     return 1;
 }
 
+/// @brief Read the header behind a payload the caller keeps alive.
+/// @details No registry probe: the caller guarantees @p p is a retained
+///          reference (a slot the runtime itself retains), so the block cannot
+///          have been freed. A zeroed header (the final-free path clears it)
+///          still fails closed through the magic check.
+/// @param p Retained object payload.
+/// @return Borrowed header, or NULL when @p p is NULL or carries no live magic.
+static inline const rt_heap_hdr_t *rt_obj_retained_header_(const void *p) {
+    const rt_heap_hdr_t *hdr;
+    if (!p)
+        return NULL;
+    hdr = (const rt_heap_hdr_t *)((const uint8_t *)p - sizeof(rt_heap_hdr_t));
+    if (hdr->magic != RT_MAGIC || (rt_heap_kind_t)hdr->kind != RT_HEAP_OBJECT)
+        return NULL;
+    return hdr;
+}
+
+int64_t rt_obj_class_id_retained(const void *p) {
+    const rt_heap_hdr_t *hdr = rt_obj_retained_header_(p);
+    return hdr ? hdr->class_id : 0;
+}
+
+int8_t rt_obj_is_instance_retained(const void *p, int64_t class_id, size_t min_payload_bytes) {
+    const rt_heap_hdr_t *hdr = rt_obj_retained_header_(p);
+    if (!hdr || hdr->class_id != class_id)
+        return 0;
+    if (hdr->cap < min_payload_bytes)
+        return 0;
+    return 1;
+}
+
 /// @brief Human-readable name for a runtime collection class identifier.
 /// @param class_id Runtime class tag from a heap-object header.
 /// @return Static qualified class name, or @c NULL when @p class_id is not a

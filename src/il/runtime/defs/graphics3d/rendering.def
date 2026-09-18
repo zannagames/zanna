@@ -74,6 +74,34 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.RenderTarget3D", RenderTarget3D, "obj", RenderT
 RT_CLASS_END()
 
 //=============================================================================
+// GRAPHICS 3D - SHADER3D (ADR 0370)
+//=============================================================================
+
+/// @summary Provides user-authored per-backend shader sources for Material3D.
+/// @details
+/// Create `Zanna.Graphics3D.Shader3D` values with `Load`, `LoadAsset` or `FromSource` from a
+/// `.zshader` document (an engine-parsed header of params, textures, mode, blend and cull, then
+/// raw `[metal]`, `[hlsl]` and `[glsl]` sections). Bind one to a material with
+/// `Material3D.SetShader`; `Status` reports 0 pending, 1 ready, 2 failed, 3 unsupported.
+RT_CLASS_BEGIN("Zanna.Graphics3D.Shader3D", Shader3D, "obj", none)
+    RT_PROP("Name", "str", Shader3DGetName, none)
+    RT_PROP("Mode", "i64", Shader3DGetMode, none)
+    RT_PROP("Status", "i64", Shader3DGetStatus, none)
+    RT_PROP("IsReady", "i1", Shader3DGetIsReady, none)
+    RT_PROP("Error", "str", Shader3DGetError, none)
+    RT_PROP("ParamCount", "i64", Shader3DGetParamCount, none)
+    RT_PROP("TextureCount", "i64", Shader3DGetTextureCount, none)
+    RT_METHOD("Load", "obj<Zanna.Graphics3D.Shader3D>(str)", Shader3DLoad)
+    RT_METHOD("LoadAsset", "obj<Zanna.Graphics3D.Shader3D>(str)", Shader3DLoadAsset)
+    RT_METHOD("FromSource", "obj<Zanna.Graphics3D.Shader3D>(str)", Shader3DFromSource)
+    RT_METHOD("Reload", "void()", Shader3DReload)
+    RT_METHOD("ParamName", "str(i64)", Shader3DParamName)
+    RT_METHOD("ParamType", "str(i64)", Shader3DParamType)
+    RT_METHOD("TextureName", "str(i64)", Shader3DTextureName)
+    RT_METHOD("HasBackend", "i1(str)", Shader3DHasBackend)
+RT_CLASS_END()
+
+//=============================================================================
 // GRAPHICS 3D - CANVAS3D
 //=============================================================================
 
@@ -227,6 +255,8 @@ RT_FUNC(Canvas3DSetShadowDistance, rt_canvas3d_set_shadow_distance, "Zanna.Graph
 RT_FUNC(Canvas3DGetShadowDistance, rt_canvas3d_get_shadow_distance, "Zanna.Graphics3D.Canvas3D.get_ShadowDistance", "f64(obj)")
 RT_FUNC(Canvas3DSetVSync,          rt_canvas3d_set_vsync,          "Zanna.Graphics3D.Canvas3D.SetVSync",          "void(obj,i1)")
 RT_FUNC(Canvas3DGetVSync,          rt_canvas3d_get_vsync,          "Zanna.Graphics3D.Canvas3D.get_VSync",         "i1(obj)")
+RT_FUNC(Canvas3DSetTargetFrameRate, rt_canvas3d_set_target_frame_rate, "Zanna.Graphics3D.Canvas3D.SetTargetFrameRate", "void(obj,i64)")
+RT_FUNC(Canvas3DGetTargetFrameRate, rt_canvas3d_get_target_frame_rate, "Zanna.Graphics3D.Canvas3D.get_TargetFrameRate", "i64(obj)")
 RT_FUNC(Canvas3DSetCaptureAfterPresent, rt_canvas3d_set_capture_after_present, "Zanna.Graphics3D.Canvas3D.SetCaptureAfterPresent", "void(obj,i1)")
 RT_FUNC(Canvas3DGetCaptureAfterPresent, rt_canvas3d_get_capture_after_present, "Zanna.Graphics3D.Canvas3D.get_CaptureAfterPresent", "i1(obj)")
 RT_FUNC(Canvas3DTrySetRenderScale, rt_canvas3d_try_set_render_scale, "Zanna.Graphics3D.Canvas3D.TrySetRenderScale", "i1(obj,f64)")
@@ -474,6 +504,10 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Canvas3D", Canvas3D, "obj", Canvas3DNew)
     RT_METHOD("SetVSync", "void(i1)", Canvas3DSetVSync)
     RT_METHOD("SetCaptureAfterPresent", "void(i1)", Canvas3DSetCaptureAfterPresent)
     RT_PROP("VSync", "i1", Canvas3DGetVSync, none)
+    // ADR 0369: pace every Present to a target frame rate snapped to the display
+    // refresh (0 = uncapped). DeltaTime reports the paced interval.
+    RT_METHOD("SetTargetFrameRate", "void(i64)", Canvas3DSetTargetFrameRate)
+    RT_PROP("TargetFrameRate", "i64", Canvas3DGetTargetFrameRate, none)
     RT_PROP("CaptureAfterPresent", "i1", Canvas3DGetCaptureAfterPresent, none)
     // Render the 3D scene at a reduced resolution and upscale at presentation —
     // the most effective performance lever on fill-rate/CPU-bound scenes. Values
@@ -794,6 +828,32 @@ RT_FUNC(Material3DGetUnlit,     rt_material3d_get_unlit,    "Zanna.Graphics3D.Ma
 RT_FUNC(Material3DSetShading,  rt_material3d_set_shading_model,"Zanna.Graphics3D.Material3D.SetShadingModel","void(obj,i64)")
 RT_FUNC(Material3DGetShading,  rt_material3d_get_shading_model,"Zanna.Graphics3D.Material3D.get_ShadingModel","i64(obj)")
 RT_FUNC(Material3DSetCustom,   rt_material3d_set_custom_param, "Zanna.Graphics3D.Material3D.SetCustomParam", "void(obj,i64,f64)")
+// ADR 0370: user shader sources bound to a material.
+RT_FUNC(Material3DSetShader, rt_material3d_set_shader, "Zanna.Graphics3D.Material3D.SetShader", "void(obj,obj)")
+RT_FUNC(Material3DGetShader, rt_material3d_get_shader, "Zanna.Graphics3D.Material3D.get_Shader", "obj<Zanna.Graphics3D.Shader3D>(obj)", borrowed)
+RT_FUNC(Material3DClearShader, rt_material3d_clear_shader, "Zanna.Graphics3D.Material3D.ClearShader", "void(obj)")
+RT_FUNC(Material3DSetShaderParam, rt_material3d_set_shader_param, "Zanna.Graphics3D.Material3D.SetShaderParam", "void(obj,str,f64)")
+RT_FUNC(Material3DSetShaderParam2, rt_material3d_set_shader_param2, "Zanna.Graphics3D.Material3D.SetShaderParam2", "void(obj,str,f64,f64)")
+RT_FUNC(Material3DSetShaderParam3, rt_material3d_set_shader_param3, "Zanna.Graphics3D.Material3D.SetShaderParam3", "void(obj,str,f64,f64,f64)")
+RT_FUNC(Material3DSetShaderParam4, rt_material3d_set_shader_param4, "Zanna.Graphics3D.Material3D.SetShaderParam4", "void(obj,str,f64,f64,f64,f64)")
+RT_FUNC(Material3DSetShaderInt, rt_material3d_set_shader_int, "Zanna.Graphics3D.Material3D.SetShaderInt", "void(obj,str,i64)")
+RT_FUNC(Material3DGetShaderParam, rt_material3d_get_shader_param, "Zanna.Graphics3D.Material3D.ShaderParam", "f64(obj,str)")
+RT_FUNC(Material3DSetShaderTexture, rt_material3d_set_shader_texture, "Zanna.Graphics3D.Material3D.SetShaderTexture", "void(obj,str,obj)")
+RT_FUNC(Shader3DLoad, rt_shader3d_load, "Zanna.Graphics3D.Shader3D.Load", "obj<Zanna.Graphics3D.Shader3D>(str)", owned)
+RT_FUNC(Shader3DLoadAsset, rt_shader3d_load_asset, "Zanna.Graphics3D.Shader3D.LoadAsset", "obj<Zanna.Graphics3D.Shader3D>(str)", owned)
+RT_FUNC(Shader3DFromSource, rt_shader3d_from_source, "Zanna.Graphics3D.Shader3D.FromSource", "obj<Zanna.Graphics3D.Shader3D>(str)", owned)
+RT_FUNC(Shader3DReload, rt_shader3d_reload, "Zanna.Graphics3D.Shader3D.Reload", "void(obj)")
+RT_FUNC(Shader3DGetName, rt_shader3d_get_name, "Zanna.Graphics3D.Shader3D.get_Name", "str(obj)", owned)
+RT_FUNC(Shader3DGetMode, rt_shader3d_get_mode, "Zanna.Graphics3D.Shader3D.get_Mode", "i64(obj)")
+RT_FUNC(Shader3DGetStatus, rt_shader3d_get_status, "Zanna.Graphics3D.Shader3D.get_Status", "i64(obj)")
+RT_FUNC(Shader3DGetIsReady, rt_shader3d_get_is_ready, "Zanna.Graphics3D.Shader3D.get_IsReady", "i1(obj)")
+RT_FUNC(Shader3DGetError, rt_shader3d_get_error, "Zanna.Graphics3D.Shader3D.get_Error", "str(obj)", owned)
+RT_FUNC(Shader3DGetParamCount, rt_shader3d_get_param_count, "Zanna.Graphics3D.Shader3D.get_ParamCount", "i64(obj)")
+RT_FUNC(Shader3DParamName, rt_shader3d_param_name, "Zanna.Graphics3D.Shader3D.ParamName", "str(obj,i64)", owned)
+RT_FUNC(Shader3DParamType, rt_shader3d_param_type, "Zanna.Graphics3D.Shader3D.ParamType", "str(obj,i64)", owned)
+RT_FUNC(Shader3DGetTextureCount, rt_shader3d_get_texture_count, "Zanna.Graphics3D.Shader3D.get_TextureCount", "i64(obj)")
+RT_FUNC(Shader3DTextureName, rt_shader3d_texture_name, "Zanna.Graphics3D.Shader3D.TextureName", "str(obj,i64)", owned)
+RT_FUNC(Shader3DHasBackend, rt_shader3d_has_backend, "Zanna.Graphics3D.Shader3D.HasBackend", "i1(obj,str)")
 
 RT_FUNC(Material3DSetAlpha,        rt_material3d_set_alpha,        "Zanna.Graphics3D.Material3D.set_Alpha",       "void(obj,f64)")
 RT_FUNC(Material3DGetAlpha,        rt_material3d_get_alpha,        "Zanna.Graphics3D.Material3D.get_Alpha",       "f64(obj)")
@@ -934,6 +994,18 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Material3D", Material3D, "obj", Material3DNew)
     RT_METHOD("SetEmissiveColor", "void(f64,f64,f64)", Material3DSetEmissiveColor)
     RT_METHOD("SetShadingModel", "void(i64)", Material3DSetShading)
     RT_METHOD("SetCustomParam", "void(i64,f64)", Material3DSetCustom)
+    // ADR 0370: raw per-backend shader sources. A material with a shader that
+    // no backend can compile renders its built-in shading model.
+    RT_PROP("Shader", "obj<Zanna.Graphics3D.Shader3D>", Material3DGetShader, none)
+    RT_METHOD("SetShader", "void(obj)", Material3DSetShader)
+    RT_METHOD("ClearShader", "void()", Material3DClearShader)
+    RT_METHOD("SetShaderParam", "void(str,f64)", Material3DSetShaderParam)
+    RT_METHOD("SetShaderParam2", "void(str,f64,f64)", Material3DSetShaderParam2)
+    RT_METHOD("SetShaderParam3", "void(str,f64,f64,f64)", Material3DSetShaderParam3)
+    RT_METHOD("SetShaderParam4", "void(str,f64,f64,f64,f64)", Material3DSetShaderParam4)
+    RT_METHOD("SetShaderInt", "void(str,i64)", Material3DSetShaderInt)
+    RT_METHOD("ShaderParam", "f64(str)", Material3DGetShaderParam)
+    RT_METHOD("SetShaderTexture", "void(str,obj)", Material3DSetShaderTexture)
     RT_METHOD("SetEnvMap", "void(obj)", Material3DSetEnvMap)
     RT_METHOD("SetDepthBias", "void(f64,f64)", Material3DSetDepthBias)
     RT_PROP("Reflectivity", "f64", Material3DGetReflectivity, Material3DSetReflectivity)

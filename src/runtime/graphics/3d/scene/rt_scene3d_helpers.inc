@@ -750,8 +750,17 @@ void recompute_world_matrix(rt_scene_node3d *node) {
     rt_scene_node3d **stack = NULL;
     size_t count = 0;
     size_t capacity = 0;
-    rt_scene_node3d *current = scene_node3d_checked(node);
-    rt_scene3d *owner_scene = current ? scene3d_checked(current->owner_scene) : NULL;
+    /* Plan 127: this runs per drawn entry per frame; the node, its scene and every
+     * ancestor are retained links, so header checks replace the registry probes. */
+    rt_scene_node3d *current =
+        rt_obj_is_instance_retained(node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))
+            ? node
+            : NULL;
+    rt_scene3d *owner_scene = current && rt_obj_is_instance_retained(current->owner_scene,
+                                                                     RT_G3D_SCENE3D_CLASS_ID,
+                                                                     sizeof(rt_scene3d))
+                                  ? (rt_scene3d *)current->owner_scene
+                                  : NULL;
     if (owner_scene) {
         while (current) {
             rt_scene_node3d *parent;
@@ -762,7 +771,10 @@ void recompute_world_matrix(rt_scene_node3d *node) {
                 rt_trap("Scene3D: world-matrix traversal stack allocation failed");
                 return;
             }
-            parent = scene_node3d_checked(current->parent);
+            parent = rt_obj_is_instance_retained(
+                         current->parent, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))
+                         ? current->parent
+                         : NULL;
             if (!parent)
                 break;
             current = parent;
@@ -1286,10 +1298,12 @@ static void scene_node_sync_recursive(rt_scene3d *scene, rt_scene_node3d *node, 
         int pull_from_body;
         int push_to_body;
         int body_is_kinematic;
-        void *node_animator =
-            rt_g3d_checked_or_null(current->bound_node_animator, RT_G3D_NODEANIMATOR3D_CLASS_ID);
-        void *animator =
-            rt_g3d_checked_or_null(current->bound_animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
+        /* Both binding slots are retained by the node, so the registry probe is
+         * unnecessary on this every-step whole-tree walk. */
+        void *node_animator = rt_g3d_checked_or_null_retained(current->bound_node_animator,
+                                                              RT_G3D_NODEANIMATOR3D_CLASS_ID);
+        void *animator = rt_g3d_checked_or_null_retained(current->bound_animator,
+                                                         RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
 
         if (animator && current->bound_animator_scene_update)
             rt_anim_controller3d_update(animator, dt);

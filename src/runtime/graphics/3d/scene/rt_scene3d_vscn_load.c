@@ -51,6 +51,7 @@
 #include "rt_morphtarget3d.h"
 #include "rt_morphtarget3d_internal.h"
 #include "rt_object.h"
+#include "rt_parallel.h"
 #include "rt_path.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
@@ -62,6 +63,7 @@
 #include "rt_skeleton3d_internal.h"
 #include "rt_string.h"
 #include "rt_textureasset3d.h"
+#include "rt_threadpool.h"
 #include "rt_trap.h"
 #include "rt_untrusted_count.h"
 
@@ -989,6 +991,190 @@ static int vscn_read_index_ref(void *obj, const char *key, int64_t *out_index) {
         return 0;
     *out_index = index;
     return 1;
+}
+
+/* Plan 127: a scene's embedded PNG textures decode on a loader pool. Crowd and venue
+ * prefabs carry dozens of PNG maps each; inflating them one after another on the
+ * main thread was the largest share of Legacy Baseball's startup after the venue
+ * spawn. Base64 decoding and the Pixels wrap stay on the calling thread; only the
+ * worker-safe raw PNG decoder runs on the pool. */
+typedef struct {
+    const uint8_t *source;
+    size_t source_len;
+    uint32_t *raw;
+    int64_t width;
+    int64_t height;
+    int ok;
+} vscn_png_job;
+
+/// @brief Pool task: decode one PNG payload to raw RGBA.
+/// @param arg Borrowed job whose fields hold the result.
+static void vscn_png_job_run(void *arg) {
+    vscn_png_job *job = (vscn_png_job *)arg;
+    if (!job)
+        return;
+    job->ok = rt_png_decode_buffer_rgba32(
+        job->source, job->source_len, &job->raw, &job->width, &job->height);
+}
+
+/// @brief Process-wide loader pool, created on first use (NULL on single-core hosts).
+static void *vscn_texture_decode_pool(void) {
+    static void *pool = NULL;
+    static int attempted = 0;
+    if (!attempted) {
+        int64_t workers = rt_parallel_default_workers();
+        attempted = 1;
+        if (workers > 8)
+            workers = 8;
+        if (workers >= 2)
+            pool = rt_threadpool_new(workers);
+    }
+    return pool;
+}
+
+/// @brief Wrap a raw RGBA decode into a Pixels object (consumes @p raw).
+static void *vscn_pixels_from_raw(uint32_t *raw, int64_t width, int64_t height) {
+    void *pixels_obj;
+    rt_pixels_impl *pixels;
+    size_t bytes;
+    if (!raw || width <= 0 || height <= 0 || width > INT64_MAX / height ||
+        (uint64_t)(width * height) > SIZE_MAX / sizeof(uint32_t)) {
+        free(raw);
+        return NULL;
+    }
+    pixels_obj = rt_pixels_new(width, height);
+    if (!pixels_obj) {
+        free(raw);
+        return NULL;
+    }
+    pixels = (rt_pixels_impl *)pixels_obj;
+    bytes = (size_t)(width * height) * sizeof(uint32_t);
+    memcpy(pixels->data, raw, bytes);
+    pixels->generation++;
+    pixels->alpha_scan_valid = 0;
+    free(raw);
+    return pixels_obj;
+}
+
+static void *vscn_parse_texture(void *texture_obj, int64_t version);
+
+/// @brief Parse every texture entry, decoding embedded PNG payloads in parallel.
+/// @details Entries that are not v5+ PNG sources take the serial parser unchanged;
+///          PNG sources are base64-decoded here, inflated on the loader pool, then
+///          wrapped in order so the texture array matches the serial result exactly.
+/// @param textures_arr Borrowed JSON texture array.
+/// @param tex_count Entry count.
+/// @param version Scene format version.
+/// @param textures Output array receiving one retained texture per entry.
+/// @return 1 when every entry parsed, otherwise 0 with the asset error set.
+static int vscn_parse_textures(void *textures_arr,
+                               int tex_count,
+                               int64_t version,
+                               void **textures) {
+    vscn_png_job *jobs = NULL;
+    uint8_t **sources = NULL;
+    int png_jobs = 0;
+    int ok = 1;
+    if (tex_count <= 0)
+        return 1;
+    if (tex_count > 1 && version >= 5) {
+        jobs = (vscn_png_job *)calloc((size_t)tex_count, sizeof(*jobs));
+        sources = (uint8_t **)calloc((size_t)tex_count, sizeof(*sources));
+        if (!jobs || !sources) {
+            free(jobs);
+            free(sources);
+            jobs = NULL;
+            sources = NULL;
+        }
+    }
+    if (jobs) {
+        for (int i = 0; i < tex_count; i++) {
+            void *texture_obj = rt_seq_get(textures_arr, (int64_t)i);
+            const char *entry_kind;
+            const char *container;
+            const char *source_b64;
+            size_t source_b64_len = 0;
+            size_t source_len = 0;
+            size_t source_error = SIZE_MAX;
+            uint8_t *source;
+            if (!vjson_is_map(texture_obj))
+                continue;
+            entry_kind = vjson_cstr(texture_obj, "kind");
+            container = vjson_cstr(texture_obj, "container");
+            if (!entry_kind || strcmp(entry_kind, "source") != 0 || !container ||
+                strcmp(container, "png") != 0)
+                continue;
+            source_b64 = vjson_cstr_len(texture_obj, "sourceBase64", &source_b64_len);
+            if (!source_b64)
+                continue;
+            source = vscn_base64_decode_ex(source_b64, source_b64_len, &source_len, &source_error);
+            if (!source)
+                continue; /* the serial parser reports the exact base64 error */
+            if (source_len == 0 || source_len > VSCN_MAX_FILE_BYTES) {
+                free(source);
+                continue;
+            }
+            sources[i] = source;
+            jobs[i].source = source;
+            jobs[i].source_len = source_len;
+            png_jobs++;
+        }
+        if (png_jobs >= 2) {
+            void *pool = vscn_texture_decode_pool();
+            int queued = 0;
+            for (int i = 0; i < tex_count; i++) {
+                if (!sources[i])
+                    continue;
+                if (pool && rt_threadpool_submit_fn(pool, vscn_png_job_run, &jobs[i]))
+                    queued++;
+                else
+                    vscn_png_job_run(&jobs[i]);
+            }
+            if (queued > 0)
+                rt_threadpool_wait(pool);
+        } else {
+            for (int i = 0; i < tex_count; i++)
+                if (sources[i])
+                    vscn_png_job_run(&jobs[i]);
+        }
+    }
+    for (int i = 0; i < tex_count; i++) {
+        if (sources && sources[i]) {
+            void *pixels = jobs[i].ok
+                               ? vscn_pixels_from_raw(jobs[i].raw, jobs[i].width, jobs[i].height)
+                               : NULL;
+            jobs[i].raw = NULL;
+            if (pixels) {
+                textures[i] = rt_textureasset3d_wrap_encoded_pixels(
+                    pixels, sources[i], (uint64_t)jobs[i].source_len, "png");
+                scene3d_release_ref(&pixels);
+            }
+            free(sources[i]);
+            sources[i] = NULL;
+            if (!textures[i]) {
+                rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
+                                            "Scene3D.Load: source texture is invalid");
+                ok = 0;
+                break;
+            }
+            continue;
+        }
+        textures[i] = vscn_parse_texture(rt_seq_get(textures_arr, (int64_t)i), version);
+        if (!textures[i]) {
+            ok = 0;
+            break;
+        }
+    }
+    if (sources) {
+        for (int i = 0; i < tex_count; i++) {
+            free(sources[i]);
+            if (jobs)
+                free(jobs[i].raw);
+        }
+    }
+    free(sources);
+    free(jobs);
+    return ok;
 }
 
 /// @brief Reverse of `vscn_serialize_texture` — rebuild a source asset or RGBA Pixels object.
@@ -3248,11 +3434,8 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
         (node_animation_count > 0 && !node_animations) || (camera_count > 0 && !cameras))
         goto fail;
 
-    for (int i = 0; i < tex_count; i++) {
-        textures[i] = vscn_parse_texture(rt_seq_get(textures_arr, (int64_t)i), version);
-        if (!textures[i])
-            goto fail;
-    }
+    if (!vscn_parse_textures(textures_arr, tex_count, version, textures))
+        goto fail;
     for (int i = 0; i < cubemap_count; i++) {
         cubemaps[i] = vscn_parse_cubemap(rt_seq_get(cubemaps_arr, (int64_t)i), textures, tex_count);
         if (!cubemaps[i])

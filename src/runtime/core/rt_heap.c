@@ -16,7 +16,9 @@
 // Key invariants:
 //   - Every heap allocation is preceded by an rt_heap_hdr_t carrying
 //     magic==RT_MAGIC. Public helpers validate live payloads against the
-//     registry before touching the header.
+//     registry before touching the header. Validation is lockless: only
+//     alloc, final release, realloc moves and table growth take the registry
+//     spinlock, so per-frame handle checks never contend across threads.
 //   - refcnt==0 is logically dead and awaits immediate or explicit deferred
 //     reclamation; refcnt>=RT_HEAP_IMMORTAL_REFCNT is an immortal/static
 //     sentinel. Release operations publish with release semantics.
@@ -181,21 +183,43 @@ static int rt_register_shutdown_handler_(void) {
 /// @brief Deleted registry slot that preserves a linear-probe chain.
 #define RT_HEAP_REG_TOMBSTONE ((void *)(uintptr_t)1)
 
-/// @brief Direct-mapped memo of recently validated payloads (power of two).
+/// @brief Direct-mapped memo of recently registered payloads (power of two).
 /// @details The table is sized by the live-allocation population — millions of
 ///          entries for large programs — so each validation is a DRAM miss.
 ///          This 64 KB memo stays cache-resident and short-circuits repeat
-///          validations. Entries mirror the table exactly: insertion and a
-///          successful probe populate a slot, removal and moves clear it.
+///          validations. Only writers (insert, remove, move) touch it, so a
+///          memo hit is exact: it is never a stale address. Lockless readers
+///          only load from it.
 #define RT_HEAP_REG_RECENT_SLOTS 8192u
 #define RT_HEAP_REG_RECENT_MASK (RT_HEAP_REG_RECENT_SLOTS - 1u)
 
-/// @brief Process-global open-addressed set of exact live payload addresses.
-typedef struct {
+/// @brief One published generation of the registry's open-addressed slot array.
+/// @details `slots` and `capacity` travel together so a lockless reader never
+///          pairs a freshly grown array with a stale mask. Superseded tables
+///          are retired, never released, until process shutdown: a reader that
+///          loaded the table pointer just before a grow keeps probing a
+///          complete, still-mapped array. Capacity doubles on every grow, so
+///          the retired chain never holds more memory than the live table.
+typedef struct rt_heap_reg_table_s {
     void **slots;
+    size_t capacity;
+    struct rt_heap_reg_table_s *retired_next;
+} rt_heap_reg_table_t;
+
+/// @brief Process-global open-addressed set of exact live payload addresses.
+/// @details Writers (alloc, final release, realloc move, grow) serialize on the
+///          spinlock. Readers (validation, class lookups, retain) never take
+///          it: they load the published table pointer with acquire semantics
+///          and probe the slots with acquire loads. Every slot mutation is a
+///          single pointer store, tombstones keep probe chains intact, and a
+///          grow publishes a complete replacement table, so a concurrent
+///          reader always terminates and reports a payload as registered
+///          exactly when it was registered before the reader started.
+typedef struct {
+    rt_heap_reg_table_t *table;
+    rt_heap_reg_table_t *retired;
     size_t count;
     size_t tombstones;
-    size_t capacity;
     int lock;
     void *recent[RT_HEAP_REG_RECENT_SLOTS];
 } rt_heap_registry_t;
@@ -205,14 +229,33 @@ static rt_heap_registry_t g_heap_registry_;
 
 static int rt_heap_registry_slot_is_live_(void *slot);
 
+/// @brief Load the published registry table for a lockless reader.
+/// @return Borrowed current table, or NULL before the first allocation.
+static inline rt_heap_reg_table_t *rt_heap_registry_table_(void) {
+    return __atomic_load_n(&g_heap_registry_.table, __ATOMIC_ACQUIRE);
+}
+
+/// @brief Load one registry slot; safe with or without the writer lock.
+static inline void *rt_heap_registry_slot_load_(const rt_heap_reg_table_t *table, size_t idx) {
+    return __atomic_load_n(&table->slots[idx], __ATOMIC_ACQUIRE);
+}
+
+/// @brief Store one registry slot (writer lock held).
+static inline void rt_heap_registry_slot_store_(rt_heap_reg_table_t *table,
+                                                size_t idx,
+                                                void *value) {
+    __atomic_store_n(&table->slots[idx], value, __ATOMIC_RELEASE);
+}
+
 void rt_heap_debug_dump_objects(void) {
-    if (!g_heap_registry_.slots)
+    rt_heap_reg_table_t *table = rt_heap_registry_table_();
+    if (!table)
         return;
     /* Debug-only diagnostic (ZANNA_GC_DUMP_TRACKED): one line per live object
        payload with its class id and size, so a retained object graph can be
        attributed to the classes that own it. No locking: single-threaded use. */
-    for (size_t i = 0; i < g_heap_registry_.capacity; ++i) {
-        void *payload = g_heap_registry_.slots[i];
+    for (size_t i = 0; i < table->capacity; ++i) {
+        void *payload = rt_heap_registry_slot_load_(table, i);
         if (!rt_heap_registry_slot_is_live_(payload))
             continue;
         rt_heap_hdr_t *hdr = (rt_heap_hdr_t *)((char *)payload - sizeof(rt_heap_hdr_t));
@@ -252,25 +295,18 @@ static size_t rt_heap_registry_recent_idx_(const void *p) {
     return (size_t)((rt_heap_ptr_hash_(p) >> 32) & RT_HEAP_REG_RECENT_MASK);
 }
 
-/// @brief Acquire the registry's spinlock with yield-on-contention.
-/// @details Used to serialize structural mutations to the live-payload
-///          set. Insertions and removals are rare relative to lookups,
-///          so a simple test-and-set spinlock is faster than a full
-///          mutex on typical workloads.
+/// @brief Acquire the registry's writer spinlock with yield-on-contention.
+/// @details Serializes structural mutations to the live-payload set:
+///          insertions, removals, realloc moves and grows. Lookups do not take
+///          it (see @ref rt_heap_registry_contains_). Insertions and removals
+///          are rare relative to lookups, so a simple test-and-set spinlock is
+///          faster than a full mutex on typical workloads.
 ///
-/// @note Deliberate safety-vs-throughput tradeoff. retain/release take this
-///       global lock even though the refcount step is already a lock-free CAS:
-///       the lock makes the *membership probe* safe against a concurrent grow()
-///       (which reallocs the slots array) and prevents a final release from
-///       freeing the header mid-retain. The payoff is deterministic misuse
-///       detection — retain/release on a bogus or freed pointer traps with a
-///       clear message instead of corrupting memory. Under heavy multithreaded
-///       refcount churn this serializes; the safe ways to relieve it without
-///       losing the safety net are (a) a reader-writer lock so retains/releases
-///       run concurrently and only alloc/free/grow are exclusive, or (b) sharding
-///       the registry into N hash tables keyed by pointer hash. Both are real
-///       concurrency redesigns — adopt one only when profiling shows this lock
-///       is a measured hot spot.
+/// @note retain/release no longer take this lock. Their safety net is the
+///       lockless membership probe plus the header magic: a retain on a
+///       payload that another thread is releasing at that instant is a program
+///       bug (nothing owned the reference) and is reported by the refcount
+///       CAS seeing zero or by the magic check, not by lock exclusion.
 static void rt_heap_registry_lock_(void) {
     if (__atomic_test_and_set(&g_heap_registry_.lock, __ATOMIC_ACQUIRE)) {
         do {
@@ -300,21 +336,24 @@ static int rt_heap_registry_slot_is_live_(void *slot) {
     return slot != RT_HEAP_REG_EMPTY && slot != RT_HEAP_REG_TOMBSTONE;
 }
 
-/// @brief Reallocate the registry to at least `min_capacity` slots and rehash existing entries.
+/// @brief Publish a registry table of at least `min_capacity` slots and rehash existing entries.
 /// @details Doubles capacity (or jumps to `min_capacity` if larger),
 ///          allocates a fresh power-of-two-sized table, and reinserts
 ///          every live entry from the old table — this rebuilds the
 ///          probe sequences against the new mask and drops all
-///          tombstones along the way. Returns 0 on allocation
-///          failure (caller leaves the registry untouched).
+///          tombstones along the way. The old table is retired, not
+///          freed, so lockless readers still holding it stay valid.
+///          Returns 0 on allocation failure (caller leaves the registry
+///          untouched).
 /// @param min_capacity Minimum power-of-two-compatible capacity requested.
 /// @return 1 after installing the replacement table, otherwise 0.
 static int rt_heap_registry_grow_locked_(size_t min_capacity) {
+    rt_heap_reg_table_t *old_table = g_heap_registry_.table;
     size_t new_capacity = 256;
-    if (g_heap_registry_.capacity) {
-        if (g_heap_registry_.capacity > SIZE_MAX / 2)
+    if (old_table && old_table->capacity) {
+        if (old_table->capacity > SIZE_MAX / 2)
             return 0;
-        new_capacity = g_heap_registry_.capacity * 2;
+        new_capacity = old_table->capacity * 2;
     }
     while (new_capacity < min_capacity) {
         if (new_capacity > SIZE_MAX / 2)
@@ -322,26 +361,37 @@ static int rt_heap_registry_grow_locked_(size_t min_capacity) {
         new_capacity *= 2;
     }
 
-    void **new_slots = (void **)calloc(new_capacity, sizeof(void *));
-    if (!new_slots)
+    rt_heap_reg_table_t *new_table = (rt_heap_reg_table_t *)calloc(1, sizeof(*new_table));
+    if (!new_table)
         return 0;
+    new_table->slots = (void **)calloc(new_capacity, sizeof(void *));
+    if (!new_table->slots) {
+        free(new_table);
+        return 0;
+    }
+    new_table->capacity = new_capacity;
 
-    if (g_heap_registry_.slots) {
+    if (old_table && old_table->slots) {
         const size_t mask = new_capacity - 1;
-        for (size_t i = 0; i < g_heap_registry_.capacity; ++i) {
-            void *slot = g_heap_registry_.slots[i];
+        for (size_t i = 0; i < old_table->capacity; ++i) {
+            void *slot = old_table->slots[i];
             if (!rt_heap_registry_slot_is_live_(slot))
                 continue;
             size_t idx = (size_t)(rt_heap_ptr_hash_(slot) & mask);
-            while (new_slots[idx] != RT_HEAP_REG_EMPTY)
+            while (new_table->slots[idx] != RT_HEAP_REG_EMPTY)
                 idx = (idx + 1) & mask;
-            new_slots[idx] = slot;
+            new_table->slots[idx] = slot;
         }
-        free(g_heap_registry_.slots);
     }
 
-    g_heap_registry_.slots = new_slots;
-    g_heap_registry_.capacity = new_capacity;
+    /* Publish with release semantics so a reader that acquires the new table
+       pointer also sees every rehashed slot. The old table joins the retired
+       chain: a reader still probing it sees a complete pre-grow snapshot. */
+    __atomic_store_n(&g_heap_registry_.table, new_table, __ATOMIC_RELEASE);
+    if (old_table) {
+        old_table->retired_next = g_heap_registry_.retired;
+        g_heap_registry_.retired = old_table;
+    }
     g_heap_registry_.tombstones = 0;
     return 1;
 }
@@ -355,16 +405,17 @@ static int rt_heap_registry_grow_locked_(size_t min_capacity) {
 /// @return 1 when current or newly allocated capacity can accept one entry,
 ///   otherwise 0.
 static int rt_heap_registry_ensure_capacity_locked_(void) {
-    if (g_heap_registry_.capacity == 0)
+    rt_heap_reg_table_t *table = g_heap_registry_.table;
+    if (!table || table->capacity == 0)
         return rt_heap_registry_grow_locked_(256);
     if (g_heap_registry_.count > SIZE_MAX - g_heap_registry_.tombstones - 1)
         return 0;
     size_t projected = g_heap_registry_.count + g_heap_registry_.tombstones + 1;
-    size_t threshold = (g_heap_registry_.capacity / 8) * 5;
+    size_t threshold = (table->capacity / 8) * 5;
     if (projected >= threshold) {
-        if (g_heap_registry_.capacity > SIZE_MAX / 2)
+        if (table->capacity > SIZE_MAX / 2)
             return 0;
-        return rt_heap_registry_grow_locked_(g_heap_registry_.capacity * 2);
+        return rt_heap_registry_grow_locked_(table->capacity * 2);
     }
     return 1;
 }
@@ -378,22 +429,25 @@ static int rt_heap_registry_ensure_capacity_locked_(void) {
 /// @param payload Non-NULL exact payload address to insert.
 /// @return 1 when present after the call, otherwise 0.
 static int rt_heap_registry_insert_existing_locked_(void *payload) {
-    if (!payload || !g_heap_registry_.slots || g_heap_registry_.capacity == 0)
+    rt_heap_reg_table_t *table = g_heap_registry_.table;
+    if (!payload || !table || !table->slots || table->capacity == 0)
         return 0;
-    const size_t mask = g_heap_registry_.capacity - 1;
+    const size_t mask = table->capacity - 1;
     size_t idx = (size_t)(rt_heap_ptr_hash_(payload) & mask);
     size_t first_tombstone = SIZE_MAX;
     while (1) {
-        void *slot = g_heap_registry_.slots[idx];
+        void *slot = table->slots[idx];
         if (slot == payload)
             return 1;
         if (slot == RT_HEAP_REG_EMPTY) {
             size_t target = first_tombstone != SIZE_MAX ? first_tombstone : idx;
             if (first_tombstone != SIZE_MAX)
                 g_heap_registry_.tombstones--;
-            g_heap_registry_.slots[target] = payload;
+            rt_heap_registry_slot_store_(table, target, payload);
             g_heap_registry_.count++;
-            g_heap_registry_.recent[rt_heap_registry_recent_idx_(payload)] = payload;
+            __atomic_store_n(&g_heap_registry_.recent[rt_heap_registry_recent_idx_(payload)],
+                             payload,
+                             __ATOMIC_RELEASE);
             return 1;
         }
         if (slot == RT_HEAP_REG_TOMBSTONE && first_tombstone == SIZE_MAX)
@@ -417,48 +471,53 @@ static int rt_heap_registry_insert_locked_(void *payload) {
     return rt_heap_registry_insert_existing_locked_(payload);
 }
 
-/// @brief Membership test against the registry (linear probe through tombstones).
-/// @details Walks the probe chain from `hash & mask`, skipping over
-///          tombstones (which mean "moved on"), stopping at the
-///          first EMPTY slot. Returns 0 for unknown payloads.
+/// @brief Lockless membership test against the registry (linear probe through tombstones).
+/// @details Consults the exact writer-maintained memo first, then walks the
+///          probe chain of the currently published table from `hash & mask`,
+///          skipping tombstones (which mean "moved on") and stopping at the
+///          first EMPTY slot. Safe to call with or without the writer lock:
+///          every slot mutation is one atomic pointer store and a grow
+///          publishes a whole replacement table. The probe is bounded by the
+///          table capacity so a torn snapshot can never spin forever.
 /// @param payload Exact payload address to locate.
 /// @return 1 when the registry contains @p payload, otherwise 0.
-static int rt_heap_registry_contains_locked_(void *payload) {
-    if (!payload || payload == RT_HEAP_REG_TOMBSTONE || !g_heap_registry_.slots ||
-        g_heap_registry_.capacity == 0)
+static int rt_heap_registry_contains_(const void *payload) {
+    if (!payload || payload == RT_HEAP_REG_TOMBSTONE)
         return 0;
     const size_t recent_idx = rt_heap_registry_recent_idx_(payload);
-    if (g_heap_registry_.recent[recent_idx] == payload)
+    if (__atomic_load_n(&g_heap_registry_.recent[recent_idx], __ATOMIC_ACQUIRE) == payload)
         return 1;
-    const size_t mask = g_heap_registry_.capacity - 1;
+    rt_heap_reg_table_t *table = rt_heap_registry_table_();
+    if (!table || !table->slots || table->capacity == 0)
+        return 0;
+    const size_t mask = table->capacity - 1;
     size_t idx = (size_t)(rt_heap_ptr_hash_(payload) & mask);
-    while (1) {
-        void *slot = g_heap_registry_.slots[idx];
-        if (slot == payload) {
-            g_heap_registry_.recent[recent_idx] = payload;
+    for (size_t probes = 0; probes <= mask; ++probes) {
+        void *slot = rt_heap_registry_slot_load_(table, idx);
+        if (slot == payload)
             return 1;
-        }
         if (slot == RT_HEAP_REG_EMPTY)
             return 0;
         idx = (idx + 1) & mask;
     }
+    return 0;
 }
 
-/// @brief Validate a payload while the heap registry lock is already held.
-/// @details This helper is used by operations that need to inspect or retain a
-///          heap allocation without allowing a concurrent final release to
-///          remove and free the header between validation and the refcount
-///          operation.  The caller must hold @ref rt_heap_registry_lock_ for
-///          the full duration of the check and any immediate header access.
+/// @brief Validate a payload and return its header without taking any lock.
+/// @details Used by every reader-side entry point (info, class lookups,
+///          retain) and by writers that already hold the registry lock.
+///          A concurrent final release of @p payload is a program bug (no
+///          live reference could have been passed in); the magic check still
+///          fails closed for an already-zeroed header.
 /// @param payload Candidate payload pointer.
 /// @param out_hdr Receives the header when validation succeeds; set to NULL on failure.
 /// @return 1 when @p payload is a registered heap allocation with a valid magic tag.
-static int rt_heap_try_get_header_locked_(void *payload, rt_heap_hdr_t **out_hdr) {
+static int rt_heap_lookup_header_(void *payload, rt_heap_hdr_t **out_hdr) {
     if (out_hdr)
         *out_hdr = NULL;
     if (!payload)
         return 0;
-    if (!rt_heap_registry_contains_locked_(payload))
+    if (!rt_heap_registry_contains_(payload))
         return 0;
     rt_heap_hdr_t *hdr = (rt_heap_hdr_t *)((uint8_t *)payload - sizeof(rt_heap_hdr_t));
     if (!hdr || hdr->magic != RT_MAGIC)
@@ -468,6 +527,17 @@ static int rt_heap_try_get_header_locked_(void *payload, rt_heap_hdr_t **out_hdr
     return 1;
 }
 
+/// @brief Validate a payload while the heap registry lock is already held.
+/// @details Writers (realloc) validate under the lock so the entry cannot move
+///          between validation and the structural update they perform next.
+///          The lookup itself is the lockless reader path.
+/// @param payload Candidate payload pointer.
+/// @param out_hdr Receives the header when validation succeeds; set to NULL on failure.
+/// @return 1 when @p payload is a registered heap allocation with a valid magic tag.
+static int rt_heap_try_get_header_locked_(void *payload, rt_heap_hdr_t **out_hdr) {
+    return rt_heap_lookup_header_(payload, out_hdr);
+}
+
 /// @brief Remove `payload` from the registry by stamping a TOMBSTONE in its slot.
 /// @details Open-addressing requires tombstones (rather than just
 ///          re-empty) so that probe sequences past the deleted slot
@@ -475,17 +545,18 @@ static int rt_heap_try_get_header_locked_(void *payload, rt_heap_hdr_t **out_hdr
 ///          next `grow` invocation drops accumulated tombstones.
 /// @param payload Exact address to remove; missing and NULL values are no-ops.
 static void rt_heap_registry_remove_locked_(void *payload) {
-    if (!payload || !g_heap_registry_.slots || g_heap_registry_.capacity == 0)
+    rt_heap_reg_table_t *table = g_heap_registry_.table;
+    if (!payload || !table || !table->slots || table->capacity == 0)
         return;
     const size_t recent_idx = rt_heap_registry_recent_idx_(payload);
     if (g_heap_registry_.recent[recent_idx] == payload)
-        g_heap_registry_.recent[recent_idx] = RT_HEAP_REG_EMPTY;
-    const size_t mask = g_heap_registry_.capacity - 1;
+        __atomic_store_n(&g_heap_registry_.recent[recent_idx], RT_HEAP_REG_EMPTY, __ATOMIC_RELEASE);
+    const size_t mask = table->capacity - 1;
     size_t idx = (size_t)(rt_heap_ptr_hash_(payload) & mask);
     while (1) {
-        void *slot = g_heap_registry_.slots[idx];
+        void *slot = table->slots[idx];
         if (slot == payload) {
-            g_heap_registry_.slots[idx] = RT_HEAP_REG_TOMBSTONE;
+            rt_heap_registry_slot_store_(table, idx, RT_HEAP_REG_TOMBSTONE);
             g_heap_registry_.count--;
             g_heap_registry_.tombstones++;
             return;
@@ -500,26 +571,27 @@ static void rt_heap_registry_remove_locked_(void *payload) {
 /// @details Used after `realloc` returns a different pointer for an
 ///          allocation: the registry must forget the old address and
 ///          remember the new one. Implements as remove-old +
-///          insert-new under the same lock so no thread can observe
+///          insert-new under the same lock so no writer can observe
 ///          an inconsistent state.
 /// @param old_payload Exact currently registered address.
 /// @param new_payload Replacement address to insert.
 /// @return 1 when the entry is moved or addresses match, otherwise 0.
 static int RT_HEAP_UNUSED_PRIVATE rt_heap_registry_move_locked_(void *old_payload,
                                                                 void *new_payload) {
+    rt_heap_reg_table_t *table = g_heap_registry_.table;
     if (old_payload == new_payload)
         return 1;
-    if (!g_heap_registry_.slots || g_heap_registry_.capacity == 0)
+    if (!table || !table->slots || table->capacity == 0)
         return 0;
     const size_t recent_idx = rt_heap_registry_recent_idx_(old_payload);
     if (g_heap_registry_.recent[recent_idx] == old_payload)
-        g_heap_registry_.recent[recent_idx] = RT_HEAP_REG_EMPTY;
-    const size_t mask = g_heap_registry_.capacity - 1;
+        __atomic_store_n(&g_heap_registry_.recent[recent_idx], RT_HEAP_REG_EMPTY, __ATOMIC_RELEASE);
+    const size_t mask = table->capacity - 1;
     size_t idx = (size_t)(rt_heap_ptr_hash_(old_payload) & mask);
     while (1) {
-        void *slot = g_heap_registry_.slots[idx];
+        void *slot = table->slots[idx];
         if (slot == old_payload) {
-            g_heap_registry_.slots[idx] = RT_HEAP_REG_TOMBSTONE;
+            rt_heap_registry_slot_store_(table, idx, RT_HEAP_REG_TOMBSTONE);
             g_heap_registry_.tombstones++;
             g_heap_registry_.count--;
             return rt_heap_registry_insert_existing_locked_(new_payload);
@@ -530,16 +602,25 @@ static int RT_HEAP_UNUSED_PRIVATE rt_heap_registry_move_locked_(void *old_payloa
     }
 }
 
-/// @brief Free the registry's slot array at process shutdown.
+/// @brief Free the registry's live and retired slot arrays at process shutdown.
 /// @details Registry entries are borrowed addresses, so process-exit teardown
-///   frees only the slot array and resets bookkeeping. It does not attempt to
+///   releases only the tables and resets bookkeeping. It does not attempt to
 ///   release any payload that remains registered.
 static void rt_heap_registry_shutdown_(void) {
-    free(g_heap_registry_.slots);
-    g_heap_registry_.slots = NULL;
+    rt_heap_reg_table_t *table = g_heap_registry_.table;
+    __atomic_store_n(&g_heap_registry_.table, (rt_heap_reg_table_t *)NULL, __ATOMIC_RELEASE);
+    if (table) {
+        table->retired_next = g_heap_registry_.retired;
+        g_heap_registry_.retired = table;
+    }
+    while (g_heap_registry_.retired) {
+        rt_heap_reg_table_t *retired = g_heap_registry_.retired;
+        g_heap_registry_.retired = retired->retired_next;
+        free(retired->slots);
+        free(retired);
+    }
     g_heap_registry_.count = 0;
     g_heap_registry_.tombstones = 0;
-    g_heap_registry_.capacity = 0;
     memset(g_heap_registry_.recent, 0, sizeof(g_heap_registry_.recent));
 }
 
@@ -580,17 +661,14 @@ static void rt_heap_validate_header(const rt_heap_hdr_t *hdr) {
 /// @brief Validate a heap header at a public-operation safety boundary.
 #define RT_HEAP_VALIDATE(hdr) rt_heap_validate_header(hdr)
 
-/// @brief Returns 1 if `payload` is a tracked rt_heap allocation. Looks up the registry under
-/// the heap lock. Used by polymorphic dispatch to distinguish heap-managed pointers from raw.
+/// @brief Returns 1 if `payload` is a tracked rt_heap allocation. Lockless registry probe.
+/// Used by polymorphic dispatch to distinguish heap-managed pointers from raw.
 /// @param payload Exact candidate payload address; NULL and the tombstone sentinel are rejected.
 /// @return 1 when currently registered, otherwise 0.
 int8_t rt_heap_is_payload(void *payload) {
     if (!payload || payload == RT_HEAP_REG_TOMBSTONE)
         return 0;
-    rt_heap_registry_lock_();
-    int found = rt_heap_registry_contains_locked_(payload);
-    rt_heap_registry_unlock_();
-    return found ? 1 : 0;
+    return rt_heap_registry_contains_(payload) ? 1 : 0;
 }
 
 /// @brief Validate `payload` and write its `rt_heap_hdr_t *` to `out_hdr`. Returns 1 on
@@ -602,15 +680,12 @@ int8_t rt_heap_is_payload(void *payload) {
 /// @warning The returned header is borrowed and becomes unsafe when the caller
 ///   does not otherwise pin the payload against concurrent final release.
 int8_t rt_heap_try_get_header(void *payload, rt_heap_hdr_t **out_hdr) {
+    rt_heap_hdr_t *hdr = NULL;
     if (out_hdr)
         *out_hdr = NULL;
     if (!payload || payload == RT_HEAP_REG_TOMBSTONE)
         return 0;
-    rt_heap_registry_lock_();
-    rt_heap_hdr_t *hdr = NULL;
-    int found = rt_heap_try_get_header_locked_(payload, &hdr);
-    rt_heap_registry_unlock_();
-    if (!found)
+    if (!rt_heap_lookup_header_(payload, &hdr))
         return 0;
     if (out_hdr)
         *out_hdr = hdr;
@@ -625,21 +700,18 @@ int8_t rt_heap_get_info(const void *payload, rt_heap_info_t *out_info) {
     if (!payload || payload == RT_HEAP_REG_TOMBSTONE)
         return 0;
 
-    rt_heap_registry_lock_();
     rt_heap_hdr_t *hdr = NULL;
-    int found = rt_heap_try_get_header_locked_((void *)(uintptr_t)payload, &hdr);
-    if (found && hdr) {
-        out_info->kind = hdr->kind;
-        out_info->elem_kind = hdr->elem_kind;
-        out_info->flags = hdr->flags;
-        out_info->refcnt = __atomic_load_n(&hdr->refcnt, __ATOMIC_ACQUIRE);
-        out_info->len = hdr->len;
-        out_info->cap = hdr->cap;
-        out_info->alloc_size = hdr->alloc_size;
-        out_info->class_id = hdr->class_id;
-    }
-    rt_heap_registry_unlock_();
-    return found && hdr ? 1 : 0;
+    if (!rt_heap_lookup_header_((void *)(uintptr_t)payload, &hdr) || !hdr)
+        return 0;
+    out_info->kind = hdr->kind;
+    out_info->elem_kind = hdr->elem_kind;
+    out_info->flags = hdr->flags;
+    out_info->refcnt = __atomic_load_n(&hdr->refcnt, __ATOMIC_ACQUIRE);
+    out_info->len = hdr->len;
+    out_info->cap = hdr->cap;
+    out_info->alloc_size = hdr->alloc_size;
+    out_info->class_id = hdr->class_id;
+    return 1;
 }
 
 /// @brief Check whether @p ptr and @p bytes are wholly inside one tracked heap payload.
@@ -665,9 +737,10 @@ int8_t rt_heap_contains_range(const void *ptr, size_t bytes) {
     int found = 0;
 
     rt_heap_registry_lock_();
-    if (g_heap_registry_.slots && g_heap_registry_.capacity > 0) {
-        for (size_t i = 0; i < g_heap_registry_.capacity; ++i) {
-            void *payload = g_heap_registry_.slots[i];
+    rt_heap_reg_table_t *table = g_heap_registry_.table;
+    if (table && table->slots && table->capacity > 0) {
+        for (size_t i = 0; i < table->capacity; ++i) {
+            void *payload = table->slots[i];
             if (!rt_heap_registry_slot_is_live_(payload))
                 continue;
 
@@ -845,10 +918,8 @@ void rt_heap_retain(void *payload) {
         return;
 
     rt_gc_mutator_enter();
-    rt_heap_registry_lock_();
     rt_heap_hdr_t *hdr = NULL;
-    if (!rt_heap_try_get_header_locked_(payload, &hdr) || !hdr) {
-        rt_heap_registry_unlock_();
+    if (!rt_heap_lookup_header_(payload, &hdr) || !hdr) {
         rt_gc_mutator_exit();
         rt_trap("rt_heap_retain: invalid or freed heap payload");
         return;
@@ -858,18 +929,15 @@ void rt_heap_retain(void *payload) {
     size_t next = 0;
     for (;;) {
         if (old == 0) {
-            rt_heap_registry_unlock_();
             rt_gc_mutator_exit();
             rt_trap("rt_heap: retain after release");
             return;
         }
         if (old >= RT_HEAP_IMMORTAL_REFCNT) {
-            rt_heap_registry_unlock_();
             rt_gc_mutator_exit();
             return;
         }
         if (old >= RT_HEAP_MAX_MORTAL_REFCNT) {
-            rt_heap_registry_unlock_();
             rt_gc_mutator_exit();
             rt_trap("refcount overflow");
             return;
@@ -884,7 +952,6 @@ void rt_heap_retain(void *payload) {
             break;
         }
     }
-    rt_heap_registry_unlock_();
     rt_gc_mutator_exit();
     (void)next;
 #ifdef ZANNA_RC_DEBUG
@@ -893,8 +960,8 @@ void rt_heap_retain(void *payload) {
 }
 
 /// @brief Non-trapping retain for code that already has its own recovery/cleanup path.
-/// @details Validates and increments under the heap registry lock, preventing a
-///   concurrent final release from freeing the header during promotion.
+/// @details Validates through the lockless registry probe and increments with a
+///   CAS; a zero count observed by the CAS reports the payload as not live.
 /// @param payload Exact borrowed payload address; NULL is reported as not live.
 /// @return 1 when retained, 2 when live immortal and not retained, 0 when not
 ///         live/managed, and -1 on mortal refcount overflow.
@@ -902,10 +969,8 @@ int32_t rt_heap_try_retain_live(void *payload) {
     if (!payload)
         return 0;
     rt_gc_mutator_enter();
-    rt_heap_registry_lock_();
     rt_heap_hdr_t *hdr = NULL;
-    if (!rt_heap_try_get_header_locked_(payload, &hdr) || !hdr) {
-        rt_heap_registry_unlock_();
+    if (!rt_heap_lookup_header_(payload, &hdr) || !hdr) {
         rt_gc_mutator_exit();
         return 0;
     }
@@ -913,17 +978,14 @@ int32_t rt_heap_try_retain_live(void *payload) {
     size_t old = __atomic_load_n(&hdr->refcnt, __ATOMIC_RELAXED);
     for (;;) {
         if (old == 0) {
-            rt_heap_registry_unlock_();
             rt_gc_mutator_exit();
             return 0;
         }
         if (old >= RT_HEAP_IMMORTAL_REFCNT) {
-            rt_heap_registry_unlock_();
             rt_gc_mutator_exit();
             return 2;
         }
         if (old >= RT_HEAP_MAX_MORTAL_REFCNT) {
-            rt_heap_registry_unlock_();
             rt_gc_mutator_exit();
             return -1;
         }
@@ -934,7 +996,6 @@ int32_t rt_heap_try_retain_live(void *payload) {
                                         /*weak=*/0,
                                         __ATOMIC_RELAXED,
                                         __ATOMIC_RELAXED)) {
-            rt_heap_registry_unlock_();
             rt_gc_mutator_exit();
             return 1;
         }

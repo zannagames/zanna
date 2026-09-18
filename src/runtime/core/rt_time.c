@@ -127,8 +127,8 @@ static int64_t rt_time_scale_seconds(int64_t seconds, int64_t scale, int64_t fra
 int64_t rt_time_monotonic_ratchet(int64_t *floor, int64_t candidate) {
     int64_t prev = __atomic_load_n(floor, __ATOMIC_RELAXED);
     while (candidate > prev) {
-        if (__atomic_compare_exchange_n(floor, &prev, candidate, 0, __ATOMIC_RELAXED,
-                                        __ATOMIC_RELAXED))
+        if (__atomic_compare_exchange_n(
+                floor, &prev, candidate, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
             return candidate;
     }
     return prev;
@@ -180,6 +180,37 @@ void rt_sleep_ms(int32_t ms) {
     if (ms < 0)
         ms = 0;
     Sleep((DWORD)ms);
+}
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+/// @brief Sleep for a microsecond interval through a per-thread waitable timer (Windows).
+/// @details `Sleep` rounds to the scheduler tick (up to 15.6 ms), which is useless for
+///          frame pacing. A high-resolution waitable timer resolves to ~0.5 ms on
+///          Windows 10 1803+; older systems fall back to a standard timer and finally
+///          to `Sleep`. The timer handle lives for the thread's lifetime.
+/// @param us Microseconds to sleep; non-positive values return immediately.
+void rt_sleep_us(int64_t us) {
+    static RT_THREAD_LOCAL HANDLE timer = NULL;
+    LARGE_INTEGER due;
+    if (us <= 0)
+        return;
+    if (!timer) {
+        timer = CreateWaitableTimerExW(
+            NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!timer)
+            timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+    }
+    if (timer) {
+        due.QuadPart = -(LONGLONG)(us * 10); /* relative, 100 ns units */
+        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(timer, INFINITE);
+            return;
+        }
+    }
+    Sleep((DWORD)((us + 999) / 1000));
 }
 
 /// @brief Returns monotonic time in milliseconds (Windows).
@@ -302,6 +333,20 @@ void rt_sleep_ms(int32_t ms) {
     long nsec = (long)(ms % 1000) * 1000000L;
     req.tv_nsec = nsec;
 
+    while (nanosleep(&req, &req) == -1 && errno == EINTR) {
+        // Retry with remaining time in req.
+    }
+}
+
+/// @brief Sleep for a microsecond interval (POSIX).
+/// @details `nanosleep` with the remaining time re-armed after `EINTR`.
+/// @param us Microseconds to sleep; non-positive values return immediately.
+void rt_sleep_us(int64_t us) {
+    struct timespec req;
+    if (us <= 0)
+        return;
+    req.tv_sec = (time_t)(us / 1000000);
+    req.tv_nsec = (long)(us % 1000000) * 1000L;
     while (nanosleep(&req, &req) == -1 && errno == EINTR) {
         // Retry with remaining time in req.
     }

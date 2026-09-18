@@ -176,7 +176,11 @@ void *canvas3d_frame_arena_alloc(rt_canvas3d *c, size_t bytes) {
     canvas3d_frame_arena_chunk *chunk;
     if (!c || bytes == 0u)
         return NULL;
-    canvas3d_frame_arena_repair(c);
+    /* Plan 127: the whole-chain repair (cycle check + chunk walk) runs once per
+     * frame at reset; the per-allocation guard is the O(1) part of it. */
+    chunk = c->frame_arena_current;
+    if (chunk && chunk->used > chunk->capacity)
+        chunk->used = chunk->capacity;
     bytes =
         (bytes + (CANVAS3D_FRAME_ARENA_ALIGN - 1u)) & ~(size_t)(CANVAS3D_FRAME_ARENA_ALIGN - 1u);
     if (bytes == 0u)

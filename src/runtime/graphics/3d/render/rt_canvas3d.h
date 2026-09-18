@@ -1498,6 +1498,62 @@ int64_t rt_material3d_get_shading_model(void *obj);
 /// @param index Zero-based custom-parameter slot.
 /// @param value Finite scalar value; unsupported indices or values are rejected.
 void rt_material3d_set_custom_param(void *obj, int64_t index, double value);
+
+/// @name Shader3D and material shader binding (ADR 0370)
+/// @{
+/// @brief Load a `.zshader` file from the filesystem; a read or parse failure is recorded in
+///        the returned shader's Status/Error rather than trapping.
+void *rt_shader3d_load(rt_string path);
+/// @brief Load a `.zshader` through the asset manager (packs, embedded, loose).
+void *rt_shader3d_load_asset(rt_string asset_path);
+/// @brief Parse `.zshader` text held in memory.
+void *rt_shader3d_from_source(rt_string text);
+/// @brief Re-read and re-parse the shader from its recorded path (Studio hot reload).
+void rt_shader3d_reload(void *obj);
+/// @brief Declared `name` directive, or an empty string.
+rt_string rt_shader3d_get_name(void *obj);
+/// @brief 0 surface, 1 full.
+int64_t rt_shader3d_get_mode(void *obj);
+/// @brief 0 pending, 1 ready, 2 failed, 3 unsupported backend.
+int64_t rt_shader3d_get_status(void *obj);
+/// @brief Non-zero once a backend compiled the shader.
+int8_t rt_shader3d_get_is_ready(void *obj);
+/// @brief Parse or compile diagnostic, or an empty string.
+rt_string rt_shader3d_get_error(void *obj);
+/// @brief Declared parameter count.
+int64_t rt_shader3d_get_param_count(void *obj);
+/// @brief Parameter name by index, or an empty string.
+rt_string rt_shader3d_param_name(void *obj, int64_t index);
+/// @brief Parameter type keyword by index, or an empty string.
+rt_string rt_shader3d_param_type(void *obj, int64_t index);
+/// @brief Declared user texture count.
+int64_t rt_shader3d_get_texture_count(void *obj);
+/// @brief User texture name by index, or an empty string.
+rt_string rt_shader3d_texture_name(void *obj, int64_t index);
+/// @brief Non-zero when the shader carries a section for "metal", "hlsl" or "glsl".
+int8_t rt_shader3d_has_backend(void *obj, rt_string backend);
+/// @brief Bind (retain) a Shader3D and reset its parameters to the declared defaults.
+void rt_material3d_set_shader(void *obj, void *shader);
+/// @brief Borrowed bound shader, or NULL.
+void *rt_material3d_get_shader(void *obj);
+/// @brief Detach the bound shader (the material renders its built-in shading model).
+void rt_material3d_clear_shader(void *obj);
+/// @brief Set a scalar (or the first component of a vector) parameter by name.
+void rt_material3d_set_shader_param(void *obj, rt_string name, double x);
+/// @brief Set a two-component parameter by name.
+void rt_material3d_set_shader_param2(void *obj, rt_string name, double x, double y);
+/// @brief Set a three-component parameter by name.
+void rt_material3d_set_shader_param3(void *obj, rt_string name, double x, double y, double z);
+/// @brief Set a four-component parameter by name.
+void rt_material3d_set_shader_param4(
+    void *obj, rt_string name, double x, double y, double z, double w);
+/// @brief Set an integer parameter by name.
+void rt_material3d_set_shader_int(void *obj, rt_string name, int64_t value);
+/// @brief Read the first component of a parameter by name (0 when unbound or unknown).
+double rt_material3d_get_shader_param(void *obj, rt_string name);
+/// @brief Bind a Pixels, TextureAsset3D or RenderTarget3D to a declared user texture slot.
+void rt_material3d_set_shader_texture(void *obj, rt_string name, void *source);
+/// @}
 /// @brief Set the material alpha multiplier (1.0 = opaque, 0.0 = invisible).
 /// @param obj Borrowed Material3D handle.
 /// @param alpha Opacity clamped to the inclusive normalized range.
@@ -2184,6 +2240,14 @@ int8_t rt_canvas3d_get_capture_after_present(void *canvas);
 /// @param canvas Borrowed Canvas3D handle.
 /// @return Requested state, or 1 for invalid input to preserve the default contract.
 int8_t rt_canvas3d_get_vsync(void *canvas);
+/// @brief Pace presentation to a target frame rate; zero removes the cap (ADR 0369).
+/// @param canvas Borrowed Canvas3D handle.
+/// @param fps Target frames per second in `[0, 1000]`.
+void rt_canvas3d_set_target_frame_rate(void *canvas, int64_t fps);
+/// @brief Target frame rate, or zero when presentation is uncapped.
+/// @param canvas Borrowed Canvas3D handle.
+/// @return The clamped target frame rate.
+int64_t rt_canvas3d_get_target_frame_rate(void *canvas);
 /// @brief Try to render the window-backed 3D scene at a scale in `[0.25, 1]`.
 /// @details Reduced scales require the `"render-scale"` backend capability and are upscaled to
 /// the logical output dimensions before overlays, readback, and presentation. Values greater

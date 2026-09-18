@@ -77,6 +77,22 @@ int64_t rt_obj_class_id(void *p);
 /// @return 1 when the object matches, otherwise 0.
 int8_t rt_obj_is_instance(void *p, int64_t class_id, size_t min_payload_bytes);
 
+/// @brief Class ID of an object the caller keeps alive, read straight from its header.
+/// @details The registry-free twin of @ref rt_obj_class_id for per-frame loops over
+///          slots the runtime itself retains (scene children, bound animators, world
+///          entities). It never consults the live-payload registry, so it must not be
+///          used on handles supplied by program code, which may be stale.
+/// @param p Retained object payload, or NULL.
+/// @return The class ID, or 0 when @p p is NULL or its header carries no live object magic.
+int64_t rt_obj_class_id_retained(const void *p);
+
+/// @brief Registry-free twin of @ref rt_obj_is_instance for retained internal slots.
+/// @param p Retained object payload, or NULL.
+/// @param class_id Expected runtime class identifier.
+/// @param min_payload_bytes Minimum payload capacity required by the target struct.
+/// @return 1 when the retained object matches, otherwise 0.
+int8_t rt_obj_is_instance_retained(const void *p, int64_t class_id, size_t min_payload_bytes);
+
 /// @brief Narrow a runtime handle to an exact runtime class, trapping on mismatch.
 /// @details Backs the Zia `value as RuntimeClass` cast. Runtime classes compare by
 ///          exact class id because there is no hierarchy walk, so an unrelated

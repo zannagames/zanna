@@ -29,8 +29,8 @@ typedef enum {
     METAL_UPLOAD_COMPLETE = 1,
 } metal_upload_status_t;
 
-static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSValue *protected_key);
-static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSValue *protected_key);
+static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSNumber *protected_key);
+static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSNumber *protected_key);
 
 /// @brief Select the complete texture that may be bound for a cache entry.
 /// @details A candidate texture is not visible until its streamed upload publishes. While that
@@ -60,7 +60,7 @@ static id<MTLTexture> metal_visible_cubemap(VGFXMetalCubemapCacheEntry *entry) {
 /// @param generation Failed source generation to memoize and avoid repeated work.
 static void metal_fail_texture_upload(VGFXMetalContext *ctx,
                                       VGFXMetalTextureCacheEntry *entry,
-                                      NSValue *key,
+                                      NSNumber *key,
                                       uint64_t generation) {
     VGFXMetalTextureCacheEntry *fallback;
 
@@ -98,7 +98,7 @@ static void metal_fail_texture_upload(VGFXMetalContext *ctx,
 /// @param generation Failed cubemap generation to memoize and avoid repeated work.
 static void metal_fail_cubemap_upload(VGFXMetalContext *ctx,
                                       VGFXMetalCubemapCacheEntry *entry,
-                                      NSValue *key,
+                                      NSNumber *key,
                                       uint64_t generation) {
     VGFXMetalCubemapCacheEntry *fallback;
 
@@ -238,14 +238,14 @@ static uint64_t metal_get_texture_upload_pending_bytes(void *ctx_ptr) {
     uint64_t total = 0;
     if (!ctx || !ctx.textureCache)
         return 0;
-    for (NSValue *key in ctx.textureCache) {
+    for (NSNumber *key in ctx.textureCache) {
         VGFXMetalTextureCacheEntry *entry = ctx.textureCache[key];
         uint64_t bytes = metal_texture_pending_bytes(entry);
         if (total > UINT64_MAX - bytes)
             return UINT64_MAX;
         total += bytes;
     }
-    for (NSValue *key in ctx.cubemapCache) {
+    for (NSNumber *key in ctx.cubemapCache) {
         VGFXMetalCubemapCacheEntry *entry = ctx.cubemapCache[key];
         uint64_t bytes = metal_cubemap_pending_bytes(entry);
         if (total > UINT64_MAX - bytes)
@@ -589,11 +589,11 @@ static metal_upload_status_t metal_start_texture_upload(VGFXMetalContext *ctx,
 /// @brief Enforce the hard 2D texture-cache cardinality limit after a successful insertion.
 /// @param ctx Borrowed cache owner.
 /// @param protected_key Newly inserted key that must not be selected for eviction.
-static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSValue *protected_key) {
+static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSNumber *protected_key) {
     while (ctx && ctx.textureCache.count > k_texture_cache_max_entries) {
-        NSValue *oldest_key = nil;
+        NSNumber *oldest_key = nil;
         uint64_t oldest_frame = UINT64_MAX;
-        for (NSValue *candidate_key in ctx.textureCache) {
+        for (NSNumber *candidate_key in ctx.textureCache) {
             if ([candidate_key isEqual:protected_key])
                 continue;
             VGFXMetalTextureCacheEntry *candidate = ctx.textureCache[candidate_key];
@@ -617,13 +617,13 @@ static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSValue *protected_
 ///         pending/failed, or nil when no complete generation exists.
 static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void *pixels_ptr) {
     uint64_t cache_key;
-    NSValue *key;
+    NSNumber *key;
     VGFXMetalTextureCacheEntry *cached;
     metal_upload_status_t status;
 
     if (!ctx || !pixels_ptr)
         return nil;
-    key = [NSValue valueWithPointer:pixels_ptr];
+    key = metal_ptr_key(pixels_ptr);
     cached = ctx.textureCache[key];
     cache_key = vgfx3d_get_pixels_cache_key(pixels_ptr);
     if (cached && cached.failedGeneration == cache_key) {
@@ -672,7 +672,7 @@ static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void
 ///         replacement, or nil when unsupported or no complete generation exists.
 static id<MTLTexture> metal_get_cached_native_texture(
     VGFXMetalContext *ctx, void *asset, uint64_t cache_key, int64_t mip_start, int64_t mip_count) {
-    NSValue *key;
+    NSNumber *key;
     VGFXMetalTextureCacheEntry *cached;
     metal_upload_status_t status;
 
@@ -688,7 +688,7 @@ static id<MTLTexture> metal_get_cached_native_texture(
         mip_count = rt_textureasset3d_get_resident_mip_count(asset);
     if (cache_key == 0)
         return nil;
-    key = [NSValue valueWithPointer:asset];
+    key = metal_ptr_key(asset);
     cached = ctx.textureCache[key];
     if (cached && cached.failedGeneration == cache_key) {
         cached.lastUsedFrame = ctx.frameSerial;
@@ -1149,11 +1149,11 @@ static metal_upload_status_t metal_start_cubemap_upload(VGFXMetalContext *ctx,
 /// @brief Enforce the hard cubemap-cache cardinality limit after successful insertion.
 /// @param ctx Borrowed cache owner.
 /// @param protected_key Newly inserted key that must remain resident.
-static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSValue *protected_key) {
+static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSNumber *protected_key) {
     while (ctx && ctx.cubemapCache.count > k_cubemap_cache_max_entries) {
-        NSValue *oldest_key = nil;
+        NSNumber *oldest_key = nil;
         uint64_t oldest_frame = UINT64_MAX;
-        for (NSValue *candidate_key in ctx.cubemapCache) {
+        for (NSNumber *candidate_key in ctx.cubemapCache) {
             if ([candidate_key isEqual:protected_key])
                 continue;
             VGFXMetalCubemapCacheEntry *candidate = ctx.cubemapCache[candidate_key];
@@ -1176,14 +1176,14 @@ static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSValue *protected_
 ///         nil when no complete generation exists.
 static id<MTLTexture> metal_get_cached_cubemap(VGFXMetalContext *ctx, const rt_cubemap3d *cubemap) {
     uint64_t generation;
-    NSValue *key;
+    NSNumber *key;
     VGFXMetalCubemapCacheEntry *cached;
     metal_upload_status_t status;
 
     if (!ctx || !cubemap)
         return nil;
 
-    key = [NSValue valueWithPointer:cubemap];
+    key = metal_ptr_key(cubemap);
     cached = ctx.cubemapCache[key];
     generation = vgfx3d_get_cubemap_generation(cubemap);
     if (cached && cached.failedGeneration == generation) {
@@ -1265,7 +1265,7 @@ static int metal_compute_morph_payload_bytes(uint32_t vertex_count,
 static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *ctx,
                                                               const vgfx3d_draw_cmd_t *cmd,
                                                               int32_t morph_count) {
-    NSValue *key;
+    NSNumber *key;
     VGFXMetalMorphCacheEntry *entry;
     id<MTLBuffer> replacement_delta;
     id<MTLBuffer> replacement_normal;
@@ -1277,7 +1277,7 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
         return nil;
     }
 
-    key = [NSValue valueWithPointer:cmd->morph_key];
+    key = metal_ptr_key(cmd->morph_key);
     entry = ctx.morphCache[key];
     if (entry && entry.deltaBuffer &&
         vgfx3d_metal_should_reuse_morph_cache(entry.key,
@@ -1312,9 +1312,9 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
     entry.hasNormalDeltas = entry.normalBuffer ? 1 : 0;
     entry.lastUsedFrame = ctx.frameSerial;
     if (!ctx.morphCache[key] && ctx.morphCache.count >= k_morph_cache_max_entries) {
-        NSValue *oldest_key = nil;
+        NSNumber *oldest_key = nil;
         uint64_t oldest_frame = UINT64_MAX;
-        for (NSValue *candidate_key in ctx.morphCache) {
+        for (NSNumber *candidate_key in ctx.morphCache) {
             VGFXMetalMorphCacheEntry *candidate_entry = ctx.morphCache[candidate_key];
             if (!candidate_entry || candidate_entry.lastUsedFrame < oldest_frame) {
                 oldest_key = candidate_key;
@@ -1340,13 +1340,139 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
 /// @param has_prev_skinning Nonzero when a previous-frame palette should also be attempted.
 /// @param[out] out_prev_ok Optional destination set nonzero when the prior palette binds.
 /// @return 1 on success, 0 if the palette is missing or the upload failed.
+/// @brief Upload one bone palette into the transient ring, reusing this command buffer's
+///        earlier upload of the same palette.
+/// @details Plan 127: a skinned actor is drawn once per shadow slot plus once per
+///          submesh in the main pass, all from the same palette pointer, and packing
+///          plus copying the identity-padded 16 KB palette for every one of those
+///          draws was the largest memmove in the frame. The cache is reset whenever the
+///          ring rotates, so an entry never outlives the slot it points into.
+/// @param ctx Borrowed Metal context with an active transient ring slot.
+/// @param palette Borrowed row-major bone matrices.
+/// @param bone_count Number of matrices in @p palette.
+/// @param packed Caller-owned scratch of VGFX3D_METAL_BONE_PALETTE_FLOATS floats.
+/// @param[out] out_offset Byte offset of the palette inside the returned buffer.
+/// @return The ring buffer holding the packed palette, or nil when the upload failed.
+static id<MTLBuffer> metal_upload_bone_palette_cached(VGFXMetalContext *ctx,
+                                                      const float *palette,
+                                                      int32_t bone_count,
+                                                      float *packed,
+                                                      NSUInteger *out_offset) {
+    id<MTLBuffer> buf;
+    NSUInteger offset = 0;
+    for (int32_t i = 0; i < ctx->_paletteCacheCount; i++) {
+        if (ctx->_paletteCacheKey[i] == palette && ctx->_paletteCacheBones[i] == bone_count &&
+            ctx->_paletteCacheBuffer[i]) {
+            *out_offset = ctx->_paletteCacheOffset[i];
+            return ctx->_paletteCacheBuffer[i];
+        }
+    }
+    vgfx3d_metal_pack_bone_palette(packed, palette, bone_count);
+    buf = metal_upload_transient_buffer(ctx,
+                                        VGFX3D_METAL_TRANSIENT_VERTEX,
+                                        packed,
+                                        VGFX3D_METAL_BONE_PALETTE_FLOATS * sizeof(float),
+                                        &offset);
+    if (!buf)
+        return nil;
+    if (ctx->_paletteCacheCount < VGFX3D_METAL_PALETTE_CACHE_SLOTS) {
+        int32_t at = ctx->_paletteCacheCount++;
+        ctx->_paletteCacheKey[at] = palette;
+        ctx->_paletteCacheBones[at] = bone_count;
+        ctx->_paletteCacheOffset[at] = offset;
+        ctx->_paletteCacheBuffer[at] = buf;
+    }
+    *out_offset = offset;
+    return buf;
+}
+
+/// @brief Hash slot for a shadow instance upload key.
+/// @param matrices Borrowed instance matrices address.
+/// @param count Instance count.
+/// @return Slot index in the shadow instance hash.
+static inline uint32_t metal_shadow_inst_hash(const float *matrices, int32_t count) {
+    uint64_t v = (uint64_t)(uintptr_t)matrices ^ ((uint64_t)(uint32_t)count << 48);
+    v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    v = (v ^ (v >> 27)) * 0x94d049bb133111ebULL;
+    v ^= v >> 31;
+    return (uint32_t)(v & (VGFX3D_METAL_SHADOW_INST_HASH_SLOTS - 1u));
+}
+
+/// @brief Pack instance transforms for a depth-only pass straight into a ring slice.
+/// @details The shadow vertex function reads only `modelMatrix`; the normal and
+///          previous-model lanes keep the struct layout the pipeline expects and
+///          are filled with the model itself instead of an inverse-transpose and
+///          a second finite check per instance.
+/// @param dst Ring slice with room for @p count entries.
+/// @param matrices Borrowed row-major model matrices.
+/// @param count Instance count.
+static void metal_shadow_pack_instances(vgfx3d_metal_instance_data_t *dst,
+                                        const float *matrices,
+                                        int32_t count) {
+    for (int32_t i = 0; i < count; i++) {
+        float safe_model[16];
+        vgfx3d_copy_mat4_finite_or_identity(safe_model, &matrices[(size_t)i * 16u]);
+        transpose4x4(safe_model, dst[i].model);
+        memcpy(dst[i].normal, dst[i].model, sizeof(dst[i].normal));
+        memcpy(dst[i].prev_model, dst[i].model, sizeof(dst[i].prev_model));
+    }
+}
+
+/// @brief Resolve (uploading once per command buffer) the instance buffer for a shadow batch.
+/// @param ctx Borrowed Metal context with an active transient ring slot.
+/// @param matrices Borrowed row-major model matrices, unique for the frame.
+/// @param count Instance count.
+/// @param[out] out_offset Byte offset of the packed instances inside the returned buffer.
+/// @return The ring buffer, or nil when the upload failed.
+static id<MTLBuffer> metal_shadow_instances_cached(VGFXMetalContext *ctx,
+                                                   const float *matrices,
+                                                   int32_t count,
+                                                   NSUInteger *out_offset) {
+    uint32_t slot = metal_shadow_inst_hash(matrices, count);
+    void *slice = NULL;
+    NSUInteger offset = 0;
+    id<MTLBuffer> buffer;
+    if ((size_t)count > SIZE_MAX / sizeof(vgfx3d_metal_instance_data_t))
+        return nil;
+    for (uint32_t probes = 0; probes < VGFX3D_METAL_SHADOW_INST_HASH_SLOTS; probes++) {
+        int16_t index = ctx->_shadowInstHash[slot];
+        if (index < 0)
+            break;
+        if (ctx->_shadowInstKey[index] == matrices && ctx->_shadowInstCount[index] == count &&
+            ctx->_shadowInstBuffer[index]) {
+            *out_offset = ctx->_shadowInstOffset[index];
+            return ctx->_shadowInstBuffer[index];
+        }
+        slot = (slot + 1u) & (VGFX3D_METAL_SHADOW_INST_HASH_SLOTS - 1u);
+    }
+    buffer = metal_reserve_transient_slice(ctx,
+                                           VGFX3D_METAL_TRANSIENT_INSTANCE,
+                                           (size_t)count * sizeof(vgfx3d_metal_instance_data_t),
+                                           &offset,
+                                           &slice);
+    if (!buffer || !slice)
+        return nil;
+    metal_shadow_pack_instances((vgfx3d_metal_instance_data_t *)slice, matrices, count);
+    if (ctx->_shadowInstEntries < VGFX3D_METAL_SHADOW_INST_CACHE_SLOTS) {
+        int32_t at = ctx->_shadowInstEntries++;
+        ctx->_shadowInstKey[at] = matrices;
+        ctx->_shadowInstCount[at] = count;
+        ctx->_shadowInstOffset[at] = offset;
+        ctx->_shadowInstBuffer[at] = buffer;
+        while (ctx->_shadowInstHash[slot] >= 0)
+            slot = (slot + 1u) & (VGFX3D_METAL_SHADOW_INST_HASH_SLOTS - 1u);
+        ctx->_shadowInstHash[slot] = (int16_t)at;
+    }
+    *out_offset = offset;
+    return buffer;
+}
+
 static int metal_bind_bone_palettes(VGFXMetalContext *ctx,
                                     const vgfx3d_draw_cmd_t *cmd,
                                     int has_skinning,
                                     int has_prev_skinning,
                                     int *out_prev_ok) {
     float packed_palette[VGFX3D_METAL_MAX_BONES * 16];
-    size_t palette_bytes = sizeof(packed_palette);
     id<MTLBuffer> bone_buf;
     NSUInteger bone_offset = 0;
 
@@ -1356,18 +1482,16 @@ static int metal_bind_bone_palettes(VGFXMetalContext *ctx,
     if (!ctx || !cmd || !has_skinning)
         return 0;
 
-    vgfx3d_metal_pack_bone_palette(packed_palette, cmd->bone_palette, cmd->bone_count);
-    bone_buf = metal_upload_transient_buffer(
-        ctx, VGFX3D_METAL_TRANSIENT_VERTEX, packed_palette, palette_bytes, &bone_offset);
+    bone_buf = metal_upload_bone_palette_cached(
+        ctx, cmd->bone_palette, cmd->bone_count, packed_palette, &bone_offset);
     if (!bone_buf)
         return 0;
     [ctx.encoder setVertexBuffer:bone_buf offset:bone_offset atIndex:3];
     if (has_prev_skinning) {
         id<MTLBuffer> prev_bone_buf;
         NSUInteger prev_offset = 0;
-        vgfx3d_metal_pack_bone_palette(packed_palette, cmd->prev_bone_palette, cmd->bone_count);
-        prev_bone_buf = metal_upload_transient_buffer(
-            ctx, VGFX3D_METAL_TRANSIENT_VERTEX, packed_palette, palette_bytes, &prev_offset);
+        prev_bone_buf = metal_upload_bone_palette_cached(
+            ctx, cmd->prev_bone_palette, cmd->bone_count, packed_palette, &prev_offset);
         if (prev_bone_buf) {
             [ctx.encoder setVertexBuffer:prev_bone_buf offset:prev_offset atIndex:7];
             if (out_prev_ok)
@@ -1491,40 +1615,4 @@ static metal_morph_bind_status_t metal_bind_morph_payload(VGFXMetalContext *ctx,
     status.has_prev_weights = cmd->prev_morph_weights ? 1 : 0;
     status.has_normal_deltas = normal_buf ? 1 : 0;
     return status;
-}
-
-/// @brief Ensure the CPU-side instance staging scratch can hold @p instance_count instances.
-/// @details GPU storage is a per-draw slice of the transient ring (see
-///          metal_upload_transient_buffer); only the packing scratch persists here.
-/// @param ctx Borrowed Metal context owning the mutable instance scratch allocation.
-/// @param instance_count Minimum number of packed instance entries required.
-/// @return Non-zero when scratch storage for every requested instance is ready.
-static int metal_ensure_instance_storage(VGFXMetalContext *ctx, int32_t instance_count) {
-    int32_t needed_capacity;
-    int32_t next_capacity;
-    NSUInteger byte_count;
-
-    if (!ctx || instance_count <= 0)
-        return 0;
-    if (ctx.instanceCapacity > (NSUInteger)INT32_MAX)
-        return 0;
-    if (ctx.instanceScratch && ctx.instanceCapacity >= (NSUInteger)instance_count)
-        return 1;
-
-    needed_capacity = instance_count;
-    next_capacity = vgfx3d_metal_next_capacity((int32_t)ctx.instanceCapacity, needed_capacity, 64);
-    if (next_capacity < needed_capacity ||
-        (size_t)next_capacity > SIZE_MAX / sizeof(vgfx3d_metal_instance_data_t)) {
-        return 0;
-    }
-    if ((NSUInteger)next_capacity > ctx.instanceCapacity || !ctx.instanceScratch) {
-        NSMutableData *replacement;
-        byte_count = (NSUInteger)next_capacity * sizeof(vgfx3d_metal_instance_data_t);
-        replacement = [NSMutableData dataWithLength:byte_count];
-        if (!replacement || replacement.length < byte_count)
-            return 0;
-        ctx.instanceScratch = replacement;
-        ctx.instanceCapacity = (NSUInteger)next_capacity;
-    }
-    return ctx.instanceScratch && ctx.instanceCapacity >= (NSUInteger)instance_count;
 }

@@ -23,6 +23,44 @@
 ///          encoders, manages per-frame target transitions, and exposes the draw-related hooks
 ///          installed in the Metal backend vtable. It is included by `vgfx3d_backend_metal.m`.
 
+/// @brief Sanitize a draw's light snapshot once per revision instead of once per draw.
+/// @details Plan 127: every draw of a pass carries the same flattened snapshot and
+///          revision, and the per-draw copy plus clamp of up to 64 lights was a fixed
+///          cost per draw call. The cache is keyed by source pointer, count, revision
+///          and the shadow-slot count the span clamp depends on; revision zero means
+///          "always re-sanitize", exactly like the encoder's constant dirty check.
+/// @param ctx Borrowed Metal context owning the sanitized copy.
+/// @param cmd Borrowed draw command carrying the snapshot revision.
+/// @param lights Borrowed unsanitized snapshot, or NULL.
+/// @param light_count Entries in @p lights.
+/// @param[out] out_lights Receives the sanitized array (context-owned) or NULL.
+/// @return Sanitized light count.
+static int32_t metal_sanitized_lights(VGFXMetalContext *ctx,
+                                      const vgfx3d_draw_cmd_t *cmd,
+                                      const vgfx3d_light_params_t *lights,
+                                      int32_t light_count,
+                                      const vgfx3d_light_params_t **out_lights) {
+    int32_t count;
+    if (cmd->lights_revision != 0 && lights && light_count > 0 &&
+        lights == ctx->_sanitizedLightsSource && light_count == ctx->_sanitizedLightsSourceCount &&
+        cmd->lights_revision == ctx->_sanitizedLightsRevision &&
+        ctx->_shadowCount == ctx->_sanitizedLightsShadowCount) {
+        *out_lights = ctx->_sanitizedLightsCount > 0 ? ctx->_sanitizedLights : NULL;
+        return ctx->_sanitizedLightsCount;
+    }
+    count =
+        vgfx3d_sanitize_light_array(lights, light_count, ctx->_sanitizedLights, VGFX3D_MAX_LIGHTS);
+    for (int32_t light_index = 0; light_index < count; light_index++)
+        vgfx3d_sanitize_light_shadow_span(&ctx->_sanitizedLights[light_index], ctx->_shadowCount);
+    ctx->_sanitizedLightsSource = lights;
+    ctx->_sanitizedLightsSourceCount = light_count;
+    ctx->_sanitizedLightsCount = count;
+    ctx->_sanitizedLightsShadowCount = ctx->_shadowCount;
+    ctx->_sanitizedLightsRevision = cmd->lights_revision;
+    *out_lights = count > 0 ? ctx->_sanitizedLights : NULL;
+    return count;
+}
+
 /// @brief Encode and submit a single 3D draw command (the backend's main draw entry point).
 /// @details Selects/creates the pipeline state for the material, binds geometry, textures,
 /// lighting,
@@ -55,7 +93,6 @@ static void metal_submit_draw(void *ctx_ptr,
         uint32_t index_count;
         vgfx3d_metal_blend_mode_t blend_mode;
         vgfx3d_draw_cmd_t safe_cmd;
-        vgfx3d_light_params_t safe_lights[VGFX3D_MAX_LIGHTS];
         float safe_ambient[3];
         if (!ctx)
             return;
@@ -66,11 +103,7 @@ static void metal_submit_draw(void *ctx_ptr,
         }
         vgfx3d_sanitize_draw_command(cmd, &safe_cmd);
         cmd = &safe_cmd;
-        light_count =
-            vgfx3d_sanitize_light_array(lights, light_count, safe_lights, VGFX3D_MAX_LIGHTS);
-        for (int32_t light_index = 0; light_index < light_count; light_index++)
-            vgfx3d_sanitize_light_shadow_span(&safe_lights[light_index], ctx->_shadowCount);
-        lights = light_count > 0 ? safe_lights : NULL;
+        light_count = metal_sanitized_lights(ctx, cmd, lights, light_count, &lights);
         vgfx3d_sanitize_ambient_rgb(ambient, safe_ambient);
         ambient = safe_ambient;
         index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
@@ -304,31 +337,31 @@ static void metal_submit_draw(void *ctx_ptr,
         metal_fill_material_decal(&mat, cmd);
         [ctx.encoder setFragmentBytes:&mat length:sizeof(mat) atIndex:1];
         [ctx.encoder setVertexBytes:&mat length:sizeof(mat) atIndex:11];
-        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:19];
+        metal_bind_frag_texture(ctx, ctx.defaultTexture, 19);
         if (cmd->has_decal) {
             id<MTLTexture> decal_tex =
                 metal_get_material_texture(ctx, NULL, cmd->decal_map, 0, 0, 0);
             if (decal_tex)
-                [ctx.encoder setFragmentTexture:decal_tex atIndex:19];
+                metal_bind_frag_texture(ctx, decal_tex, 19);
         }
 
         /* Bind default textures to all shader slots. */
         for (int slot = 0; slot <= 12; slot++)
-            [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:slot];
-        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:14];
-        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:15];
+            metal_bind_frag_texture(ctx, ctx.defaultTexture, slot);
+        metal_bind_frag_texture(ctx, ctx.defaultTexture, 14);
+        metal_bind_frag_texture(ctx, ctx.defaultTexture, 15);
         {
             id<MTLTexture> opaqueDepth =
                 ctx->_opaqueDepthValid ? ctx.opaqueDepthTexture : metal_opaque_depth_dummy(ctx);
             if (!opaqueDepth)
                 return;
-            [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];
+            metal_bind_frag_texture(ctx, opaqueDepth, 16);
         }
-        [ctx.encoder setFragmentTexture:ctx.defaultCubemap atIndex:13];
-        [ctx.encoder setFragmentTexture:ctx.brdfLutTexture atIndex:18];
+        metal_bind_frag_texture(ctx, ctx.defaultCubemap, 13);
+        metal_bind_frag_texture(ctx, ctx.brdfLutTexture, 18);
         for (int32_t slot = 0; slot < ctx->_shadowCount && slot < VGFX3D_CSM_SLOTS; slot++) {
             if (ctx->_shadowDepthTexture[slot])
-                [ctx.encoder setFragmentTexture:ctx->_shadowDepthTexture[slot] atIndex:4 + slot];
+                metal_bind_frag_texture(ctx, ctx->_shadowDepthTexture[slot], 4 + slot);
         }
         {
             /* Atlas tiles for slots >= VGFX3D_CSM_SLOTS; depth dummy keeps the
@@ -337,7 +370,7 @@ static void metal_submit_draw(void *ctx_ptr,
                 ctx->_shadowAtlasTexture ? ctx->_shadowAtlasTexture : metal_opaque_depth_dummy(ctx);
             if (!atlas)
                 return;
-            [ctx.encoder setFragmentTexture:atlas atIndex:17];
+            metal_bind_frag_texture(ctx, atlas, 17);
         }
         [ctx.encoder setFragmentSamplerState:metal_get_material_sampler(
                                                  ctx, cmd, RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR)
@@ -367,7 +400,7 @@ static void metal_submit_draw(void *ctx_ptr,
         if (vgfx3d_draw_cmd_has_base_texture(cmd)) {
             id<MTLTexture> tex = metal_material_base_texture(ctx, cmd);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:0];
+                metal_bind_frag_texture(ctx, tex, 0);
             else if (cmd->texture_required)
                 return; /* budget-paused text/image quad: nothing beats a white block */
         }
@@ -380,7 +413,7 @@ static void metal_submit_draw(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_NORMAL],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_NORMAL]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:1];
+                metal_bind_frag_texture(ctx, tex, 1);
         }
         if (cmd->specular_map || cmd->specular_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(
@@ -391,12 +424,12 @@ static void metal_submit_draw(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_SPECULAR],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_SPECULAR]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:2];
+                metal_bind_frag_texture(ctx, tex, 2);
         }
         if (vgfx3d_draw_cmd_has_emissive_map(cmd)) {
             id<MTLTexture> tex = metal_material_emissive_texture(ctx, cmd);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:3];
+                metal_bind_frag_texture(ctx, tex, 3);
         }
         if (cmd->metallic_roughness_map || cmd->metallic_roughness_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(
@@ -407,7 +440,7 @@ static void metal_submit_draw(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:14];
+                metal_bind_frag_texture(ctx, tex, 14);
         }
         if (cmd->ao_map || cmd->ao_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(
@@ -418,23 +451,23 @@ static void metal_submit_draw(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_AO],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_AO]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:15];
+                metal_bind_frag_texture(ctx, tex, 15);
         }
         /* MTL-14: Terrain splat textures (slots 8-12) */
         if (has_complete_splat) {
             id<MTLTexture> sp = metal_get_cached_texture(ctx, cmd->splat_map);
             if (sp)
-                [ctx.encoder setFragmentTexture:sp atIndex:8];
+                metal_bind_frag_texture(ctx, sp, 8);
             for (int si = 0; si < 4; si++) {
                 if (cmd->splat_layers[si]) {
                     id<MTLTexture> lt = metal_get_cached_texture(ctx, cmd->splat_layers[si]);
                     if (lt)
-                        [ctx.encoder setFragmentTexture:lt atIndex:9 + si];
+                        metal_bind_frag_texture(ctx, lt, 9 + si);
                 }
             }
         }
         if (env_texture && (cmd->reflectivity > 0.0001f || ibl_draw))
-            [ctx.encoder setFragmentTexture:env_texture atIndex:13];
+            metal_bind_frag_texture(ctx, env_texture, 13);
 
         /* Lights — always set buffer 2, even if empty (prevents validation warnings) */
         if (lights_dirty) {
@@ -935,6 +968,7 @@ static void metal_shadow_begin(
 
         ctx.encoder = [ctx.cmdBuf renderCommandEncoderWithDescriptor:rp];
         ctx->_encoderLightsRevision = 0; /* fresh encoder: no constants encoded yet */
+        metal_reset_encoder_binds(ctx);
         if (!ctx.encoder) {
             ctx->_shadowPassSlot = -1;
             return;
@@ -986,16 +1020,8 @@ static void metal_shadow_draw_impl(void *ctx_ptr,
         if (matrices) {
             NSUInteger offset = 0;
             id<MTLBuffer> instances = nil;
-            if (count > 0 && metal_ensure_instance_storage(ctx, count)) {
-                vgfx3d_metal_instance_data_t *data =
-                    (vgfx3d_metal_instance_data_t *)ctx.instanceScratch.mutableBytes;
-                vgfx3d_metal_fill_instance_data(data, count, matrices, NULL, 0);
-                instances = metal_upload_transient_buffer(ctx,
-                                                          VGFX3D_METAL_TRANSIENT_INSTANCE,
-                                                          data,
-                                                          (size_t)count * sizeof(*data),
-                                                          &offset);
-            }
+            if (count > 0)
+                instances = metal_shadow_instances_cached(ctx, matrices, count, &offset);
             if (!instances) {
                 // Preserve complete depth coverage if the transient upload cannot grow.
                 for (int32_t i = 0; i < count; i++) {
@@ -1064,7 +1090,25 @@ static void metal_shadow_draw_impl(void *ctx_ptr,
         /* Shadow pose must match the main pass: bind influences 5-8 too. */
         obj.flags2[1] = has_skinning ? metal_bind_extra_influences(ctx, cmd) : 0;
         [ctx.encoder setVertexBytes:&obj length:sizeof(obj) atIndex:1];
-        {
+        if (cmd->alpha_mode != 1 && !cmd->has_decal && !cmd->texture_required) {
+            /* Plan 127: an opaque caster's depth cannot depend on its material or
+             * texture (the shadow fragment discards only under alpha-mask mode), so
+             * the material block, base texture and sampler binds are skipped; a
+             * neutral block is bound once per shadow encoder for the shader ABI. */
+            if (!ctx->_shadowOpaqueMatBound) {
+                mtl_per_material_t neutral;
+                memset(&neutral, 0, sizeof(neutral));
+                neutral.dc[0] = neutral.dc[1] = neutral.dc[2] = neutral.dc[3] = 1.0f;
+                neutral.scalars[0] = 1.0f;
+                [ctx.encoder setFragmentBytes:&neutral length:sizeof(neutral) atIndex:1];
+                [ctx.encoder setVertexBytes:&neutral length:sizeof(neutral) atIndex:11];
+                metal_bind_frag_texture(ctx, ctx.defaultTexture, 19);
+                metal_bind_frag_texture(ctx, ctx.defaultTexture, 0);
+                if (ctx.defaultSampler)
+                    [ctx.encoder setFragmentSamplerState:ctx.defaultSampler atIndex:0];
+                ctx->_shadowOpaqueMatBound = 1;
+            }
+        } else {
             mtl_per_material_t mat;
             id<MTLTexture> diffuse_tex = metal_material_base_texture(ctx, cmd);
             if (!diffuse_tex && cmd->texture_required && vgfx3d_draw_cmd_has_base_texture(cmd))
@@ -1103,6 +1147,7 @@ static void metal_shadow_draw_impl(void *ctx_ptr,
                 setFragmentSamplerState:metal_get_material_sampler(
                                             ctx, cmd, RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR)
                                 atIndex:0];
+            ctx->_shadowOpaqueMatBound = 0;
         }
 
         [ctx.encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
@@ -1277,7 +1322,6 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         uint32_t index_count;
         vgfx3d_metal_blend_mode_t blend_mode;
         vgfx3d_draw_cmd_t safe_cmd;
-        vgfx3d_light_params_t safe_lights[VGFX3D_MAX_LIGHTS];
         float safe_ambient[3];
         particle_mode = cmd && cmd->particle_instances != NULL;
         if (!ctx)
@@ -1290,11 +1334,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         }
         vgfx3d_sanitize_draw_command(cmd, &safe_cmd);
         cmd = &safe_cmd;
-        light_count =
-            vgfx3d_sanitize_light_array(lights, light_count, safe_lights, VGFX3D_MAX_LIGHTS);
-        for (int32_t light_index = 0; light_index < light_count; light_index++)
-            vgfx3d_sanitize_light_shadow_span(&safe_lights[light_index], ctx->_shadowCount);
-        lights = light_count > 0 ? safe_lights : NULL;
+        light_count = metal_sanitized_lights(ctx, cmd, lights, light_count, &lights);
         vgfx3d_sanitize_ambient_rgb(ambient, safe_ambient);
         ambient = safe_ambient;
         particle_mode = cmd->particle_instances != NULL;
@@ -1553,31 +1593,31 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         metal_fill_material_decal(&mat, cmd);
         [ctx.encoder setFragmentBytes:&mat length:sizeof(mat) atIndex:1];
         [ctx.encoder setVertexBytes:&mat length:sizeof(mat) atIndex:11];
-        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:19];
+        metal_bind_frag_texture(ctx, ctx.defaultTexture, 19);
         if (cmd->has_decal) {
             id<MTLTexture> decal_tex =
                 metal_get_material_texture(ctx, NULL, cmd->decal_map, 0, 0, 0);
             if (decal_tex)
-                [ctx.encoder setFragmentTexture:decal_tex atIndex:19];
+                metal_bind_frag_texture(ctx, decal_tex, 19);
         }
 
         /* Default textures + sampler */
         for (int slot = 0; slot <= 12; slot++)
-            [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:slot];
-        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:14];
-        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:15];
+            metal_bind_frag_texture(ctx, ctx.defaultTexture, slot);
+        metal_bind_frag_texture(ctx, ctx.defaultTexture, 14);
+        metal_bind_frag_texture(ctx, ctx.defaultTexture, 15);
         {
             id<MTLTexture> opaqueDepth =
                 ctx->_opaqueDepthValid ? ctx.opaqueDepthTexture : metal_opaque_depth_dummy(ctx);
             if (!opaqueDepth)
                 return;
-            [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];
+            metal_bind_frag_texture(ctx, opaqueDepth, 16);
         }
-        [ctx.encoder setFragmentTexture:ctx.defaultCubemap atIndex:13];
-        [ctx.encoder setFragmentTexture:ctx.brdfLutTexture atIndex:18];
+        metal_bind_frag_texture(ctx, ctx.defaultCubemap, 13);
+        metal_bind_frag_texture(ctx, ctx.brdfLutTexture, 18);
         for (int32_t slot = 0; slot < ctx->_shadowCount && slot < VGFX3D_CSM_SLOTS; slot++) {
             if (ctx->_shadowDepthTexture[slot])
-                [ctx.encoder setFragmentTexture:ctx->_shadowDepthTexture[slot] atIndex:4 + slot];
+                metal_bind_frag_texture(ctx, ctx->_shadowDepthTexture[slot], 4 + slot);
         }
         {
             /* Atlas tiles for slots >= VGFX3D_CSM_SLOTS; depth dummy keeps the
@@ -1586,7 +1626,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
                 ctx->_shadowAtlasTexture ? ctx->_shadowAtlasTexture : metal_opaque_depth_dummy(ctx);
             if (!atlas)
                 return;
-            [ctx.encoder setFragmentTexture:atlas atIndex:17];
+            metal_bind_frag_texture(ctx, atlas, 17);
         }
         [ctx.encoder setFragmentSamplerState:metal_get_material_sampler(
                                                  ctx, cmd, RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR)
@@ -1614,7 +1654,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         if (vgfx3d_draw_cmd_has_base_texture(cmd)) {
             id<MTLTexture> tex = metal_material_base_texture(ctx, cmd);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:0];
+                metal_bind_frag_texture(ctx, tex, 0);
             else if (cmd->texture_required)
                 return; /* budget-paused text/image quad: nothing beats a white block */
         }
@@ -1627,7 +1667,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_NORMAL],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_NORMAL]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:1];
+                metal_bind_frag_texture(ctx, tex, 1);
         }
         if (cmd->specular_map || cmd->specular_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(
@@ -1638,12 +1678,12 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_SPECULAR],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_SPECULAR]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:2];
+                metal_bind_frag_texture(ctx, tex, 2);
         }
         if (vgfx3d_draw_cmd_has_emissive_map(cmd)) {
             id<MTLTexture> tex = metal_material_emissive_texture(ctx, cmd);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:3];
+                metal_bind_frag_texture(ctx, tex, 3);
         }
         if (cmd->metallic_roughness_map || cmd->metallic_roughness_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(
@@ -1654,7 +1694,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:14];
+                metal_bind_frag_texture(ctx, tex, 14);
         }
         if (cmd->ao_map || cmd->ao_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(
@@ -1665,22 +1705,22 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_AO],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_AO]);
             if (tex)
-                [ctx.encoder setFragmentTexture:tex atIndex:15];
+                metal_bind_frag_texture(ctx, tex, 15);
         }
         if (has_complete_splat) {
             id<MTLTexture> sp = metal_get_cached_texture(ctx, cmd->splat_map);
             if (sp)
-                [ctx.encoder setFragmentTexture:sp atIndex:8];
+                metal_bind_frag_texture(ctx, sp, 8);
             for (int si = 0; si < 4; si++) {
                 if (cmd->splat_layers[si]) {
                     id<MTLTexture> lt = metal_get_cached_texture(ctx, cmd->splat_layers[si]);
                     if (lt)
-                        [ctx.encoder setFragmentTexture:lt atIndex:9 + si];
+                        metal_bind_frag_texture(ctx, lt, 9 + si);
                 }
             }
         }
         if (env_texture && (cmd->reflectivity > 0.0001f || ibl_draw))
-            [ctx.encoder setFragmentTexture:env_texture atIndex:13];
+            metal_bind_frag_texture(ctx, env_texture, 13);
 
         /* Lights */
         if (lights_dirty) {

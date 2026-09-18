@@ -152,6 +152,9 @@ struct StubMaterial {
     double decal_forward[3] = {0.0};
     double decal_opacity = 0.0;
     int8_t decal_projector_set = 0;
+    void *shader = nullptr;
+    double shader_params[64] = {0.0};
+    void *shader_textures[4] = {nullptr};
     uint64_t identity_serial = 0;
 };
 

@@ -718,16 +718,13 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
     const char *required_cluster_guard = "if (!clusterBuf)\n"
                                          "                return;\n"
                                          "            [ctx.encoder setFragmentBuffer:clusterBuf";
-    const char *required_brdf_binding =
-        "[ctx.encoder setFragmentTexture:ctx.brdfLutTexture atIndex:18];";
-    const char *required_depth_guard =
-        "if (!opaqueDepth)\n"
-        "                return;\n"
-        "            [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];";
-    const char *required_atlas_guard =
-        "if (!atlas)\n"
-        "                return;\n"
-        "            [ctx.encoder setFragmentTexture:atlas atIndex:17];";
+    const char *required_brdf_binding = "metal_bind_frag_texture(ctx, ctx.brdfLutTexture, 18);";
+    const char *required_depth_guard = "if (!opaqueDepth)\n"
+                                       "                return;\n"
+                                       "            metal_bind_frag_texture(ctx, opaqueDepth, 16);";
+    const char *required_atlas_guard = "if (!atlas)\n"
+                                       "                return;\n"
+                                       "            metal_bind_frag_texture(ctx, atlas, 17);";
 
     EXPECT_TRUE(source != NULL,
                 "Metal backend source chunks are readable for target/probe regression checks");
@@ -864,9 +861,15 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
                            "if (!candidate)\n"
                            "        return metal_visible_cubemap(cached);") != NULL,
                 "Metal preserves resident resources when replacement-entry allocation fails");
-    EXPECT_TRUE(strstr(source, "static int metal_ensure_instance_storage") != NULL &&
-                    strstr(source, "if (!replacement || replacement.length < byte_count)") != NULL,
-                "Metal instance scratch growth publishes capacity only after allocation");
+    EXPECT_TRUE(
+        strstr(source, "static id<MTLBuffer> metal_shadow_instances_cached") != NULL &&
+            strstr(source,
+                   "metal_shadow_pack_instances((vgfx3d_metal_instance_data_t *)slice, "
+                   "matrices, count);") != NULL &&
+            strstr(source, "memset(ctx->_shadowInstHash, -1, sizeof(ctx->_shadowInstHash));") !=
+                NULL,
+        "Metal shadow instance uploads pack into a reserved ring slice once per command "
+        "buffer and the cache resets with the ring");
     EXPECT_TRUE(strstr(source, "!ctx.textureCache || !ctx.cubemapCache || !ctx.geometryCache") !=
                         NULL &&
                     strstr(source, "if (!ctx.inflightSemaphore)") != NULL,

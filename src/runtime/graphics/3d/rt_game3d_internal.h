@@ -1313,6 +1313,16 @@ typedef struct rt_game3d_world {
     int8_t floating_origin;
     double origin_rebase_threshold;
     double world_origin[3];
+    /* Plan 127: stable entity ids of the live registry, kept across spawns so a
+     * spawn preflight checks its new tree against this set instead of rebuilding
+     * one from every registered entity (the venue composer spawns hundreds of
+     * trees into a 23k-entity registry; that rebuild was the largest single
+     * startup cost). Invalidated by despawn and rollback, rebuilt lazily.
+     * Placed after the test-mirrored prefix (test_rt_game3d Game3DWorldTestLayout). */
+    int64_t *stable_id_slots;
+    size_t stable_id_count;
+    size_t stable_id_capacity;
+    int8_t stable_ids_valid;
     int64_t width;
     int64_t height;
     double clear_r;

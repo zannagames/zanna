@@ -41,6 +41,14 @@ extern "C" {
 /// @param ms Milliseconds to sleep; negative values become zero.
 void rt_sleep_ms(int32_t ms);
 
+/// @brief Sleep for approximately @p us microseconds.
+/// @details POSIX uses `nanosleep` (retrying after `EINTR`); Windows uses a
+///          per-thread high-resolution waitable timer and falls back to `Sleep`
+///          when one cannot be created. Frame pacers combine this with a short
+///          spin because every platform may oversleep by scheduler latency.
+/// @param us Microseconds to sleep; non-positive values return immediately.
+void rt_sleep_us(int64_t us);
+
 /// @brief Return milliseconds from the best available elapsed-time clock.
 /// @details Windows prefers QueryPerformanceCounter and falls back to
 ///          GetTickCount64. POSIX prefers CLOCK_MONOTONIC and falls back to a

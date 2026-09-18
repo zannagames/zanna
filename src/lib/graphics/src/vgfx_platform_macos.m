@@ -1419,6 +1419,49 @@ int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     }
 }
 
+/// @brief Refresh rate of the screen showing @p win (or the main screen).
+/// @details `maximumFramesPerSecond` reports the panel's peak rate (120 on ProMotion),
+///          which is what a frame pacer must snap to; older systems fall back to the
+///          display mode's nominal rate, which some built-in panels report as zero.
+/// @param win Window whose screen is queried, or NULL for the main screen.
+/// @param out_hz Receives the rate in Hz.
+/// @return 1 when a positive rate is known, otherwise 0.
+int vgfx_platform_get_display_refresh_hz(struct vgfx_window *win, double *out_hz) {
+    @autoreleasepool {
+        NSScreen *screen = nil;
+        if (win && win->platform_data) {
+            vgfx_macos_platform *platform = (vgfx_macos_platform *)win->platform_data;
+            if (platform->window)
+                screen = [platform->window screen];
+        }
+        if (!screen)
+            screen = [NSScreen mainScreen];
+        if (!screen)
+            return 0;
+        if (@available(macOS 12.0, *)) {
+            NSInteger fps = [screen maximumFramesPerSecond];
+            if (fps > 0) {
+                if (out_hz)
+                    *out_hz = (double)fps;
+                return 1;
+            }
+        }
+        {
+            CGDirectDisplayID display_id = macos_display_id_for_screen(screen);
+            CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display_id);
+            double rate = mode ? CGDisplayModeGetRefreshRate(mode) : 0.0;
+            if (mode)
+                CGDisplayModeRelease(mode);
+            if (rate > 0.0) {
+                if (out_hz)
+                    *out_hz = rate;
+                return 1;
+            }
+        }
+        return 0;
+    }
+}
+
 /// @brief Initialize platform-specific window resources for macOS.
 /// @details Creates an NSWindow with a custom VGFXView for framebuffer display.
 ///          Initializes NSApplication (required for any Cocoa window), creates
