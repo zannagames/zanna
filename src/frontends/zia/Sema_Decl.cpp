@@ -165,6 +165,7 @@ void Sema::buildBoundFileExports(const std::vector<BindDecl> &binds,
     fileModuleExports_.clear();
     fileBoundModuleIds_.clear();
     boundFileModuleIds_.clear();
+    ownModuleExports_.clear();
     std::unordered_map<uint32_t, std::unordered_map<std::string, uint32_t>> moduleIdsByImporterFile;
 
     for (const auto &bind : binds) {
@@ -211,12 +212,47 @@ const std::unordered_map<std::string, Symbol> *Sema::findModuleExports(
             if (moduleIt != fileIt->second.end())
                 return &moduleIt->second;
         }
+        // A file may qualify its own declarations with its module name.
+        if (!moduleName.empty() && moduleNameForFile(useLoc.file_id) == moduleName) {
+            auto ownIt = ownModuleExports_.find(useLoc.file_id);
+            if (ownIt == ownModuleExports_.end()) {
+                std::unordered_map<std::string, Symbol> exports;
+                if (currentModule_)
+                    collectExportedSymbolsForFile(
+                        useLoc.file_id, currentModule_->declarations, exports);
+                ownIt = ownModuleExports_.emplace(useLoc.file_id, std::move(exports)).first;
+            }
+            return &ownIt->second;
+        }
+        // A bind is not inherited: only this file's own binds are visible (ADR 0376).
+        return nullptr;
     }
 
     auto moduleIt = moduleExports_.find(moduleName);
     if (moduleIt == moduleExports_.end())
         return nullptr;
     return &moduleIt->second;
+}
+
+/// @brief The file a module name refers to from a use location (ADR 0376).
+/// @param moduleName Visible module name or alias.
+/// @param useLoc Location of the use.
+/// @return A module the use's own file binds, or that file itself when it names
+///         its own module; 0 when the name is not visible there. Without
+///         source context, the program-wide map.
+uint32_t Sema::visibleModuleFile(const std::string &moduleName, SourceLoc useLoc) const {
+    if (useLoc.file_id == 0) {
+        auto it = boundFileModuleIds_.find(moduleName);
+        return it != boundFileModuleIds_.end() ? it->second : 0;
+    }
+    if (auto fileIt = fileBoundModuleIds_.find(useLoc.file_id);
+        fileIt != fileBoundModuleIds_.end()) {
+        if (auto it = fileIt->second.find(moduleName); it != fileIt->second.end())
+            return it->second;
+    }
+    if (!moduleName.empty() && moduleNameForFile(useLoc.file_id) == moduleName)
+        return useLoc.file_id;
+    return 0;
 }
 
 /// @brief Return true if a file-module root is visible at a source location.
@@ -702,6 +738,10 @@ void Sema::validateInterfaceImplementations(const std::string &typeName,
         if (TypeRef ifaceType = resolveNamedType(ifaceName, loc);
             ifaceType && ifaceType->kind == TypeKindSem::Interface) {
             resolvedIfaceName = ifaceType->name;
+        } else {
+            // An interface from a file this file does not bind is reported once
+            // here; conformance is still checked against its declaration.
+            reportUnboundModuleType(ifaceName, loc);
         }
 
         auto ifaceIt = interfaceDecls_.find(resolvedIfaceName);
@@ -753,12 +793,16 @@ void Sema::validateInterfaceImplementations(const std::string &typeName,
 
 /// @brief Analyze a struct type declaration body (fields, methods, interface validation).
 /// @param decl The struct type declaration to analyze.
-void Sema::analyzeStructDecl(StructDecl &decl) {
-    // Generic types are registered in the first pass; skip body analysis
-    if (!decl.genericParams.empty())
+/// @param instantiationName Mangled instantiation name when analyzing a generic body under its
+///        substitutions; empty for ordinary declarations.
+void Sema::analyzeStructDecl(StructDecl &decl, const std::string &instantiationName) {
+    // A generic body is analyzed per instantiation (by the lowerer, under that instantiation's
+    // substitutions), never in the module pass where its type parameters are unbound.
+    if (!decl.genericParams.empty() && instantiationName.empty())
         return;
 
-    const std::string ownerName = semanticNameForDecl(decl, decl.name);
+    const std::string ownerName =
+        instantiationName.empty() ? semanticNameForDecl(decl, decl.name) : instantiationName;
     auto selfType = types::structType(ownerName);
     currentSelfType_ = selfType;
 
@@ -930,12 +974,16 @@ void Sema::registerInterfaceMembers(InterfaceDecl &decl) {
 ///          pre-defines method symbols for intra-class calls, then analyzes member bodies.
 ///          Validates interface implementations after all members are analyzed.
 /// @param decl The class declaration to analyze.
-void Sema::analyzeClassDecl(ClassDecl &decl) {
-    // Generic types are registered in the first pass; skip body analysis
-    if (!decl.genericParams.empty())
+/// @param instantiationName Mangled instantiation name when analyzing a generic body under its
+///        substitutions; empty for ordinary declarations.
+void Sema::analyzeClassDecl(ClassDecl &decl, const std::string &instantiationName) {
+    // A generic body is analyzed per instantiation (by the lowerer, under that instantiation's
+    // substitutions), never in the module pass where its type parameters are unbound.
+    if (!decl.genericParams.empty() && instantiationName.empty())
         return;
 
-    const std::string ownerName = semanticNameForDecl(decl, decl.name);
+    const std::string ownerName =
+        instantiationName.empty() ? semanticNameForDecl(decl, decl.name) : instantiationName;
     auto selfType = types::classType(ownerName);
     currentSelfType_ = selfType;
 
@@ -958,6 +1006,10 @@ void Sema::analyzeClassDecl(ClassDecl &decl) {
         if (TypeRef resolvedBase = resolveNamedType(decl.baseClass, decl.loc);
             resolvedBase && resolvedBase->kind == TypeKindSem::Class) {
             decl.baseClass = resolvedBase->name;
+        } else {
+            // A base class from a file this file does not bind is reported once
+            // here; the class is still analyzed against its declaration.
+            reportUnboundModuleType(decl.baseClass, decl.loc);
         }
 
         auto parentIt = classDecls_.find(decl.baseClass);
@@ -1479,9 +1531,12 @@ void Sema::analyzeMethodDecl(MethodDecl &decl, TypeRef ownerType) {
     TypeRef savedSelfType = currentSelfType_;
     currentMethod_ = &decl;
     currentSelfType_ = ownerType;
-    auto methodTypeIt = methodDeclTypes_.find(&decl);
-    TypeRef methodType =
-        methodTypeIt != methodDeclTypes_.end() ? methodTypeIt->second : methodTypeForDecl(decl);
+    // The owner-specific signature, not the declaration's first registration: every
+    // instantiation of a generic class shares one MethodDecl, and the declaration-keyed cache
+    // keeps whichever instantiation registered first (ZB-58).
+    TypeRef methodType = ownerType ? getMethodType(ownerType->name, &decl) : getMethodType(&decl);
+    if (!methodType)
+        methodType = methodTypeForDecl(decl);
     TypeRef returnType = methodType && methodType->kind == TypeKindSem::Function
                              ? methodType->returnType()
                              : types::voidType();

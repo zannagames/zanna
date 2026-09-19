@@ -229,6 +229,25 @@ std::string Sema::qualifyName(const std::string &name) const {
     return namespacePrefix_ + "." + name;
 }
 
+/// @brief Enclosing-namespace spellings of an unqualified name, innermost first.
+/// @param name Name as written at the use site.
+/// @return `A.B.name`, `A.name` inside `namespace A.B`; empty outside a namespace or when
+///         @p name is already qualified.
+std::vector<std::string> Sema::namespaceCandidates(const std::string &name) const {
+    std::vector<std::string> candidates;
+    if (namespacePrefix_.empty() || name.find('.') != std::string::npos)
+        return candidates;
+    std::string prefix = namespacePrefix_;
+    while (!prefix.empty()) {
+        candidates.push_back(prefix + "." + name);
+        const size_t dot = prefix.rfind('.');
+        if (dot == std::string::npos)
+            break;
+        prefix.resize(dot);
+    }
+    return candidates;
+}
+
 /// @brief Pass 2: Register member signatures (fields, methods) for type declarations.
 /// @param declarations The declaration list to process.
 void Sema::registerMemberSignatures(std::vector<DeclPtr> &declarations) {
@@ -451,20 +470,18 @@ void Sema::analyzeDeclarationBodies(std::vector<DeclPtr> &declarations) {
     }
 }
 
-/// @brief Analyze a namespace declaration with recursive multi-pass processing.
-/// @details Saves the current namespace prefix, computes a new qualified prefix,
-///          then runs the same three-pass strategy (register, member sigs, bodies)
-///          on the namespace's nested declarations. Handles nested namespaces recursively.
-/// @param decl The namespace declaration to analyze.
-void Sema::analyzeNamespaceDecl(NamespaceDecl &decl) {
-    // Save current namespace prefix
-    std::string savedPrefix = namespacePrefix_;
-
-    // Compute new prefix: append this namespace's name
-    if (namespacePrefix_.empty())
-        namespacePrefix_ = decl.name;
-    else
-        namespacePrefix_ = namespacePrefix_ + "." + decl.name;
+/// @brief Namespace phase 1: register every declaration of @p decl and its nested namespaces.
+/// @details Types, aliases and nominal relationships first, then functions, globals and nested
+///          namespace symbols, all under qualified names. Namespace analysis runs in three
+///          phases that the module pass interleaves with its own (declarations, then
+///          signatures, then bodies), so top-level and namespace code can use each other's
+///          types, members and functions in either direction (ZB-56). Before, a namespace
+///          was analyzed start-to-finish — bodies included — ahead of the top level's member
+///          signatures, and nested namespaces ahead of their parent's.
+/// @param decl The namespace declaration.
+void Sema::registerNamespaceDeclarations(NamespaceDecl &decl) {
+    const std::string savedPrefix = namespacePrefix_;
+    namespacePrefix_ = qualifyName(decl.name);
 
     std::vector<std::pair<TypeAliasDecl *, std::string>> pendingTypeAliases;
 
@@ -587,7 +604,7 @@ void Sema::analyzeNamespaceDecl(NamespaceDecl &decl) {
                 sym.decl = ns;
                 sym.isFinal = true;
                 defineSymbol(qualifiedName, sym);
-                analyzeNamespaceDecl(*ns);
+                registerNamespaceDeclarations(*ns);
                 break;
             }
             default:
@@ -595,16 +612,37 @@ void Sema::analyzeNamespaceDecl(NamespaceDecl &decl) {
         }
     }
 
-    // Pre-pass: resolve final constant types for forward references
+    namespacePrefix_ = savedPrefix;
+}
+
+/// @brief Namespace phase 2: final-constant types and member signatures, recursively.
+/// @param decl The namespace declaration.
+void Sema::registerNamespaceSignatures(NamespaceDecl &decl) {
+    const std::string savedPrefix = namespacePrefix_;
+    namespacePrefix_ = qualifyName(decl.name);
+
     registerFinalConstantTypes(decl.declarations);
-
-    // Second pass: register members for types
     registerMemberSignatures(decl.declarations);
+    for (auto &innerDecl : decl.declarations) {
+        if (innerDecl->kind == DeclKind::Namespace)
+            registerNamespaceSignatures(*static_cast<NamespaceDecl *>(innerDecl.get()));
+    }
 
-    // Third pass: analyze bodies
+    namespacePrefix_ = savedPrefix;
+}
+
+/// @brief Namespace phase 3: analyze declaration bodies, recursively.
+/// @param decl The namespace declaration.
+void Sema::analyzeNamespaceBodies(NamespaceDecl &decl) {
+    const std::string savedPrefix = namespacePrefix_;
+    namespacePrefix_ = qualifyName(decl.name);
+
     analyzeDeclarationBodies(decl.declarations);
+    for (auto &innerDecl : decl.declarations) {
+        if (innerDecl->kind == DeclKind::Namespace)
+            analyzeNamespaceBodies(*static_cast<NamespaceDecl *>(innerDecl.get()));
+    }
 
-    // Restore previous namespace prefix
     namespacePrefix_ = savedPrefix;
 }
 

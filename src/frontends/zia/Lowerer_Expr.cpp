@@ -314,16 +314,13 @@ LowerResult Lowerer::lowerIdent(IdentExpr *expr) {
 /// @param expr Ternary expression.
 /// @return The selected branch value and its IL type (void placeholder for void results).
 /// @details Allocates a result slot, branches into then/else blocks that each store their
-///          value, and reloads at the merge block. When the result type is optional but a
-///          branch produced a non-optional value, that branch is wrapped via
-///          emitOptionalWrap(). Reference-typed results are scheduled for deferred release.
+///          value (converted to the result type by coerceBranchValue()), and reloads at the
+///          merge block. Reference-typed results are scheduled for deferred release.
 LowerResult Lowerer::lowerTernary(TernaryExpr *expr) {
     const size_t conditionReleaseMark = deferredTemps_.size();
     auto cond = lowerExpr(expr->condition.get());
     TypeRef resultType = sema_.typeOf(expr);
     Type ilResultType = mapType(resultType);
-    bool expectsOptional = resultType && resultType->kind == TypeKindSem::Optional;
-    TypeRef optionalInner = expectsOptional ? resultType->innerType() : nullptr;
 
     // Allocate a stack slot for the result before branching.
     unsigned allocaId = nextTempId();
@@ -347,14 +344,7 @@ LowerResult Lowerer::lowerTernary(TernaryExpr *expr) {
     {
         const size_t branchReleaseMark = deferredTemps_.size();
         auto thenResult = lowerExpr(expr->thenExpr.get());
-        Value thenValue = thenResult.value;
-        if (expectsOptional) {
-            TypeRef thenType = sema_.typeOf(expr->thenExpr.get());
-            if (!thenType || thenType->kind != TypeKindSem::Optional) {
-                if (optionalInner)
-                    thenValue = emitOptionalWrap(thenResult.value, optionalInner);
-            }
-        }
+        Value thenValue = coerceBranchValue(thenResult, expr->thenExpr.get(), resultType);
         if (ilResultType.kind != Type::Kind::Void) {
             if (needsRelease(resultType))
                 emitInlineValueStore(resultType, resultSlot, thenValue, /*destInitialized=*/false);
@@ -371,14 +361,7 @@ LowerResult Lowerer::lowerTernary(TernaryExpr *expr) {
     {
         const size_t branchReleaseMark = deferredTemps_.size();
         auto elseResult = lowerExpr(expr->elseExpr.get());
-        Value elseValue = elseResult.value;
-        if (expectsOptional) {
-            TypeRef elseType = sema_.typeOf(expr->elseExpr.get());
-            if (!elseType || elseType->kind != TypeKindSem::Optional) {
-                if (optionalInner)
-                    elseValue = emitOptionalWrap(elseResult.value, optionalInner);
-            }
-        }
+        Value elseValue = coerceBranchValue(elseResult, expr->elseExpr.get(), resultType);
         if (ilResultType.kind != Type::Kind::Void) {
             if (needsRelease(resultType))
                 emitInlineValueStore(resultType, resultSlot, elseValue, /*destInitialized=*/false);
@@ -412,15 +395,13 @@ LowerResult Lowerer::lowerTernary(TernaryExpr *expr) {
 /// @param expr If-expression with then/else branches.
 /// @return The selected branch value and its IL type (void placeholder for void results).
 /// @details Structurally identical to lowerTernary(): a result slot plus then/else/merge
-///          blocks, optional-wrapping of a non-optional branch when the result type is
-///          optional, and deferred release for reference-typed results.
+///          blocks, each branch converted to the result type by coerceBranchValue(), and
+///          deferred release for reference-typed results.
 LowerResult Lowerer::lowerIfExpr(IfExpr *expr) {
     const size_t conditionReleaseMark = deferredTemps_.size();
     auto cond = lowerExpr(expr->condition.get());
     TypeRef resultType = sema_.typeOf(expr);
     Type ilResultType = mapType(resultType);
-    bool expectsOptional = resultType && resultType->kind == TypeKindSem::Optional;
-    TypeRef optionalInner = expectsOptional ? resultType->innerType() : nullptr;
 
     // Allocate a stack slot for the result before branching.
     unsigned allocaId = nextTempId();
@@ -444,14 +425,7 @@ LowerResult Lowerer::lowerIfExpr(IfExpr *expr) {
     {
         const size_t branchReleaseMark = deferredTemps_.size();
         auto thenResult = lowerExpr(expr->thenBranch.get());
-        Value thenValue = thenResult.value;
-        if (expectsOptional) {
-            TypeRef thenType = sema_.typeOf(expr->thenBranch.get());
-            if (!thenType || thenType->kind != TypeKindSem::Optional) {
-                if (optionalInner)
-                    thenValue = emitOptionalWrap(thenResult.value, optionalInner);
-            }
-        }
+        Value thenValue = coerceBranchValue(thenResult, expr->thenBranch.get(), resultType);
         if (ilResultType.kind != Type::Kind::Void) {
             if (needsRelease(resultType))
                 emitInlineValueStore(resultType, resultSlot, thenValue, /*destInitialized=*/false);
@@ -468,14 +442,7 @@ LowerResult Lowerer::lowerIfExpr(IfExpr *expr) {
     {
         const size_t branchReleaseMark = deferredTemps_.size();
         auto elseResult = lowerExpr(expr->elseBranch.get());
-        Value elseValue = elseResult.value;
-        if (expectsOptional) {
-            TypeRef elseType = sema_.typeOf(expr->elseBranch.get());
-            if (!elseType || elseType->kind != TypeKindSem::Optional) {
-                if (optionalInner)
-                    elseValue = emitOptionalWrap(elseResult.value, optionalInner);
-            }
-        }
+        Value elseValue = coerceBranchValue(elseResult, expr->elseBranch.get(), resultType);
         if (ilResultType.kind != Type::Kind::Void) {
             if (needsRelease(resultType))
                 emitInlineValueStore(resultType, resultSlot, elseValue, /*destInitialized=*/false);

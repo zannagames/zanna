@@ -345,7 +345,7 @@ std::optional<LowerResult> Lowerer::lowerListCombinator(Value baseValue,
                            Type retIl) -> Value {
         auto closure = lowerExpr(expr->args[argIndex].value.get());
         Value funcPtr = emitLoad(closure.value, ptr);
-        Value envPtr = emitLoad(emitGEP(closure.value, /*kClosureEnvOffset=*/8), ptr);
+        Value envPtr = emitLoad(emitGEP(closure.value, kClosureEnvOffset), ptr);
         std::vector<Value> full;
         full.reserve(callArgs.size() + 1);
         full.push_back(envPtr);
@@ -594,31 +594,9 @@ std::optional<LowerResult> Lowerer::lowerMapMethodCall(Value baseValue,
                             return LowerResult{str, Type(Type::Kind::Str)};
                         }
 
-                        std::string slotName =
-                            "__intmap_get_opt_str_" + std::to_string(nextTempId());
-                        createSlot(slotName, Type(Type::Kind::Str));
                         Value boxed =
                             emitCallRet(Type(Type::Kind::Ptr), getHelper, {baseValue, runtimeKey});
-                        Value hasValue = emitPointerIsNonNull(boxed, Type(Type::Kind::Ptr));
-
-                        size_t hasValueIdx = createBlock("intmap_get_str_has");
-                        size_t missingIdx = createBlock("intmap_get_str_missing");
-                        size_t mergeIdx = createBlock("intmap_get_str_merge");
-                        emitCBr(hasValue, hasValueIdx, missingIdx);
-
-                        setBlock(hasValueIdx);
-                        Value str = emitCallRet(Type(Type::Kind::Str), kUnboxStr, {boxed});
-                        storeToSlot(slotName, str, Type(Type::Kind::Str));
-                        emitBr(mergeIdx);
-
-                        setBlock(missingIdx);
-                        storeToSlot(slotName, Value::null(), Type(Type::Kind::Ptr));
-                        emitBr(mergeIdx);
-
-                        setBlock(mergeIdx);
-                        Value result = loadFromSlot(slotName, Type(Type::Kind::Str));
-                        removeSlot(slotName);
-                        return LowerResult{result, Type(Type::Kind::Str)};
+                        return emitOptionalStringUnbox(boxed);
                     }
 
                     Value boxed =
@@ -840,7 +818,9 @@ LowerResult Lowerer::lowerMethodCall(MethodDecl *method,
 
     std::vector<Value> args;
     args.reserve(paramTypes.size() + 1);
-    args.push_back(selfValue);
+    // Static methods are lowered without a self parameter (lowerMethodDecl).
+    if (!method || !method->isStatic)
+        args.push_back(selfValue);
     std::vector<Value> boundArgs =
         lowerResolvedCallArgs(expr, paramTypes, method ? &method->params : nullptr);
     args.insert(args.end(), boundArgs.begin(), boundArgs.end());

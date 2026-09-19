@@ -132,20 +132,39 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
         }
     }
 
+    // A type declared in an enclosing namespace is named by its short name inside it (ZB-56).
+    for (const auto &candidate : namespaceCandidates(name)) {
+        if (Symbol *sym = const_cast<Sema *>(this)->lookupAccessibleSymbol(candidate, useLoc);
+            sym && sym->kind == Symbol::Kind::Type) {
+            return sym->type;
+        }
+        auto nsIt = typeRegistry_.find(candidate);
+        if (nsIt != typeRegistry_.end())
+            return nsIt->second;
+    }
+
     if (Symbol *sym = const_cast<Sema *>(this)->lookupAccessibleSymbol(name, useLoc);
         sym && sym->kind == Symbol::Kind::Type) {
         return sym->type;
     }
 
-    // Look up in registry
-    auto it = typeRegistry_.find(name);
-    if (it != typeRegistry_.end())
-        return it->second;
+    // A type exported by a file this file does not bind is not in scope here
+    // (ADR 0376), so the program-wide registry and alias table must not supply it.
+    const Symbol *unbound = const_cast<Sema *>(this)->unboundExportedDecl(name, useLoc);
+    const bool registryVisible = !(unbound && unbound->kind == Symbol::Kind::Type);
 
-    // Check type aliases (type Name = TargetType;)
-    auto aliasIt = typeAliases_.find(name);
-    if (aliasIt != typeAliases_.end())
-        return aliasIt->second;
+    // Look up in registry
+    auto it = typeRegistry_.end();
+    if (registryVisible) {
+        it = typeRegistry_.find(name);
+        if (it != typeRegistry_.end())
+            return it->second;
+
+        // Check type aliases (type Name = TargetType;)
+        auto aliasIt = typeAliases_.find(name);
+        if (aliasIt != typeAliases_.end())
+            return aliasIt->second;
+    }
 
     /// @brief Looks up a registered nominal type or alias.
     /// @param candidate Semantic type name.
@@ -166,20 +185,7 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
     /// @return File-scoped exported type, or null.
     auto resolveBoundFileModuleType = [&](const std::string &moduleName,
                                           const std::string &suffix) -> TypeRef {
-        uint32_t boundFileId = 0;
-        if (useLoc.file_id != 0) {
-            auto fileIt = fileBoundModuleIds_.find(useLoc.file_id);
-            if (fileIt != fileBoundModuleIds_.end()) {
-                auto moduleIt = fileIt->second.find(moduleName);
-                if (moduleIt != fileIt->second.end())
-                    boundFileId = moduleIt->second;
-            }
-        }
-        if (boundFileId == 0) {
-            auto moduleIt = boundFileModuleIds_.find(moduleName);
-            if (moduleIt != boundFileModuleIds_.end())
-                boundFileId = moduleIt->second;
-        }
+        const uint32_t boundFileId = visibleModuleFile(moduleName, useLoc);
         if (boundFileId == 0)
             return nullptr;
 
@@ -259,13 +265,8 @@ TypeRef Sema::resolveNamedType(const std::string &name, SourceLoc useLoc) const 
         if (TypeRef resolved = resolveBoundFileModuleType(prefix, suffix))
             return resolved;
 
-        auto fileModuleIdIt = useLoc.file_id != 0 ? fileBoundModuleIds_.find(useLoc.file_id)
-                                                  : fileBoundModuleIds_.end();
         const bool visibleFileModule =
-            moduleExports != nullptr ||
-            boundFileModuleIds_.find(prefix) != boundFileModuleIds_.end() ||
-            (fileModuleIdIt != fileBoundModuleIds_.end() &&
-             fileModuleIdIt->second.find(prefix) != fileModuleIdIt->second.end());
+            moduleExports != nullptr || visibleModuleFile(prefix, useLoc) != 0;
         if (visibleFileModule && prefix != "Zanna") {
             if (TypeRef resolved = lookupRegisteredType(suffix))
                 return resolved;
@@ -335,7 +336,8 @@ TypeRef Sema::resolveTypeNode(const TypeNode *node) {
 
             TypeRef resolved = resolveNamedType(named->name, node->loc);
             if (!resolved) {
-                error(node->loc, "Unknown type: " + named->name);
+                if (!reportUnboundModuleType(named->name, node->loc))
+                    error(node->loc, "Unknown type: " + named->name);
                 return types::unknown();
             }
             return resolved;
@@ -417,13 +419,17 @@ TypeRef Sema::resolveTypeNode(const TypeNode *node) {
             if (genericName.find('.') == std::string::npos && node->loc.file_id != 0)
                 genericName = fileScopedTypeName(node->loc.file_id, genericName);
             if (genericTypeDecls_.count(genericName)) {
+                if (genericName == generic->name &&
+                    reportUnboundModuleType(generic->name, node->loc))
+                    return types::unknown();
                 return instantiateGenericType(genericName, args, node->loc);
             }
 
             // Fallback: resolve as named type with type arguments
             TypeRef baseType = resolveNamedType(genericName, node->loc);
             if (!baseType) {
-                error(node->loc, "Unknown type: " + generic->name);
+                if (!reportUnboundModuleType(generic->name, node->loc))
+                    error(node->loc, "Unknown type: " + generic->name);
                 return types::unknown();
             }
 
@@ -541,14 +547,23 @@ void Sema::collectCaptures(const Expr *expr,
 /// @param ctx Mutable capture traversal state.
 /// @param name Referenced identifier spelling.
 /// @details Ignores names bound in any active local scope, and only captures symbols that are
-///          variables or parameters; each name is captured at most once.
+///          variables or parameters; each name is captured at most once. A bare field or
+///          method name of the enclosing type reads through `self`, so it captures `self`.
 void Sema::recordCapture(CaptureContext &ctx, const std::string &name) {
     for (auto it = ctx.localScopes.rbegin(); it != ctx.localScopes.rend(); ++it) {
         if (it->find(name) != it->end())
             return;
     }
     Symbol *sym = lookupSymbol(name);
+    if (sym && (sym->kind == Symbol::Kind::Field || sym->kind == Symbol::Kind::Method) &&
+        name != "self") {
+        recordCapture(ctx, "self");
+        return;
+    }
     if (!sym || (sym->kind != Symbol::Kind::Variable && sym->kind != Symbol::Kind::Parameter))
+        return;
+    // Module variables are global storage, read and written in place.
+    if (sym->decl && sym->decl->kind == DeclKind::GlobalVar)
         return;
     if (!ctx.captured.insert(name).second)
         return;
@@ -733,6 +748,10 @@ void Sema::collectExprCaptures(CaptureContext &ctx, const Expr *e) {
         case ExprKind::Ident:
             recordCapture(ctx, static_cast<const IdentExpr *>(e)->name);
             break;
+        case ExprKind::SelfExpr:
+            // A method's lambda that names `self` captures the receiver.
+            recordCapture(ctx, "self");
+            break;
         case ExprKind::Binary: {
             auto *bin = static_cast<const BinaryExpr *>(e);
             // A lambda captures free variables by value, so assigning to a bare
@@ -749,9 +768,13 @@ void Sema::collectExprCaptures(CaptureContext &ctx, const Expr *e) {
                     }
                 }
                 if (!isLocal) {
+                    // Module variables are not captured; a lambda writes them in place.
                     Symbol *sym = lookupSymbol(tgt);
-                    if (sym && (sym->kind == Symbol::Kind::Variable ||
-                                sym->kind == Symbol::Kind::Parameter)) {
+                    const bool moduleVariable =
+                        sym && sym->decl && sym->decl->kind == DeclKind::GlobalVar;
+                    if (sym && !moduleVariable &&
+                        (sym->kind == Symbol::Kind::Variable ||
+                         sym->kind == Symbol::Kind::Parameter)) {
                         error(bin->loc,
                               "Cannot assign to captured variable '" + tgt +
                                   "'; lambda captures are by value. Return the new value, or use "
@@ -895,4 +918,30 @@ void Sema::collectExprCaptures(CaptureContext &ctx, const Expr *e) {
     }
 }
 
+/// @brief Report a type name that belongs to a module the using file does not
+///        bind (ADR 0376), instead of "Unknown type".
+/// @param name Type name as written (`module.Type` or a bare name).
+/// @param loc Location of the type reference.
+/// @return True when an unbound-module diagnostic was reported.
+bool Sema::reportUnboundModuleType(const std::string &name, SourceLoc loc) {
+    if (loc.file_id == 0)
+        return false;
+    std::string owner;
+    const auto dot = name.find('.');
+    if (dot != std::string::npos) {
+        const std::string prefix = name.substr(0, dot);
+        if (visibleModuleFile(prefix, loc) == 0 &&
+            boundFileModuleIds_.find(prefix) != boundFileModuleIds_.end())
+            owner = prefix;
+    } else if (Symbol *sym = unboundExportedDecl(name, loc)) {
+        owner = moduleNameForFile(sym->loc.file_id);
+    }
+    if (owner.empty())
+        return false;
+    reportUnboundModule(loc,
+                        owner,
+                        "Type '" + name + "' belongs to module '" + owner +
+                            "', which this file does not bind");
+    return true;
+}
 } // namespace il::frontends::zia

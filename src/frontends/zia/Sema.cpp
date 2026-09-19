@@ -1769,15 +1769,31 @@ void Sema::resolvePendingTypeAliases(
 ///          assignability registries are populated. Generic relationships are deferred until
 ///          instantiation.
 void Sema::registerNominalTypeRelationships(std::vector<DeclPtr> &declarations) {
+    /// @brief Resolves a declared base or interface name for registration.
+    /// @details A type from a file the declaring file does not bind is reported
+    ///          when the declaration is analyzed (ADR 0376); registering the
+    ///          relationship anyway keeps that one diagnostic from cascading
+    ///          into assignability errors at every use.
+    /// @param name Declared type name.
+    /// @param loc Declaration location.
+    /// @return The named type, or null when it does not exist.
+    auto resolveRelatedType = [this](const std::string &name, const SourceLoc &loc) -> TypeRef {
+        if (TypeRef resolved = resolveNamedType(name, loc))
+            return resolved;
+        if (Symbol *sym = unboundExportedDecl(name, loc); sym && sym->kind == Symbol::Kind::Type)
+            return sym->type;
+        return nullptr;
+    };
+
     /// @brief Registers resolved interface implementations for one nominal type.
     /// @param ownerName Semantic owner type name.
     /// @param loc Declaration location for type-resolution diagnostics.
     /// @param interfaces Declared interface names.
-    auto registerInterfaces = [this](const std::string &ownerName,
-                                     const SourceLoc &loc,
-                                     const std::vector<std::string> &interfaces) {
+    auto registerInterfaces = [&resolveRelatedType](const std::string &ownerName,
+                                                    const SourceLoc &loc,
+                                                    const std::vector<std::string> &interfaces) {
         for (const auto &ifaceName : interfaces) {
-            TypeRef ifaceType = resolveNamedType(ifaceName, loc);
+            TypeRef ifaceType = resolveRelatedType(ifaceName, loc);
             if (ifaceType && ifaceType->kind == TypeKindSem::Interface)
                 types::registerInterfaceImplementation(ownerName, ifaceType->name);
         }
@@ -1800,7 +1816,7 @@ void Sema::registerNominalTypeRelationships(std::vector<DeclPtr> &declarations) 
 
                 const std::string ownerName = semanticNameForDecl(*cls, cls->name);
                 if (!cls->baseClass.empty()) {
-                    TypeRef baseType = resolveNamedType(cls->baseClass, cls->loc);
+                    TypeRef baseType = resolveRelatedType(cls->baseClass, cls->loc);
                     if (baseType && baseType->kind == TypeKindSem::Class) {
                         cls->baseClass = baseType->name;
                         types::registerClassInheritance(ownerName, cls->baseClass);
@@ -1824,6 +1840,9 @@ void Sema::registerNominalTypeRelationships(std::vector<DeclPtr> &declarations) 
 /// @return True if analysis succeeded without errors, false otherwise.
 bool Sema::analyze(ModuleDecl &module) {
     currentModule_ = &module;
+    reportedDiagnostics_.clear();
+    reportedUnboundModules_.clear();
+    ownModuleExports_.clear();
     fileModuleNames_.clear();
     moduleExports_.clear();
     fileModuleExports_.clear();
@@ -1992,11 +2011,11 @@ bool Sema::analyze(ModuleDecl &module) {
         }
     }
 
-    // Process namespace declarations (they handle their own multi-pass analysis)
+    // Namespaces run the same three phases as the module, each right after the module's own:
+    // declarations here, signatures and bodies below (ZB-56).
     for (auto &decl : module.declarations) {
-        if (decl->kind == DeclKind::Namespace) {
-            analyzeNamespaceDecl(*static_cast<NamespaceDecl *>(decl.get()));
-        }
+        if (decl->kind == DeclKind::Namespace)
+            registerNamespaceDeclarations(*static_cast<NamespaceDecl *>(decl.get()));
     }
 
     // Pre-pass: eagerly resolve types of final constants from literal initializers
@@ -2011,9 +2030,17 @@ bool Sema::analyze(ModuleDecl &module) {
     // Second pass: register all method/field signatures (before analyzing bodies)
     // This ensures cross-module method calls can be resolved regardless of declaration order
     registerMemberSignatures(module.declarations);
+    for (auto &decl : module.declarations) {
+        if (decl->kind == DeclKind::Namespace)
+            registerNamespaceSignatures(*static_cast<NamespaceDecl *>(decl.get()));
+    }
 
     // Third pass: analyze declarations (bodies)
     analyzeDeclarationBodies(module.declarations);
+    for (auto &decl : module.declarations) {
+        if (decl->kind == DeclKind::Namespace)
+            analyzeNamespaceBodies(*static_cast<NamespaceDecl *>(decl.get()));
+    }
 
     return !hasError_;
 }

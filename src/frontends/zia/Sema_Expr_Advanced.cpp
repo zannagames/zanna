@@ -19,6 +19,7 @@
 #include "il/runtime/classes/RuntimeClasses.hpp"
 
 #include <unordered_set>
+#include <utility>
 
 namespace il::frontends::zia {
 
@@ -130,9 +131,11 @@ TypeRef Sema::analyzeField(FieldExpr *expr) {
     // before trying to analyze the base, because "Zanna" is not a symbol.
     std::string dottedBase;
     if (extractDottedName(expr->base.get(), dottedBase)) {
-        // Check if the dotted base is a runtime class (registered in typeRegistry_)
+        // Check if the dotted base is a runtime class (registered in typeRegistry_).
+        // A type from a file this file does not bind is analyzed as an ordinary
+        // name instead, which reports the missing bind (ADR 0376).
         auto typeIt = typeRegistry_.find(dottedBase);
-        if (typeIt != typeRegistry_.end()) {
+        if (typeIt != typeRegistry_.end() && !unboundExportedDecl(dottedBase, expr->loc)) {
             if (TypeRef staticFieldType = resolveStaticField(expr, dottedBase))
                 return staticFieldType;
 
@@ -1296,7 +1299,9 @@ TypeRef Sema::analyzeMatchExpr(MatchExpr *expr) {
                       "Non-exhaustive patterns: match on Result should handle Ok and Err or use "
                       "a wildcard (_)");
             }
-        } else {
+        } else if (!scrutineeType || (scrutineeType->kind != TypeKindSem::Unknown &&
+                                      scrutineeType->kind != TypeKindSem::Error)) {
+            // An unresolved scrutinee type was already reported where it arose.
             warn(WarningCode::W019_NonExhaustiveMatch,
                  expr->loc,
                  "Non-exhaustive patterns: consider adding a wildcard (_) case "
@@ -1361,7 +1366,8 @@ TypeRef Sema::analyzeNew(NewExpr *expr) {
         }
     }
 
-    if (!allowed) {
+    // An unresolved type was already reported where it was written.
+    if (!allowed && type->kind != TypeKindSem::Unknown && type->kind != TypeKindSem::Error) {
         error(expr->loc, "'new' can only be used with struct, class, or collection types");
     }
 
@@ -1518,14 +1524,42 @@ TypeRef Sema::analyzeLambda(LambdaExpr *expr) {
         markInitialized(param.name);
     }
 
+    // The body's `return` statements belong to the lambda, not to the
+    // enclosing function: check them against the lambda's declared (or
+    // hinted) return type, or collect them to infer it. `break`/`continue`
+    // cannot leave a lambda.
+    TypeRef declaredReturn = expr->returnType ? resolveTypeNode(expr->returnType.get()) : nullptr;
+    if (!declaredReturn && hint && hint->kind == TypeKindSem::Function && hint->returnType() &&
+        hint->returnType()->kind != TypeKindSem::Unknown)
+        declaredReturn = hint->returnType();
+    std::vector<TypeRef> inferredReturns;
+    TypeRef savedExpectedReturn =
+        std::exchange(expectedReturnType_, declaredReturn ? declaredReturn : types::unknown());
+    std::vector<TypeRef> *savedLambdaReturns =
+        std::exchange(lambdaReturnTypes_, declaredReturn ? nullptr : &inferredReturns);
+    const int savedLoopDepth = std::exchange(loopDepth_, 0);
+
     TypeRef bodyType = analyzeExpr(expr->body.get());
+
+    expectedReturnType_ = savedExpectedReturn;
+    lambdaReturnTypes_ = savedLambdaReturns;
+    loopDepth_ = savedLoopDepth;
 
     popScope(expr->body ? expr->body->loc : expr->loc);
 
     // Collect captured variables (free variables referenced in the body)
     collectCaptures(expr->body.get(), lambdaLocals, expr->captures);
 
-    TypeRef returnType = expr->returnType ? resolveTypeNode(expr->returnType.get()) : bodyType;
+    TypeRef returnType = declaredReturn;
+    if (!returnType && !inferredReturns.empty()) {
+        for (TypeRef returned : inferredReturns)
+            returnType = returnType ? commonType(returnType, returned) : returned;
+    }
+    if (!returnType) {
+        // A block that ends without a value expression produces no value.
+        auto *block = dynamic_cast<BlockExpr *>(expr->body.get());
+        returnType = block && !block->value ? types::voidType() : bodyType;
+    }
     return types::function(paramTypes, returnType);
 }
 
@@ -1706,10 +1740,13 @@ TypeRef Sema::analyzeBlockExpr(BlockExpr *expr) {
 /// @param expr The struct-literal expression node.
 /// @return The struct type named by the expression, or unknown on error.
 TypeRef Sema::analyzeStructLiteral(StructLiteralExpr *expr) {
-    // Look up the type name and verify it is a struct type.
-    TypeRef valueType = resolveNamedType(expr->typeName, expr->loc);
+    // Look up the written type and verify it is a struct type. A generic literal
+    // (`Pair[Integer] { ... }`) resolves its written type, which instantiates it.
+    TypeRef valueType = expr->typeNode ? resolveTypeNode(expr->typeNode.get())
+                                       : resolveNamedType(expr->typeName, expr->loc);
     if (!valueType) {
-        error(expr->loc, "Unknown type '" + expr->typeName + "'");
+        if (!reportUnboundModuleType(expr->typeName, expr->loc))
+            error(expr->loc, "Unknown type '" + expr->typeName + "'");
         return types::unknown();
     }
     if (!valueType || valueType->kind != TypeKindSem::Struct) {

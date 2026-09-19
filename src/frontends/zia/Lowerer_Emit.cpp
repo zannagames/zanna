@@ -58,6 +58,11 @@ bool isInlineAggregateType(TypeRef type) {
                     type->kind == TypeKindSem::Tuple);
 }
 
+/// @brief Runtime error code a failed `as Byte` traps with. `trap.from_err`
+///        takes a runtime error code (`Err_Overflow`, vm/err_bridge.hpp),
+///        which every backend maps to the Overflow trap kind.
+constexpr int kErrOverflow = 4;
+
 } // namespace
 
 //=============================================================================
@@ -121,12 +126,12 @@ Lowerer::Value Lowerer::emitUnary(Opcode op, Type ty, Value operand) {
     return Value::temp(id);
 }
 
-/// @brief Zero-extend the low 32 bits of a byte-representation value to `i64`.
+/// @brief Zero-extend an IL `i32` value (an error kind, code or line) to `i64`.
 /// @param value Value represented as IL `i32`.
 /// @return Fresh `i64` temporary containing the zero-extended value.
 /// @details The conversion round-trips through zero-initialized stack storage
 ///          and masks the loaded word to make the upper bits deterministic.
-Lowerer::Value Lowerer::widenByteToInteger(Value value) {
+Lowerer::Value Lowerer::zeroExtendI32(Value value) {
     // Zero-extend i32 to i64 via alloca/store/load pattern
     // Store i32 value, load as i64 (upper bits will be zero due to alloca zeroing)
     unsigned slotId = nextTempId();
@@ -158,7 +163,7 @@ Lowerer::Value Lowerer::widenIntegralToI64(Value value, Type valueType) {
         case Type::Kind::I64:
             return value;
         case Type::Kind::I32:
-            return widenByteToInteger(value);
+            return zeroExtendI32(value);
         case Type::Kind::I1:
             return emitUnary(Opcode::Zext1, Type(Type::Kind::I64), value);
         default:
@@ -258,11 +263,34 @@ Lowerer::Value Lowerer::emitPositiveStepCheck(Value stepValue) {
     return stepValue;
 }
 
-/// @brief Narrow a signed integer to the checked Zia Byte representation.
-/// @param value Integer value to convert.
-/// @return Fresh `i32` result produced by `CastSiNarrowChk`.
+/// @brief Narrow an Integer to Byte, trapping (Overflow) outside 0..255.
+/// @param value `i64` value to narrow.
+/// @return @p value on the success continuation; a Byte is carried in `i64`.
+/// @details An in-range constant needs no check. Otherwise one unsigned
+///          comparison rejects both negatives and values above 255; emission
+///          terminates the current block and leaves the insertion point in the
+///          success block.
 Lowerer::Value Lowerer::narrowIntegerToByte(Value value) {
-    return emitUnary(Opcode::CastSiNarrowChk, Type(Type::Kind::I32), value);
+    if (value.kind == Value::Kind::ConstInt && value.i64 >= 0 && value.i64 <= 255)
+        return value;
+
+    Value outOfRange =
+        emitBinary(Opcode::UCmpGT, Type(Type::Kind::I1), value, Value::constInt(255));
+    size_t trapIdx = createBlock("byte_narrow_trap");
+    size_t okIdx = createBlock("byte_narrow_ok");
+    emitCBr(outOfRange, trapIdx, okIdx);
+
+    setBlock(trapIdx);
+    il::core::Instr trap;
+    trap.op = Opcode::TrapFromErr;
+    trap.type = Type(Type::Kind::I32);
+    trap.operands.push_back(Value::constInt(kErrOverflow));
+    trap.loc = curLoc_;
+    blockMgr_.currentBlock()->instructions.push_back(std::move(trap));
+    blockMgr_.currentBlock()->terminated = true;
+
+    setBlock(okIdx);
+    return value;
 }
 
 /// @brief Coerce a lowered value to a target semantic type.
@@ -286,6 +314,17 @@ LowerResult Lowerer::coerceValueToType(Value value,
     Type targetIlType = mapType(targetType);
     if (targetType->kind == TypeKindSem::Unit)
         return {Value::null(), targetIlType};
+
+    // The null literal is the empty optional whatever its source type reads
+    // (a default-argument expression may be unanalyzed): it is never unboxed,
+    // only given the target's IL type.
+    if (value.kind == Value::Kind::NullPtr && targetType->kind == TypeKindSem::Optional)
+        return {materializeTypedNull(value, targetIlType), targetIlType};
+
+    // `&name` is a raw code address (what runtime callbacks take); a Zia
+    // function value is a closure record.
+    if (targetType->kind == TypeKindSem::Function && value.kind == Value::Kind::GlobalAddr)
+        return {emitFunctionReferenceClosure(value.str), Type(Type::Kind::Ptr)};
 
     TypeRef effectiveSource = sourceType;
     bool sourceIsUnknownish = !effectiveSource || effectiveSource->kind == TypeKindSem::Unknown ||
@@ -318,21 +357,18 @@ LowerResult Lowerer::coerceValueToType(Value value,
 
     if (targetType->kind == TypeKindSem::Optional) {
         TypeRef innerType = targetType->innerType();
-        /// @brief Selects the storage IL type for an optional value.
-        /// @return Pointer storage for null strings; otherwise the mapped optional type.
-        auto optionalStoreType = [&]() {
-            Type optionalIlType = mapType(targetType);
-            return value.kind == Value::Kind::NullPtr && optionalIlType.kind == Type::Kind::Str
-                       ? Type(Type::Kind::Ptr)
-                       : optionalIlType;
-        };
-        if (effectiveSource && effectiveSource->kind == TypeKindSem::Optional)
-            return {value, optionalStoreType()};
+        const Type optionalIlType = mapType(targetType);
+        // An optional source already has the optional representation, and a
+        // unit value is the empty optional. A null literal takes the target's
+        // IL type, so a String? null is a `str` null wherever it is used.
+        if (effectiveSource && (effectiveSource->kind == TypeKindSem::Optional ||
+                                effectiveSource->kind == TypeKindSem::Unit))
+            return {materializeTypedNull(value, optionalIlType), optionalIlType};
         if (innerType) {
             auto coercedInner = coerceValueToType(value, valueIlType, effectiveSource, innerType);
-            return {emitOptionalWrap(coercedInner.value, innerType), mapType(targetType)};
+            return {emitOptionalWrap(coercedInner.value, innerType), optionalIlType};
         }
-        return {value, mapType(targetType)};
+        return {value, optionalIlType};
     }
 
     if (targetType->kind == TypeKindSem::Interface && effectiveSource &&
@@ -367,20 +403,91 @@ LowerResult Lowerer::coerceValueToType(Value value,
         }
         if (effectiveSource->kind == TypeKindSem::Integer &&
             targetType->kind == TypeKindSem::Byte) {
-            return {narrowIntegerToByte(value), Type(Type::Kind::I32)};
-        }
-        if (effectiveSource->kind == TypeKindSem::Byte &&
-            targetType->kind == TypeKindSem::Integer) {
-            return {widenByteToInteger(value), Type(Type::Kind::I64)};
+            return {narrowIntegerToByte(value), Type(Type::Kind::I64)};
         }
         if (effectiveSource->kind == TypeKindSem::Byte && targetType->kind == TypeKindSem::Number) {
-            Value widened = widenByteToInteger(value);
-            return {emitUnary(Opcode::Sitofp, Type(Type::Kind::F64), widened),
-                    Type(Type::Kind::F64)};
+            return {emitUnary(Opcode::Sitofp, Type(Type::Kind::F64), value), Type(Type::Kind::F64)};
         }
     }
 
     return {value, targetIlType};
+}
+
+/// @brief Convert an assigned value to the representation of its target.
+/// @param right The lowered right-hand value and its IL type.
+/// @param rightType The semantic type of the right-hand side.
+/// @param targetType The semantic type of the assigned variable, field or
+///        property; null leaves @p right unchanged.
+/// @return The value to store and its IL type.
+/// @details Optional and function targets go through coerceValueToType(),
+///          which wraps a present payload, gives a null literal the target's
+///          IL type (never an unbox: `rt_unbox_str` traps on null), and turns a
+///          `&function` address into a closure. Other targets
+///          unbox a pointer-represented value into a primitive slot (such as a
+///          runtime result typed `obj`) and convert between Number and
+///          Integer. Every assignment form (local, implicit field, instance
+///          field, global, property setter) shares this one rule.
+LowerResult Lowerer::coerceAssignedValue(LowerResult right, TypeRef rightType, TypeRef targetType) {
+    if (!targetType)
+        return right;
+    if (targetType->kind == TypeKindSem::Optional || targetType->kind == TypeKindSem::Function)
+        return coerceValueToType(right.value, right.type, rightType, targetType);
+
+    LowerResult result = right;
+    const Type targetIlType = mapType(targetType);
+    if (right.type.kind == Type::Kind::Ptr && targetIlType.kind != Type::Kind::Ptr)
+        result = emitUnbox(right.value, targetIlType);
+    if (rightType && targetType->kind == TypeKindSem::Integer &&
+        rightType->kind == TypeKindSem::Number) {
+        result = {emitUnary(Opcode::CastFpToSiRteChk, Type(Type::Kind::I64), result.value),
+                  Type(Type::Kind::I64)};
+    } else if (rightType && targetType->kind == TypeKindSem::Number &&
+               rightType->kind == TypeKindSem::Integer) {
+        result = {emitUnary(Opcode::Sitofp, Type(Type::Kind::F64), result.value),
+                  Type(Type::Kind::F64)};
+    }
+    return result;
+}
+
+/// @brief Convert one branch of a value-producing `if`, ternary or `match` to
+///        the expression's result type.
+/// @param branch The lowered branch value.
+/// @param branchExpr The branch expression, for its semantic type.
+/// @param resultType The semantic type of the whole expression.
+/// @return The value to store in the shared result slot.
+/// @details Every branch stores into one slot of the result's IL type, so each
+///          goes through coerceValueToType(): a non-optional branch of an
+///          optional result is wrapped, a `null` branch of a String? result is
+///          a `str` null, and numeric branches convert.
+Lowerer::Value Lowerer::coerceBranchValue(LowerResult branch,
+                                          Expr *branchExpr,
+                                          TypeRef resultType) {
+    if (!resultType || resultType->kind == TypeKindSem::Unknown ||
+        resultType->kind == TypeKindSem::Error)
+        return branch.value;
+    TypeRef branchType = branchExpr ? sema_.typeOf(branchExpr) : types::unknown();
+    return coerceValueToType(branch.value, branch.type, branchType, resultType).value;
+}
+
+/// @brief Give a `null` literal the IL type of the position it flows into.
+/// @param value Candidate value; only the untyped null literal is rewritten.
+/// @param ilType IL representation the consumer requires.
+/// @return A fresh `const_null` of @p ilType when a null literal reaches a
+///         `str` position; otherwise @p value unchanged.
+/// @details The IL `null` literal is typed `ptr`, while String? is a nullable
+///          `str` handle. A null string that is returned, passed, retained or
+///          stored as `str` must therefore be a `str`-typed null.
+Lowerer::Value Lowerer::materializeTypedNull(Value value, Type ilType) {
+    if (value.kind != Value::Kind::NullPtr || ilType.kind != Type::Kind::Str)
+        return value;
+    unsigned id = nextTempId();
+    il::core::Instr instr;
+    instr.result = id;
+    instr.op = Opcode::ConstNull;
+    instr.type = ilType;
+    instr.loc = curLoc_;
+    blockMgr_.currentBlock()->instructions.push_back(instr);
+    return Value::temp(id);
 }
 
 /// @brief Check if a string-returning call returns a borrowed reference.
@@ -552,7 +659,6 @@ Lowerer::Value Lowerer::emitToString(Value val, TypeRef sourceType) {
         case TypeKindSem::String:
             return val;
         case TypeKindSem::Byte:
-            return emitCallRet(Type(Type::Kind::Str), kStringFromInt, {widenByteToInteger(val)});
         case TypeKindSem::Integer:
         case TypeKindSem::Enum:
             return emitCallRet(Type(Type::Kind::Str), kStringFromInt, {val});
@@ -714,6 +820,11 @@ Lowerer::Value Lowerer::emitBox(Value val, Type type) {
 ///          their fields, then every recursively nested managed field is
 ///          registered with the runtime ownership descriptor.
 Lowerer::Value Lowerer::emitBoxValue(Value val, Type ilType, TypeRef semanticType) {
+    // A stored `&name` must be callable as a Zia function value later.
+    if (semanticType && semanticType->kind == TypeKindSem::Function &&
+        val.kind == Value::Kind::GlobalAddr)
+        return emitFunctionReferenceClosure(val.str);
+
     // Check if this is a struct type that needs heap allocation
     if (semanticType && semanticType->kind == TypeKindSem::Struct &&
         ilType.kind == Type::Kind::Ptr) {
@@ -797,8 +908,8 @@ LowerResult Lowerer::emitUnbox(Value boxed, Type expectedType) {
 /// @param boxed Boxed runtime pointer.
 /// @param ilType Requested IL representation.
 /// @param semanticType Requested semantic type.
-/// @return Stack copy for a known non-empty struct, otherwise the primitive
-///         result of emitUnbox().
+/// @return Stack copy for a known non-empty struct, a null-aware unbox for a
+///         String? value, otherwise the primitive result of emitUnbox().
 LowerResult Lowerer::emitUnboxValue(Value boxed, Type ilType, TypeRef semanticType) {
     // Check if this is a struct type that needs copying from heap to stack
     if (semanticType && semanticType->kind == TypeKindSem::Struct &&
@@ -812,8 +923,146 @@ LowerResult Lowerer::emitUnboxValue(Value boxed, Type ilType, TypeRef semanticTy
         }
     }
 
+    // A String? element or value may be absent (a null box).
+    if (semanticType && semanticType->kind == TypeKindSem::Optional &&
+        ilType.kind == Type::Kind::Str)
+        return emitOptionalStringUnbox(boxed);
+
     // Fall back to standard unboxing
     return emitUnbox(boxed, ilType);
+}
+
+/// @brief Unbox a String? value whose box may be absent.
+/// @param boxed String box (or raw string handle), or null when absent.
+/// @return Caller-owned string handle, null when absent, scheduled for release
+///         at the statement boundary.
+/// @details `rt_unbox_str` traps on null, so only a present box is unboxed.
+///          The unboxed reference moves into a merge slot, and the merged
+///          handle is deferred in the merge block, where statement cleanup
+///          releases it on every path.
+LowerResult Lowerer::emitOptionalStringUnbox(Value boxed) {
+    const Type strType(Type::Kind::Str);
+    const std::string slotName = "__opt_str_unbox_" + std::to_string(nextTempId());
+    createSlot(slotName, strType);
+    storeToSlot(slotName, materializeTypedNull(Value::null(), strType), strType);
+    Value present = emitPointerIsNonNull(boxed, Type(Type::Kind::Ptr));
+    const size_t presentIdx = createBlock("opt_str_unbox_present");
+    const size_t mergeIdx = createBlock("opt_str_unbox_merge");
+    emitCBr(present, presentIdx, mergeIdx);
+
+    setBlock(presentIdx);
+    Value str = emitCallRet(strType, kUnboxStr, {boxed});
+    consumeDeferred(str); // the merge slot takes the unboxed reference
+    storeToSlot(slotName, str, strType);
+    emitBr(mergeIdx);
+
+    setBlock(mergeIdx);
+    Value result = loadFromSlot(slotName, strType);
+    removeSlot(slotName);
+    deferRelease(result, /*isString=*/true);
+    return {result, strType};
+}
+
+/// @brief Name of the closure thunk that forwards to @p functionName.
+/// @param functionName Lowered name of a function referenced with `&`.
+/// @return `<functionName>.__fnref`.
+static std::string functionReferenceThunkName(const std::string &functionName) {
+    return functionName + ".__fnref";
+}
+
+/// @brief Wrap a `&function` code address in a Zia closure record.
+/// @param functionName Lowered name of the referenced function.
+/// @return Closure `[thunk, null]`; the thunk forwards to @p functionName.
+/// @details `&name` lowers to the raw code address, which is what runtime
+///          callbacks take. A Zia function value is a closure record whose call
+///          passes the environment first (like a lambda's), so converting the
+///          address to a Zia function type wraps it: calling the raw address as
+///          a closure read the function's code as a record and crashed
+///          (defect-audit #26).
+Lowerer::Value Lowerer::emitFunctionReferenceClosure(const std::string &functionName) {
+    functionReferenceThunks_.insert(functionName);
+    // A closure is a reference-counted object (ADR 0374); a reference captures
+    // nothing, so it needs no destructor (class id 0).
+    Value closure = emitCallRet(Type(Type::Kind::Ptr),
+                                "rt_obj_new_i64",
+                                {Value::constInt(0), Value::constInt(kClosureSize)});
+    emitStore(
+        closure, Value::global(functionReferenceThunkName(functionName)), Type(Type::Kind::Ptr));
+    emitStore(emitGEP(closure, kClosureEnvOffset), Value::null(), Type(Type::Kind::Ptr));
+    return closure;
+}
+
+/// @brief Emit the forwarding thunks recorded by emitFunctionReferenceClosure().
+/// @details Each `<name>.__fnref(env, args...)` calls `<name>(args...)` and
+///          returns its result unchanged, so ownership passes straight through.
+///          Thunks are emitted after every function is lowered, when each
+///          target's IL signature is known; the lowering context is saved and
+///          restored around them.
+void Lowerer::emitFunctionReferenceThunks() {
+    if (functionReferenceThunks_.empty())
+        return;
+
+    Function *savedFunc = currentFunc_;
+    auto savedLocals = std::exchange(locals_, {});
+    auto savedSlots = std::exchange(slots_, {});
+    auto savedLocalTypes = std::exchange(localTypes_, {});
+    auto savedDeferredTemps = std::exchange(deferredTemps_, {});
+    TypeRef savedReturnType = currentReturnType_;
+
+    for (const std::string &target : functionReferenceThunks_) {
+        const Function *targetFn = nullptr;
+        for (const auto &fn : module_->functions) {
+            if (fn.name == target) {
+                targetFn = &fn;
+                break;
+            }
+        }
+        if (!targetFn) {
+            reportLoweringInvariant({},
+                                    "V-ZIA-LOWER-FNREF",
+                                    "function reference '&" + target +
+                                        "' names no function defined in this program");
+            continue;
+        }
+
+        // Copy the signature first: startFunction may reallocate the function list.
+        const Type retType = targetFn->retType;
+        std::vector<il::core::Param> params{{"env", Type(Type::Kind::Ptr)}};
+        for (const auto &param : targetFn->params)
+            params.push_back({param.name, param.type});
+
+        const std::string thunkName = functionReferenceThunkName(target);
+        auto &fn = builder_->startFunction(thunkName, retType, params);
+        currentFunc_ = &fn;
+        currentReturnType_ = nullptr;
+        definedFunctions_.insert(thunkName);
+        blockMgr_.bind(builder_.get(), &fn);
+        builder_->createBlock(fn, "entry_0", fn.params);
+        setBlock(fn.blocks.size() - 1);
+
+        std::vector<Value> args;
+        const auto &entryParams = fn.blocks.back().params;
+        for (size_t i = 1; i < entryParams.size(); ++i)
+            args.push_back(Value::temp(entryParams[i].id));
+        if (retType.kind == Type::Kind::Void) {
+            emitCall(target, args);
+            emitRetVoid();
+        } else {
+            emitRet(emitCallRet(retType, target, args));
+        }
+        deferredTemps_.clear(); // the result is the caller's reference
+    }
+
+    currentFunc_ = savedFunc;
+    currentReturnType_ = savedReturnType;
+    locals_ = std::move(savedLocals);
+    slots_ = std::move(savedSlots);
+    localTypes_ = std::move(savedLocalTypes);
+    deferredTemps_ = std::move(savedDeferredTemps);
+    if (savedFunc)
+        blockMgr_.bind(builder_.get(), savedFunc);
+    else
+        blockMgr_.reset(nullptr);
 }
 
 /// @brief Convert a value to the pointer-compatible Optional representation.
@@ -1707,6 +1956,7 @@ bool Lowerer::needsRelease(TypeRef type) const {
         case TypeKindSem::Set:
         case TypeKindSem::Any:
         case TypeKindSem::TypeParam:
+        case TypeKindSem::Function: // closures are reference-counted objects (ADR 0374)
             return true;
         // Ptr with a non-empty name is likely a runtime class (Seq, etc.)
         case TypeKindSem::Ptr:
@@ -2065,6 +2315,76 @@ void Lowerer::releaseDeferredTempsFrom(size_t first) {
     }
 }
 
+/// @brief Release the pending temporaries a block defined, on an edge that
+///        leaves the function early, without changing the pending state.
+/// @param definingBlock Block whose temporaries dominate the exit edge (the
+///        block that branches to it).
+/// @param kept Value transferred to the caller instead of released.
+/// @details A postfix `?` exits mid-statement. Its exit block's only
+///          predecessor is @p definingBlock, so that block's pending
+///          temporaries are valid there; the continuing edge still releases
+///          them at its own statement boundary, so the pending list is kept.
+void Lowerer::releaseDeferredTempsOnExitEdge(size_t definingBlock, Value kept) {
+    if (isTerminated())
+        return;
+    for (const auto &t : deferredTemps_) {
+        if (t.blockIdx != definingBlock)
+            continue;
+        if (kept.kind == Value::Kind::Temp && t.value.kind == Value::Kind::Temp &&
+            t.value.id == kept.id)
+            continue;
+        emitManagedRelease(t.value, t.isString);
+    }
+}
+
+/// @brief Emit the destructors of the closure classes recorded by lowerLambda().
+/// @details Each `<lambda>.__dtor(self)` releases the closure's managed
+///          captures (the references the closure took when it was created).
+///          `__zia_dtor_dispatch` routes a dying closure object here by class
+///          id, exactly like a class instance (ADR 0313, ADR 0374).
+void Lowerer::emitClosureDestructors() {
+    if (closureLayouts_.empty())
+        return;
+
+    Function *savedFunc = currentFunc_;
+    auto savedLocals = std::exchange(locals_, {});
+    auto savedSlots = std::exchange(slots_, {});
+    auto savedLocalTypes = std::exchange(localTypes_, {});
+    auto savedDeferredTemps = std::exchange(deferredTemps_, {});
+    TypeRef savedReturnType = currentReturnType_;
+
+    for (const auto &layout : closureLayouts_) {
+        auto &fn = builder_->startFunction(
+            layout.dtorName, Type(Type::Kind::Void), {{"self", Type(Type::Kind::Ptr)}});
+        currentFunc_ = &fn;
+        currentReturnType_ = types::voidType();
+        definedFunctions_.insert(layout.dtorName);
+        blockMgr_.bind(builder_.get(), &fn);
+        builder_->createBlock(fn, "entry_0", fn.params);
+        setBlock(fn.blocks.size() - 1);
+
+        Value self = Value::temp(fn.blocks.back().params[0].id);
+        for (const auto &[offset, kind] : layout.managedSlots) {
+            const bool isString = kind == 2;
+            Value captured =
+                emitLoad(emitGEP(self, offset), Type(isString ? Type::Kind::Str : Type::Kind::Ptr));
+            emitManagedRelease(captured, isString);
+        }
+        emitRetVoid();
+    }
+
+    currentFunc_ = savedFunc;
+    currentReturnType_ = savedReturnType;
+    locals_ = std::move(savedLocals);
+    slots_ = std::move(savedSlots);
+    localTypes_ = std::move(savedLocalTypes);
+    deferredTemps_ = std::move(savedDeferredTemps);
+    if (savedFunc)
+        blockMgr_.bind(builder_.get(), savedFunc);
+    else
+        blockMgr_.reset(nullptr);
+}
+
 /// @brief Emit the module-wide `__zia_dtor_dispatch` helper.
 /// @details Collects defined class destructors by runtime class identifier and
 ///          emits a deterministic comparison chain that calls the matching
@@ -2079,6 +2399,9 @@ void Lowerer::emitDestructorDispatch() {
         if (definedFunctions_.count(dtorName) > 0)
             destructors.emplace_back(info.classId, dtorName);
     }
+    // Closures with managed captures are objects with a class id too (ADR 0374).
+    for (const auto &layout : closureLayouts_)
+        destructors.emplace_back(static_cast<int>(layout.classId), layout.dtorName);
 
     /// @brief Orders destructors by runtime class identifier.
     /// @param lhs Left class-ID/destructor pair.

@@ -31,6 +31,7 @@ bind "../services/workspace_file_index";
 bind "../commands/file_commands";
 bind "../basic/semantic_scan";
 bind "../zia/source_scan";
+bind "../core/document";
 
 bind Zanna.GUI;
 bind IO = Zanna.IO;

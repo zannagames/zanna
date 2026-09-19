@@ -28,10 +28,6 @@
 
 namespace il::frontends::zia {
 
-/// @brief Byte offset of the environment pointer in `[funcPtr, envPtr]`
-///        closure storage.
-static constexpr int kClosureEnvOffset = 8;
-
 using namespace runtime;
 
 namespace {
@@ -359,60 +355,32 @@ std::vector<Lowerer::Value> Lowerer::lowerResolvedNewArgs(NewExpr *expr,
 /// @return Lowered `print`/`println`/`toString` result, or `std::nullopt` when
 ///         @p name is not handled here.
 std::optional<LowerResult> Lowerer::lowerBuiltinCall(const std::string &name, CallExpr *expr) {
+    /// @brief Lower one argument to its text.
+    /// @param argExpr Argument expression.
+    /// @return A string handle (String or String?) as is; any other value
+    ///         formatted by emitToString() (numbers, Byte, enums, Booleans,
+    ///         objects), falling back to its IL representation when sema left
+    ///         the type unknown.
+    auto lowerText = [&](Expr *argExpr) -> Value {
+        auto arg = lowerExpr(argExpr);
+        if (arg.type.kind == Type::Kind::Str)
+            return arg.value;
+        TypeRef argType = sema_.typeOf(argExpr);
+        if (!argType || argType->kind == TypeKindSem::Unknown)
+            argType = arg.type.kind == Type::Kind::Ptr ? types::any() : reverseMapType(arg.type);
+        return emitToString(arg.value, argType);
+    };
+
     if (name == "print" || name == "println") {
-        if (!expr->args.empty()) {
-            auto arg = lowerExpr(expr->args[0].value.get());
-            TypeRef argType = sema_.typeOf(expr->args[0].value.get());
-
-            Value strVal = arg.value;
-            if (argType && argType->kind != TypeKindSem::String) {
-                if (argType->kind == TypeKindSem::Integer) {
-                    strVal = emitCallRet(Type(Type::Kind::Str), kStringFromInt, {arg.value});
-                } else if (argType->kind == TypeKindSem::Number) {
-                    strVal = emitCallRet(Type(Type::Kind::Str), kStringFromNum, {arg.value});
-                }
-            }
-
-            emitCall(kTerminalSay, {strVal});
-        }
+        if (!expr->args.empty())
+            emitCall(kTerminalSay, {lowerText(expr->args[0].value.get())});
         return LowerResult{Value::constInt(0), Type(Type::Kind::Void)};
     }
 
     if (name == "toString") {
         if (expr->args.empty())
-            return LowerResult{Value::constInt(0), Type(Type::Kind::Str)};
-
-        auto *argExpr = expr->args[0].value.get();
-        auto arg = lowerExpr(argExpr);
-        TypeRef argType = sema_.typeOf(argExpr);
-
-        if (argType) {
-            switch (argType->kind) {
-                case TypeKindSem::String:
-                    return LowerResult{arg.value, Type(Type::Kind::Str)};
-                case TypeKindSem::Integer: {
-                    Value strVal = emitCallRet(Type(Type::Kind::Str), kStringFromInt, {arg.value});
-                    return LowerResult{strVal, Type(Type::Kind::Str)};
-                }
-                case TypeKindSem::Number: {
-                    Value strVal = emitCallRet(Type(Type::Kind::Str), kStringFromNum, {arg.value});
-                    return LowerResult{strVal, Type(Type::Kind::Str)};
-                }
-                case TypeKindSem::Boolean: {
-                    Value strVal = emitCallRet(Type(Type::Kind::Str), kTextFmtBool, {arg.value});
-                    return LowerResult{strVal, Type(Type::Kind::Str)};
-                }
-                default:
-                    break;
-            }
-        }
-
-        if (arg.type.kind == Type::Kind::Ptr) {
-            Value strVal = emitCallRet(Type(Type::Kind::Str), kObjectToString, {arg.value});
-            return LowerResult{strVal, Type(Type::Kind::Str)};
-        }
-
-        return LowerResult{Value::constInt(0), Type(Type::Kind::Str)};
+            return LowerResult{emitEmptyString(), Type(Type::Kind::Str)};
+        return LowerResult{lowerText(expr->args[0].value.get()), Type(Type::Kind::Str)};
     }
 
     return std::nullopt;
@@ -489,6 +457,17 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
                     return lowerMethodCall(resolvedMethod, ownerType, selfPtr, expr);
             }
 
+            // A static method is called through its type name (`Counter.create()`): the base
+            // names the type, not a value, so it is never lowered and no self is passed (ZB-47).
+            if (resolvedMethod->isStatic) {
+                TypeRef staticOwner = sema_.typeOf(fieldExpr->base.get());
+                return lowerMethodCall(resolvedMethod,
+                                       ownerType.empty() && staticOwner ? staticOwner->name
+                                                                        : ownerType,
+                                       Value::null(),
+                                       expr);
+            }
+
             auto baseResult = lowerExpr(fieldExpr->base.get());
             TypeRef baseType = sema_.typeOf(fieldExpr->base.get());
             if (baseType && baseType->kind == TypeKindSem::Optional && baseType->innerType())
@@ -528,6 +507,19 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
                                    ownerType.empty() ? (baseType ? baseType->name : "") : ownerType,
                                    baseResult.value,
                                    expr);
+        }
+
+        // A bare call to a static method (from a static or an instance method of its type)
+        // takes no self.
+        if (resolvedMethod->isStatic) {
+            std::string staticOwner = ownerType;
+            if (staticOwner.empty()) {
+                if (currentClassType_)
+                    staticOwner = currentClassType_->name;
+                else if (currentStructType_)
+                    staticOwner = currentStructType_->name;
+            }
+            return lowerMethodCall(resolvedMethod, staticOwner, Value::null(), expr);
         }
 
         Value selfPtr;
@@ -746,13 +738,18 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
                     parentName = parentIt->second.baseClass;
                 }
 
-                // Class type found but method not in it or any parent — emit error
-                diag_.report(
-                    {il::support::Severity::Error,
-                     "Class type '" + typeName + "' has no method '" + fieldExpr->field + "'",
-                     expr->loc,
-                     "V3100"});
-                return {Value::constInt(0), Type(Type::Kind::Void)};
+                // No method by that name: a field holding a function value is
+                // called through its closure by the indirect-call path below;
+                // anything else is an error.
+                const FieldLayout *calledField = entityInfo.findField(fieldExpr->field);
+                if (!calledField || !calledField->type || !calledField->type->isCallable()) {
+                    diag_.report(
+                        {il::support::Severity::Error,
+                         "Class type '" + typeName + "' has no method '" + fieldExpr->field + "'",
+                         expr->loc,
+                         "V3100"});
+                    return {Value::constInt(0), Type(Type::Kind::Void)};
+                }
             }
 
             // Handle interface method calls
@@ -891,10 +888,6 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
                 auto arg = lowerExpr(argExpr);
                 Value argVal = arg.value;
 
-                if (arg.type.kind == Type::Kind::I32) {
-                    argVal = widenByteToInteger(argVal);
-                }
-
                 if (runtimeCallee == kTerminalSay) {
                     if (argType->kind == TypeKindSem::Integer ||
                         argType->kind == TypeKindSem::Byte || argType->kind == TypeKindSem::Enum)
@@ -1021,6 +1014,21 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
                 auto localIt = locals_.find(ident->name);
                 if (localIt != locals_.end()) {
                     funcPtr = localIt->second;
+                    isIndirectCall = true;
+                }
+            }
+
+            // A field of `self` (declared here or inherited) or a module
+            // variable holding a function value: load it and call the closure.
+            if (!isIndirectCall && isLambdaClosure) {
+                const bool selfField =
+                    (currentClassType_ && currentClassType_->findField(ident->name)) ||
+                    (currentStructType_ && currentStructType_->findField(ident->name));
+                std::string resolvedName = sema_.resolvedIdentifierName(ident);
+                const bool moduleVariable =
+                    globalVariables_.count(resolvedName.empty() ? ident->name : resolvedName) > 0;
+                if (selfField || moduleVariable) {
+                    funcPtr = lowerExpr(expr->callee.get()).value;
                     isIndirectCall = true;
                 }
             }

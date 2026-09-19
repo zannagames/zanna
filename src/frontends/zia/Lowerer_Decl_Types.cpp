@@ -15,6 +15,8 @@
 //     so native backends never receive one unbounded initializer function.
 //   - Interface tables are populated only after their classes and interfaces
 //     have been registered.
+//   - Every class gets an interface table for each interface in its ancestry,
+//     so inherited interfaces dispatch to the subclass's overrides (ZB-53).
 // Ownership/Lifetime:
 //   - Lowered metadata is owned by the Lowerer and destination IL module.
 //   - AST declarations and semantic types are borrowed for the lowering pass.
@@ -32,6 +34,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <set>
 #include <unordered_set>
 #include <utility>
 
@@ -58,15 +61,8 @@ void Lowerer::registerAllTypeLayouts(std::vector<DeclPtr> &declarations) {
             registerInterfaceLayout(*static_cast<InterfaceDecl *>(decl.get()));
         } else if (decl->kind == DeclKind::Namespace) {
             auto *ns = static_cast<NamespaceDecl *>(decl.get());
-            std::string savedPrefix = namespacePrefix_;
-            if (namespacePrefix_.empty())
-                namespacePrefix_ = ns->name;
-            else
-                namespacePrefix_ = namespacePrefix_ + "." + ns->name;
-
+            NamespaceScope scope(*this, ns->name);
             registerAllTypeLayouts(ns->declarations);
-
-            namespacePrefix_ = savedPrefix;
         }
     }
 }
@@ -401,6 +397,17 @@ void Lowerer::emitClassLayoutInit() {
             continue;
         registrations.push_back({static_cast<int64_t>(info.classId), std::move(slots)});
     }
+    // A closure's captured objects are strong slots too (ADR 0374), so a cycle
+    // through a closure (an object holding a lambda that captures it) collects.
+    for (const auto &layout : closureLayouts_) {
+        std::vector<ManagedSlot> slots;
+        for (const auto &[offset, kind] : layout.managedSlots) {
+            if (kind == 1)
+                slots.push_back({static_cast<size_t>(offset), 1});
+        }
+        if (!slots.empty())
+            registrations.push_back({layout.classId, std::move(slots)});
+    }
 
     auto startInitFunction = [&](const std::string &name) {
         auto &initFn = builder_->startFunction(name, Type(Type::Kind::Void), {});
@@ -658,9 +665,23 @@ void Lowerer::emitItableInit() {
                   Value::constInt(static_cast<int64_t>(ifaceInfo.methods.size()))});
     }
 
-    // Phase 3: For each class implementing an interface, build and bind itable
+    // Phase 3: bind an itable for every interface a class implements, whether it
+    // declares `implements` itself or inherits the interface from a base class.
+    // A subclass needs its own table: its slots must resolve to its overrides,
+    // and the runtime's base-chain fallback (rt_get_interface_impl) would hand
+    // it the base's table, whose slots name the base implementations.
     for (const auto &[entityName, entityInfo] : classTypes_) {
-        for (const auto &ifaceName : entityInfo.implementedInterfaces) {
+        std::set<std::string> effectiveInterfaces;
+        std::unordered_set<std::string> visitedBases;
+        for (std::string walk = entityName; !walk.empty() && visitedBases.insert(walk).second;) {
+            auto walkIt = classTypes_.find(walk);
+            if (walkIt == classTypes_.end())
+                break;
+            effectiveInterfaces.insert(walkIt->second.implementedInterfaces.begin(),
+                                       walkIt->second.implementedInterfaces.end());
+            walk = walkIt->second.baseClass;
+        }
+        for (const auto &ifaceName : effectiveInterfaces) {
             auto ifaceIt = interfaceTypes_.find(ifaceName);
             if (ifaceIt == interfaceTypes_.end())
                 continue;

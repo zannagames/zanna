@@ -41,6 +41,7 @@
 #include "bytecode/BytecodeCompiler.hpp"
 #include "bytecode/BytecodeVM.hpp"
 #include "frontends/zia/Compiler.hpp"
+#include "frontends/zia/ZiaAnalysis.hpp"
 #include "il/io/Serializer.hpp"
 #include "il/verify/Verifier.hpp"
 #include "support/diagnostics.hpp"
@@ -53,6 +54,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace zanna::repl {
 
@@ -95,6 +97,75 @@ static bool startsWithKeyword(const std::string &s, size_t offset, const char *k
 /// @return True for ASCII letters, digits, and underscores.
 static bool isIdentifierChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+/// @brief Split a snippet into its top-level items (declarations and statements).
+/// @details An item ends at a `;` at nesting depth 0, or at the `}` that closes
+///          a declaration's body (`func`, `class`, `struct`, `interface`,
+///          `enum`, `namespace`, optionally after `expose`/`hide`) at depth 0.
+///          String literals and comments are skipped. A statement ending in a
+///          block without `;` (such as `if … { … }`) stays part of the item that
+///          follows it, which is still valid inside the entry function. Items
+///          are trimmed and lose their final `;`.
+/// @param input Complete snippet.
+/// @return Non-empty items in source order.
+static std::vector<std::string> splitTopLevelItems(const std::string &input) {
+    std::vector<std::string> items;
+    auto startsDeclaration = [&](size_t from) {
+        size_t p = skipWhitespace(input, from);
+        for (const char *modifier : {"expose", "hide"}) {
+            if (startsWithKeyword(input, p, modifier))
+                p = skipWhitespace(input, p + std::strlen(modifier));
+        }
+        for (const char *keyword : {"func", "class", "struct", "interface", "enum", "namespace"}) {
+            if (startsWithKeyword(input, p, keyword))
+                return true;
+        }
+        return false;
+    };
+    auto push = [&](size_t begin, size_t end) {
+        std::string item = input.substr(begin, end - begin);
+        while (!item.empty() &&
+               (item.back() == ';' || std::isspace(static_cast<unsigned char>(item.back()))))
+            item.pop_back();
+        const size_t first = skipWhitespace(item);
+        if (first < item.size())
+            items.push_back(item.substr(first));
+    };
+
+    size_t itemStart = 0;
+    int depth = 0;
+    for (size_t i = 0; i < input.size(); ++i) {
+        const char c = input[i];
+        const char next = i + 1 < input.size() ? input[i + 1] : '\0';
+        if (c == '"' || c == '\'') {
+            for (++i; i < input.size() && input[i] != c; ++i) {
+                if (input[i] == '\\')
+                    ++i;
+            }
+        } else if (c == '/' && next == '/') {
+            while (i < input.size() && input[i] != '\n')
+                ++i;
+        } else if (c == '/' && next == '*') {
+            const size_t close = input.find("*/", i + 2);
+            i = close == std::string::npos ? input.size() : close + 1;
+        } else if (c == '(' || c == '[' || c == '{') {
+            ++depth;
+        } else if (c == ')' || c == ']' || c == '}') {
+            if (depth > 0)
+                --depth;
+            if (c == '}' && depth == 0 && startsDeclaration(itemStart)) {
+                push(itemStart, i + 1);
+                itemStart = i + 1;
+            }
+        } else if (c == ';' && depth == 0) {
+            push(itemStart, i + 1);
+            itemStart = i + 1;
+        }
+    }
+    if (itemStart < input.size())
+        push(itemStart, input.size());
+    return items;
 }
 
 /// @brief Find a top-level assignment operator in a Zia input line.
@@ -165,15 +236,30 @@ static size_t findTopLevelAssignmentOperator(const std::string &input) {
     return std::string::npos;
 }
 
-/// @brief Append a statement terminator when source does not already end one.
-/// @param src Destination synthetic source to extend.
-/// @param input Fragment whose last non-space byte controls insertion.
+/// @brief Terminate a REPL fragment with `;` when its syntax needs one.
+/// @details A fragment already ending in `;` is left alone, as is one ending in
+///          the block of a block statement (`if`, `while`, `for`, `try`,
+///          `match`, `guard`, `defer`, a bare `{ … }`) or of a declaration —
+///          Zia has no empty statement. An expression ending in a brace (a
+///          struct, map or set literal, a block lambda) still needs the `;`.
+/// @param src Source being built.
+/// @param input Fragment just appended to @p src.
 static void appendAutoSemicolon(std::string &src, const std::string &input) {
-    size_t lastNonSpace = input.find_last_not_of(" \t\r\n");
-    if (lastNonSpace != std::string::npos && input[lastNonSpace] != ';' &&
-        input[lastNonSpace] != '}') {
-        src += ";";
+    const size_t lastNonSpace = input.find_last_not_of(" \t\r\n");
+    if (lastNonSpace == std::string::npos || input[lastNonSpace] == ';')
+        return;
+    if (input[lastNonSpace] == '}') {
+        const size_t start = skipWhitespace(input);
+        if (start < input.size() && input[start] == '{')
+            return;
+        for (const char *keyword : {"if", "while", "for", "try", "match", "guard", "defer", "func",
+                                    "class", "struct", "interface", "enum", "namespace", "expose",
+                                    "hide"}) {
+            if (startsWithKeyword(input, start, keyword))
+                return;
+        }
     }
+    src += ";";
 }
 
 /// @brief Return a source literal that default-initializes @p type.
@@ -274,7 +360,8 @@ bool ZiaReplAdapter::isFuncDef(const std::string &input) const {
 bool ZiaReplAdapter::isTypeDef(const std::string &input) const {
     size_t start = skipWhitespace(input);
     return startsWithKeyword(input, start, "class") || startsWithKeyword(input, start, "struct") ||
-           startsWithKeyword(input, start, "interface");
+           startsWithKeyword(input, start, "interface") || startsWithKeyword(input, start, "enum") ||
+           startsWithKeyword(input, start, "namespace");
 }
 
 /// @brief Detect a top-level variable declaration.
@@ -386,19 +473,21 @@ std::string ZiaReplAdapter::extractFuncName(const std::string &input) const {
     return input.substr(nameStart, pos - nameStart);
 }
 
-/// @brief Extract a declared class, struct, or interface name.
+/// @brief Extract a declared class, struct, interface, enum, or namespace name.
 /// @param input Zia type-definition source.
 /// @return Identifier following the first recognized definition keyword, or
 ///         an empty string.
 std::string ZiaReplAdapter::extractTypeName(const std::string &input) const {
-    size_t pos = 0;
-    if (input.find("class ") != std::string::npos)
-        pos = input.find("class ") + 6;
-    else if (input.find("struct ") != std::string::npos)
-        pos = input.find("struct ") + 7;
-    else if (input.find("interface ") != std::string::npos)
-        pos = input.find("interface ") + 10;
-    else
+    size_t pos = skipWhitespace(input);
+    bool found = false;
+    for (const char *keyword : {"class", "struct", "interface", "enum", "namespace"}) {
+        if (startsWithKeyword(input, pos, keyword)) {
+            pos += std::strlen(keyword);
+            found = true;
+            break;
+        }
+    }
+    if (!found)
         return "";
 
     pos = skipWhitespace(input, pos);
@@ -506,10 +595,26 @@ std::string ZiaReplAdapter::inferPersistentVarType(const std::string &input,
     }
 
     if (!initializer.empty()) {
-        std::string probed = getExprType(initializer);
-        if (probed == "Boolean" || probed == "Integer" || probed == "Number" ||
-            probed == "String")
-            return probed;
+        // Ask the compiler: declare a probe global with the initializer and
+        // read the type sema gives it (List[Integer], a struct, ...).
+        std::string cleanInit = initializer;
+        while (!cleanInit.empty() &&
+               (cleanInit.back() == ';' || std::isspace(static_cast<unsigned char>(cleanInit.back()))))
+            cleanInit.pop_back();
+        const std::string probeName = "__repl_type_probe";
+        const std::string source = buildSource("", "var " + probeName + " = " + cleanInit + ";");
+        il::support::SourceManager sm;
+        il::frontends::zia::CompilerOptions opts;
+        auto analysis = il::frontends::zia::parseAndAnalyze({source, "<repl>"}, opts, sm);
+        if (analysis && analysis->sema && !analysis->hasErrors()) {
+            for (const auto &sym : analysis->sema->getGlobalSymbols()) {
+                if (sym.name != probeName || !sym.type)
+                    continue;
+                if (sym.type->kind != il::frontends::zia::TypeKindSem::Unknown &&
+                    sym.type->kind != il::frontends::zia::TypeKindSem::Error)
+                    return sym.type->toDisplayString();
+            }
+        }
     }
 
     (void)input;
@@ -541,7 +646,8 @@ std::string ZiaReplAdapter::makePersistentVarDecl(const std::string &name,
 ///        newly introduced persistent global.
 /// @return Self-contained Zia source module.
 std::string ZiaReplAdapter::buildSource(const std::string &input,
-                                        const std::string &extraTopLevel) const {
+                                        const std::string &extraTopLevel,
+                                        const std::string &userEntry) const {
     std::string src;
     src.reserve(2048);
 
@@ -582,7 +688,12 @@ std::string ZiaReplAdapter::buildSource(const std::string &input,
         src += "\n";
     }
 
-    // Entry point
+    // Entry point: the user's own `start`, or one wrapping the current input.
+    if (!userEntry.empty()) {
+        src += userEntry;
+        src += "\n";
+        return src;
+    }
     src += "func start() {\n";
 
     // Current user input
@@ -709,6 +820,23 @@ EvalResult ZiaReplAdapter::compileAndRun(const std::string &source) {
 EvalResult ZiaReplAdapter::eval(const std::string &input) {
     using namespace il::frontends::zia;
 
+    // A snippet may hold several top-level items (declarations and
+    // statements); evaluate them in order, as if entered one at a time. The
+    // outputs accumulate, and the first failure ends the run.
+    const std::vector<std::string> items = splitTopLevelItems(input);
+    if (items.size() > 1) {
+        std::string output;
+        EvalResult last;
+        for (const std::string &item : items) {
+            last = eval(item);
+            output += last.output;
+            if (!last.success)
+                break;
+        }
+        last.output = output;
+        return last;
+    }
+
     EvalResult result;
 
     // --- Bind statements ---
@@ -746,6 +874,11 @@ EvalResult ZiaReplAdapter::eval(const std::string &input) {
             result.errorMessage = "Could not parse function name.";
             return result;
         }
+
+        // A user-written entry point is a program to run, not a definition to
+        // keep: it replaces the synthesized `start` for this evaluation.
+        if (funcName == "start")
+            return compileAndRun(buildSource("", "", input));
 
         auto oldFunc = definedFunctions_.find(funcName);
         std::string oldFuncSrc;

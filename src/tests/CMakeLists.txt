@@ -1236,6 +1236,17 @@ set(ZIA_LANG_TESTS
         50_world_projection_runtime
         51_struct_return_abi
         52_path_datadir
+        53_inherited_interface_dispatch
+        54_generic_collection_fields
+        55_static_members
+        56_namespace_siblings
+        57_try_catch_locals
+        58_optional_string_null
+        59_byte_and_enum_values
+        60_set_iteration_and_collection_names
+        61_function_references_and_late_globals
+        62_lambda_bodies_and_self
+        63_closure_ownership
 )
 
 foreach (test_name IN LISTS ZIA_LANG_TESTS)
@@ -1338,7 +1349,12 @@ endforeach ()
 # with classes, lists and nested control flow. Each fixture prints
 # `RESULT: ok` under the VM; the native builds at O1 and O2 must too.
 foreach (fixture IN ITEMS 06_control_flow 10_for_break_continue 12_list_map_stats
-        14_class_methods 18_numeric_algorithms 29_control_flow_advanced)
+        14_class_methods 18_numeric_algorithms 29_control_flow_advanced
+        53_inherited_interface_dispatch 54_generic_collection_fields 55_static_members
+        56_namespace_siblings 57_try_catch_locals 58_optional_string_null
+        59_byte_and_enum_values 60_set_iteration_and_collection_names
+        61_function_references_and_late_globals 62_lambda_bodies_and_self
+        63_closure_ownership)
     foreach (opt_level IN ITEMS O1 O2)
         add_test(NAME native_run_zia_${fixture}_${opt_level}
                 COMMAND ${CMAKE_COMMAND}

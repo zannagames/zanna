@@ -1023,7 +1023,7 @@ world-space values.
 | `ScreenToRayOrigin(sx, sy, screenW, screenH)` | `Object(Integer, Integer, Integer, Integer)` | World-space ray origin for the same pixel; pair with `ScreenToRay` (and `Input3D.MousePosition()`) for picking |
 | `FirstPersonInit()` | `Void()` | Initialize FPS-camera state (yaw and pitch reset to zero) |
 | `FirstPersonUpdate(yawDelta, pitchDelta, moveFwd, moveRight, moveUp, speed, dt)` | `Void(Double ×7)` | Apply mouse-look deltas in degrees plus signed camera-relative movement axes at `speed` world units per second |
-| `Shake(amplitude, frequency, duration)` | `Void(Double, Double, Double)` | Start a procedural camera shake |
+| `Shake(intensity, duration, decay)` | `Void(Double, Double, Double)` | Start a camera shake: a random offset of up to `intensity` world units that decays exponentially at rate `decay` (per second; non-positive uses `5.0`) and stops after `duration` seconds |
 | `SmoothFollow(target, speed, minDist, maxDist, height)` | `Void(Object, Double, Double, Double, Double)` | Lerp toward a target with distance clamping |
 | `SmoothLookAt(target, speed, roll)` | `Void(Object, Double, Double)` | Slerp the camera orientation toward a target |
 
@@ -1045,7 +1045,7 @@ bind Zanna.Math.Vec3 as Vec3;
 
 var cam = Camera3D.New(60.0, 16.0 / 9.0, 0.1, 1000.0);
 cam.LookAt(Vec3.New(0.0, 2.0, -5.0), Vec3.New(0.0, 0.0, 0.0), Vec3.New(0.0, 1.0, 0.0));
-cam.Shake(0.3, 15.0, 0.5);
+cam.Shake(0.3, 0.5, 6.0);   // 0.3-unit kick, fading fast, over half a second
 ```
 
 ```basic

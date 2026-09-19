@@ -989,8 +989,9 @@ struct IfExpr : Expr {
 };
 
 /// @brief Struct-literal initialization for struct types.
-/// @details `Point { x = 3, y = 4 }` initializes a struct type by field name.
-/// Each field may appear in any order; the lowerer reorders by declaration order.
+/// @details `Point { x = 3, y = 4 }` initializes a struct type by field name, and
+/// `Pair[Integer] { items = [1] }` a generic struct instantiation. Each field may
+/// appear in any order; the lowerer reorders by declaration order.
 struct StructLiteralExpr : Expr {
     /// @brief One named-field initializer.
     struct Field {
@@ -999,8 +1000,12 @@ struct StructLiteralExpr : Expr {
         SourceLoc loc;    ///< Location of this field entry.
     };
 
-    /// @brief The struct type name (e.g., "Point").
+    /// @brief The struct type name as written (e.g., "Point" or "Pair[Integer]").
     std::string typeName;
+
+    /// @brief The written type when it carries generic arguments (`Pair[Integer]`); null for
+    ///        a plain or qualified name, which resolves through @ref typeName.
+    TypePtr typeNode;
 
     /// @brief Named field initializers (in source order).
     std::vector<Field> fields;
@@ -1009,8 +1014,10 @@ struct StructLiteralExpr : Expr {
     /// @param l Source location of the literal.
     /// @param name Struct type name as written.
     /// @param fs Owned field initializers in source order.
-    StructLiteralExpr(SourceLoc l, std::string name, std::vector<Field> fs)
-        : Expr(ExprKind::StructLiteral, l), typeName(std::move(name)), fields(std::move(fs)) {}
+    /// @param type Written generic type, or null.
+    StructLiteralExpr(SourceLoc l, std::string name, std::vector<Field> fs, TypePtr type = nullptr)
+        : Expr(ExprKind::StructLiteral, l), typeName(std::move(name)), typeNode(std::move(type)),
+          fields(std::move(fs)) {}
 };
 
 /// @brief Pattern matching arm: `Pattern => Expr`.

@@ -1,0 +1,85 @@
+module RuntimeTest56;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: namespace members name their siblings by short name (ZB-56). Members
+// are registered under qualified names (`Field.MOUND_T`), and a short-name use
+// inside the namespace used to fail — `Undefined identifier: MOUND_T`,
+// `Unknown type: Point` — so a namespace could not group anything that
+// referred to anything else. Lookup inside a namespace now tries the enclosing
+// namespaces innermost-first, after locals, parameters and class members.
+
+final LIMIT = 1;          // module-level: shadowed by Field.LIMIT inside Field
+
+// Top-level types used from inside the namespace: before, a namespace was
+// analyzed (bodies included) ahead of the top level's member signatures, so
+// `t.x` was "no member" and `new Box()` had "no init overload".
+struct Top { Integer x; }
+class Box {
+    expose Integer v;
+    expose func init() { v = 7; }
+}
+
+namespace Field {
+    final MOUND_T = 605;
+    final LIMIT = 90;
+    var visits = 0;
+
+    struct Point {
+        Integer xT;
+        Integer zT;
+    }
+
+    func mound() -> Integer { return MOUND_T; }
+    func visit() -> Integer {
+        visits = visits + 1;              // sibling var: read and write
+        return visits;
+    }
+    func twiceMound() -> Integer { return mound() * 2; }    // sibling call
+    func origin() -> Point { return Point { xT = 0, zT = MOUND_T }; }
+    func limit() -> Integer { return LIMIT; }               // shadows module LIMIT
+    func shadowed(MOUND_T: Integer) -> Integer { return MOUND_T; }  // param wins
+    func topField(t: Top) -> Integer { return t.x; }
+    func topClass() -> Integer { var b = new Box(); return b.v; }
+
+    class Bag {
+        expose Integer count;
+        expose func init() { count = 0; }
+        expose func fill() -> Integer {
+            count = count + mound();      // class member + sibling function
+            return count;
+        }
+    }
+
+    namespace Inner {
+        final MOUND_T = 1;               // shadows the outer constant
+        func innerMound() -> Integer { return MOUND_T; }
+        func outerLimit() -> Integer { return LIMIT; }      // outer sibling visible
+        func corner() -> Point { return Point { xT = LIMIT, zT = LIMIT }; }
+    }
+}
+
+func start() {
+    assertEqInt(Field.mound(), 605, "sibling_final");
+    assertEqInt(Field.visit() + Field.visit(), 3, "sibling_var_read_write");
+    assertEqInt(Field.visits, 2, "sibling_var_visible_outside");
+    assertEqInt(Field.twiceMound(), 1210, "sibling_call");
+    assertEqInt(Field.origin().zT, 605, "sibling_struct_type_and_literal");
+    assertEqInt(Field.limit(), 90, "namespace_member_shadows_module");
+    assertEqInt(LIMIT, 1, "module_constant_unchanged");
+    assertEqInt(Field.shadowed(7), 7, "parameter_shadows_member");
+
+    assertEqInt(Field.topField(Top { x = 5 }), 5, "namespace_reads_top_level_struct_field");
+    assertEqInt(Field.topClass(), 7, "namespace_constructs_top_level_class");
+
+    var bag = new Field.Bag();
+    assertEqInt(bag.fill() + bag.fill(), 605 + 1210, "class_in_namespace_uses_siblings");
+
+    assertEqInt(Field.Inner.innerMound(), 1, "inner_shadows_outer");
+    assertEqInt(Field.Inner.outerLimit(), 90, "inner_sees_outer_member");
+    assertEqInt(Field.Inner.corner().xT, 90, "inner_uses_outer_type");
+
+    report();
+}

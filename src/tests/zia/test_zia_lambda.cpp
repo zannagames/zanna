@@ -113,7 +113,9 @@ func start() {    var b: Byte = 1;
         }
     }
     ASSERT_TRUE(mainFn != nullptr);
-    EXPECT_TRUE(hasCallWithConstIntArg(*mainFn, "rt_alloc", 24));
+    // One managed closure record: [code, env] (16) + inline env
+    // {Boolean @0, Integer @8, Byte @16} (24; a Byte is carried in i64).
+    EXPECT_TRUE(hasCallWithConstIntArg(*mainFn, "rt_obj_new_i64", 40));
     ASSERT_TRUE(findLambdaFunction(result.module) != nullptr);
 }
 

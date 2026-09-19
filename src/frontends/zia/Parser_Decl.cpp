@@ -638,7 +638,10 @@ bool Parser::parseMemberBlock(std::vector<DeclPtr> &members,
             dtor->body = parseBlock();
             members.push_back(std::move(dtor));
         } else if (check(TokenKind::Identifier) || check(TokenKind::KwVar) ||
-                   check(TokenKind::KwFinal) || check(TokenKind::KwLet)) {
+                   check(TokenKind::KwFinal) || check(TokenKind::KwLet) ||
+                   check(TokenKind::LParen)) {
+            // `(` starts the type of a `Type name` field: a function type such
+            // as `(Integer) -> Void onTick;` or a tuple type.
             if (isOverride) {
                 error("'override' can only be used on methods");
                 isOverride = false;

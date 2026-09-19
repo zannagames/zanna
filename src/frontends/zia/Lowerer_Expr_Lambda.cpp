@@ -31,11 +31,6 @@ namespace il::frontends::zia {
 
 using namespace runtime;
 
-/// @brief Total byte size of `[funcPtr, envPtr]` closure storage.
-static constexpr int kClosureSize = 16;
-/// @brief Byte offset of the environment pointer within closure storage.
-static constexpr int kClosureEnvOffset = 8;
-
 //=============================================================================
 // Lambda Expression Lowering
 //=============================================================================
@@ -55,19 +50,23 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
     // Check if lambda has captured variables
     bool hasCaptures = !expr->captures.empty();
 
-    // Determine return type (inferred as the body's type if not specified)
+    // The lambda's full function type carries any parameter types that Sema
+    // inferred from context (target-typed lambdas), which the AST param nodes
+    // lack when the source omitted the annotation, and the return type Sema
+    // settled on (declared, hinted, joined from the body's `return`s, or Void
+    // for a block without a value).
+    TypeRef lambdaFnType = sema_.typeOf(expr);
     TypeRef returnType = types::unknown();
-    if (expr->returnType) {
+    if (lambdaFnType && lambdaFnType->kind == TypeKindSem::Function && lambdaFnType->returnType()) {
+        returnType = lambdaFnType->returnType();
+    } else if (expr->returnType) {
         returnType = sema_.resolveType(expr->returnType.get());
     } else {
         returnType = sema_.typeOf(expr->body.get());
     }
+    if (returnType && returnType->kind == TypeKindSem::Unit)
+        returnType = types::voidType(); // `-> Unit` is `-> Void`
     Type ilReturnType = mapType(returnType);
-
-    // The lambda's full function type carries any parameter types that Sema
-    // inferred from context (target-typed lambdas), which the AST param nodes
-    // lack when the source omitted the annotation.
-    TypeRef lambdaFnType = sema_.typeOf(expr);
     /// @brief Retrieves a context-inferred lambda parameter type.
     /// @param i Parameter index.
     /// @return Inferred type, or `unknown` when unavailable.
@@ -113,6 +112,14 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
             auto localTypeIt = localTypes_.find(cap.name);
             TypeRef varType = (localTypeIt != localTypes_.end()) ? localTypeIt->second
                                                                  : sema_.lookupVarType(cap.name);
+            // A method's `self` slot carries no local type (the method does not
+            // own it); a closure that captures it keeps the receiver alive.
+            if (cap.name == "self") {
+                if (currentClassType_)
+                    varType = types::classType(currentClassType_->name);
+                else if (currentStructType_)
+                    varType = types::structType(currentStructType_->name);
+            }
 
             // Look up the variable in current scope
             auto slotIt = slots_.find(cap.name);
@@ -171,6 +178,11 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
     auto savedSlots = std::exchange(slots_, {});
     auto savedLocalTypes = std::exchange(localTypes_, {});
     auto savedDeferredTemps = std::exchange(deferredTemps_, {});
+    // A `return` in the body leaves the lambda, not the enclosing function: the
+    // enclosing `defer`/`finally` cleanups and async-worker exit do not apply.
+    auto savedCleanupStack = std::exchange(cleanupStack_, {});
+    const bool savedAsyncWorker = std::exchange(currentAsyncWorker_, false);
+    auto savedAsyncOwnedValues = std::exchange(asyncOwnedValues_, {});
 
     // Create the lambda function and entry block via IRBuilder so param IDs are assigned.
     currentFunc_ = &builder_->startFunction(lambdaName, ilReturnType, params);
@@ -203,8 +215,12 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
             // Create a slot for mutable captured variables
             createSlot(info.name, info.type);
             storeToSlot(info.name, capturedVal, info.type);
-            if (info.type.kind == Type::Kind::Str) // env value is borrowed; the slot owns +1
+            // The environment keeps its reference; the slot owns another,
+            // released on every exit like a parameter slot.
+            if (info.type.kind == Type::Kind::Str)
                 emitCall(runtime::kStrRetainMaybe, {capturedVal});
+            else if (info.type.kind == Type::Kind::Ptr && needsRelease(info.semType))
+                emitCall("rt_obj_retain_maybe", {capturedVal});
             localTypes_[info.name] = info.semType ? info.semType : types::unknown();
         }
     }
@@ -221,6 +237,8 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
             storeToSlot(expr->params[i].name, Value::temp(blockParams[paramIdx].id), ilParamType);
             if (ilParamType.kind == Type::Kind::Str) // params are borrowed; the slot owns +1
                 emitCall(runtime::kStrRetainMaybe, {Value::temp(blockParams[paramIdx].id)});
+            else if (ilParamType.kind == Type::Kind::Ptr && needsRelease(paramType))
+                emitCall("rt_obj_retain_maybe", {Value::temp(blockParams[paramIdx].id)});
             localTypes_[expr->params[i].name] = paramType;
         }
     }
@@ -240,36 +258,22 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
         bodyResult = lowerExpr(expr->body.get());
     }
 
-    // Return the body result
-    if (ilReturnType.kind == Type::Kind::Void) {
-        if (!blockMgr_.isTerminated()) {
-            releaseLocalStringSlots(); // capture/param slots own +1
-            emitRetVoid();
-        }
-    } else {
-        if (!blockMgr_.isTerminated()) {
-            if (returnType && returnType->kind == TypeKindSem::Unit) {
-                releaseLocalStringSlots();
-                emitRet(Value::null());
-            } else {
-                Value returnValue = bodyResult.value;
-                if (returnType && returnType->kind == TypeKindSem::Optional) {
-                    TypeRef bodyType = sema_.typeOf(expr->body.get());
-                    if (!bodyType || bodyType->kind != TypeKindSem::Optional) {
-                        TypeRef innerType = returnType->innerType();
-                        if (innerType)
-                            returnValue = emitOptionalWrap(bodyResult.value, innerType);
-                    }
-                }
-                if (ilReturnType.kind == Type::Kind::Str) {
-                    // Mint the caller's reference when the value is borrowed
-                    // (a slot load) — the slot releases just below.
-                    if (!consumeDeferred(returnValue))
-                        emitCall(runtime::kStrRetainMaybe, {returnValue});
-                }
-                releaseLocalStringSlots(); // capture/param slots own +1
-                emitRet(returnValue);
-            }
+    // Return the body result through the function exit sequence, which
+    // releases the capture and parameter slots (each owns +1) and gives a
+    // managed result the caller's reference.
+    if (!blockMgr_.isTerminated()) {
+        if (ilReturnType.kind == Type::Kind::Void) {
+            emitFunctionReturnVoid();
+        } else {
+            // The body value takes the lambda's return type (optional
+            // wrapping, typed nulls, numeric conversion).
+            TypeRef bodyType = sema_.typeOf(expr->body.get());
+            if (auto *blockBody = dynamic_cast<BlockExpr *>(expr->body.get());
+                blockBody && blockBody->value)
+                bodyType = sema_.typeOf(blockBody->value.get());
+            auto coerced =
+                coerceValueToType(bodyResult.value, bodyResult.type, bodyType, returnType);
+            emitFunctionReturn(coerced.value, coerced.type, returnType);
         }
     }
 
@@ -288,39 +292,48 @@ LowerResult Lowerer::lowerLambda(LambdaExpr *expr) {
     slots_ = std::move(savedSlots);
     localTypes_ = std::move(savedLocalTypes);
     deferredTemps_ = std::move(savedDeferredTemps);
+    cleanupStack_ = std::move(savedCleanupStack);
+    currentAsyncWorker_ = savedAsyncWorker;
+    asyncOwnedValues_ = std::move(savedAsyncOwnedValues);
     currentReturnType_ = savedReturnType;
 
-    // Get the function pointer
-    Value funcPtr = Value::global(lambdaName);
-
-    // Always create a uniform closure struct: { funcPtr, envPtr }
-    // For no-capture lambdas, envPtr is null
-
-    // Allocate environment if we have captures
-    Value envPtr = Value::null(); // null for no captures
-    if (hasCaptures) {
-        // Allocate environment struct using rt_alloc
-        Value envSizeVal = Value::constInt(static_cast<int64_t>(envSize));
-        envPtr = emitCallRet(Type(Type::Kind::Ptr), "rt_alloc", {envSizeVal});
-
-        // Store captured values into the environment
-        for (size_t i = 0; i < captureInfos.size(); ++i) {
-            const auto &info = captureInfos[i];
-            Value fieldAddr = emitGEP(envPtr, static_cast<int64_t>(captureOffsets[i]));
-            emitStore(fieldAddr, info.value, info.type);
-        }
+    // A closure is a reference-counted object that owns its captures
+    // (ADR 0374): [code][environment][captured values]. The environment is the
+    // payload after the two header words (null without captures), so a call
+    // still passes closure[1] to closure[0]. A closure with managed captures
+    // gets its own class id, whose destructor releases them when it dies.
+    std::vector<std::pair<int64_t, int64_t>> managedSlots;
+    for (size_t i = 0; i < captureInfos.size(); ++i) {
+        const auto &info = captureInfos[i];
+        const int64_t offset = kClosureSize + static_cast<int64_t>(captureOffsets[i]);
+        if (info.type.kind == Type::Kind::Str)
+            managedSlots.push_back({offset, 2});
+        else if (info.type.kind == Type::Kind::Ptr && needsRelease(info.semType))
+            managedSlots.push_back({offset, 1});
+    }
+    int64_t closureClassId = 0;
+    if (!managedSlots.empty()) {
+        closureClassId = nextClassId_++;
+        closureLayouts_.push_back({closureClassId, lambdaName + ".__dtor", managedSlots});
     }
 
-    // Allocate closure struct: { ptr funcPtr, ptr envPtr } = 16 bytes
-    Value closureSizeVal = Value::constInt(kClosureSize);
-    Value closurePtr = emitCallRet(Type(Type::Kind::Ptr), "rt_alloc", {closureSizeVal});
+    Value closurePtr = emitCallRet(Type(Type::Kind::Ptr),
+                                   "rt_obj_new_i64",
+                                   {Value::constInt(closureClassId),
+                                    Value::constInt(kClosureSize + static_cast<int64_t>(envSize))});
+    emitStore(closurePtr, Value::global(lambdaName), Type(Type::Kind::Ptr));
+    Value envPtr = hasCaptures ? emitGEP(closurePtr, kClosureSize) : Value::null();
+    emitStore(emitGEP(closurePtr, kClosureEnvOffset), envPtr, Type(Type::Kind::Ptr));
 
-    // Store function pointer at offset 0
-    emitStore(closurePtr, funcPtr, Type(Type::Kind::Ptr));
-
-    // Store environment pointer at closure env offset
-    Value envFieldAddr = emitGEP(closurePtr, kClosureEnvOffset);
-    emitStore(envFieldAddr, envPtr, Type(Type::Kind::Ptr));
+    // Store the captured values; the closure owns a reference to each managed one.
+    for (size_t i = 0; i < captureInfos.size(); ++i) {
+        const auto &info = captureInfos[i];
+        emitStore(emitGEP(envPtr, static_cast<int64_t>(captureOffsets[i])), info.value, info.type);
+        if (info.type.kind == Type::Kind::Str)
+            emitCall(runtime::kStrRetainMaybe, {info.value});
+        else if (info.type.kind == Type::Kind::Ptr && needsRelease(info.semType))
+            emitCall("rt_obj_retain_maybe", {info.value});
+    }
 
     return {closurePtr, Type(Type::Kind::Ptr)};
 }
@@ -370,8 +383,9 @@ LowerResult Lowerer::lowerBlockExpr(BlockExpr *expr) {
 /// @param expr Cast expression.
 /// @return The converted value and its IL type.
 /// @details Unwraps an optional source (trapping on null) before converting. Numeric casts use
-///          real conversion opcodes — checked f64→i64, i64→f64 widening, checked i64→byte
-///          narrowing, byte→i64 zero-extension — rather than bit reinterpretation. Assignable
+///          real conversion opcodes — checked f64→i64, i64→f64 widening, and a checked
+///          Integer→Byte narrowing to 0..255 (Byte→Integer is the identity) — rather than bit
+///          reinterpretation. Assignable
 ///          types coerce directly; class/interface downcasts call `rt_cast_as` /
 ///          `rt_cast_as_iface` and trap if the runtime cast fails.
 LowerResult Lowerer::lowerAs(AsExpr *expr) {
@@ -469,21 +483,12 @@ LowerResult Lowerer::lowerAs(AsExpr *expr) {
             return {Value::temp(convId), conv.type};
         }
         if (sourceType->kind == TypeKindSem::Integer && targetType->kind == TypeKindSem::Byte) {
-            // i64 -> i32 (byte): checked narrowing (traps on overflow)
-            unsigned convId = nextTempId();
-            il::core::Instr conv;
-            conv.result = convId;
-            conv.op = Opcode::CastSiNarrowChk;
-            conv.type = Type(Type::Kind::I32);
-            conv.operands = {source.value};
-            conv.loc = curLoc_;
-            blockMgr_.currentBlock()->instructions.push_back(conv);
-            return {Value::temp(convId), conv.type};
+            // Checked narrowing: traps (Overflow) outside 0..255.
+            return {narrowIntegerToByte(source.value), Type(Type::Kind::I64)};
         }
         if (sourceType->kind == TypeKindSem::Byte && targetType->kind == TypeKindSem::Integer) {
-            // i32 -> i64: zero-extend widening
-            Value widened = widenByteToInteger(source.value);
-            return {widened, Type(Type::Kind::I64)};
+            // A Byte already is an i64 in 0..255.
+            return {source.value, Type(Type::Kind::I64)};
         }
     }
 

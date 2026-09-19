@@ -590,6 +590,13 @@ convention established by
   through an owning slot.
 - Runtime calls annotated `consumedArgMask` / `returnsOwned` in
   `RuntimeOwnershipEffects` override the borrow-by-default convention.
+- **Function values are closures** ([ADR 0374](adr/0374-closures-own-their-captures.md)):
+  a lambda or a `&function` reference used as a Zia function value is a
+  reference-counted object `[code][environment][captured values]` managed like
+  any other object reference. The closure retains each captured string and object
+  when it is created; a capturing closure has its own class id, whose synthesized
+  destructor releases the captures when the last reference dies, and whose
+  captured objects are strong slots for the cycle collector.
 
 Object cleanup lowers to `rt_obj_release_check0` plus a conditional destroy block;
 string temporaries lower to `rt_str_release_maybe`. You can see both directly:
@@ -639,8 +646,9 @@ Two ways to reclaim cycles:
   call stack.
 
 The remaining unsoundness is that the threshold is opt-in, so the default
-configuration keeps cycles until the program collects. Cycles that pass only
-through closure environments (class id 0) or runtime-internal objects are not
+configuration keeps cycles until the program collects. Cycles through a closure
+(an object holding a lambda that captures it) collect like class instances
+(ADR 0374); cycles that pass only through runtime-internal objects are not
 traversed and still leak.
 
 ### 2. HIGH: Borrowed Seq Elements Require Explicit Lifetime Management

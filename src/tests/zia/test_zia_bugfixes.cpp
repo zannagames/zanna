@@ -3389,7 +3389,8 @@ func start() {
     ASSERT_TRUE(result.succeeded());
     const auto *mainFn = findFunction(result.module, "main");
     ASSERT_TRUE(mainFn != nullptr);
-    EXPECT_TRUE(hasAllocaSize(*mainFn, 16));
+    // (Byte, Byte, Integer): a Byte is carried in i64, so elements sit at 0/8/16.
+    EXPECT_TRUE(hasAllocaSize(*mainFn, 24));
 }
 
 TEST(ZiaBugFixes, TernaryLookaheadAllowsExpressionKeywordArms) {

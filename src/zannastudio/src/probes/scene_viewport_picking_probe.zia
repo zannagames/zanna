@@ -41,6 +41,7 @@ bind "../ui/scene_panels_3d";
 bind "../ui/scene_selection";
 bind "scene_probe_support";
 bind "scene_viewport_picking_routing_probe";
+bind "../core/document";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;

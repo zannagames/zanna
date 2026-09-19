@@ -247,7 +247,43 @@ bool Sema::canAccessSymbol(const Symbol &sym,
 
     if (!sym.isExported)
         return false;
-    return true;
+    // Another file's declaration is visible only in files that bind that file
+    // directly: a bind does not pass the bound file's own binds on to its
+    // importer (ADR 0376).
+    return fileBindsFile(useLoc.file_id, sym.loc.file_id);
+}
+
+/// @brief Whether a file binds another file directly.
+/// @param useFile File making the reference.
+/// @param declFile File declaring the referenced symbol.
+/// @return True when one of @p useFile's own binds resolves to @p declFile.
+bool Sema::fileBindsFile(uint32_t useFile, uint32_t declFile) const {
+    auto it = fileBoundModuleIds_.find(useFile);
+    if (it == fileBoundModuleIds_.end())
+        return false;
+    for (const auto &[moduleName, fileId] : it->second) {
+        if (fileId == declFile)
+            return true;
+    }
+    return false;
+}
+
+/// @brief Find the exported top-level declaration a bare name refers to when it
+///        lives in a file the using file does not bind (ADR 0376).
+/// @details Type names reach the program-wide type registry by other routes
+///          than symbol lookup; resolution paths consult this first so a type
+///          is visible under exactly the rule that governs every other name.
+/// @param name Bare source spelling.
+/// @param useLoc Location of the use.
+/// @return The unbound declaration's symbol, or nullptr when the name is
+///         qualified, visible, private or unknown.
+Symbol *Sema::unboundExportedDecl(const std::string &name, SourceLoc useLoc) {
+    if (name.find('.') != std::string::npos || useLoc.file_id == 0)
+        return nullptr;
+    Symbol *sym = lookupSymbol(name);
+    if (!sym || !sym->isExported || canAccessSymbol(*sym, useLoc, name, false))
+        return nullptr;
+    return sym;
 }
 
 /// @brief Emit the access diagnostic corresponding to a rejected symbol.
@@ -265,6 +301,11 @@ void Sema::reportInaccessibleSymbol(SourceLoc useLoc,
               "Cannot access private top-level declaration '" + name + "' from another file");
         return;
     }
+    const std::string owner = moduleNameForFile(sym.loc.file_id);
+    reportUnboundModule(useLoc,
+                        owner,
+                        "'" + name + "' is declared in module '" + owner +
+                            "', which this file does not bind");
 }
 
 /// @brief Look up a symbol and enforce cross-file export visibility.
@@ -280,6 +321,12 @@ Symbol *Sema::lookupAccessibleSymbol(const std::string &name,
         return nullptr;
     if (canAccessSymbol(*sym, useLoc, name, viaQualifiedModule))
         return sym;
+    // An exported declaration of a file this file does not bind is not in scope
+    // here (ADR 0376): the lookup finds nothing, so callers fall back to other
+    // candidates (a runtime name, an enclosing namespace) or report an
+    // undefined name, which names the module to bind.
+    if (sym->isExported)
+        return nullptr;
     reportInaccessibleSymbol(useLoc, name, *sym, viaQualifiedModule);
     return nullptr;
 }

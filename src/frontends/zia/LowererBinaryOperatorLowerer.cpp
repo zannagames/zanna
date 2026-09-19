@@ -79,16 +79,12 @@ LowerResult BinaryOperatorLowerer::lowerBinary(BinaryExpr *expr) {
     switch (expr->op) {
         case BinaryOp::Add:
             if (leftType && leftType->kind == TypeKindSem::String) {
-                Value rightStr = right.value;
-                if (rightType && rightType->kind == TypeKindSem::Integer)
-                    rightStr =
-                        lowerer_.emitCallRet(Type(Type::Kind::Str), kStringFromInt, {right.value});
-                else if (rightType && rightType->kind == TypeKindSem::Number)
-                    rightStr =
-                        lowerer_.emitCallRet(Type(Type::Kind::Str), kStringFromNum, {right.value});
-                else if (rightType && rightType->kind == TypeKindSem::Boolean)
-                    rightStr =
-                        lowerer_.emitCallRet(Type(Type::Kind::Str), kTextFmtBool, {right.value});
+                // A string handle (String or String?) concatenates as is; any
+                // other operand (Integer, Byte, enum, Number, Boolean) formats
+                // the way `toString` does.
+                Value rightStr = right.type.kind == Type::Kind::Str
+                                     ? right.value
+                                     : lowerer_.emitToString(right.value, rightType);
 
                 Value result = lowerer_.emitCallRet(
                     Type(Type::Kind::Str), kStringConcat, {left.value, rightStr});
@@ -97,16 +93,9 @@ LowerResult BinaryOperatorLowerer::lowerBinary(BinaryExpr *expr) {
                 return {result, Type(Type::Kind::Str)};
             }
             if (rightType && rightType->kind == TypeKindSem::String) {
-                Value leftStr = left.value;
-                if (leftType && leftType->kind == TypeKindSem::Integer)
-                    leftStr =
-                        lowerer_.emitCallRet(Type(Type::Kind::Str), kStringFromInt, {left.value});
-                else if (leftType && leftType->kind == TypeKindSem::Number)
-                    leftStr =
-                        lowerer_.emitCallRet(Type(Type::Kind::Str), kStringFromNum, {left.value});
-                else if (leftType && leftType->kind == TypeKindSem::Boolean)
-                    leftStr =
-                        lowerer_.emitCallRet(Type(Type::Kind::Str), kTextFmtBool, {left.value});
+                Value leftStr = left.type.kind == Type::Kind::Str
+                                    ? left.value
+                                    : lowerer_.emitToString(left.value, leftType);
 
                 Value result = lowerer_.emitCallRet(
                     Type(Type::Kind::Str), kStringConcat, {leftStr, right.value});

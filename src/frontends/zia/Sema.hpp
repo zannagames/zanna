@@ -776,11 +776,20 @@ class Sema {
     /// @return Export map for the module, or nullptr when no matching file module is visible.
     ///
     /// @details File binds are scoped to the importing file even though imported
-    /// declarations are flattened into the compilation unit. This helper uses
-    /// @p useLoc to prefer the imports declared by that file, then falls back to
-    /// globally unique module exports for older call sites without source context.
+    /// declarations are flattened into the compilation unit: a use sees only the
+    /// modules its own file binds, plus its own module name (ADR 0376). A use
+    /// without source context (completion, synthesized nodes) falls back to the
+    /// program-wide map.
     const std::unordered_map<std::string, Symbol> *findModuleExports(const std::string &moduleName,
                                                                      SourceLoc useLoc = {}) const;
+
+    /// @brief The file a module name refers to from a use location.
+    /// @param moduleName Visible module name or alias.
+    /// @param useLoc Location of the use.
+    /// @return The bound file's id — a module the use's own file binds, or that
+    ///         file itself when it names its own module — or 0 when the name is
+    ///         not visible there. Without source context, the program-wide map.
+    uint32_t visibleModuleFile(const std::string &moduleName, SourceLoc useLoc) const;
 
     /// @brief Return true if a file-module root is visible at a source location.
     /// @param moduleName The visible module root to test.
@@ -840,6 +849,19 @@ class Sema {
                          const std::string &name,
                          bool viaQualifiedModule) const;
 
+    /// @brief Whether @p useFile binds @p declFile directly (ADR 0376).
+    bool fileBindsFile(uint32_t useFile, uint32_t declFile) const;
+
+    /// @brief The exported top-level declaration a bare name refers to when it
+    ///        lives in a file the using file does not bind (ADR 0376).
+    /// @return The unbound declaration's symbol, or nullptr when the name is
+    ///         qualified, visible, private or unknown.
+    Symbol *unboundExportedDecl(const std::string &name, SourceLoc useLoc);
+
+    /// @brief Report a type from a module the using file does not bind.
+    /// @return True when a diagnostic was reported.
+    bool reportUnboundModuleType(const std::string &name, SourceLoc loc);
+
     /// @brief Emit an access-control diagnostic for an inaccessible symbol.
     void reportInaccessibleSymbol(SourceLoc useLoc,
                                   const std::string &name,
@@ -874,9 +896,13 @@ class Sema {
 
     /// @brief Analyze a struct type declaration.
     /// @param decl The struct type declaration.
+    /// @param instantiationName Mangled name of a generic instantiation whose body is being
+    ///        analyzed under its active substitutions; empty for ordinary declarations.
     ///
-    /// @details Registers the type and analyzes all members.
-    void analyzeStructDecl(StructDecl &decl);
+    /// @details Registers the type and analyzes all members. A generic declaration is skipped
+    ///          in the module pass and analyzed once per instantiation, just before that
+    ///          instantiation is lowered, so its expressions carry the substituted types.
+    void analyzeStructDecl(StructDecl &decl, const std::string &instantiationName = {});
 
     /// @brief Register type member signatures for cross-module resolution.
     /// @tparam T Decl type (ClassDecl, StructDecl, or InterfaceDecl)
@@ -911,11 +937,15 @@ class Sema {
     /// @param declarations The declaration list to process.
     void analyzeDeclarationBodies(std::vector<DeclPtr> &declarations);
 
-    /// @brief Analyze an class type declaration.
+    /// @brief Analyze a class type declaration.
     /// @param decl The class type declaration.
+    /// @param instantiationName Mangled name of a generic instantiation whose body is being
+    ///        analyzed under its active substitutions; empty for ordinary declarations.
     ///
-    /// @details Registers the type, resolves inheritance, and analyzes members.
-    void analyzeClassDecl(ClassDecl &decl);
+    /// @details Registers the type, resolves inheritance, and analyzes members. A generic
+    ///          declaration is skipped in the module pass and analyzed once per instantiation,
+    ///          just before that instantiation is lowered (ZB-58).
+    void analyzeClassDecl(ClassDecl &decl, const std::string &instantiationName = {});
 
     /// @brief Analyze an interface declaration.
     /// @param decl The interface declaration.
@@ -941,12 +971,19 @@ class Sema {
                                           const SourceLoc &loc,
                                           const std::vector<std::string> &interfaces);
 
-    /// @brief Analyze a namespace declaration.
+    /// @brief Namespace phase 1: register all declarations (recursively, qualified names).
     /// @param decl The namespace declaration.
-    ///
-    /// @details Processes all declarations within the namespace, prefixing
-    /// their names with the namespace path. Supports nested namespaces.
-    void analyzeNamespaceDecl(NamespaceDecl &decl);
+    void registerNamespaceDeclarations(NamespaceDecl &decl);
+
+    /// @brief Namespace phase 2: final-constant types and member signatures (recursively).
+    /// @param decl The namespace declaration.
+    void registerNamespaceSignatures(NamespaceDecl &decl);
+
+    /// @brief Namespace phase 3: analyze bodies (recursively).
+    /// @param decl The namespace declaration.
+    /// @details The module pass runs each phase for every namespace right after its own
+    ///          matching phase, so top-level and namespace code resolve in either direction.
+    void analyzeNamespaceBodies(NamespaceDecl &decl);
 
     /// @brief Compute the qualified name for a declaration.
     /// @param name The unqualified name.
@@ -955,6 +992,14 @@ class Sema {
     /// @details If currently inside a namespace, prepends the namespace path.
     /// Example: inside "MyLib", name "Parser" becomes "MyLib.Parser".
     std::string qualifyName(const std::string &name) const;
+
+    /// @brief Namespace-qualified spellings under which an unqualified name may be declared.
+    /// @param name Name as written at the use site.
+    /// @return Inside `namespace A.B`, the candidates `A.B.name` then `A.name` (innermost
+    ///         first); empty outside a namespace or for an already-qualified name.
+    /// @details Namespace members are registered under qualified names, so a use of a sibling
+    ///          by its short name resolves through these candidates (ZB-56).
+    std::vector<std::string> namespaceCandidates(const std::string &name) const;
 
     /// @brief Analyze a function declaration.
     /// @param decl The function declaration.
@@ -1829,6 +1874,12 @@ class Sema {
     /// @param message Error message.
     void error(SourceLoc loc, const std::string &message);
 
+    /// @brief Forward a diagnostic to the engine unless an identical one (same
+    ///        severity, code, location and message) was already reported.
+    /// @param diag Diagnostic to report.
+    void reportOnce(il::support::Diagnostic diag);
+
+
     /// @brief Report a semantic error with an explicit stable diagnostic code.
     void errorWithCode(SourceLoc loc,
                        std::string code,
@@ -1836,6 +1887,13 @@ class Sema {
                        il::support::SourceRange range = {},
                        std::vector<il::support::DiagnosticNote> notes = {},
                        std::string help = {});
+
+    /// @brief Report a use of a module the using file does not bind (ADR 0376),
+    ///        once per (file, module).
+    /// @param loc Location of the use.
+    /// @param owner Module the file must bind.
+    /// @param message Diagnostic text naming the use.
+    void reportUnboundModule(SourceLoc loc, const std::string &owner, std::string message);
 
     /// @brief Find a close in-scope symbol name for an undefined identifier.
     std::optional<std::string> suggestSymbolName(const std::string &name) const;
@@ -1931,6 +1989,14 @@ class Sema {
     /// @brief Diagnostic engine for error reporting.
     il::support::DiagnosticEngine &diag_;
 
+    /// @brief Keys (severity, code, location, message) of diagnostics already
+    ///        reported, so re-analysing an expression reports it once.
+    std::unordered_set<std::string> reportedDiagnostics_;
+
+    /// @brief (use file, module) pairs already reported as missing a bind; one
+    ///        bind fixes every use, so later uses are not reported again.
+    std::set<std::pair<uint32_t, std::string>> reportedUnboundModules_;
+
     /// @brief Whether any errors have occurred.
     bool hasError_{false};
 
@@ -1960,6 +2026,11 @@ class Sema {
     /// argument). analyzeLambda() consumes and clears it to infer omitted
     /// parameter types. Null when no expected type is available.
     TypeRef lambdaTypeHint_{nullptr};
+
+    /// @brief Value types of the `return` statements in the lambda body being
+    ///        analysed, when its return type is inferred rather than declared or
+    ///        hinted. Null outside such a lambda body.
+    std::vector<TypeRef> *lambdaReturnTypes_{nullptr};
 
     /// @brief Current loop nesting depth for break/continue validation.
     int loopDepth_{0};
@@ -2192,6 +2263,10 @@ class Sema {
     std::unordered_map<uint32_t,
                        std::unordered_map<std::string, std::unordered_map<std::string, Symbol>>>
         fileModuleExports_;
+
+    /// @brief Each file's own exports, for qualifying its declarations with its
+    ///        own module name (built on first use).
+    mutable std::unordered_map<uint32_t, std::unordered_map<std::string, Symbol>> ownModuleExports_;
 
     /// @brief File-local file-module ids keyed by importer file id and visible module name.
     /// @details Used for qualified type references such as `player.Player` even when the target

@@ -22,6 +22,7 @@
 #include "il/build/IRBuilder.hpp"
 #include "il/runtime/signatures/Registry.hpp"
 #include "tests/common/PosixCompat.h"
+#include "vm/RuntimeBridge.hpp"
 #include "zanna/vm/RuntimeBridge.hpp"
 #include <atomic>
 #include <cassert>
@@ -1151,6 +1152,53 @@ static void test_add_function() {
     // Test with different values
     result = vm.exec("add", {BCSlot::fromInt(100), BCSlot::fromInt(-50)});
     assert(result.i64 == 50);
+
+    std::cout << "PASSED\n";
+}
+
+/// Stand-in handler another component might register over a unified one.
+static void replacement_thread_start_handler(void **, void *) {}
+
+/// Entering the VM (exec, callbacks, and every class destructor) must not
+/// re-install the unified runtime handlers while the extern registry is unchanged
+/// — that cost a registry lock, name canonicalization and a signature build per
+/// handler on every object death (Legacy Baseball ledger ZB-70) — and must restore
+/// them once another component has replaced one.
+static void test_unified_handlers_reinstall_only_after_registry_change() {
+    std::cout << "  test_unified_handlers_reinstall_only_after_registry_change: ";
+
+    Module ilModule = createAddModule();
+    BytecodeModule bcModule = compileAssumingVerified(ilModule);
+    BytecodeVM vm;
+    vm.load(&bcModule);
+
+    il::vm::ExternRegistry &registry = il::vm::processGlobalExternRegistry();
+    const uint64_t settled = il::vm::externRegistryGeneration(registry);
+    for (int i = 0; i < 3; ++i) {
+        BCSlot result = vm.exec("add", {BCSlot::fromInt(1), BCSlot::fromInt(2)});
+        assert(vm.state() == VMState::Halted);
+        assert(result.i64 == 3);
+    }
+    assert(il::vm::externRegistryGeneration(registry) == settled);
+
+    const il::vm::ExternDesc *unified =
+        il::vm::RuntimeBridge::findExtern("Zanna.Threads.Thread.Start");
+    assert(unified && unified->fn);
+    void *const unifiedFn = unified->fn;
+    il::vm::ExternDesc replacement = *unified;
+    replacement.fn = reinterpret_cast<void *>(&replacement_thread_start_handler);
+    il::vm::RuntimeBridge::registerExtern(replacement);
+
+    BCSlot result = vm.exec("add", {BCSlot::fromInt(4), BCSlot::fromInt(5)});
+    assert(result.i64 == 9);
+    const il::vm::ExternDesc *restored =
+        il::vm::RuntimeBridge::findExtern("zanna.threads.thread.start");
+    assert(restored && restored->fn == unifiedFn);
+
+    const uint64_t reinstalled = il::vm::externRegistryGeneration(registry);
+    result = vm.exec("add", {BCSlot::fromInt(6), BCSlot::fromInt(7)});
+    assert(result.i64 == 13);
+    assert(il::vm::externRegistryGeneration(registry) == reinstalled);
 
     std::cout << "PASSED\n";
 }
@@ -2793,6 +2841,7 @@ int main() {
 
     test_bytecode_encoding();
     test_add_function();
+    test_unified_handlers_reinstall_only_after_registry_change();
     test_abs_function();
     test_fib_small();
     test_fib_benchmark();

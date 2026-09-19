@@ -491,6 +491,72 @@ func start() {
     EXPECT_TRUE(hasWarningCode(r, "W015"));
 }
 
+TEST(ZiaWarnings, W015_AggregateLocalsAreZeroInitialized) {
+    // A struct, tuple or fixed-array local declared without an initializer is
+    // zero-initialized storage. The reference's own `var p: Point; p.x = 3;`
+    // and `p.init(...)` patterns tripped W015 (a strict error by default).
+    auto r = compileWithPolicy(R"(
+module T;
+bind Zanna.Terminal as IO;
+struct Point {
+    Integer x;
+    Integer y;
+    func init(px: Integer, py: Integer) {
+        x = px;
+        y = py;
+    }
+}
+func start() {
+    var p: Point;
+    p.x = 3;
+    var q: Point;
+    q.init(1, 2);
+    var t: (Integer, Integer);
+    var grid: Integer[4];
+    grid[0] = p.x + q.y + t.0;
+    IO.SayInt(grid[0]);
+}
+)");
+    EXPECT_TRUE(r.succeeded());
+    EXPECT_FALSE(hasWarningCode(r, "W015"));
+}
+
+TEST(ZiaWarnings, RepeatedAnalysisReportsEachDiagnosticOnce) {
+    // An assignment target's base and an unbound runtime namespace are analysed
+    // more than once; their diagnostics used to repeat two or three times.
+    auto r = compileWithPolicy(R"(
+module T;
+class Box {
+    expose Integer n;
+}
+func start() {
+    var b: Box;
+    b.n = 1;
+    Terminal.Say("x");
+}
+)");
+    EXPECT_FALSE(r.succeeded());
+    EXPECT_EQ(countWarningCode(r, "W015"), static_cast<size_t>(1));
+    EXPECT_EQ(countWarningCode(r, "V-ZIA-UNDEFINED"), static_cast<size_t>(1));
+}
+
+TEST(ZiaWarnings, RejectedTupleReturnTypeDoesNotCascade) {
+    // The tuple-return rule has its own clear message; checking each `return`
+    // against the poisoned return type added "expected ?" mismatches.
+    auto r = compileWithPolicy(R"(
+module T;
+func pair() -> (Integer, Integer) {
+    return (1, 2);
+}
+func start() {
+    var p = pair();
+}
+)");
+    EXPECT_FALSE(r.succeeded());
+    EXPECT_EQ(countWarningCode(r, "V-ZIA-SEMA"), static_cast<size_t>(1));
+    EXPECT_EQ(countWarningCode(r, "V-ZIA-TYPE-MISMATCH"), static_cast<size_t>(0));
+}
+
 //=============================================================================
 // W016: Optional Access Without Check
 //=============================================================================

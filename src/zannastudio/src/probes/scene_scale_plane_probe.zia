@@ -43,6 +43,7 @@ bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
 bind "../ui/scene_transform_3d";
+bind "../core/document";
 
 bind GUI = Zanna.GUI;
 bind Convert = Zanna.Core.Convert;

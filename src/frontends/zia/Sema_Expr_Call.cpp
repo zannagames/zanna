@@ -1428,6 +1428,13 @@ TypeRef Sema::analyzeCall(CallExpr *expr) {
         std::string loweredName;
         CallArgBinding binding;
         std::string callName = fileScopedDeclName(identExpr->loc.file_id, identExpr->name);
+        // A sibling function of the enclosing namespace is called by its short name (ZB-56).
+        for (const auto &candidate : namespaceCandidates(identExpr->name)) {
+            if (functionOverloads_.count(candidate)) {
+                callName = candidate;
+                break;
+            }
+        }
         if (FunctionDecl *func =
                 resolveFunctionCallOverload(callName, expr, expr->loc, &loweredName, &binding)) {
             TypeRef funcType = functionDeclTypes_[func];

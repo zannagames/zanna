@@ -1,0 +1,69 @@
+module RuntimeTest55;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: static members work from outside and inside their class (ZB-47,
+// ZB-48). A static method called through its type name used to fail with
+// "Unknown identifier 'Counter' reached lowering" (the type name was lowered
+// as a value and a self was passed); a bare static field read inside the class
+// was an unknown identifier, and a bare static field WRITE silently defined a
+// local, losing the store.
+
+class Counter {
+    expose Integer value;
+    expose static Integer created;
+    expose static Integer bumps;
+
+    expose func init(v: Integer) {
+        value = v;
+        created = created + 1;          // instance method writes a static
+    }
+
+    expose static func make(v: Integer) -> Counter {
+        return new Counter(v);
+    }
+
+    expose static func bump() -> Integer {
+        bumps = bumps + 1;              // static method reads and writes a static
+        return bumps;
+    }
+
+    expose static func bumpTwice() -> Integer {
+        bump();                         // bare call to a static from a static
+        return bump();
+    }
+
+    expose func describe() -> String {
+        return toString(value) + "/" + toString(created) + "/" + toString(peek());
+    }
+
+    expose static func peek() -> Integer { return bumps; }
+}
+
+class Special extends Counter {
+    expose func init(v: Integer) { super.init(v); }
+    expose func origin() -> Integer { return created; }   // inherited static field
+}
+
+func start() {
+    assertEqInt(Counter.created, 0, "static_default");
+    var a = Counter.make(3);
+    var b = new Counter(4);
+    assertEqInt(Counter.created, 2, "instance_init_counts_through_static");
+    assertEqInt(a.value + b.value, 7, "static_factory_builds_instances");
+
+    assertEqInt(Counter.bump(), 1, "static_call_through_type_name");
+    assertEqInt(Counter.bumpTwice(), 3, "static_calls_static_by_bare_name");
+    assertEqInt(Counter.bumps, 3, "static_write_inside_class_persists");
+
+    Counter.bumps = 10;
+    assertEqInt(Counter.peek(), 10, "outside_write_visible_inside");
+    assertEqStr(a.describe(), "3/2/10", "instance_method_reads_static_and_calls_static");
+
+    var s = new Special(9);
+    assertEqInt(s.origin(), 3, "subclass_reads_inherited_static");
+
+    report();
+}

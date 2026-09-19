@@ -1,0 +1,100 @@
+module RuntimeTest59;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: enum values keep their enum type when a type is inferred from them
+// (ZB-50), and Byte is a checked 0..255 integer (defect-audit #5/#12).
+//
+// The common-type join treated two variants of one enum as numeric and
+// returned Byte, so `[Kind.Hit]`, a `match` or `if` yielding variants, and a
+// `match` with a `null` arm were typed List[Byte], Byte and Byte?. Byte was an
+// IL i32 that almost nothing widened: `"v=" + b`, `b + b`, comparisons,
+// shifts, List[Byte] and toString failed IL verification, `-b` read back as
+// 4294967293, and `as Byte` narrowed to 32 bits (`300 as Byte` was 300,
+// `-1 as Byte` 4294967295) instead of trapping.
+
+enum Kind { Hit, Walk, Out }
+enum Color { Red, Green }
+
+func name(k: Kind) -> String {
+    return match k { Kind.Hit => "hit", Kind.Walk => "walk", Kind.Out => "out" };
+}
+
+func parse(code: String) -> Kind {
+    var k: Kind = match code { "hit" => Kind.Hit, "walk" => Kind.Walk, _ => Kind.Out };
+    return k;
+}
+
+func maybeKind(code: String) -> Kind? {
+    return match code { "hit" => Kind.Hit, "out" => Kind.Out, _ => null };
+}
+
+func starters() -> List[Kind] {
+    var xs = [Kind.Walk, Kind.Hit];
+    return xs;
+}
+
+func narrow(n: Integer) -> String {
+    try {
+        var b: Byte = n as Byte;
+        return "ok" + b;
+    } catch (e: Overflow) {
+        return e.kind;
+    }
+}
+
+func start() {
+    // Enum joins.
+    var kinds: List[Kind] = [Kind.Hit, Kind.Out];
+    kinds.add(parse("walk"));
+    var names = "";
+    for k in kinds {
+        names = names + name(k) + ",";
+    }
+    assertEqStr(names, "hit,out,walk,", "enum_list_literal_and_match");
+    var pick = if kinds.length() > 2 { Kind.Walk } else { Kind.Out };
+    assertEqStr(name(pick), "walk", "enum_if_expression");
+    var found = maybeKind("hit");
+    var missing = maybeKind("zz");
+    assertTrue(found != null && missing == null, "enum_match_with_null_arm");
+    assertEqStr(name(found!), "hit", "enum_optional_unwrap");
+    assertEqStr(name(starters().get(0)), "walk", "enum_inferred_list");
+    var mixed = if missing == null { Kind.Out } else { 7 };     // widens to Integer
+    assertEqInt(mixed + 1, 3, "enum_integer_join");
+    var twoEnums = if missing == null { Color.Green } else { Kind.Out };
+    assertEqInt(twoEnums, 1, "two_enums_join_as_integer");
+    assertEqInt(-Kind.Out, -2, "negated_enum_is_integer");
+    assertEqStr("k=" + Kind.Walk + " " + toString(Kind.Out), "k=1 2", "enum_to_text");
+
+    // Byte arithmetic, comparison and text.
+    var a: Byte = 3;
+    var b: Byte = 250;
+    var n = 10;
+    assertEqInt(a + b, 253, "byte_add_is_integer");
+    assertEqInt(b * n, 2500, "byte_times_integer");
+    assertEqInt(n - a, 7, "integer_minus_byte");
+    assertEqInt(b / a, 83, "byte_div");
+    assertEqInt(b % a, 1, "byte_mod");
+    assertEqInt(a << 4, 48, "byte_shift_is_integer");
+    var both: Byte = a & b;
+    var either: Byte = a | b;
+    assertEqInt(both + either, 2 + 251, "byte_bitwise_stays_byte");
+    assertEqInt(-a, -3, "negated_byte_is_integer");
+    assertTrue(a < b && a < n && b == 250, "byte_comparisons");
+    assertEqStr("v=" + a + "," + toString(b), "v=3,250", "byte_to_text");
+    var x: Number = b;
+    assertApprox(x / 1000.0, 0.25, 0.000001, "byte_to_number");
+    var bytes: List[Byte] = [a, b];
+    assertEqInt(bytes.get(0) + bytes.get(1), 253, "byte_list");
+
+    // Checked narrowing: 0..255, Overflow otherwise.
+    var back: Byte = (a + b) as Byte;
+    assertEqInt(back, 253, "byte_round_trip");
+    assertEqStr(narrow(0) + narrow(255), "ok0ok255", "narrow_in_range");
+    assertEqStr(narrow(256) + narrow(300) + narrow(-1), "OverflowOverflowOverflow",
+                "narrow_out_of_range_traps_overflow");
+
+    report();
+}

@@ -1,0 +1,111 @@
+module RuntimeTest63;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: a closure owns what it captures (ADR 0374, baseball ZB-67).
+//
+// Closures were raw, never-freed allocations that copied captured strings and
+// objects without a reference, so once the creating function returned its
+// release freed them: a returned or stored lambda read reused memory (a
+// captured list reported another list's length; native code trapped with
+// "invalid List object"). A closure is now a reference-counted object: it
+// retains each captured string and object, its destructor releases them when
+// the last reference to the closure dies, and its captured objects are strong
+// slots for the cycle collector.
+
+var trail = "";
+
+class Res {
+    expose String tag;
+    expose func init(t: String) { tag = t; }
+    deinit { trail = trail + "free:" + tag + ";"; }
+}
+
+class Counter {
+    expose Integer count;
+    expose func init() { count = 0; }
+    expose func bump() { count = count + 1; }
+    expose func reader() -> () -> Integer { return () => self.count; }
+}
+
+class Owner {
+    expose Res res;
+    expose var handler: () -> Integer;
+    expose func init(t: String) {
+        res = new Res(t);
+        handler = () => self.res.tag.Length();   // owner -> handler -> owner
+    }
+}
+
+func makeLister() -> () -> Integer {
+    var items: List[Integer] = [1, 2, 3];
+    return () => items.length();
+}
+
+func makeGreeter(name: String) -> () -> String {
+    var greeting = "hi " + name;
+    return () => greeting;
+}
+
+func orphanReader() -> () -> Integer {
+    var c = new Counter();
+    c.bump();
+    return c.reader();              // the counter now lives only in the closure
+}
+
+func churn() {
+    var junk: List[String] = [];
+    var i = 0;
+    while i < 500 {
+        junk.add("x" + i);
+        i = i + 1;
+    }
+}
+
+func useAndDrop() {
+    var r = new Res("captured");
+    var get = () => r.tag;
+    trail = trail + "got:" + get() + ";";
+}
+
+func dropCycle() {
+    var o = new Owner("cycle");
+    trail = trail + "len:" + o.handler() + ";";
+}
+
+func start() {
+    var lister = makeLister();
+    var greeter = makeGreeter("zia");
+    var reader = orphanReader();
+    churn();
+    assertEqInt(lister(), 3, "captured_list_outlives_creator");
+    assertEqStr(greeter(), "hi zia", "captured_string_outlives_creator");
+    assertEqInt(reader(), 1, "captured_self_outlives_creator");
+
+    var handlers: List[() -> Integer] = [];
+    var round = 0;
+    while round < 200 {
+        handlers.add(makeLister());
+        round = round + 1;
+    }
+    churn();
+    var sum = 0;
+    for h in handlers {
+        sum = sum + h();
+    }
+    assertEqInt(sum, 600, "stored_closures");
+
+    trail = "";
+    useAndDrop();
+    assertEqStr(trail, "got:captured;free:captured;", "capture_freed_with_closure");
+
+    trail = "";
+    dropCycle();
+    assertEqStr(trail, "len:5;", "cycle_survives_refcounting");
+    Zanna.Runtime.GC.Collect();
+    assertEqStr(trail, "len:5;free:cycle;", "cycle_collected");
+
+    report();
+}

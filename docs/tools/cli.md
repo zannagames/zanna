@@ -235,14 +235,11 @@ Type-check and verify a source file or project without executing or emitting
 anything. This is the fast verification gate for editors, scripts, and AI
 coding agents: it runs the frontend and then stops before emitting or executing.
 
-> **`check` is not currently as strict as `run`/`build`.** It compiles with
-> optimization enabled (the manifest/default build profile, not `O0`), and it
-> re-runs the IL verifier only when the frontend did not already mark the module
-> verified. A module can therefore pass `zanna check` with exit `0` and still
-> fail IL verification under `zanna run` or `zanna build`. When you need the
-> check to match what a build will accept, pass `-O0`, `--build-profile debug`,
-> or `--paranoid-verify` — each of those restores the lowering-stage verifier
-> and reports exit `2`.
+`check` verifies the IL the frontend produces and, by default, skips the
+optimizer (which could otherwise erase invalid IL that `run` and `build`
+reject), so it is both the strictest and the fastest gate. Passing `-O1`/`-O2`
+or `--build-profile` on the command line also optimizes and verifies the
+optimized module.
 
 ```bash
 zanna check program.zia
@@ -254,7 +251,8 @@ zanna check my-project/ --diagnostic-format=json
 | `--diagnostic-format text\|json` | Select text or machine-readable JSON diagnostics (stderr) |
 | `--strict-diagnostics` / `--no-strict-diagnostics` | Control safety-warning promotion (strict by default) |
 | `--quiet-warnings`, `--no-warnings` | Suppress warning output |
-| `--build-profile`, `-O0/-O1/-O2`, `--bounds-checks`, `--no-bounds-checks` | Same meaning as `zanna run` |
+| `--build-profile`, `-O0/-O1/-O2` | Also optimize and verify the optimized module (the lowered module is always verified) |
+| `--bounds-checks`, `--no-bounds-checks` | Same meaning as `zanna run` |
 
 Exit codes are differentiated so callers can branch without parsing output:
 

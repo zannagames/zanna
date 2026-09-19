@@ -44,7 +44,7 @@ Lowerer::Value RuntimeCallBuilder::coerceRuntimeArgument(Lowerer::Value argValue
                                                          const Lowerer::Type *expectedType) {
     if (!expectedType) {
         if (argIlType.kind == Lowerer::Type::Kind::I32)
-            return lowerer_.widenByteToInteger(argValue);
+            return lowerer_.zeroExtendI32(argValue);
         return argValue;
     }
 
@@ -69,7 +69,7 @@ Lowerer::Value RuntimeCallBuilder::coerceRuntimeArgument(Lowerer::Value argValue
     }
 
     if (argIlType.kind == Lowerer::Type::Kind::I32)
-        return lowerer_.widenByteToInteger(argValue);
+        return lowerer_.zeroExtendI32(argValue);
 
     return argValue;
 }

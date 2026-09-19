@@ -75,6 +75,9 @@
 #include "frontends/zia/RuntimeNames.hpp"
 #include "frontends/zia/ZiaLocationScope.hpp"
 
+#include <algorithm>
+#include <vector>
+
 namespace il::frontends::zia {
 
 using namespace runtime;
@@ -112,7 +115,9 @@ static int trapKindFromName(const std::string &name) {
     return -1; // "Error" catch-all or unknown
 }
 
-/// @brief Trap-kind value used for language-level RuntimeError throws.
+/// @brief Runtime error code (`Err_RuntimeError`) a language-level `throw`
+///        raises through `trap.from_err`, which maps it to the RuntimeError
+///        trap kind (ADR 0375).
 static constexpr int kErrRuntimeError = 9;
 
 /// @brief Emit `eh.pop` in the current block.
@@ -193,8 +198,81 @@ void Lowerer::emitCatchBodyCleanupsBeforeThrow() {
 ///          rethrow fallback, and resume-label transfer to the shared
 ///          continuation. Cleanup metadata is coordinated with abrupt exits
 ///          from nested statements.
+void Lowerer::materializeLocalsForHandlers() {
+    if (!currentFunc_ || currentFunc_->blocks.empty())
+        return;
+    auto &entry = currentFunc_->blocks.front();
+    /// @brief Index just past the entry block's leading allocas (keeps allocas grouped first).
+    auto allocaInsertPos = [&entry]() {
+        size_t pos = 0;
+        while (pos < entry.instructions.size() && entry.instructions[pos].op == Opcode::Alloca)
+            ++pos;
+        return pos;
+    };
+
+    // 1. Relocate the alloca of every visible slot declared outside the entry block.
+    for (const auto &[name, slot] : slots_) {
+        (void)name;
+        if (slot.kind != Value::Kind::Temp)
+            continue;
+        for (size_t b = 1; b < currentFunc_->blocks.size(); ++b) {
+            auto &instrs = currentFunc_->blocks[b].instructions;
+            auto it = std::find_if(instrs.begin(), instrs.end(), [&](const il::core::Instr &in) {
+                return in.op == Opcode::Alloca && in.result && *in.result == slot.id;
+            });
+            if (it == instrs.end())
+                continue;
+            il::core::Instr moved = std::move(*it);
+            instrs.erase(it);
+            entry.instructions.insert(entry.instructions.begin() + allocaInsertPos(),
+                                      std::move(moved));
+            break;
+        }
+    }
+
+    // 2. Spill every visible SSA local into a fresh entry-block slot. The store runs here, at
+    //    the try; later reads of the name (in the protected region and the handlers) go
+    //    through the slot. Block-scoped maps restore the SSA binding when the scope ends, which
+    //    is sound because an SSA local is immutable.
+    std::vector<std::string> spilled;
+    for (const auto &[name, value] : locals_) {
+        if (slots_.count(name))
+            continue;
+        Type ilType(Type::Kind::Ptr);
+        if (name != "self") {
+            auto typeIt = localTypes_.find(name);
+            if (typeIt == localTypes_.end() || !typeIt->second)
+                continue; // untyped internal binding; never referenced by source
+            ilType = mapType(typeIt->second);
+        }
+        il::core::Instr allocaInstr;
+        const unsigned allocaId = nextTempId();
+        allocaInstr.result = allocaId;
+        allocaInstr.op = Opcode::Alloca;
+        allocaInstr.type = Type(Type::Kind::Ptr);
+        allocaInstr.operands = {Value::constInt(static_cast<long long>(kMachineWordSize))};
+        allocaInstr.loc = curLoc_;
+        entry.instructions.insert(entry.instructions.begin() + allocaInsertPos(), allocaInstr);
+        nameTemp(allocaId, name);
+        slots_[name] = Value::temp(allocaId);
+        // Block and function exits release owned string/object slots by type, so a spilled
+        // managed value is retained: the slot owns one reference, balanced by that release.
+        if (isOwnedStringSlot(name))
+            emitCall(kStrRetainMaybe, {value});
+        else if (isOwnedObjectSlot(name))
+            emitCall("rt_obj_retain_maybe", {value});
+        storeToSlot(name, value, ilType);
+        spilled.push_back(name);
+    }
+    for (const auto &name : spilled)
+        locals_.erase(name);
+}
+
 void Lowerer::lowerTryStmt(TryStmt *stmt) {
     ZiaLocationScope locScope(*this, stmt->loc);
+
+    // Handlers may read any visible local: route them all through entry-block slots first.
+    materializeLocalsForHandlers();
 
     bool hasFinally = stmt->finallyBody != nullptr;
     bool hasCatch = !stmt->catches.empty();

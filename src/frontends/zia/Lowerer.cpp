@@ -168,6 +168,16 @@ Lowerer::Module Lowerer::lower(ModuleDecl &module) {
         // Push substitution context so type parameters resolve correctly
         bool pushedContext = sema_.pushSubstitutionContext(typeName);
 
+        // Analyze this instantiation's bodies under its substitutions before lowering them,
+        // as generic functions already are: the module pass never analyzes a generic body, so
+        // without this every expression needing semantic resolution (e.g. a method call on a
+        // List[T] field) reached lowering unresolved (ZB-58).
+        if (pushedContext) {
+            Decl *genericDecl = sema_.getGenericDeclForInstantiation(typeName);
+            if (genericDecl && genericDecl->kind == DeclKind::Class)
+                sema_.analyzeClassDecl(*static_cast<ClassDecl *>(genericDecl), typeName);
+        }
+
         // Lower all methods for this instantiated generic class
         for (auto *method : info.methods) {
             lowerMethodDecl(*method, typeName, true);
@@ -198,6 +208,13 @@ Lowerer::Module Lowerer::lower(ModuleDecl &module) {
         // Push substitution context so type parameters resolve correctly
         bool pushedContext = sema_.pushSubstitutionContext(typeName);
 
+        // Analyze the instantiated body first (see the class loop above; ZB-58).
+        if (pushedContext) {
+            Decl *genericDecl = sema_.getGenericDeclForInstantiation(typeName);
+            if (genericDecl && genericDecl->kind == DeclKind::Struct)
+                sema_.analyzeStructDecl(*static_cast<StructDecl *>(genericDecl), typeName);
+        }
+
         // Lower all methods for this instantiated generic struct type
         for (auto *method : info.methods) {
             lowerMethodDecl(*method, typeName, false);
@@ -217,6 +234,11 @@ Lowerer::Module Lowerer::lower(ModuleDecl &module) {
         // Lower the generic function instantiation
         lowerGenericFunctionInstantiation(mangledName, decl);
     }
+
+    // Closure thunks for `&function` values, once every target's signature exists,
+    // and the destructors of capturing closures (before the dispatcher lists them).
+    emitFunctionReferenceThunks();
+    emitClosureDestructors();
 
     // Emit destructor dispatch after all concrete class destructors exist.
     emitDestructorDispatch();

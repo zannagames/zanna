@@ -1,0 +1,127 @@
+module RuntimeTest61;
+
+bind "./_support";
+bind Zanna.Threads;
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: `&function` references are callable Zia function values
+// (defect-audit #26), function-typed fields can be declared and called, and
+// module globals declared after `start()` are initialized.
+//
+// `&name` lowers to the raw code address that runtime callbacks take, but a
+// Zia call through a function value expects a closure record
+// `[code, environment]` (a lambda's representation), so every call through a
+// `&` reference read the function's code as a record and crashed. A function
+// reference now becomes a closure whenever it takes a Zia function type
+// (variables, parameters, fields, collections, returns, branches); runtime
+// APIs still receive the raw address.
+//
+// Found on the way: `obj.field(args)` on a function-typed field failed in
+// lowering ("has no method"), a bare call to such a field inside a method
+// called a nonexistent function, `(T) -> R name;` fields did not parse, and
+// every module global declared after `start()` was left uninitialized
+// (0 or null; a non-literal `final` failed to compile).
+
+func start() {
+    trail = "";
+    testReferences();
+    testFields();
+    testLateGlobals();
+    report();
+}
+
+var hits = 0;
+var trail = "";
+
+func add(n: Integer) { hits = hits + n; }
+func addHundreds(n: Integer) { hits = hits + 100 * n; }
+func greet(name: String) -> String { return "hi " + name; }
+func pick(first: Boolean) -> (Integer) -> Void {
+    return if first { &add } else { &addHundreds };
+}
+func apply(f: (Integer) -> Void, n: Integer) { f(n); }
+func worker(_arg: Integer) { trail = trail + "worker;"; }
+
+func testReferences() {
+    hits = 0;
+    var direct: (Integer) -> Void = &add;
+    direct(1);
+    var inferred = &addHundreds;
+    inferred(1);
+    inferred = &add;
+    inferred(2);
+    apply(&add, 3);
+    pick(true)(4);
+    pick(false)(5);
+    var handlers: List[(Integer) -> Void] = [];
+    handlers.add(&add);
+    handlers.add(&addHundreds);
+    for f in handlers {
+        f(6);
+    }
+    var byName: Map[String, (Integer) -> Void] = new Map[String, (Integer) -> Void]();
+    byName.set("add", &add);
+    byName.get("add")!(7);
+    assertEqInt(hits, 1 + 100 + 2 + 3 + 4 + 500 + 6 + 600 + 7, "reference_calls");
+
+    var format = &greet;
+    var text = "";
+    var rounds = 0;
+    while rounds < 300 {
+        text = format("zia");
+        rounds = rounds + 1;
+    }
+    assertEqStr(text, "hi zia", "string_result_through_reference");
+
+    var t = Thread.Start(&worker, 0);   // a runtime callback keeps the raw address
+    t.Join();
+    assertEqStr(trail, "worker;", "runtime_callback");
+}
+
+class Base {
+    expose var onTick: (Integer) -> Void;
+    expose (String) -> String formatter;
+    expose func init() {
+        onTick = &add;
+        formatter = &greet;
+    }
+}
+
+class Derived extends Base {
+    expose func init() { super.init(); }
+    expose func fire(n: Integer) { onTick(n); }
+}
+
+struct Action {
+    Integer amount;
+    (Integer) -> Void run;
+}
+
+func testFields() {
+    hits = 0;
+    var d = new Derived();
+    d.onTick(1);
+    d.fire(2);
+    d.onTick = &addHundreds;
+    d.fire(3);
+    var a = Action { amount = 4, run = &add };
+    a.run(a.amount);
+    assertEqInt(hits, 1 + 2 + 300 + 4, "function_typed_fields");
+    assertEqStr(d.formatter("field"), "hi field", "type_name_field_form");
+}
+
+func testLateGlobals() {
+    hits = 0;
+    lateCallback(8);
+    assertEqInt(hits, 8, "late_function_global");
+    assertEqInt(lateCount, 42, "late_var");
+    assertEqStr(lateText, "set", "late_string");
+    assertEqInt(LATE_LIMIT + lateTable.length(), 5 + 3, "late_finals");
+}
+
+var lateCallback: (Integer) -> Void = &add;
+var lateCount = 42;
+var lateText = "set";
+final LATE_LIMIT = 5;
+final lateTable = [1, 2, 3];

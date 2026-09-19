@@ -156,6 +156,9 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0371](0371-canvas3d-render-thread.md) — Canvas3D Render Thread (Deferred Frame Execution Off the Sim Thread) — draft
 - [ADR 0372](0372-package-icon-sources-and-dmg-volume-icons.md) — Package Icon Sources and DMG Volume Icons
 - [ADR 0373](0373-pixels-resize-area-filters-every-downscale.md) — Pixels.Resize Area-Filters Every Downscale
+- [ADR 0374](0374-closures-own-their-captures.md) — Closures Own Their Captures
+- [ADR 0375](0375-trap-error-operands-are-error-codes.md) — `trap.err` and `trap.from_err` Take Runtime Error Codes
+- [ADR 0376](0376-a-bind-is-not-inherited.md) — A Bind Is Not Inherited
 
 ## GUI & IDE
 

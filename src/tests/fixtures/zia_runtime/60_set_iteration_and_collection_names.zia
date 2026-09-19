@@ -1,0 +1,81 @@
+module RuntimeTest60;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: `for ... in` iterates a Set, and variables named `map` and `set` work
+// as iterables and conditions (defect-audit #13).
+//
+// For-in lowering had no Set case and no fallback, so a loop over a Set was
+// silently dropped — the body never ran and nothing was reported, although
+// sema accepted the loop and the reference documents it. And because
+// `map { ... }` / `set { ... }` are explicit collection literals, a variable
+// named `map` or `set` followed by a loop body parsed as a literal.
+
+func size(s: Set[Integer]) -> Integer { return s.count(); }
+
+func start() {
+    // Set iteration: values, strings, index/element binding, repeated.
+    var numbers: Set[Integer] = {1, 2, 3};
+    var sum = 0;
+    for n in numbers {
+        sum = sum + n;
+    }
+    assertEqInt(sum, 6, "set_of_integers");
+
+    var words: Set[String] = {"ab", "cd"};
+    var letters = 0;
+    for w in words {
+        letters = letters + w.Length();
+    }
+    assertEqInt(letters, 4, "set_of_strings");
+
+    var indexSum = 0;
+    var seen = 0;
+    for i, w in words {
+        indexSum = indexSum + i;
+        if w == "ab" || w == "cd" { seen = seen + 1; }
+    }
+    assertEqInt(indexSum + seen, 1 + 2, "set_index_and_element");
+
+    var rounds = 0;
+    var total = 0;
+    while rounds < 300 {
+        var t: Set[Integer] = {rounds, rounds + 1};
+        for v in t {
+            total = total + v;
+        }
+        rounds = rounds + 1;
+    }
+    assertEqInt(total, 2 * (299 * 300 / 2) + 300, "set_iteration_repeated");
+
+    // `map` and `set` as variable names.
+    var map: Map[String, Integer] = new Map[String, Integer]();
+    map.set("a", 1);
+    map.set("b", 2);
+    var keys = 0;
+    for key in map {
+        keys = keys + map.get(key)!;
+    }
+    assertEqInt(keys, 3, "variable_named_map_as_iterable");
+
+    var set: Set[Integer] = {10, 20};
+    var fromSet = 0;
+    for v in set {
+        fromSet = fromSet + v;
+    }
+    assertEqInt(fromSet, 30, "variable_named_set_as_iterable");
+    if set.count() == 2 { fromSet = fromSet + 1; }
+    var shrinking = set.count();
+    while shrinking > 0 { shrinking = shrinking - 1; }
+    var label = match map.count() { 2 => "two", _ => "other" };
+    assertEqStr(label + toString(fromSet + shrinking), "two31", "map_and_set_in_conditions");
+
+    // The explicit literal forms still work where a value is expected.
+    var empty = set {};
+    var one = map { "x": 5 };
+    assertEqInt(size(set { 4, 5 }) + empty.count() + one.count(), 3, "explicit_literals");
+
+    report();
+}

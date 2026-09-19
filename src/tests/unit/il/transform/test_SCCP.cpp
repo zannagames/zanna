@@ -8,7 +8,8 @@
 // File: tests/unit/il/transform/test_SCCP.cpp
 // Purpose: Validate SCCP lattice behaviour (constants, traps) and interaction
 //          with SimplifyCFG on conditional/switch terminators.
-// Key invariants: Provisional trapping operands cannot freeze later loop values.
+// Key invariants: Provisional trapping operands cannot freeze later loop values;
+//                 folding never changes a value's IL type (only ptr nulls fold).
 // Ownership/Lifetime: Tests own parsed and constructed modules for each solver run.
 // Links: docs/internals/architecture.md, docs/il/il-guide.md#reference
 //
@@ -626,6 +627,38 @@ TEST(SCCP, ZeroOperandTrapKindIsOverdefinedAndKeepsTheLoopAlive) {
     auto *exit = findBlock(function, "exit");
     ASSERT_NE(exit, nullptr);
     EXPECT_EQ(exit->instructions.back().operands[0].kind, Value::Kind::Temp);
+}
+
+TEST(SCCP, FoldsOnlyPtrTypedNulls) {
+    // The `null` literal is typed ptr. Folding a `const_null str` into it
+    // retyped every use, so a Zia String? null that was returned or retained
+    // failed the post-optimisation verifier ("ret value type mismatch:
+    // expected str but got ptr") at -O1/-O2 only.
+    const std::string text = "il 0.3.0\n"
+                             "func @name() -> str {\n"
+                             "entry:\n"
+                             "  %n:str = const_null\n"
+                             "  ret %n\n"
+                             "}\n"
+                             "func @addr() -> ptr {\n"
+                             "entry:\n"
+                             "  %p:ptr = const_null\n"
+                             "  ret %p\n"
+                             "}\n";
+    std::istringstream input(text);
+    Module module;
+    ASSERT_TRUE(il::io::Parser::parse(input, module));
+    ASSERT_TRUE(il::verify::Verifier::verify(module));
+    il::transform::sccp(module);
+    ASSERT_TRUE(il::verify::Verifier::verify(module));
+
+    ASSERT_EQ(module.functions.size(), 2u);
+    const Instr &nameRet = module.functions[0].blocks.front().instructions.back();
+    ASSERT_EQ(nameRet.op, Opcode::Ret);
+    EXPECT_EQ(nameRet.operands[0].kind, Value::Kind::Temp);
+    const Instr &addrRet = module.functions[1].blocks.front().instructions.back();
+    ASSERT_EQ(addrRet.op, Opcode::Ret);
+    EXPECT_EQ(addrRet.operands[0].kind, Value::Kind::NullPtr);
 }
 
 int main(int argc, char **argv) {

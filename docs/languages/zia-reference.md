@@ -196,7 +196,7 @@ assignments.
 | `Boolean` | True or false | `false` |
 | `Integer` | 64-bit signed integer | `0` |
 | `Number` | 64-bit floating-point | `0.0` |
-| `Byte` | Lowered to IL `i32` (see the defect note below — **not** currently 8-bit) | `0` |
+| `Byte` | Unsigned 8-bit integer, `0`–`255` (`as Byte` checks the range) | `0` |
 | `String` | UTF-8 string | `""` |
 | `Any` | Managed top type for boxed values, objects, strings, and function references | `null` |
 | `Never` | Bottom type for code paths that do not produce a value | — |
@@ -309,10 +309,10 @@ Arrays with a compile-time size:
 var grid: Integer[100];     // Fixed array of 100 integers
 ```
 
-Fixed-size array indexes must be integral. Reads and writes use the configured
-bounds-checking mode, and sub-width indexes such as `Byte` are widened before
-offset arithmetic. Fixed arrays are available as local variables, struct/class
-fields, and assignable values; assignment copies the inline elements.
+Fixed-size array indexes must be integral (`Integer`, `Byte`, or an enum
+value). Reads and writes use the configured bounds-checking mode. Fixed arrays
+are available as local variables, struct/class fields, and assignable values;
+assignment copies the inline elements.
 
 ### Set Types
 
@@ -389,10 +389,25 @@ func start() {
 }
 ```
 
+A function reference is an ordinary function value: store it in variables,
+fields and collections, pass it to function-typed parameters, return it, and
+call it like a lambda:
+
+```zia
+func add(n: Integer) -> Integer { return n + 1; }
+
+func start() {
+    var f: (Integer) -> Integer = &add;
+    var handlers: List[(Integer) -> Integer] = [&add, (n: Integer) => n * 2];
+    Zanna.Terminal.SayInt(f(1) + handlers.get(1)(3));   // 2 + 6
+}
+```
+
 **Notes:**
 - The `&` operator can only be applied to function names, not variables or expressions
 - Function names are still ordinary call expressions when followed by `(...)`
-- Use with `Zanna.Threads.Thread.Start()` to spawn threads with custom entry points
+- Use with `Zanna.Threads.Thread.Start()` to spawn threads with custom entry points;
+  runtime APIs that take a callback receive the function itself
 
 ### Binary Operators
 
@@ -475,18 +490,12 @@ custom value semantics.
   infinity or NaN.
 - **Mixed `Integer`/`Number` operands widen to `Number`.** There is no implicit
   narrowing back to `Integer`; use `as Integer` when you want truncation.
-- **`Byte` result types:** arithmetic (`+`, `-`, `*`, `/`, `%`) on `Byte`
-  operands produces `Integer`; bitwise `&`, `|`, `^` on two `Byte` operands
-  produces `Byte`; shifts produce `Integer`. Assign back to a `Byte` with an
-  explicit `as Byte` (a checked narrowing).
-
-> **`Byte` is partially broken today.** `Byte` lowers to IL `i32` and the
-> widening/narrowing conversions are not always inserted, so two common forms
-> fail IL verification: string concatenation (`"v=" + aByte`) and storing a
-> `Byte`-operand arithmetic result into an `Integer`. `Integer as Byte`,
-> implicit widening in a direct initialization, and `SayInt(aByte)` do work.
-> See [defect audit #5](../defect-audit-2026-09-01.md). Note that `zanna check` does not
-> currently report these — use `zanna build` to confirm.
+- **`Byte` result types:** arithmetic (`+`, `-`, `*`, `/`, `%`, and unary `-`)
+  on `Byte` operands produces `Integer`; bitwise `&`, `|`, `^` on two `Byte`
+  operands produces `Byte`; shifts produce `Integer`. A `Byte` is usable
+  wherever an `Integer` is (comparisons, string concatenation, `toString`,
+  collections). Assign back to a `Byte` with an explicit `as Byte` (a checked
+  narrowing).
 
 ### Ternary Operator
 
@@ -610,7 +619,9 @@ func findUser(id: Integer) -> User? {
 ```
 
 For a `Result[T]` operand, `?` returns the `Err` immediately from an enclosing
-function that also returns `Result[...]`; otherwise it unwraps the `Ok` payload:
+function that also returns `Result[...]`; otherwise it unwraps the `Ok` payload.
+Either early exit leaves the function exactly like a `return`: `defer` and
+`finally` blocks run and the function's locals are released.
 
 ```zia
 func readScore(path: String) -> Result[Integer] {
@@ -717,7 +728,11 @@ var set = {1, 2, 3};               // Set[Integer]
 
 `{}` is the empty map literal by default. `map {}` is an explicit empty map. In a
 declared `Set[T]` initializer `{}` is an empty set; `set {}` and constructors
-such as `new Set[Integer]()` are unambiguous empty set forms.
+such as `new Set[Integer]()` are unambiguous empty set forms. Like struct
+literals, the `map { ... }` and `set { ... }` forms are recognized where a value
+is expected (initializers, arguments, returns); in an `if`/`while` condition,
+a `match` scrutinee, or a `for ... in` iterable, `map {` and `set {` are
+variables named `map` or `set` followed by the block.
 Non-empty list, map, and set literals must be homogeneous: all list/set elements
 and all map values must have compatible types.
 List, map, and set literals permit a trailing comma.
@@ -786,9 +801,8 @@ element. Combinators compose: `nums.filter((n) => n > 1).map((n) => n * 10)`.
 Collection count aliases such as `.Count`, `.Length`, `.Len`, `.count`,
 `.length`, and `.size` are read-only properties. Unknown collection and string
 fields or methods are compile-time errors.
-List index arguments are widened to the runtime index width before dispatch, so
-sub-width integral values such as `Byte` are accepted for `get`, `set`,
-`insert`, and `removeAt`. `Map.get` returns an optional value; for
+List index arguments may be any integral value (`Integer` or `Byte`) for `get`,
+`set`, `insert`, and `removeAt`. `Map.get` returns an optional value; for
 `Map[String, String]`, a missing key returns `null`, not an empty string.
 
 ### Range Expressions
@@ -832,11 +846,9 @@ value as Type           // Type cast
   round-half-to-even rule the IL `cast.fp_to_si.rte.chk` opcode uses. It traps on
   NaN or a value outside the `Integer` range. `Integer as Number` widens (values
   above 2^53 may lose precision).
-- `Integer` ↔ `Byte`: `Integer as Byte` is intended to be a checked narrowing
-  that traps on overflow, and `Byte as Integer` zero-extends. **The narrowing is
-  currently 32-bit, not 8-bit**, so `256 as Byte` is `256`, `300 as Byte` is
-  `300`, and `-1 as Byte` reads back as `4294967295` instead of trapping. See
-  [defect audit #12](../defect-audit-2026-09-01.md).
+- `Integer` ↔ `Byte`: `Integer as Byte` is a checked narrowing that traps with
+  `Overflow` outside `0`–`255` (`256 as Byte` and `-1 as Byte` both trap), and
+  `Byte as Integer` is exact.
 - Class/interface casts are checked at runtime and trap on a mismatch.
 
 `as` does **not** convert between `String` and scalar types — there is no
@@ -856,15 +868,30 @@ fallback.
 Lambda parameters must include explicit type annotations, unless the expected
 function type is known from the context (see [Parameter Type Inference](#parameter-type-inference)).
 
-**Capture semantics:** a lambda captures free variables from the enclosing scope
-**by value** — it copies them when the lambda is created. Reassigning a captured
-variable inside the lambda is a compile-time error, because it would silently
-mutate the private copy rather than the original:
+**Capture semantics:** a lambda captures free local variables and parameters
+from the enclosing scope **by value** — it copies them when the lambda is
+created. Reassigning a captured variable inside the lambda is a compile-time
+error, because it would silently mutate the private copy rather than the
+original:
 
 ```zia
-var counter = 0;
-var inc = () => { counter = counter + 1; };  // error: cannot assign to captured 'counter'
+func start() {
+    var counter = 0;
+    var inc = () => { counter = counter + 1; };  // error: cannot assign to captured 'counter'
+}
 ```
+
+Module-level variables are not captured: a lambda reads and writes them in
+place. Inside a method, naming `self` — explicitly, or through a bare field or
+method name — captures the receiver, so the lambda can call its methods and
+update its fields.
+
+A closure owns what it captures: captured strings and objects stay alive as
+long as the lambda does, so a lambda may safely outlive the function that
+created it (returned, or stored in a field or list), and they are released when
+the last reference to the lambda goes away. A lambda stored in a field of an
+object it captures forms a cycle that `Zanna.Runtime.GC.Collect()` reclaims
+(see [ADR 0374](../adr/0374-closures-own-their-captures.md)).
 
 To share mutable state, capture a class instance and mutate its fields (reference
 semantics), or have the lambda return the new value:
@@ -873,6 +900,22 @@ semantics), or have the lambda return the new value:
 class Counter { expose var n: Integer; func init() { n = 0; } }
 var c = new Counter();
 var inc = () => { c.n = c.n + 1; };  // OK: mutates the captured object's field
+```
+
+**Block bodies and returns:** a block body yields its trailing expression, or
+uses `return` statements, which leave the lambda (not the enclosing function)
+and do not run the enclosing function's `defer` blocks. Without a declared or
+contextual return type, the lambda returns the common type of its `return`
+values; a block with neither returns nothing. In a function type, `-> Unit` and
+`-> Void` both mean "returns nothing" and are the same type.
+
+```zia
+var sign = (x: Integer) => {
+    if x > 0 { return 1; }
+    if x < 0 { return -1; }
+    return 0;
+};                                        // (Integer) -> Integer
+var log: () -> Void = () => { Zanna.Terminal.Say("tick"); };
 ```
 
 #### Parameter Type Inference
@@ -1085,10 +1128,6 @@ for ((key, value) in ages) {
     // same as: for key, value in ages { ... }
 }
 
-// NOTE: do not name the iterable `map` or `set` — `map {` and `set {` are the
-// explicit empty-collection literal forms, so `for key in map { ... }` is
-// mis-parsed as a collection literal. See defect audit #13.
-
 // Range iteration
 for i in 0..10 {        // 0 to 9
     // body
@@ -1232,8 +1271,8 @@ try {
 ### Defer Statement
 
 `defer` registers a cleanup action for the current block. Deferred actions run
-when the block exits normally and before `return`, `break`, or `continue` leaves
-the scope.
+when the block exits normally and before `return`, `break`, `continue`, or an
+early exit through a postfix `?` leaves the scope.
 
 ```zia
 func writeLine(path: String, text: String) {
@@ -1621,15 +1660,13 @@ func start() {
 
 - Static fields are stored in module-level runtime storage (not per-instance).
 - Static methods have no `self` parameter.
-- Access via the class name: `Counter.describe()`, `Counter.instanceCount`.
+- Access via the class name from anywhere: `Counter.describe()`,
+  `Counter.instanceCount`.
+- Inside the class (and its subclasses), static fields and static methods may
+  also be used by their bare names — `instanceCount = instanceCount + 1;`,
+  `describe()` — from both static and instance methods.
 - Use `expose static` when code outside the declaring type should access the
   field.
-
-> **Static fields cannot currently be read from inside their own class.** Both a
-> bare `instanceCount` and a qualified `Counter.instanceCount` inside a method of
-> `Counter` fail with `error[V3000]: Unknown identifier ... reached lowering`.
-> Only access from outside the declaring type works. See
-> [defect audit #15](../defect-audit-2026-09-01.md).
 
 ### Destructors
 
@@ -1829,7 +1866,11 @@ if Priority.Low < Priority.High {   // compares underlying integers
 
 Enum variants have their declared enum type in source. They can be widened to
 `Integer` or `Number` for runtime interop and bit-level code, but `Integer` values
-are not implicitly assignable back to enum variables. Prefer comparing variants
+are not implicitly assignable back to enum variables. A type inferred from
+variants of one enum keeps that enum type — `[Color.Red, Color.Blue]` is a
+`List[Color]`, and an `if` or `match` whose branches yield variants is a `Color`
+(`Color?` with a `null` branch) — while arithmetic on a variant (including unary
+`-`) and a join with an `Integer` or another enum produce `Integer`. Prefer comparing variants
 of the same enum, or use `match` for branching:
 
 ```zia
@@ -1961,6 +2002,45 @@ Beta.make();
 Zanna.Terminal.SayInt(Alpha.VALUE + Beta.VALUE);
 ```
 
+**Binds Are Per File:**
+
+A file can name the declarations of the files it binds itself, and no others. A
+bind is not inherited: when `main.zia` binds `outer`, and `outer.zia` binds
+`inner`, `main.zia` cannot use anything declared in `inner` until it binds
+`inner` too. The rule applies to every kind of declaration (functions, globals,
+classes, structs, interfaces, enums, type aliases), wherever the name appears
+(calls, type annotations, `new`, `is`/`as`, `extends`, `implements`, generic
+arguments, struct literals, enum variants), and whether it is written bare
+(`Page`) or qualified (`inner.Page`):
+
+```zia
+// inner.zia
+module inner;
+class Page { expose Integer n; }
+
+// outer.zia
+module outer;
+bind "./inner";
+
+// main.zia
+module main;
+bind "./outer";
+
+var p: Page;    // error V-ZIA-UNBOUND-MODULE: Type 'Page' belongs to module
+                // 'inner', which this file does not bind
+```
+
+The compiler reports the first use of each unbound module in a file and names
+the module to bind, so `zanna check --diagnostic-format=json` lists exactly the
+binds a file is missing. A name that another file exports without being bound
+here is simply not in scope, so it never hides a runtime or bound-module name
+spelled the same way.
+
+> **Known issue (ZB-69):** runtime namespace binds (`bind Zanna.Graphics;`,
+> `bind Zanna.Math as M;`) are still visible program-wide. Bind every runtime
+> namespace in each file that uses it; a later release enforces the same rule
+> for them.
+
 **Namespace Imports:**
 
 When you bind a runtime namespace like `Zanna.Terminal`, all its functions
@@ -1990,9 +2070,10 @@ Say("Hello!");      // Works
 // Print("x");      // Error: Print not imported
 ```
 
-### Circular Bind Protection
+### Circular Binds
 
-The compiler detects circular binds and reports an error. Maximum bind depth is 50 levels.
+Files may bind each other: each file is loaded once, and a bind back to a file
+already being loaded is skipped. Bind chains deeper than 50 files are an error.
 
 ---
 
@@ -2026,6 +2107,25 @@ var p = new MyLib.Parser();
 var version = Config.VERSION;
 Config.debug = true;
 ```
+
+Inside a namespace, its members — and the members of every enclosing namespace —
+are named by their short names. Lookup tries the innermost namespace first, then
+each enclosing one, then module scope; locals, parameters and class members
+still shadow namespace members:
+
+```zia
+namespace Field {
+    final MOUND_T = 605;
+    struct Point { Integer xT; Integer zT; }
+
+    func origin() -> Point { return Point { xT = 0, zT = MOUND_T }; }
+    func twice() -> Integer { return mound() * 2; }
+    func mound() -> Integer { return MOUND_T; }
+}
+```
+
+Namespace code may use top-level types and functions, and top-level code may
+use namespace members, in either direction and in any declaration order.
 
 ### Dotted Namespace Names
 

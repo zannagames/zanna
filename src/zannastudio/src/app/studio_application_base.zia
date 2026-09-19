@@ -74,6 +74,18 @@ bind "../commands/autosave_job";
 bind "../commands/view_commands";
 bind "../commands/search_commands";
 bind "../ui/diff_view";
+bind "../editor/completion";
+bind "../editor/diagnostics";
+bind "../editor/hover";
+bind "../editor/inlay_hints";
+bind "../editor/language_service";
+bind "../editor/perf_monitor";
+bind "../editor/project_index";
+bind "../editor/scheduler";
+bind "../editor/semantic_tokens";
+bind "../editor/signature";
+bind "../editor/symbols";
+bind "../editor/workbench_state";
 
 bind Zanna.GUI;
 bind Threads = Zanna.Threads;

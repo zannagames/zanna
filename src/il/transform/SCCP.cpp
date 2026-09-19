@@ -989,7 +989,12 @@ static FoldResult foldTrunc1(const FoldContext &ctx) {
 static FoldResult foldConstantMaterialization(const Instr &instr) {
     switch (instr.op) {
         case Opcode::ConstNull:
-            return FoldResult::constant(Value::null());
+            // The `null` literal is typed ptr. A str, error or resume_tok null
+            // keeps its const_null so every use stays correctly typed (a
+            // String? null returned or passed as `str`).
+            if (instr.type.kind == Type::Kind::Ptr)
+                return FoldResult::constant(Value::null());
+            return FoldResult::unknown();
         case Opcode::ConstStr:
             // ConstStr is a runtime operation (rt_const_cstr(ptr) → str).
             // Cannot constant-fold: the operand is GlobalAddr (ptr type) but

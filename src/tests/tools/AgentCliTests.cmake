@@ -55,6 +55,29 @@ if (NOT _check_missing_rc EQUAL 1)
     message(FATAL_ERROR "zanna check on a missing target should exit 1, got ${_check_missing_rc}")
 endif ()
 
+# ===== zanna check: verifies the lowered module (defect-audit #6) =====
+# The optimizer can erase IL that `run` and `build` reject, so `check` verifies
+# what the frontend produced: by default it skips the optimizer, and with -O2
+# it verifies the lowered module as well as the optimized one.
+execute_process(
+        COMMAND "${ZANNA_EXE}" check "${_ok_zia}" --time-compile
+        RESULT_VARIABLE _check_lower_rc
+        OUTPUT_VARIABLE _check_lower_out
+        ERROR_VARIABLE _check_lower_err)
+if (NOT _check_lower_rc EQUAL 0 OR NOT "${_check_lower_out}${_check_lower_err}" MATCHES "zia\\.verify-lower"
+        OR "${_check_lower_out}${_check_lower_err}" MATCHES "zia\\.optimize")
+    message(FATAL_ERROR "zanna check should verify the lowered module without optimizing:\n${_check_lower_out}${_check_lower_err}")
+endif ()
+execute_process(
+        COMMAND "${ZANNA_EXE}" check "${_ok_zia}" --time-compile -O2
+        RESULT_VARIABLE _check_opt_rc
+        OUTPUT_VARIABLE _check_opt_out
+        ERROR_VARIABLE _check_opt_err)
+if (NOT _check_opt_rc EQUAL 0 OR NOT "${_check_opt_out}${_check_opt_err}" MATCHES "zia\\.verify-lower"
+        OR NOT "${_check_opt_out}${_check_opt_err}" MATCHES "zia\\.verify-opt")
+    message(FATAL_ERROR "zanna check -O2 should verify both the lowered and the optimized module:\n${_check_opt_out}${_check_opt_err}")
+endif ()
+
 # ===== zanna check: rejects run/build-only flags =====
 execute_process(
         COMMAND "${ZANNA_EXE}" check "${_ok_zia}" -o out.il
@@ -77,6 +100,26 @@ endif ()
 if (NOT _eval_out MATCHES "14")
     message(FATAL_ERROR "zanna eval '2 + 3 * 4' should print 14, got:\n${_eval_out}")
 endif ()
+
+# ===== zanna eval: snippets mixing declarations and statements (ZB-52) =====
+# A snippet is split into its top-level items and evaluated in order, so it
+# may declare functions, enums and types, keep variables of any type, or
+# define its own `start`.
+function(_zia_eval_expect snippet expected label)
+    execute_process(
+            COMMAND "${ZANNA_EXE}" eval "${snippet}"
+            RESULT_VARIABLE _snip_rc
+            OUTPUT_VARIABLE _snip_out
+            ERROR_VARIABLE _snip_err)
+    if (NOT _snip_rc EQUAL 0 OR NOT _snip_out MATCHES "${expected}")
+        message(FATAL_ERROR "zanna eval (${label}) should print '${expected}' and exit 0, got ${_snip_rc}:\n${_snip_out}${_snip_err}")
+    endif ()
+endfunction()
+_zia_eval_expect("func sq(x: Integer) -> Integer { return x * x; } Zanna.Terminal.SayInt(sq(4));" "16" "function then statement")
+_zia_eval_expect("enum K { A, B } Zanna.Terminal.SayInt(K.B);" "1" "enum declaration")
+_zia_eval_expect("func start() { Zanna.Terminal.Say(\"own-entry\"); }" "own-entry" "user start")
+_zia_eval_expect("struct P { Integer x; } var p = P { x = 3 }; p.x * 2" "6" "struct variable")
+_zia_eval_expect("var xs = [1, 2]; xs.add(3); xs.length()" "3" "list variable")
 
 # ===== zanna eval --json --type: structured result =====
 execute_process(

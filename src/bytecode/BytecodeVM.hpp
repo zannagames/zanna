@@ -1096,6 +1096,14 @@ class BytecodeVM {
     /// @return True if the debugger should pause; false otherwise.
     bool checkBreakpoint();
 
+    /// @brief Whether any breakpoint or single-stepping could pause execution.
+    /// @details The dispatch loops test this inline before calling
+    ///          @ref checkBreakpoint, so ordinary execution costs two loads per
+    ///          instruction instead of an out-of-line call.
+    bool debugPauseArmed() const {
+        return singleStep_ || !breakpoints_.empty();
+    }
+
     /// @brief Notify the debugger and report whether execution should pause.
     /// @param isBreakpoint True for breakpoint events; false for single-step.
     /// @param pc Program counter to report to the debugger callback.

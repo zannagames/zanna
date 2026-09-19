@@ -1,0 +1,171 @@
+module RuntimeTest58;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: String? holds null everywhere a value can go (ZB-49), and a postfix
+// `?` leaves its function through the normal exit (ZB-62).
+//
+// String? is a nullable `str` handle, but the `null` literal lowered as an
+// untyped `ptr`: returning it, passing it, retaining it or storing it through
+// a `str` path failed IL verification, a String? local could not be
+// reassigned at all, assigning null to a String? field trapped in
+// rt_unbox_str, and so did reading a null List[String?] element. At -O1/-O2,
+// SCCP also folded a typed `const_null str` back into the `ptr` literal.
+//
+// A postfix `?` returned with a bare `ret`: `defer` bodies did not run, owned
+// locals were not released, and a `?` inside a `try` body left its handler
+// registered.
+
+var trail = "";
+
+func show(s: String?) -> String {
+    if s == null { return "<null>"; }
+    return s;
+}
+
+func maybe(k: Integer) -> String? {
+    if k > 0 { return "v" + toString(k); }
+    return null;
+}
+
+func always() -> String? { return null; }
+
+func greet(name: String? = null) -> String { return "hi " + show(name); }
+
+func viaIf(k: Integer) -> String? { return if k > 0 { "pos" } else { null }; }
+func viaTernary(k: Integer) -> String? { return k > 0 ? "pos" : null; }
+func viaMatch(k: Integer) -> String? {
+    return match k { 1 => "one", 2 => "two", _ => null };
+}
+
+class Holder {
+    expose String? label;
+    expose func init() { label = null; }
+    expose func none() -> String? { return null; }
+    expose func relabel(s: String?) { label = s; }
+}
+
+struct Tag {
+    String? name;
+    Integer n;
+}
+
+var lastName: String? = "start";
+
+func propagate(k: Integer) -> String? {
+    defer { trail = trail + "d" + toString(k) + ";"; }
+    var owned = "owned-" + toString(k);        // released on every exit
+    var w = maybe(k)?;
+    return w + "/" + owned;
+}
+
+func parse(t: String) -> Result[Integer] {
+    if t == "" { return Err("empty"); }
+    return Ok(t.Length());
+}
+
+func twice(t: String) -> Result[Integer] {
+    defer { trail = trail + "r" + t + ";"; }
+    var n = parse(t)?;
+    return Ok(n * 2);
+}
+
+func insideTry(k: Integer) -> String? {
+    try {
+        var w = maybe(k)?;
+        return w;
+    } catch {
+        return "inner-catch";
+    }
+}
+
+func thrower() { throw "boom"; }
+
+// The throw must reach this function's handler, not one left registered by
+// the `?` exit out of insideTry's try body.
+func handlerAfterEarlyExit() -> String {
+    try {
+        var skipped = insideTry(0);
+        thrower();
+        return "no-throw " + show(skipped);
+    } catch {
+        return "outer-catch";
+    }
+}
+
+func round() -> String {
+    var out = "";
+
+    // Returns and a reassigned local.
+    var s: String? = null;
+    out = out + show(s);
+    s = maybe(3);
+    out = out + show(s);
+    s = null;
+    out = out + show(s) + show(always());
+    final f: String? = null;
+    out = out + show(f);
+
+    // Branches and arguments.
+    out = out + show(viaIf(1)) + show(viaIf(0)) + show(viaTernary(1)) + show(viaTernary(0));
+    out = out + show(viaMatch(2)) + show(viaMatch(9));
+    out = out + "|" + greet() + "|" + greet("ann") + "|" + show(null);
+
+    // Fields, struct literals and globals.
+    var h = new Holder();
+    out = out + show(h.label) + show(h.none());
+    h.label = "set";
+    out = out + show(h.label);
+    h.relabel(null);
+    out = out + show(h.label);
+    var tag = Tag { name = null, n = 1 };
+    out = out + show(tag.name);
+    tag.name = "t";
+    out = out + show(tag.name);
+    lastName = null;
+    out = out + show(lastName);
+    lastName = "g";
+    out = out + show(lastName);
+
+    // Collections.
+    var xs: List[String?] = [null, "a"];
+    xs.add(null);
+    for x in xs {
+        out = out + show(x);
+    }
+    var byId: Map[Integer, String] = new Map[Integer, String]();
+    byId.set(1, "one");
+    out = out + show(byId.get(1)) + show(byId.get(2));
+    return out;
+}
+
+func start() {
+    final expected = "<null>v3<null><null><null>pos<null>pos<null>two<null>" +
+                     "|hi <null>|hi ann|<null>" +
+                     "<null><null>set<null><null>t<null>g" +
+                     "<null>a<null>one<null>";
+    var last = "";
+    var rounds = 0;
+    while rounds < 300 {
+        last = round();
+        rounds = rounds + 1;
+    }
+    assertEqStr(last, expected, "string_optional_null_positions");
+
+    trail = "";
+    assertEqStr(show(propagate(2)), "v2/owned-2", "propagate_value");
+    assertEqStr(show(propagate(0)), "<null>", "propagate_null");
+    assertEqStr(trail, "d2;d0;", "defer_runs_on_optional_exit");
+
+    trail = "";
+    assertEqInt(twice("abc").unwrap(), 6, "result_value");
+    assertEqStr(twice("").unwrapErr(), "empty", "result_err");
+    assertEqStr(trail, "rabc;r;", "defer_runs_on_err_exit");
+
+    assertEqStr(show(insideTry(4)) + show(insideTry(0)), "v4<null>", "exit_from_try_body");
+    assertEqStr(handlerAfterEarlyExit(), "outer-catch", "handler_popped_on_exit");
+
+    report();
+}

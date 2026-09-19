@@ -572,6 +572,10 @@ TypeRef Sema::analyzeUnary(UnaryExpr *expr) {
             if (!operandType->isNumeric()) {
                 error(expr->loc, "Negation requires numeric operand");
             }
+            // Arithmetic on a Byte or an enum value produces Integer (a
+            // negated Byte or variant is not a Byte or variant).
+            if (operandType->kind == TypeKindSem::Byte || operandType->kind == TypeKindSem::Enum)
+                return types::integer();
             return operandType;
 
         case UnaryOp::Not:
@@ -668,7 +672,9 @@ TypeRef Sema::analyzeIfExpr(IfExpr *expr) {
 /// @param lhs The first type.
 /// @param rhs The second type.
 /// @return The most general type compatible with both, or Unknown if incompatible.
-/// @details Handles numeric widening, optional lifting, and subtype relationships.
+/// @details Handles numeric widening (Byte < Integer < Number; an enum joins its
+///          own variants as the enum and otherwise widens to Integer), optional
+///          lifting, and subtype relationships.
 TypeRef Sema::commonType(TypeRef lhs, TypeRef rhs) {
     if (!lhs && !rhs)
         return types::unknown();
@@ -689,11 +695,15 @@ TypeRef Sema::commonType(TypeRef lhs, TypeRef rhs) {
     }
 
     if (lhs->isNumeric() && rhs->isNumeric()) {
+        // Variants of one enum keep the enum type; any other mix widens the
+        // enum to Integer (an enum never narrows to Byte).
+        if (lhs->kind == TypeKindSem::Enum && lhs->equals(*rhs))
+            return lhs;
         if (lhs->kind == TypeKindSem::Number || rhs->kind == TypeKindSem::Number)
             return types::number();
-        if (lhs->kind == TypeKindSem::Integer || rhs->kind == TypeKindSem::Integer)
-            return types::integer();
-        return types::byte();
+        if (lhs->kind == TypeKindSem::Byte && rhs->kind == TypeKindSem::Byte)
+            return types::byte();
+        return types::integer();
     }
 
     if (lhs->isAssignableFrom(*rhs))

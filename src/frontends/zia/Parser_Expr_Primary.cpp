@@ -147,7 +147,12 @@ ExprPtr Parser::parsePrimary() {
 
     // Explicit collection literals: `set { ... }` / `map { ... }`
     // This provides an unambiguous empty-set form without reserving new keywords.
-    if (check(TokenKind::Identifier) && peek().text == "set" && check(TokenKind::LBrace, 1)) {
+    // Like struct literals they are brace-bodied, so they are recognized only
+    // where struct literals are (initializers, arguments, returns). In a
+    // condition or a `for ... in` iterable, `set {` / `map {` is a variable
+    // named `set` or `map` followed by the block.
+    if (allowStructLiterals_ && check(TokenKind::Identifier) && peek().text == "set" &&
+        check(TokenKind::LBrace, 1)) {
         SourceLoc setLoc = peek().loc;
         advance(); // consume 'set'
         advance(); // consume '{'
@@ -175,7 +180,8 @@ ExprPtr Parser::parsePrimary() {
         return std::make_unique<SetLiteralExpr>(setLoc, std::move(elements));
     }
 
-    if (check(TokenKind::Identifier) && peek().text == "map" && check(TokenKind::LBrace, 1)) {
+    if (allowStructLiterals_ && check(TokenKind::Identifier) && peek().text == "map" &&
+        check(TokenKind::LBrace, 1)) {
         SourceLoc mapLoc = peek().loc;
         advance(); // consume 'map'
         advance(); // consume '{'
@@ -255,6 +261,30 @@ ExprPtr Parser::parseIdentifierOrStructLiteral(SourceLoc loc) {
                 bodyOffset += 2;
             }
 
+            // A generic instantiation `Name[Args]` may precede the body: skip the balanced
+            // type-argument list so the body check below sees the `{`.
+            size_t typeArgsOffset = 0;
+            if (peek(bodyOffset).kind == TokenKind::LBracket) {
+                size_t depth = 0;
+                size_t scan = bodyOffset;
+                for (;; ++scan) {
+                    auto kind = peek(scan).kind;
+                    if (kind == TokenKind::LBracket) {
+                        ++depth;
+                    } else if (kind == TokenKind::RBracket) {
+                        if (--depth == 0)
+                            break;
+                    } else if (kind == TokenKind::Eof || kind == TokenKind::LBrace ||
+                               kind == TokenKind::Semicolon) {
+                        break;
+                    }
+                }
+                if (depth == 0 && peek(scan).kind == TokenKind::RBracket) {
+                    typeArgsOffset = bodyOffset;
+                    bodyOffset = scan + 1;
+                }
+            }
+
             auto nextKind = peek(bodyOffset).kind;
             bool isStructLiteral = false;
             if (nextKind == TokenKind::LBrace) {
@@ -270,9 +300,20 @@ ExprPtr Parser::parseIdentifierOrStructLiteral(SourceLoc loc) {
 
             if (isStructLiteral) {
                 std::string typeName = std::move(candidateName);
-                for (size_t i = 0; i < bodyOffset; ++i)
-                    advance(); // consume qualified type name
-                advance();     // consume '{'
+                TypePtr typeNode;
+                if (typeArgsOffset != 0) {
+                    // Keep the written spelling (`Pair[Integer]`) for diagnostics, then parse
+                    // the generic type with the type grammar.
+                    for (size_t i = typeArgsOffset; i < bodyOffset; ++i)
+                        typeName += peek(i).text;
+                    typeNode = parseType();
+                    if (!typeNode)
+                        return nullptr;
+                } else {
+                    for (size_t i = 0; i < bodyOffset; ++i)
+                        advance(); // consume qualified type name
+                }
+                advance(); // consume '{'
 
                 std::vector<StructLiteralExpr::Field> fields;
                 while (!check(TokenKind::RBrace) && !check(TokenKind::Eof)) {
@@ -302,7 +343,7 @@ ExprPtr Parser::parseIdentifierOrStructLiteral(SourceLoc loc) {
                 if (!expect(TokenKind::RBrace, "}"))
                     return nullptr;
                 return std::make_unique<StructLiteralExpr>(
-                    loc, std::move(typeName), std::move(fields));
+                    loc, std::move(typeName), std::move(fields), std::move(typeNode));
             }
         }
 

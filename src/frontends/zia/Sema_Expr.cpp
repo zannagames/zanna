@@ -306,6 +306,23 @@ TypeRef Sema::analyzeUnitLiteral(UnitLiteralExpr * /*expr*/) {
 TypeRef Sema::analyzeIdent(IdentExpr *expr) {
     std::string lookupName = expr->name;
     Symbol *sym = lookupAccessibleSymbol(lookupName, expr->loc);
+
+    // Inside a namespace, a sibling member (registered under its qualified name) shadows
+    // module scope, while locals, parameters and class members still shadow it (ZB-56).
+    const bool localBinding =
+        sym && (sym->kind == Symbol::Kind::Parameter || sym->kind == Symbol::Kind::Field ||
+                sym->kind == Symbol::Kind::Method ||
+                (sym->kind == Symbol::Kind::Variable &&
+                 !(sym->decl && sym->decl->kind == DeclKind::GlobalVar)));
+    if (!localBinding) {
+        for (const auto &candidate : namespaceCandidates(expr->name)) {
+            if (Symbol *memberSym = lookupAccessibleSymbol(candidate, expr->loc)) {
+                sym = memberSym;
+                lookupName = candidate;
+                break;
+            }
+        }
+    }
     if (!sym && expr->loc.file_id != 0 && lookupName.find('.') == std::string::npos) {
         std::string scopedName = fileScopedDeclName(expr->loc.file_id, lookupName);
         if (scopedName != lookupName) {
@@ -328,6 +345,21 @@ TypeRef Sema::analyzeIdent(IdentExpr *expr) {
 
     if (sym)
         resolvedIdentNames_[expr] = lookupName;
+
+    // A bare static field names its module-level global `Owner.field`. Record that name so a
+    // read lowers to the global instead of an unknown identifier and a write stores to it
+    // instead of defining a fresh local (ZB-48).
+    auto noteStaticField = [&]() {
+        if (!currentSelfType_ || expr->name.find('.') != std::string::npos)
+            return;
+        if (auto owner = findFieldOwner(currentSelfType_->name, expr->name)) {
+            std::string key = *owner + "." + expr->name;
+            if (staticFields_.count(key))
+                resolvedIdentNames_[expr] = std::move(key);
+        }
+    };
+    if (sym && sym->kind == Symbol::Kind::Field)
+        noteStaticField();
 
     if (sym && sym->kind == Symbol::Kind::Function && hasOverloadedFunctionName(lookupName)) {
         error(expr->loc,
@@ -367,8 +399,10 @@ TypeRef Sema::analyzeIdent(IdentExpr *expr) {
                 }
 
                 TypeRef fieldType = getFieldType(currentSelfType_->name, expr->name);
-                if (fieldType)
+                if (fieldType) {
+                    noteStaticField();
                     return fieldType;
+                }
             }
         }
 

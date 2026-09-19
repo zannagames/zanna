@@ -1159,10 +1159,11 @@ Cons: Control flow is less obvious. Callbacks can nest deeply.
 
 Components publish events without knowing who listens. Other components subscribe to events they care about.
 
-> **Note:** this pattern is not currently runnable in Zia. Invoking a handler
-> through a `&function` reference segfaults
-> ([audit #26](../../defect-audit-2026-09-01.md)), so the `publish` loop below cannot
-> execute today. The structure is still the right shape to learn from.
+> **Note:** the `EventBus` below runs as written — handlers are ordinary function
+> values (lambdas or `&function` references). The services are sketches: Zia has
+> no bound-method values, so where they write `self.handleOrderPlaced`, a real
+> subscriber passes a lambda that captures `self`:
+> `eventBus.subscribe("order_placed", (e: Event) => self.handleOrderPlaced(e));`
 
 ```zia
 class Event {

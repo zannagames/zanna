@@ -45,6 +45,9 @@
 
 #include "il/runtime/RuntimeNames.hpp"
 
+#include <cstddef>
+#include <cstdint>
+
 namespace il::frontends::zia::runtime {
 
 /// @brief Import all canonical runtime names into the zia::runtime namespace.
@@ -332,6 +335,14 @@ inline constexpr size_t kVtablePtrSize = kMachineWordSize;
 
 /// @brief Offset where class fields begin (after header and vtable ptr).
 inline constexpr size_t kClassFieldsOffset = kObjectHeaderSize + kVtablePtrSize;
+
+/// @brief Byte size of a Zia function value: the closure record
+///        `[code pointer, environment pointer]`. Lambdas and `&function`
+///        references both lower to one; a call passes the environment first.
+inline constexpr int64_t kClosureSize = 2 * static_cast<int64_t>(kMachineWordSize);
+
+/// @brief Byte offset of the environment pointer within a closure record.
+inline constexpr int64_t kClosureEnvOffset = static_cast<int64_t>(kMachineWordSize);
 
 /// @}
 

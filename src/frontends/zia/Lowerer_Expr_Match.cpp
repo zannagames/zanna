@@ -535,20 +535,6 @@ LowerResult Lowerer::lowerMatchExpr(MatchExpr *expr) {
     if (hasResult)
         createSlot(resultSlot, ilResultType);
 
-    /// @brief Coerces one match-arm result to the overall match type.
-    /// @param bodyResult Lowered arm result.
-    /// @param bodyExpr Arm expression supplying semantic type metadata.
-    /// @return Value suitable for the shared match result slot.
-    auto coerceArmResult = [&](LowerResult bodyResult, Expr *bodyExpr) -> Value {
-        if (!resultType || resultType->kind == TypeKindSem::Unknown ||
-            resultType->kind == TypeKindSem::Error) {
-            return bodyResult.value;
-        }
-        TypeRef bodyType = bodyExpr ? sema_.typeOf(bodyExpr) : types::unknown();
-        auto coerced = coerceValueToType(bodyResult.value, bodyResult.type, bodyType, resultType);
-        return coerced.value;
-    };
-
     // ---- SwitchI32 fast path for integer-only match ----
     // When the scrutinee is Integer and every arm is either an integer literal
     // (without guard) or a wildcard/binding (the default), emit a single
@@ -639,7 +625,7 @@ LowerResult Lowerer::lowerMatchExpr(MatchExpr *expr) {
                 if (arm.body) {
                     auto bodyResult = lowerExpr(arm.body.get());
                     if (hasResult) {
-                        Value bodyValue = coerceArmResult(bodyResult, arm.body.get());
+                        Value bodyValue = coerceBranchValue(bodyResult, arm.body.get(), resultType);
                         storeToSlot(resultSlot, bodyValue, ilResultType);
                         consumeDeferred(bodyValue);
                     }
@@ -735,7 +721,7 @@ LowerResult Lowerer::lowerMatchExpr(MatchExpr *expr) {
         if (arm.body) {
             auto bodyResult = lowerExpr(arm.body.get());
             if (hasResult) {
-                Value bodyValue = coerceArmResult(bodyResult, arm.body.get());
+                Value bodyValue = coerceBranchValue(bodyResult, arm.body.get(), resultType);
                 storeToSlot(resultSlot, bodyValue, ilResultType);
                 consumeDeferred(bodyValue);
             }

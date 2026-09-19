@@ -82,7 +82,7 @@ class ScmViewJobLayer extends State.ScmViewBase {
             statusLabel.SetText("Queue is full; wait for git to finish");
             return;
         }
-        var action = new scm_view_base.PendingAction();
+        var action = new State.PendingAction();
         action.kind = kind;
         action.path = path;
         action.message = message;

@@ -1,0 +1,98 @@
+module RuntimeTest57;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: catch and finally blocks may read every local in scope (defect-audit
+// #24). Handler blocks are separately rooted in the IL CFG — after an unwind
+// only memory is reliable — so the verifier admits only entry-block stack
+// slots there. The lowerer used to emit a slot where its variable was declared
+// and keep immutable locals as plain SSA values, so a catch reading a final, a
+// parameter-derived value, or any variable declared after an early return
+// failed IL verification. Visible locals now reach handlers through
+// entry-block slots.
+
+func risky(k: Integer) -> Integer {
+    if k > 100 { throw "too big"; }
+    return k;
+}
+
+func risky2(s: String) -> String {
+    if s.Length() > 3 { throw "too long"; }
+    return s + "!";
+}
+
+func cond() -> Boolean { return true; }
+
+// A final computed in the entry block, read in the catch.
+func finalInCatch(k: Integer) -> Integer {
+    final n = k * 2;
+    try { return risky(n); } catch { return n + 1; }
+}
+
+// The same after an early return (the local lives outside the entry block).
+func finalAfterEarlyReturn(k: Integer) -> Integer {
+    if k < 0 { return 0; }
+    final n = k * 2;
+    try { return risky(n); } catch { return n + 1; }
+}
+
+// A mutable local declared after an early return, written in the catch.
+func varAfterEarlyReturn(k: Integer) -> Integer {
+    if k < 0 { return 0; }
+    var n = k * 2;
+    try { n = risky(n); } catch { n = n + 1; }
+    return n;
+}
+
+// The original report: a managed local after an early return, handler returns.
+func listAfterEarlyReturn(fail: Boolean) -> List[String] {
+    if !cond() { return []; }
+    var loaded: List[String] = [];
+    try {
+        loaded.add("x");
+        if fail { throw "boom"; }
+    } catch {
+        loaded.add("recovered");
+        return loaded;
+    }
+    return loaded;
+}
+
+// A borrowed string parameter and a nested-block final, read in the catch and
+// in a finally; repeated so an ownership imbalance would surface.
+func stringsInHandlers(name: String) -> String {
+    var out = "none";
+    if name.Length() > 0 {
+        final tag = "t" + name;
+        try {
+            out = risky2(name);
+        } catch {
+            out = name + "/" + tag;
+        } finally {
+            out = out + "|" + tag;
+        }
+    }
+    return out;
+}
+
+func start() {
+    assertEqInt(finalInCatch(3) + finalInCatch(80), 6 + 161, "final_in_catch");
+    assertEqInt(finalAfterEarlyReturn(3) + finalAfterEarlyReturn(80), 167,
+                "final_after_early_return");
+    assertEqInt(varAfterEarlyReturn(3) + varAfterEarlyReturn(80), 167,
+                "var_after_early_return");
+    assertEqInt(listAfterEarlyReturn(false).length(), 1, "list_normal_path");
+    assertEqInt(listAfterEarlyReturn(true).length(), 2, "list_catch_path");
+
+    var last = "";
+    var rounds = 0;
+    while rounds < 300 {
+        last = stringsInHandlers("ab") + " " + stringsInHandlers("abcdef");
+        rounds = rounds + 1;
+    }
+    assertEqStr(last, "ab!|tab abcdef/tabcdef|tabcdef", "strings_in_catch_and_finally");
+
+    report();
+}

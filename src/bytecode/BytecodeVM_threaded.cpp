@@ -113,7 +113,7 @@ void BytecodeVM::runThreaded() {
             }                                                                                      \
         }                                                                                          \
         SYNC_STATE();                                                                              \
-        if (checkBreakpoint()) {                                                                   \
+        if (debugPauseArmed() && checkBreakpoint()) {                                              \
             state_ = VMState::Halted;                                                              \
             return;                                                                                \
         }                                                                                          \
@@ -128,7 +128,7 @@ void BytecodeVM::runThreaded() {
         }                                                                                          \
         ++pc;                                                                                      \
         ++instrCount_;                                                                             \
-        if (maxInstrCount_ != 0 && instrCount_ > maxInstrCount_) {                                  \
+        if (maxInstrCount_ != 0 && instrCount_ > maxInstrCount_) {                                 \
             SYNC_STATE();                                                                          \
             trap(TrapKind::Interrupt, "VM: step limit exceeded");                                  \
             return;                                                                                \

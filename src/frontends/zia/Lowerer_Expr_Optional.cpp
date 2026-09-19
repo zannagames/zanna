@@ -543,10 +543,19 @@ LowerResult Lowerer::lowerTry(TryExpr *expr) {
         size_t okIdx = createBlock("try.result_ok");
         size_t errIdx = createBlock("try.result_err");
         Value isOk = emitCallRet(Type(Type::Kind::I1), kResultGetIsOk, {operand.value});
+        const size_t branchIdx = blockMgr_.currentBlockIndex();
         emitCBr(isOk, okIdx, errIdx);
 
+        // The Err edge returns the Result itself through the function's
+        // normal exit (defer/finally, local releases); the ok edge keeps the
+        // statement's pending temporaries.
         setBlock(errIdx);
-        emitRet(operand.value);
+        {
+            auto pending = deferredTemps_;
+            releaseDeferredTempsOnExitEdge(branchIdx, operand.value);
+            emitFunctionReturn(operand.value, operand.type, operandType);
+            deferredTemps_ = std::move(pending);
+        }
 
         setBlock(okIdx);
         Type ilSuccessType = mapType(successType);
@@ -594,17 +603,29 @@ LowerResult Lowerer::lowerTry(TryExpr *expr) {
 
     Value isNotNull =
         emitBinary(Opcode::ICmpNe, Type(Type::Kind::I1), ptrAsI64, Value::constInt(0));
+    const size_t branchIdx = blockMgr_.currentBlockIndex();
     emitCBr(isNotNull, hasValueIdx, returnNullIdx);
 
-    // Return null block - return null from the current function
+    // The null edge returns null (or nothing, in a void function) through the
+    // function's normal exit (defer/finally, local releases); the has-value
+    // edge keeps the statement's pending temporaries.
     setBlock(returnNullIdx);
-    // For functions returning optional types, return null (0 as pointer)
-    // For void functions, we just return void
-    if (currentFunc_->retType.kind == Type::Kind::Void) {
-        emitRetVoid();
-    } else {
-        // Return null for optional/pointer return types
-        emitRet(Value::null());
+    {
+        auto pending = deferredTemps_;
+        releaseDeferredTempsOnExitEdge(branchIdx, Value::null());
+        const bool returnsVoid =
+            currentFunc_->retType.kind == Type::Kind::Void ||
+            (currentReturnType_ && currentReturnType_->kind == TypeKindSem::Void);
+        if (returnsVoid) {
+            emitFunctionReturnVoid();
+        } else {
+            const Type returnIlType =
+                currentReturnType_ ? mapType(currentReturnType_) : currentFunc_->retType;
+            emitFunctionReturn(materializeTypedNull(Value::null(), returnIlType),
+                               returnIlType,
+                               currentReturnType_);
+        }
+        deferredTemps_ = std::move(pending);
     }
 
     // Has value block - continue with the unwrapped value

@@ -11,6 +11,7 @@
 //   - Interface calls lower through runtime itable lookup and call.indirect.
 //   - Classes and interfaces register before their itables are bound.
 //   - Large class registries are partitioned into ordered, bounded helpers.
+//   - A class that inherits an interface gets its own itable naming its overrides (ZB-53).
 // Ownership/Lifetime:
 //   - Every compiler result and synthesized source buffer is test-owned.
 // Cross-platform touchpoints:
@@ -70,6 +71,44 @@ static bool hasFunction(const il::core::Module &mod, const std::string &fnName) 
             return true;
     }
     return false;
+}
+
+/// @brief Count how many instructions in @p fnName reference the global @p symbol.
+static int countGlobalRefs(const il::core::Module &mod,
+                           const std::string &fnName,
+                           const std::string &symbol) {
+    int count = 0;
+    for (const auto &fn : mod.functions) {
+        if (fn.name != fnName)
+            continue;
+        for (const auto &block : fn.blocks) {
+            for (const auto &instr : block.instructions) {
+                for (const auto &operand : instr.operands) {
+                    if (operand.kind == il::core::Value::Kind::GlobalAddr && operand.str == symbol)
+                        ++count;
+                }
+            }
+        }
+    }
+    return count;
+}
+
+/// @brief Count the calls to @p callee inside @p fnName.
+static int countCalls(const il::core::Module &mod,
+                      const std::string &fnName,
+                      const std::string &callee) {
+    int count = 0;
+    for (const auto &fn : mod.functions) {
+        if (fn.name != fnName)
+            continue;
+        for (const auto &block : fn.blocks) {
+            for (const auto &instr : block.instructions) {
+                if (instr.op == il::core::Opcode::Call && instr.callee == callee)
+                    ++count;
+            }
+        }
+    }
+    return count;
 }
 
 /// @brief Helper to dump diagnostics for debugging.
@@ -325,6 +364,52 @@ interface IMarker {
     EXPECT_TRUE(helperCount > 1);
     EXPECT_TRUE(initializerCallsHelper);
     EXPECT_EQ(static_cast<size_t>(kClassCount), registrationCount);
+}
+
+/// @brief ZB-53: a subclass that inherits an interface from its base (without re-declaring
+///        `implements`) gets its own itable, and that itable names its override. Before the fix
+///        only the base was bound, so the runtime's base-chain fallback dispatched the override
+///        away to the base implementation.
+TEST(ZiaIfaceDispatch, InheritedInterfaceBindsSubclassItableWithOverrides) {
+    SourceManager sm;
+    const std::string source = R"(
+module Test;
+
+interface Greeter {
+    func greet() -> String;
+}
+
+class Base implements Greeter {
+    expose func greet() -> String { return "base"; }
+}
+
+class Loud extends Base {
+    override expose func greet() -> String { return "LOUD"; }
+}
+
+class Louder extends Loud {
+}
+
+func greetOf(g: Greeter) -> String { return g.greet(); }
+
+func start() {
+    Zanna.Terminal.Say(greetOf(new Loud()) + greetOf(new Louder()));
+}
+)";
+    CompilerInput input{.source = source, .path = "iface_inherited.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+    if (!result.succeeded())
+        dumpDiags(result);
+    ASSERT_TRUE(result.succeeded());
+
+    // One binding per class in the ancestry: Base, Loud, Louder.
+    EXPECT_EQ(countCalls(result.module, "__zia_iface_init", "rt_bind_interface"), 3);
+    // Loud's own table and the one Louder inherits both name Loud's override. Loud.greet also
+    // fills both classes' vtable slots, so it appears exactly four times.
+    EXPECT_EQ(countGlobalRefs(result.module, "__zia_iface_init", "Loud.greet"), 4);
+    // Base.greet fills Base's vtable slot and Base's itable slot only.
+    EXPECT_EQ(countGlobalRefs(result.module, "__zia_iface_init", "Base.greet"), 2);
 }
 
 /// @brief No interfaces defined — no __zia_iface_init emitted.

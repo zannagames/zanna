@@ -66,6 +66,26 @@ size_t editDistance(std::string_view lhs, std::string_view rhs) {
 // Error Reporting
 //=============================================================================
 
+/// @brief Forward a diagnostic to the engine unless an identical one was already reported.
+/// @param diag Diagnostic to report.
+/// @details An expression can be analysed more than once (an assignment target's base, a
+///          generic body per instantiation, an argument re-checked for overload
+///          resolution), which used to repeat its diagnostics two or three times. Identity is
+///          severity, code, location and message.
+void Sema::reportOnce(il::support::Diagnostic diag) {
+    std::string key = std::to_string(static_cast<int>(diag.severity));
+    key += '\x1f';
+    key += diag.code;
+    key += '\x1f';
+    key += std::to_string(diag.loc.file_id) + ":" + std::to_string(diag.loc.line) + ":" +
+           std::to_string(diag.loc.column);
+    key += '\x1f';
+    key += diag.message;
+    if (!reportedDiagnostics_.insert(std::move(key)).second)
+        return;
+    diag_.report(std::move(diag));
+}
+
 /// @brief Report a semantic warning at a source location (legacy).
 /// @param loc Source location attached to the warning.
 /// @param message Human-readable warning text.
@@ -74,7 +94,7 @@ size_t editDistance(std::string_view lhs, std::string_view rhs) {
 void Sema::warning(SourceLoc loc, const std::string &message) {
     il::support::Diagnostic diag{il::support::Severity::Warning, message, loc, "V3001"};
     diag.stage = "sema";
-    diag_.report(std::move(diag));
+    reportOnce(std::move(diag));
 }
 
 /// @brief Report a coded warning with policy and suppression checks.
@@ -126,7 +146,7 @@ void Sema::warn(WarningCode code, SourceLoc loc, const std::string &message) {
 
     il::support::Diagnostic diag{sev, message, loc, warningCodeStr(code)};
     diag.stage = "sema";
-    diag_.report(std::move(diag));
+    reportOnce(std::move(diag));
 }
 
 /// @brief Check for unused variables in a scope and emit W001 warnings.
@@ -202,7 +222,26 @@ void Sema::errorWithCode(SourceLoc loc,
     diag.notes = std::move(notes);
     diag.stage = "sema";
     diag.help = std::move(help);
-    diag_.report(std::move(diag));
+    reportOnce(std::move(diag));
+}
+
+/// @brief Report a use of a module the using file does not bind (ADR 0376).
+/// @param loc Location of the use.
+/// @param owner Module the file must bind.
+/// @param message Diagnostic text naming the use.
+/// @details One bind fixes every use of a module in a file, so only the first use per
+///          (file, module) is reported; later uses still fail the analysis.
+void Sema::reportUnboundModule(SourceLoc loc, const std::string &owner, std::string message) {
+    hasError_ = true;
+    if (!reportedUnboundModules_.emplace(loc.file_id, owner).second)
+        return;
+    errorWithCode(loc,
+                  "V-ZIA-UNBOUND-MODULE",
+                  std::move(message),
+                  {},
+                  {},
+                  "Add a `bind` for module '" + owner +
+                      "' to this file; a bind is not inherited from the files it binds.");
 }
 
 /// @brief Find the nearest visible spelling for an unresolved symbol.
@@ -384,7 +423,27 @@ void Sema::errorUndefined(SourceLoc loc, const std::string &name) {
             };
             diag.stage = "sema";
             diag.help = "Qualify the name with the bound module that should provide it.";
-            diag_.report(std::move(diag));
+            reportOnce(std::move(diag));
+            return;
+        }
+    }
+
+    // The name exists, but in a module this file does not bind (ADR 0376):
+    // either one of that module's declarations or the module itself.
+    if (loc.file_id != 0) {
+        std::string owner;
+        if (Symbol *sym = unboundExportedDecl(name, loc)) {
+            owner = moduleNameForFile(sym->loc.file_id);
+        } else if (name.find('.') == std::string::npos &&
+                   moduleExports_.find(name) != moduleExports_.end()) {
+            owner = name;
+        }
+        if (!owner.empty()) {
+            reportUnboundModule(loc,
+                                owner,
+                                owner == name ? "Module '" + name + "' is not bound in this file"
+                                              : "'" + name + "' is declared in module '" + owner +
+                                                    "', which this file does not bind");
             return;
         }
     }
@@ -420,7 +479,7 @@ void Sema::errorUndefined(SourceLoc loc, const std::string &name) {
     diag.stage = "sema";
     diag.help = "Declare the symbol, import it, or correct the spelling.";
     diag.fixits = std::move(fixits);
-    diag_.report(std::move(diag));
+    reportOnce(std::move(diag));
 }
 
 /// @brief Report a runtime method accessed without call parentheses. See header.
@@ -475,7 +534,7 @@ void Sema::errorRuntimeMethodNeedsCall(FieldExpr *expr,
     diag.stage = "sema";
     diag.help = "Runtime methods are invoked with parentheses; write '" + expr->field + call + "'.";
     diag.fixits = std::move(fixits);
-    diag_.report(std::move(diag));
+    reportOnce(std::move(diag));
 }
 
 /// @brief Report a type mismatch error showing expected vs actual types.

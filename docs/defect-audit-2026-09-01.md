@@ -26,17 +26,17 @@ unreadable from their own class).
 | 2 | BASIC frontend | High | `STATIC DESTRUCTOR` never runs — fixed 2026-09-13 |
 | 3 | BASIC frontend | High | `STATIC SUB NEW()` (static constructor) never runs — fixed 2026-09-13 |
 | 4 | BASIC frontend | High | No working way to compare an object reference to `NOTHING` — fixed 2026-09-13 |
-| 5 | Zia frontend | High | `Byte` fails IL verification in string concat and `as Byte` narrowing |
-| 6 | Driver (`zanna check`) | High | `check` passes code that `run`/`build` reject |
+| 5 | Zia frontend | High | `Byte` fails IL verification in string concat and `as Byte` narrowing — fixed 2026-09-18 |
+| 6 | Driver (`zanna check`) | High | `check` passes code that `run`/`build` reject — fixed 2026-09-18 |
 | 7 | VM / driver | Medium | Breakpoint exit code `10` only produced when `@main` returns `i64` |
 | 8 | Test suite | Medium | `golden/oop/static_destructor` fixture is orphaned — fixed 2026-09-13 |
 | 9 | BASIC frontend | Low | Static methods resolve only through an instance receiver — fixed 2026-09-13 |
 | 10 | Diagnostics catalog | Low | `B1006` summary covers only one of its several uses — fixed 2026-09-14 |
 | 11 | Zia frontend | Low | `foreign func` declaration emits a spurious unused-parameter warning |
-| 12 | Zia frontend | High | `Byte` is a 32-bit type, not 8-bit; `as Byte` does not narrow or trap |
-| 13 | Zia parser | Medium | A variable named `map` or `set` breaks `for x in <var> { ... }` |
+| 12 | Zia frontend | High | `Byte` is a 32-bit type, not 8-bit; `as Byte` does not narrow or trap — fixed 2026-09-18 |
+| 13 | Zia parser | Medium | A variable named `map` or `set` breaks `for x in <var> { ... }` — fixed 2026-09-18 |
 | 14 | Zia parser | Low | Documented `Error.type` accessor is unusable (`type` is a reserved word) |
-| 15 | Zia frontend | High | Static fields are unreadable from inside their own class (`V3000 ... reached lowering`) |
+| 15 | Zia frontend | High | Static fields are unreadable from inside their own class (`V3000 ... reached lowering`) — fixed 2026-09-18 |
 | 16 | BASIC frontend | Low | `ME` is accepted inside a `STATIC SUB` instead of being rejected — fixed 2026-09-13 |
 | 17 | BASIC frontend | High | Fields on a class declared inside a `NAMESPACE` are inaccessible — fixed 2026-09-13 |
 | 18 | BASIC frontend | Medium | `USING` inside a `NAMESPACE` block is accepted but produces broken IL — fixed 2026-09-14 |
@@ -45,9 +45,9 @@ unreadable from their own class).
 | 21 | BASIC frontend | High | A namespaced class gets no implicit default constructor — fixed 2026-09-13 |
 | 22 | BASIC frontend | High | `RESUME`, `RESUME NEXT`, and `RESUME <label>` are unimplemented (lower to `trap`) — fixed 2026-09-13 |
 | 23 | IL verifier | Medium | Verifier accepts a function whose entry block omits the signature's parameters |
-| 24 | Zia lowering | High | Managed local + early `return` + `try`/`catch` emits IL that violates SSA dominance |
-| 25 | Zia lowering | High | `return null` from a `String?` function fails IL verification |
-| 26 | Zia lowering / VM | **Critical** | Calling a function through a `&function` reference SEGFAULTS |
+| 24 | Zia lowering | High | Managed local + early `return` + `try`/`catch` emits IL that violates SSA dominance — fixed 2026-09-18 |
+| 25 | Zia lowering | High | `return null` from a `String?` function fails IL verification — fixed 2026-09-18 |
+| 26 | Zia lowering / VM | **Critical** | Calling a function through a `&function` reference SEGFAULTS — fixed 2026-09-18 |
 | 27 | BASIC completions | Low | Completion provider offers 4 builtins that do not exist — fixed 2026-09-14 |
 | 28 | BASIC frontend | Low | A trailing label with no following statement fails with a synthetic line number — fixed 2026-09-13 |
 | 29 | Runtime doc fragments | Low | `@details` prose names classes `Physics3DBody` / `Physics3DWorld`; the registered names are `PhysicsBody3D` / `PhysicsWorld3D` |
@@ -165,6 +165,16 @@ should be promoted to the documented idiom.
 
 ## 5. Zia `Byte` fails IL verification in two common positions
 
+**Status:** Fixed 2026-09-18 (with #12; baseball ledger plan 128). Almost every
+`Byte` operation failed, not just the two below: comparisons, shifts, mixed
+`Byte`/`Integer` arithmetic, `List[Byte]`, `toString(aByte)`, and unary minus
+(`-b` read back as 4294967293). `Byte` now shares `Integer`'s `i64`
+representation, so it needs no widening anywhere, and its 0..255 invariant is
+enforced by `as Byte` (#12). String concatenation, `toString` and
+`print`/`println` format every non-string operand through one helper (an enum
+operand failed the same way), and unary minus on a `Byte` or an enum value is
+an `Integer`. Regression: `src/tests/fixtures/zia_runtime/59_byte_and_enum_values.zia`.
+
 **Severity:** High — `Byte` arithmetic cannot round-trip or be printed.
 
 `Byte` lowers to `i32` and the required widening/narrowing conversions are not
@@ -192,6 +202,14 @@ direct initialization, and `SayInt(byteValue)`.
 ---
 
 ## 6. `zanna check` passes code that `run` and `build` reject
+
+**Status:** Fixed 2026-09-18 (baseball ledger ZB-68). `check` now always
+verifies the lowered module, and by default it skips the optimizer — the
+optimizer could erase IL that `run` and `build` reject. That is also faster:
+checking Legacy Baseball went from 14.7 s to 9.9 s. `-O1`/`-O2` or a build
+profile on the command line additionally optimizes and verifies the optimized
+module. Regression: the `agent_cli` test asserts both behaviours through
+`--time-compile`. (The `Byte` reproduction below compiles since #5 was fixed.)
 
 **Severity:** High — `check` is advertised as the gate for editors, scripts, and
 AI agents, so a false "clean" is expensive.
@@ -311,6 +329,13 @@ should not apply to it.
 
 ## 12. Zia `Byte` is 32-bit, not 8-bit
 
+**Status:** Fixed 2026-09-18 (with #5). `Integer as Byte` checks the value
+against 0..255 with one unsigned comparison and traps with `Overflow`
+otherwise; `Byte as Integer` is exact. IL has no `i8`, so a `Byte` is carried
+in `i64` like `Integer` and enum values — the range, not the storage width, is
+what makes it a byte. Regression:
+`src/tests/fixtures/zia_runtime/59_byte_and_enum_values.zia`.
+
 **Severity:** High — `Byte` does not hold a byte, and the documented checked
 narrowing neither narrows nor traps.
 
@@ -350,6 +375,16 @@ concatenation and `Integer`-typed arithmetic results.
 ---
 
 ## 13. A variable named `map` or `set` breaks `for ... in`
+
+**Status:** Fixed 2026-09-18 (baseball ledger ZB-63). The explicit `map { ... }`
+/ `set { ... }` literals are now recognized only where struct literals are
+(initializers, arguments, returns), so in a condition, `match` scrutinee or
+`for ... in` iterable `map {` and `set {` are variables followed by the block.
+Testing the fix exposed a worse defect: a `for ... in` over any `Set` was
+silently dropped by lowering (no Set case, no fallback), so the loop body never
+ran; sets now iterate through `Set.ToSeq`, and an iterable without a lowering
+strategy is reported instead of dropped. Regression:
+`src/tests/fixtures/zia_runtime/60_set_iteration_and_collection_names.zia`.
 
 **Severity:** Medium — bites anyone who names a variable after its type, and the
 Zia reference's own for-in example does exactly that.
@@ -411,6 +446,13 @@ documented surface.
 ---
 
 ## 15. Static fields are unreadable from inside their own class
+
+**Status:** Fixed 2026-09-18 (baseball ZB-48, with ZB-47). A bare static field
+inside its class now resolves to the module global `Owner.field` in semantic
+analysis (reads no longer reach lowering unresolved; writes no longer define a
+local that drops the store), and `Type.staticMethod()` is called without
+lowering the type name or passing a self. Regression: `ZiaStatic.*`,
+`src/tests/fixtures/zia_runtime/55_static_members.zia`.
 
 **Severity:** High — the Zia reference's own static-member example does not
 compile, and the diagnostic is an internal-invariant message.
@@ -778,6 +820,17 @@ corrected.)
 
 ## 24. Zia lowering emits SSA-invalid IL for a managed local after an early return
 
+**Status:** Fixed 2026-09-18 (baseball ZB-61). The defect was wider than the
+reproduction below: a `catch` or `finally` block could read no local at all
+unless it was a variable declared in the entry block — a `final` computed in
+the entry block failed too, as did any variable declared after control flow.
+Handler blocks are separately rooted in the IL CFG (after an unwind only memory
+is reliable), so the verifier admits only entry-block stack slots there;
+`Lowerer::materializeLocalsForHandlers` now relocates visible slot allocas to
+the entry block and spills visible SSA locals into entry slots (retaining
+managed values, balanced by the existing scope-exit release) before each `try`.
+Regression: `src/tests/fixtures/zia_runtime/57_try_catch_locals.zia`.
+
 **Severity:** High — a straightforward, correct program fails to compile, and the
 diagnostic is an internal verifier message.
 
@@ -833,6 +886,21 @@ complete example (242 lines) does not compile for this reason.
 
 ## 25. `return null` from a `String?` function fails IL verification
 
+**Status:** Fixed 2026-09-18 (baseball ZB-49). The defect was much wider than
+`return`: the `null` literal lowered as an untyped `ptr`, and `String?` is a
+nullable `str`. A null string that was passed (`f(null)`, a `= null` default),
+returned, retained (an `if`/ternary/`match` branch) or stored through a `str`
+path failed verification; a `String?` local initialized with `null` got a `ptr`
+slot, so it could never be reassigned; `label = null` on a `String?` field
+trapped at run time in `rt_unbox_str`, as did reading a null `List[String?]`
+element. The workaround below also stopped working as soon as the local was
+reassigned. A null now takes the target's IL type (`const_null str`) wherever
+it is coerced; every assignment form shares one coercion; conditional branches
+coerce like `match` arms; a possibly-absent string box is unboxed only when
+present; and SCCP no longer folds a `const_null str` into the `ptr` literal
+(which broke the same programs again at -O1/-O2). Regression:
+`src/tests/fixtures/zia_runtime/58_optional_string_null.zia` (VM and native).
+
 **Severity:** High — a one-line function using a core language feature does not
 compile.
 
@@ -875,6 +943,19 @@ retry example returns `null` from a `String?` function.
 ---
 
 ## 26. Calling a function through a `&function` reference segfaults
+
+**Status:** Fixed 2026-09-18 (baseball ledger ZB-64). `&name` lowers to the raw
+code address that runtime callbacks take, while a Zia call through a function
+value expects a closure record `[code, environment]` — a lambda's
+representation — so the call read the function's code as a record. A function
+reference now becomes a closure (a forwarding thunk with a null environment)
+whenever it takes a Zia function type; runtime APIs still receive the raw
+address. Fixing it exposed calls through function-typed fields failing in
+lowering, `(T) -> R name;` fields not parsing, module globals declared after
+`start()` never being initialized, and several lambda-body defects (returns
+checked against the enclosing function, no `self` capture, module variables
+captured by value). Regressions: `src/tests/fixtures/zia_runtime/
+61_function_references_and_late_globals.zia`, `62_lambda_bodies_and_self.zia`.
 
 **Severity:** Critical — silent crash (SIGSEGV, exit 139) with no diagnostic, in
 a documented core feature.

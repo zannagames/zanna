@@ -33,6 +33,7 @@ module debug_tree_probe;
 
 bind "../build/debug_session";
 bind "../build/breakpoints";
+bind "../build/var_model";
 
 bind Env = Zanna.System.Environment;
 bind Time = Zanna.Time;

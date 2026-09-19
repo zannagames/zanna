@@ -449,6 +449,22 @@ class Lowerer {
     /// @brief Temporaries queued for release at the next statement boundary.
     std::vector<DeferredRelease> deferredTemps_;
 
+    /// @brief Functions referenced with `&` as Zia function values; each gets
+    ///        a `<name>.__fnref` closure thunk at the end of lowering.
+    std::set<std::string> functionReferenceThunks_;
+
+    /// @brief A capturing lambda's closure class: the destructor that releases
+    ///        its managed captures and their payload offsets (kind 1 = object,
+    ///        2 = string).
+    struct ClosureLayout {
+        int64_t classId;
+        std::string dtorName;
+        std::vector<std::pair<int64_t, int64_t>> managedSlots;
+    };
+
+    /// @brief Closure classes recorded by lowerLambda(), emitted at the end of lowering.
+    std::vector<ClosureLayout> closureLayouts_;
+
     /// @brief Queue a temporary for release at statement boundary.
     void deferRelease(Value v, bool isString);
 
@@ -637,8 +653,10 @@ class Lowerer {
     ///          class/function method bodies are lowered, fixing forward-reference issues
     ///          where an class method references a `final` defined later in the same file.
     void registerAllFinalConstants(std::vector<DeclPtr> &declarations);
-    /// @brief Pre-register mutable module variables so function bodies resolve them
-    ///        regardless of declaration order (see Lowerer_Decl.cpp).
+    /// @brief Process every module variable (storage, constant inlining, queued
+    ///        initializer) before any function lowers, so neither function bodies
+    ///        nor the entry function's initializers depend on declaration order
+    ///        (see Lowerer_Decl.cpp).
     void registerAllGlobalVariables(std::vector<DeclPtr> &declarations);
 
     /// @brief Register a single class type's field layout without lowering methods.
@@ -747,6 +765,24 @@ class Lowerer {
     /// @details Processes all declarations within the namespace, using
     /// qualified names for code generation.
     void lowerNamespaceDecl(NamespaceDecl &decl);
+
+    /// @brief Scope guard for traversing a namespace's declarations.
+    /// @details Extends the lowerer's qualified-name prefix and mirrors it into the semantic
+    ///          analyzer, so type names the lowerer resolves through Sema (signatures, field and
+    ///          global types) see the same enclosing namespace that analysis did (ZB-56).
+    ///          Both prefixes are restored on destruction.
+    class NamespaceScope {
+      public:
+        NamespaceScope(Lowerer &lowerer, const std::string &name);
+        ~NamespaceScope();
+        NamespaceScope(const NamespaceScope &) = delete;
+        NamespaceScope &operator=(const NamespaceScope &) = delete;
+
+      private:
+        Lowerer &lowerer_;
+        std::string savedLowererPrefix_;
+        std::string savedSemaPrefix_;
+    };
 
     /// @brief Compute qualified name for code generation.
     /// @param name The unqualified name.
@@ -861,6 +897,23 @@ class Lowerer {
     /// @param stmt The return statement.
     void lowerReturnStmt(ReturnStmt *stmt);
 
+    /// @brief Return a value through the active cleanups with ownership transfer
+    ///        (the exit sequence shared by `return` and postfix `?`).
+    /// @param returnValue Value already coerced to the function's return type.
+    /// @param returnIlType IL representation of @p returnValue.
+    /// @param valueType Semantic type of the returned expression.
+    void emitFunctionReturn(Value returnValue, Type returnIlType, TypeRef valueType);
+
+    /// @brief Return from a void function (or async worker) through the active
+    ///        cleanups.
+    void emitFunctionReturnVoid();
+
+    /// @brief Release the pending temporaries a block defined, on an edge that
+    ///        leaves the function early, without changing the pending state.
+    /// @param definingBlock Block whose temporaries dominate the exit edge.
+    /// @param kept Value transferred to the caller instead of released.
+    void releaseDeferredTempsOnExitEdge(size_t definingBlock, Value kept);
+
     /// @brief Lower a break statement.
     /// @param stmt The break statement.
     void lowerBreakStmt(BreakStmt *stmt);
@@ -884,6 +937,13 @@ class Lowerer {
     /// @brief Lower a try/catch/finally statement.
     /// @param stmt The try statement.
     void lowerTryStmt(TryStmt *stmt);
+
+    /// @brief Make every visible local readable from the exception handlers about to be emitted.
+    /// @details Handler blocks are separately rooted in the IL CFG — after an unwind only memory
+    ///          is reliable — so the verifier admits only entry-block allocas there. Relocates the
+    ///          allocas of visible slots into the entry block and gives each visible SSA local an
+    ///          entry-block slot holding its current value (defect-audit #24).
+    void materializeLocalsForHandlers();
 
     /// @brief Lower a throw statement.
     /// @param stmt The throw statement.
@@ -973,6 +1033,17 @@ class Lowerer {
                                      FieldExpr *fieldExpr,
                                      LowerResult right,
                                      TypeRef rightType);
+
+    /// @brief Store an assigned value into a struct or class instance field.
+    /// @param field Resolved field layout.
+    /// @param basePtr Address of the containing value.
+    /// @param right The lowered right-hand value and its IL type.
+    /// @param rightType The semantic type of the right-hand side.
+    /// @return The stored value and the field's IL type.
+    LowerResult storeAssignedField(const FieldLayout *field,
+                                   Value basePtr,
+                                   LowerResult right,
+                                   TypeRef rightType);
 
     /// @brief Lower a binary expression.
     /// @return LowerResult with the operation result.
@@ -1150,11 +1221,10 @@ class Lowerer {
     /// @return The result value.
     Value emitUnary(Opcode op, Type ty, Value operand);
 
-    /// @brief Widen a Byte (i32) value to Integer (i64).
-    /// @details Uses bitwise AND to zero-extend the value.
+    /// @brief Zero-extend an IL `i32` value (an error kind, code or line) to i64.
     /// @param value The i32 value to widen.
     /// @return The widened i64 value.
-    Value widenByteToInteger(Value value);
+    Value zeroExtendI32(Value value);
 
     /// @brief Widen any supported integral IL value to i64.
     Value widenIntegralToI64(Value value, Type valueType);
@@ -1187,9 +1257,9 @@ class Lowerer {
     /// @brief Emit a trap-backed check that a range step is strictly positive.
     Value emitPositiveStepCheck(Value stepValue);
 
-    /// @brief Narrow an Integer (i64) value to Byte (i32) with overflow checking.
+    /// @brief Narrow an Integer to Byte, trapping (Overflow) outside 0..255.
     /// @param value The i64 value to narrow.
-    /// @return The narrowed i32 value.
+    /// @return @p value on the success path (a Byte is carried in i64).
     Value narrowIntegerToByte(Value value);
 
     /// @brief Apply sema-approved coercions to a lowered value.
@@ -1202,6 +1272,29 @@ class Lowerer {
                                   Type valueIlType,
                                   TypeRef sourceType,
                                   TypeRef targetType);
+
+    /// @brief Convert an assigned value to the representation of its target.
+    /// @param right The lowered right-hand value and its IL type.
+    /// @param rightType The semantic type of the right-hand side.
+    /// @param targetType The semantic type of the assigned variable, field or
+    ///        property (null leaves @p right unchanged).
+    /// @return The value to store and its IL type.
+    LowerResult coerceAssignedValue(LowerResult right, TypeRef rightType, TypeRef targetType);
+
+    /// @brief Convert one branch of a value-producing `if`, ternary or `match`
+    ///        to the expression's result type.
+    /// @param branch The lowered branch value.
+    /// @param branchExpr The branch expression (for its semantic type).
+    /// @param resultType The semantic type of the whole expression.
+    /// @return The value to store in the shared result slot.
+    Value coerceBranchValue(LowerResult branch, Expr *branchExpr, TypeRef resultType);
+
+    /// @brief Give a `null` literal the IL type of the position it flows into.
+    /// @param value Candidate value; only the untyped null literal is rewritten.
+    /// @param ilType IL representation the consumer requires.
+    /// @return A fresh `const_null` of @p ilType when a null literal reaches a
+    ///         `str` position; otherwise @p value unchanged.
+    Value materializeTypedNull(Value value, Type ilType);
 
     /// @brief Lower explicit source arguments in source order.
     std::vector<LowerResult> lowerSourceArgs(const std::vector<CallArg> &args);
@@ -1551,6 +1644,22 @@ class Lowerer {
     /// For other types, falls back to standard emitUnbox() behavior.
     LowerResult emitUnboxValue(Value boxed, Type ilType, TypeRef semanticType);
 
+    /// @brief Unbox a String? value whose box may be absent (null).
+    /// @param boxed String box, raw string handle, or null.
+    /// @return Owned string handle (null when absent), deferred for release.
+    LowerResult emitOptionalStringUnbox(Value boxed);
+
+    /// @brief Wrap a `&function` code address in a Zia closure record.
+    /// @param functionName Lowered name of the referenced function.
+    /// @return Closure `[thunk, null]` whose thunk forwards to @p functionName.
+    Value emitFunctionReferenceClosure(const std::string &functionName);
+
+    /// @brief Emit the forwarding thunks recorded by emitFunctionReferenceClosure().
+    void emitFunctionReferenceThunks();
+
+    /// @brief Emit the destructors of the closure classes in @c closureLayouts_.
+    void emitClosureDestructors();
+
     /// @brief Wrap a value in optional storage (box primitives/strings when needed).
     /// @param val The value to wrap.
     /// @param innerType The semantic inner type of the optional.
@@ -1562,13 +1671,6 @@ class Lowerer {
     /// @param innerType The semantic inner type of the optional.
     /// @return The unwrapped value with its type.
     LowerResult emitOptionalUnwrap(Value val, TypeRef innerType);
-
-    /// @brief Wrap a value for optional field assignment if needed.
-    /// @param val The value to potentially wrap.
-    /// @param fieldType The field's semantic type (may or may not be optional).
-    /// @param valueType The type of the value being assigned.
-    /// @return The wrapped value if field is optional, otherwise the original value.
-    Value wrapValueForOptionalField(Value val, TypeRef fieldType, TypeRef valueType);
 
     /// @brief Extend an operand value to i64 for integer comparison.
     /// @param val The value to extend.

@@ -43,6 +43,12 @@ bind "app/studio_application_base" as StudioBase;
 bind "app/problems_quick_fix";
 bind "app/editor_split_orchestration" as EditorSplit;
 bind "app/studio_document_frame" as DocumentFrame;
+bind "app/explorer_action_runner";
+bind "commands/file_commands";
+bind "services/file_utils";
+bind "commands/main_command_dispatcher";
+bind "commands/search_commands";
+bind "commands/view_commands";
 
 class StudioApplication extends DocumentFrame.StudioApplicationDocumentFrame {
     hide func PumpCommandFrame() -> Boolean {

@@ -468,10 +468,15 @@ void Sema::analyzeVarStmt(VarStmt *stmt) {
     sym.isFinal = stmt->isFinal;
     defineSymbol(stmt->name, sym, stmt->loc);
 
-    // Fixed arrays are zero-initialized aggregate storage. Scalar declarations
-    // without explicit initializers keep the existing W015 definite-init warning.
-    bool defaultInitializedAggregate =
-        declaredType && declaredType->kind == TypeKindSem::FixedArray && !stmt->initializer;
+    // Inline aggregates (structs, fixed arrays, tuples) are zero-initialized
+    // storage, so a declaration without an initializer is usable at once — the
+    // documented `var p: Point; p.x = 3;` and `p.init(...)` patterns. Scalar
+    // declarations without explicit initializers keep the W015 definite-init
+    // warning.
+    const bool defaultInitializedAggregate =
+        declaredType && !stmt->initializer &&
+        (declaredType->kind == TypeKindSem::FixedArray ||
+         declaredType->kind == TypeKindSem::Struct || declaredType->kind == TypeKindSem::Tuple);
     if (stmt->initializer || defaultInitializedAggregate) {
         markInitialized(stmt->name);
     }
@@ -745,6 +750,11 @@ void Sema::analyzeReturnStmt(ReturnStmt *stmt) {
 
     if (stmt->value) {
         TypeRef valueType = analyzeExpr(stmt->value.get());
+        if (lambdaReturnTypes_) {
+            // An inferred lambda return type is the join of its returns.
+            lambdaReturnTypes_->push_back(valueType);
+            return;
+        }
         if (expectedReturnType_ && stmt->value->kind == ExprKind::MapLiteral) {
             auto *mapLiteral = static_cast<MapLiteralExpr *>(stmt->value.get());
             if (mapLiteral->entries.empty() && (expectedReturnType_->kind == TypeKindSem::Set ||
@@ -762,7 +772,10 @@ void Sema::analyzeReturnStmt(ReturnStmt *stmt) {
                   "optional values");
             valueType = types::unknown();
         }
-        if (expectedReturnType_ && valueType && valueType->kind != TypeKindSem::Unknown &&
+        // An Unknown expected type was already reported (e.g. a rejected
+        // tuple return type); checking against it would only cascade.
+        if (expectedReturnType_ && expectedReturnType_->kind != TypeKindSem::Unknown && valueType &&
+            valueType->kind != TypeKindSem::Unknown &&
             !expectedReturnType_->isAssignableFrom(*valueType)) {
             // Allow implicit Number -> Integer conversion in return statements
             // This enables returning Floor/Ceil/Round/Trunc results from Integer functions
@@ -773,6 +786,10 @@ void Sema::analyzeReturnStmt(ReturnStmt *stmt) {
             }
         }
     } else {
+        if (lambdaReturnTypes_) {
+            lambdaReturnTypes_->push_back(types::voidType());
+            return;
+        }
         // No value - must be void return
         if (expectedReturnType_ && expectedReturnType_->kind != TypeKindSem::Void) {
             error(stmt->loc, "Expected return value");

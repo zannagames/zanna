@@ -469,7 +469,7 @@ LowerResult Lowerer::lowerNewRuntimeClass(NewExpr *expr, TypeRef type) {
             Value argValue = result.value;
 
             if (result.type.kind == Type::Kind::I32)
-                argValue = widenByteToInteger(argValue);
+                argValue = zeroExtendI32(argValue);
 
             if (expectedParamTypes && i < expectedParamTypes->size()) {
                 Type expectedType = (*expectedParamTypes)[i];

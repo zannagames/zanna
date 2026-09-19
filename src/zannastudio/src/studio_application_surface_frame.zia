@@ -40,6 +40,12 @@ bind Machine = Zanna.System.Machine;
 bind Str = Zanna.String;
 bind "app/studio_application_base" as StudioBase;
 bind "app/editor_split_orchestration" as EditorSplit;
+bind "ui/activity_bar";
+bind "editor/editor_engine";
+bind "app/explorer_action_runner";
+bind "commands/file_commands";
+bind "services/file_utils";
+bind "commands/main_command_dispatcher";
 
 class StudioApplicationSurfaceFrame extends StudioBase.StudioApplicationBase {
 

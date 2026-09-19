@@ -496,7 +496,8 @@ void Lowerer::lowerForStmt(ForStmt *stmt) {
 /// @brief Dispatch a `for ... in` statement by iterable type.
 /// @param stmt For-in statement and binding shape.
 /// @details Supports ranges and modifiers, tuple pairs, lists, strings, maps,
-///          Seq, and runtime collections convertible to Seq. The enclosing
+///          sets, Seq, and runtime collections convertible to Seq; any other
+///          iterable is a reported lowering invariant, never a dropped loop. The enclosing
 ///          local/slot/type maps are restored after the specialized lowering
 ///          routine completes.
 void Lowerer::lowerForInStmt(ForInStmt *stmt) {
@@ -537,6 +538,24 @@ void Lowerer::lowerForInStmt(ForInStmt *stmt) {
                           iterableType->elementType(),
                           false,
                           "forin_runtime_seq");
+        } else if (iterableType->kind == TypeKindSem::Set) {
+            // A Set iterates a snapshot of its (boxed) elements.
+            auto setValue = lowerExpr(stmt->iterable.get());
+            Value seqValue =
+                emitCallRet(Type(Type::Kind::Ptr), kCollectionsSetToSeq, {setValue.value});
+            if (consumeDeferred(setValue.value))
+                emitManagedRelease(setValue.value, /*isString=*/false);
+            lowerForInSeq({seqValue, Type(Type::Kind::Ptr)},
+                          stmt,
+                          iterableType->elementType(),
+                          false,
+                          "forin_set");
+        } else {
+            // Sema accepted the loop, so dropping it would silently skip the body.
+            reportLoweringInvariant(stmt->loc,
+                                    "V-ZIA-LOWER-FORIN",
+                                    "for-in over '" + iterableType->toDisplayString() +
+                                        "' reached lowering without an iteration strategy");
         }
     }
 
@@ -1229,128 +1248,136 @@ void Lowerer::lowerForInSeq(LowerResult seqValue,
 
 /// @brief Lower a return statement with cleanup and ownership transfer.
 /// @param stmt Optional return expression.
-/// @details Coerces the result to the current return type, preserves it across
-///          active deferred cleanups, releases local/deferred ownership, and
-///          ensures managed returns carry exactly one caller-owned reference.
-///          Async workers box payloads and release worker-owned captures before
-///          returning.
+/// @details Coerces the result to the current return type and returns it
+///          through emitFunctionReturn(); `return` and `return ()` in a void
+///          function go through emitFunctionReturnVoid().
 void Lowerer::lowerReturnStmt(ReturnStmt *stmt) {
-    if (stmt->value) {
-        auto result = lowerExpr(stmt->value.get());
-        TypeRef valueType = sema_.typeOf(stmt->value.get());
-        if (valueType && valueType->kind == TypeKindSem::Unit && currentReturnType_ &&
-            currentReturnType_->kind == TypeKindSem::Void) {
-            releaseDeferredTemps();
-            if (!cleanupStack_.empty()) {
-                emitActiveCleanups();
-                if (isTerminated())
-                    return;
-            }
-            releaseLocalStringSlots();
-            releaseLocalObjectSlots();
-            emitRetVoid();
-            return;
-        }
-        auto coerced = coerceValueToType(result.value, result.type, valueType, currentReturnType_);
-        Value returnValue = coerced.value;
-        Type returnIlType = coerced.type;
+    if (!stmt->value) {
+        emitFunctionReturnVoid();
+        return;
+    }
+    auto result = lowerExpr(stmt->value.get());
+    TypeRef valueType = sema_.typeOf(stmt->value.get());
+    if (valueType && valueType->kind == TypeKindSem::Unit && currentReturnType_ &&
+        currentReturnType_->kind == TypeKindSem::Void) {
+        emitFunctionReturnVoid();
+        return;
+    }
+    auto coerced = coerceValueToType(result.value, result.type, valueType, currentReturnType_);
+    emitFunctionReturn(coerced.value, coerced.type, valueType);
+}
 
-        // Whether returnValue already carries the caller's owned reference.
-        bool returnValueOwned = false;
+/// @brief Return a value from the current function through its active cleanups.
+/// @param returnValue Value already coerced to the function's return type.
+/// @param returnIlType IL representation of @p returnValue.
+/// @param valueType Semantic type of the returned expression (decides ownership).
+/// @details The one exit sequence for `return` and for the early exits of a
+///          postfix `?`: preserves the value across active `defer`/`finally`
+///          cleanups (which also pop a `try` body's handler), releases local
+///          and deferred ownership, and makes a managed return carry exactly one
+///          caller-owned reference. Async workers box payloads and release
+///          worker-owned captures before returning.
+void Lowerer::emitFunctionReturn(Value returnValue, Type returnIlType, TypeRef valueType) {
+    // Whether returnValue already carries the caller's owned reference.
+    bool returnValueOwned = false;
 
-        if (!cleanupStack_.empty()) {
-            const std::string slotName = "__zia_return_" + std::to_string(nextTempId());
-            createSlot(slotName, returnIlType);
-            storeToSlot(slotName, returnValue, returnIlType);
-            if (returnIlType.kind == Type::Kind::Str) {
-                // Normalize ownership into the return slot: owned temps move
-                // in; borrowed values are retained so the slot owns the
-                // caller's reference either way.
-                if (!consumeDeferred(returnValue))
-                    emitCall(runtime::kStrRetainMaybe, {returnValue});
-                returnValueOwned = true;
-            } else if (returnIlType.kind == Type::Kind::Ptr && needsRelease(valueType)) {
-                if (!consumeDeferred(returnValue))
-                    emitCall("rt_obj_retain_maybe", {returnValue});
-                returnValueOwned = true;
-            } else {
-                consumeDeferred(returnValue);
-            }
-            releaseDeferredTemps();
-
-            emitActiveCleanups();
-            if (isTerminated())
-                return;
-
-            returnValue = loadFromSlot(slotName, returnIlType);
-        }
-
-        if (currentAsyncWorker_) {
-            Type payloadIlType = mapType(currentReturnType_);
-            Value futureValue = returnValue;
-            if (currentReturnType_ && (currentReturnType_->kind == TypeKindSem::Struct ||
-                                       payloadIlType.kind != Type::Kind::Ptr)) {
-                futureValue = emitBoxValue(returnValue, payloadIlType, currentReturnType_);
-            } else {
-                emitCall("rt_obj_retain_maybe", {futureValue});
-            }
-
-            for (const auto &owned : asyncOwnedValues_)
-                emitManagedRelease(owned, /*isString=*/false);
-            asyncOwnedValues_.clear();
-
-            // The async runtime consumes the returned object.
-            consumeDeferred(futureValue);
-            releaseDeferredTemps();
-            emitRet(futureValue);
-            return;
-        }
-
-        if (currentReturnType_ && currentReturnType_->kind == TypeKindSem::Struct) {
-            returnValue =
-                emitBoxValue(returnValue, mapType(currentReturnType_), currentReturnType_);
-        }
-
-        // The return value is transferred to the caller — don't release it.
-        // But release any intermediate temps from evaluating the return expr.
-        // For strings, mint the caller's reference when the value is borrowed
-        // (e.g. `return s` loads from a slot that is released just below).
-        if (returnIlType.kind == Type::Kind::Str && !returnValueOwned) {
+    if (!cleanupStack_.empty()) {
+        const std::string slotName = "__zia_return_" + std::to_string(nextTempId());
+        createSlot(slotName, returnIlType);
+        storeToSlot(slotName, returnValue, returnIlType);
+        if (returnIlType.kind == Type::Kind::Str) {
+            // Normalize ownership into the return slot: owned temps move
+            // in; borrowed values are retained so the slot owns the
+            // caller's reference either way.
             if (!consumeDeferred(returnValue))
                 emitCall(runtime::kStrRetainMaybe, {returnValue});
-        } else if (returnIlType.kind == Type::Kind::Ptr && needsRelease(valueType) &&
-                   !returnValueOwned) {
+            returnValueOwned = true;
+        } else if (returnIlType.kind == Type::Kind::Ptr && needsRelease(valueType)) {
             if (!consumeDeferred(returnValue))
                 emitCall("rt_obj_retain_maybe", {returnValue});
+            returnValueOwned = true;
         } else {
             consumeDeferred(returnValue);
         }
         releaseDeferredTemps();
-        releaseLocalStringSlots();
-        releaseLocalObjectSlots();
-        emitRet(returnValue);
-    } else {
-        if (!cleanupStack_.empty()) {
-            releaseDeferredTemps();
-            emitActiveCleanups();
-            if (isTerminated())
-                return;
-        }
 
-        if (currentAsyncWorker_) {
-            for (const auto &owned : asyncOwnedValues_)
-                emitManagedRelease(owned, /*isString=*/false);
-            asyncOwnedValues_.clear();
-            releaseDeferredTemps();
-            emitRet(Value::null());
+        emitActiveCleanups();
+        if (isTerminated())
             return;
+
+        returnValue = loadFromSlot(slotName, returnIlType);
+    }
+
+    if (currentAsyncWorker_) {
+        Type payloadIlType = mapType(currentReturnType_);
+        Value futureValue = returnValue;
+        if (currentReturnType_ && (currentReturnType_->kind == TypeKindSem::Struct ||
+                                   payloadIlType.kind != Type::Kind::Ptr)) {
+            futureValue = emitBoxValue(returnValue, payloadIlType, currentReturnType_);
+        } else {
+            emitCall("rt_obj_retain_maybe", {futureValue});
         }
 
+        for (const auto &owned : asyncOwnedValues_)
+            emitManagedRelease(owned, /*isString=*/false);
+        asyncOwnedValues_.clear();
+
+        // The async runtime consumes the returned object.
+        consumeDeferred(futureValue);
         releaseDeferredTemps();
-        releaseLocalStringSlots();
-        releaseLocalObjectSlots();
-        emitRetVoid();
+        emitRet(futureValue);
+        return;
     }
+
+    if (currentReturnType_ && currentReturnType_->kind == TypeKindSem::Struct) {
+        returnValue = emitBoxValue(returnValue, mapType(currentReturnType_), currentReturnType_);
+    }
+
+    // The return value is transferred to the caller — don't release it.
+    // But release any intermediate temps from evaluating the return expr.
+    // For strings, mint the caller's reference when the value is borrowed
+    // (e.g. `return s` loads from a slot that is released just below).
+    if (returnIlType.kind == Type::Kind::Str && !returnValueOwned) {
+        if (!consumeDeferred(returnValue))
+            emitCall(runtime::kStrRetainMaybe, {returnValue});
+    } else if (returnIlType.kind == Type::Kind::Ptr && needsRelease(valueType) &&
+               !returnValueOwned) {
+        if (!consumeDeferred(returnValue))
+            emitCall("rt_obj_retain_maybe", {returnValue});
+    } else {
+        consumeDeferred(returnValue);
+    }
+    releaseDeferredTemps();
+    releaseLocalStringSlots();
+    releaseLocalObjectSlots();
+    emitRet(returnValue);
+}
+
+/// @brief Return from a void function through its active cleanups.
+/// @details Runs active `defer`/`finally` cleanups, releases local and deferred
+///          ownership, and returns; an async worker releases its captures and
+///          returns a null payload.
+void Lowerer::emitFunctionReturnVoid() {
+    if (!cleanupStack_.empty()) {
+        releaseDeferredTemps();
+        emitActiveCleanups();
+        if (isTerminated())
+            return;
+    }
+
+    if (currentAsyncWorker_) {
+        for (const auto &owned : asyncOwnedValues_)
+            emitManagedRelease(owned, /*isString=*/false);
+        asyncOwnedValues_.clear();
+        releaseDeferredTemps();
+        emitRet(Value::null());
+        return;
+    }
+
+    releaseDeferredTemps();
+    releaseLocalStringSlots();
+    releaseLocalObjectSlots();
+    emitRetVoid();
 }
 
 /// @brief Lower `break` to the current loop's exit target.

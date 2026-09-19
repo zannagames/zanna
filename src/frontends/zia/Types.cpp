@@ -719,6 +719,11 @@ TypeRef map(TypeRef key, TypeRef value) {
 /// @param ret Return type.
 /// @return New Function type storing the return type after all parameters.
 TypeRef function(std::vector<TypeRef> params, TypeRef ret) {
+    // `-> Unit` and `-> Void` both spell "returns nothing" (a `() -> Unit`
+    // callback lowers to an IL void return, as the runtime's callback checks
+    // require); one canonical return keeps such function types equal.
+    if (ret && ret->kind == TypeKindSem::Unit)
+        ret = voidType();
     params.push_back(ret); // Store return type at the end
     return std::make_shared<ZannaType>(TypeKindSem::Function, std::move(params));
 }
@@ -829,7 +834,11 @@ il::core::Type::Kind toILType(const ZannaType &type) {
             return il::core::Type::Kind::Str;
 
         case TypeKindSem::Byte:
-            return il::core::Type::Kind::I32; // IL has no i8
+            // An Integer in 0..255 (enforced by `as Byte`), carried in i64 like
+            // Integer and enum values: IL has no i8, and one integer
+            // representation keeps arithmetic, comparison, boxing and
+            // formatting uniform.
+            return il::core::Type::Kind::I64;
 
         case TypeKindSem::Void:
             return il::core::Type::Kind::Void;
@@ -920,7 +929,7 @@ size_t typeSize(const ZannaType &type) {
         case TypeKindSem::String:
             return 8; // Pointer
         case TypeKindSem::Byte:
-            return 4; // i32
+            return 8; // i64
         case TypeKindSem::Void:
             return 0;
         case TypeKindSem::Unit:
@@ -1009,7 +1018,7 @@ size_t typeAlignment(const ZannaType &type) {
         case TypeKindSem::Unit:
             return 8;
         case TypeKindSem::Byte:
-            return 4;
+            return 8;
         case TypeKindSem::Void:
         case TypeKindSem::Unknown:
         case TypeKindSem::Never:

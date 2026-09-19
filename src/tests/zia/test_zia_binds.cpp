@@ -978,6 +978,129 @@ func start() {
     fs::remove_all(tempRoot);
 }
 
+/// @brief A bind is not inherited (ADR 0376): a file sees only the modules it binds
+///        itself, never those bound by the files it binds. Every way of naming a
+///        declaration of an unbound module reports the module to bind, once per file
+///        and without follow-on errors, and binding it directly makes the same code
+///        compile. (Legacy Baseball ledger ZB-54.)
+TEST(ZiaBinds, BindIsNotInheritedFromBoundFiles) {
+    const fs::path tempRoot = fs::temp_directory_path() / "zia_bind_tests" /
+                              std::to_string(static_cast<unsigned long long>(::getpid()));
+    const fs::path dir = tempRoot / "bind_not_inherited";
+    writeFile(dir, "a.zia", R"(
+module a;
+
+enum Color { Red, Green }
+
+class Page {
+    expose Integer n;
+    expose func init() { n = 1; }
+}
+
+interface Greeter {
+    func greet() -> String;
+}
+
+class Base {
+    expose func hi() -> String { return "hi"; }
+}
+
+class Box[T] {
+    expose T v;
+    expose func init(x: T) { v = x; }
+}
+
+struct Pt {
+    expose Integer x;
+}
+
+type Alias = Integer;
+
+final LIMIT = 5;
+
+func helper() -> Integer { return 7; }
+)");
+    writeFile(dir, "b.zia", R"(
+module b;
+
+bind "./a";
+
+func viaB() -> Integer { return helper(); }
+)");
+
+    struct Case {
+        const char *name;
+        const char *decls;
+    };
+
+    const Case cases[] = {
+        {"bare_function", "func use() -> Integer { return helper(); }"},
+        {"qualified_function", "func use() -> Integer { return a.helper(); }"},
+        {"bare_constant", "func use() -> Integer { return LIMIT; }"},
+        {"type_annotation", "func use(p: Page) -> Integer { return p.n; }"},
+        {"new_expression", "func use() -> Integer { var p = new Page(); return p.n; }"},
+        {"enum_variant", "func use() -> Integer { var c = Color.Red; return 1; }"},
+        {"match_on_enum",
+         "func use(k: Color) -> Integer { return match k { Color.Red => 1, Color.Green => 2 }; }"},
+        {"implements",
+         "class G implements Greeter { expose func greet() -> String { return \"g\"; } }"},
+        {"extends",
+         "class D extends Base { }\nfunc use() -> String { var d = new D(); return d.hi(); }"},
+        {"generic_class", "func use() -> Integer { var bx = new Box[Integer](2); return bx.v; }"},
+        {"struct_literal", "func use() -> Integer { var q = Pt { x: 1 }; return q.x; }"},
+        {"type_alias", "func use(v: Alias) -> Integer { return v; }"},
+        {"type_test", "func use(o: Any) -> Boolean { return o is Page; }"},
+        {"element_type", "func use() -> Integer { var xs: List[Page] = []; return xs.count(); }"},
+        {"many_uses",
+         "func use(p: Page, q: Page?) -> Integer { var m: Map[String, Page] = new Map[String, "
+         "Page](); return helper() + LIMIT; }"},
+    };
+
+    for (const auto &c : cases) {
+        for (bool bindA : {false, true}) {
+            std::string source = "module Main;\n\nbind \"./b\";\n";
+            if (bindA)
+                source += "bind \"./a\";\n";
+            source += "\n";
+            source += c.decls;
+            source += "\n\nfunc start() {\n    Zanna.Terminal.Say(\"x\");\n}\n";
+            const fs::path mainPath = writeFile(
+                dir, std::string(c.name) + (bindA ? "_bound.zia" : "_unbound.zia"), source);
+            const std::string mainPathStr = mainPath.string();
+            SourceManager sm;
+            CompilerInput input{.source = source, .path = mainPathStr};
+            CompilerOptions opts{};
+            auto result = compile(input, opts, sm);
+
+            int errors = 0;
+            int unbound = 0;
+            for (const auto &d : result.diagnostics.diagnostics()) {
+                if (d.severity != Severity::Error)
+                    continue;
+                ++errors;
+                if (d.code == "V-ZIA-UNBOUND-MODULE" &&
+                    (d.message.find("module 'a', which this file does not bind") !=
+                         std::string::npos ||
+                     d.message.find("Module 'a' is not bound in this file") != std::string::npos))
+                    ++unbound;
+            }
+            const bool ok = bindA ? (result.succeeded() && errors == 0)
+                                  : (!result.succeeded() && errors == 1 && unbound == 1);
+            if (!ok) {
+                std::cerr << "BindIsNotInheritedFromBoundFiles/" << c.name
+                          << (bindA ? " (bound)" : " (unbound)") << ":\n";
+                for (const auto &d : result.diagnostics.diagnostics()) {
+                    std::cerr << "  [" << (d.severity == Severity::Error ? "ERROR" : "WARN") << "] "
+                              << d.code << " " << d.message << "\n";
+                }
+            }
+            EXPECT_TRUE(ok);
+        }
+    }
+
+    fs::remove_all(tempRoot);
+}
+
 } // namespace
 
 int main() {

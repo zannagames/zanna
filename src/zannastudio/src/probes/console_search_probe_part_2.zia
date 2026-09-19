@@ -52,6 +52,7 @@ bind Env = Zanna.System.Environment;
 bind Machine = Zanna.System.Machine;
 
 bind "console_search_probe_support" as Probe;
+bind "../commands/replace_commands";
 
 /// @brief Run the VerifyOverlayResetAndSearchHelpers scenario against the shared fixture.
 expose func VerifyOverlayResetAndSearchHelpers(ctx: Probe.ConsoleSearchProbeContext) -> Boolean {

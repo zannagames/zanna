@@ -55,8 +55,7 @@ void Lowerer::lowerDecl(Decl *decl) {
             lowerInterfaceDecl(*static_cast<InterfaceDecl *>(decl));
             break;
         case DeclKind::GlobalVar:
-            lowerGlobalVarDecl(*static_cast<GlobalVarDecl *>(decl));
-            break;
+            break; // processed up front by registerAllGlobalVariables()
         case DeclKind::Namespace:
             lowerNamespaceDecl(*static_cast<NamespaceDecl *>(decl));
             break;
@@ -342,13 +341,8 @@ void Lowerer::registerAllEnumValues(std::vector<DeclPtr> &declarations) {
             }
         } else if (decl->kind == DeclKind::Namespace) {
             auto *ns = static_cast<NamespaceDecl *>(decl.get());
-            std::string savedPrefix = namespacePrefix_;
-            if (namespacePrefix_.empty())
-                namespacePrefix_ = ns->name;
-            else
-                namespacePrefix_ = namespacePrefix_ + "." + ns->name;
+            NamespaceScope scope(*this, ns->name);
             registerAllEnumValues(ns->declarations);
-            namespacePrefix_ = savedPrefix;
         }
     }
 }
@@ -382,14 +376,8 @@ void Lowerer::registerAllFinalConstants(std::vector<DeclPtr> &declarations) {
                 continue;
 
             auto *ns = static_cast<NamespaceDecl *>(decl.get());
-            std::string savedPrefix = namespacePrefix_;
-            if (namespacePrefix_.empty())
-                namespacePrefix_ = ns->name;
-            else
-                namespacePrefix_ = namespacePrefix_ + "." + ns->name;
-
+            NamespaceScope scope(*this, ns->name);
             collectPending(ns->declarations);
-            namespacePrefix_ = savedPrefix;
         }
     };
 
@@ -411,41 +399,30 @@ void Lowerer::registerAllFinalConstants(std::vector<DeclPtr> &declarations) {
     }
 
     // Non-foldable finals are valid runtime-initialized immutable globals.
-    // They are registered by lowerGlobalVarDecl() and initialized from
-    // emitGlobalInitializers() alongside mutable globals.
+    // registerAllGlobalVariables() registers them through lowerGlobalVarDecl(),
+    // and emitGlobalInitializers() initializes them alongside mutable globals.
 }
 
-/// @brief Pre-register every mutable module variable before any function body lowers.
+/// @brief Process every module variable before any function body lowers.
 /// @param declarations Top-level or namespace-scoped declarations to scan.
-/// @details Function bodies resolve module-variable names through @c globalVariables_.
-///          Declarations lower in textual order, so a function defined BEFORE a
-///          `var` declaration used to miss the map and silently fall back to a fresh
-///          local slot — assignments ran without error and were lost (the declared
-///          global kept its initializer value). Registering names and types up front
-///          makes textual order irrelevant, matching how functions and enums already
-///          hoist. `final` declarations are excluded: they are immutable (no
-///          assignment can target them) and follow their own constant-inlining paths.
-///          Recurses into namespaces with prefix threading.
+/// @details Function bodies resolve module-variable names through @c globalVariables_,
+///          and the entry function emits every queued initializer. Declarations lower in
+///          textual order, so handling globals in that order left a function defined
+///          before a `var` with no binding (assignments went to a fresh local), and left
+///          every global declared after `start()` uninitialized: its initializer was
+///          queued after the entry function had already emitted the list, so a `var`
+///          read as 0 or null and a non-literal `final` failed with "Unknown identifier
+///          reached lowering". Each whole declaration (storage, constant inlining,
+///          initializer) is processed here, in declaration order; lowerDecl() skips
+///          globals. Recurses into namespaces with prefix threading.
 void Lowerer::registerAllGlobalVariables(std::vector<DeclPtr> &declarations) {
     for (auto &decl : declarations) {
         if (decl->kind == DeclKind::GlobalVar) {
-            auto *gvar = static_cast<GlobalVarDecl *>(decl.get());
-            if (gvar->isFinal)
-                continue;
-            std::string qualifiedName = declarationName(*gvar, gvar->name);
-            TypeRef type = gvar->type ? sema_.resolveType(gvar->type.get()) : nullptr;
-            if (!type && gvar->initializer)
-                type = sema_.typeOf(gvar->initializer.get());
-            globalVariables_[qualifiedName] = type;
+            lowerGlobalVarDecl(*static_cast<GlobalVarDecl *>(decl.get()));
         } else if (decl->kind == DeclKind::Namespace) {
             auto *ns = static_cast<NamespaceDecl *>(decl.get());
-            std::string savedPrefix = namespacePrefix_;
-            if (namespacePrefix_.empty())
-                namespacePrefix_ = ns->name;
-            else
-                namespacePrefix_ = namespacePrefix_ + "." + ns->name;
+            NamespaceScope scope(*this, ns->name);
             registerAllGlobalVariables(ns->declarations);
-            namespacePrefix_ = savedPrefix;
         }
     }
 }
@@ -461,22 +438,27 @@ void Lowerer::registerAllGlobalVariables(std::vector<DeclPtr> &declarations) {
 void Lowerer::lowerNamespaceDecl(NamespaceDecl &decl) {
     ZiaLocationScope locScope(*this, decl.loc);
 
-    // Save current namespace prefix
-    std::string savedPrefix = namespacePrefix_;
-
-    // Compute new prefix
-    if (namespacePrefix_.empty())
-        namespacePrefix_ = decl.name;
-    else
-        namespacePrefix_ = namespacePrefix_ + "." + decl.name;
-
-    // Lower all declarations inside the namespace
+    NamespaceScope scope(*this, decl.name);
     for (auto &innerDecl : decl.declarations) {
         lowerDecl(innerDecl.get());
     }
+}
 
-    // Restore previous prefix
-    namespacePrefix_ = savedPrefix;
+/// @brief Enter @p name: extend the lowerer's prefix and mirror it into Sema.
+/// @param lowerer Lowerer whose prefix is extended.
+/// @param name Namespace being entered.
+Lowerer::NamespaceScope::NamespaceScope(Lowerer &lowerer, const std::string &name)
+    : lowerer_(lowerer), savedLowererPrefix_(lowerer.namespacePrefix_),
+      savedSemaPrefix_(lowerer.sema_.namespacePrefix_) {
+    lowerer_.namespacePrefix_ =
+        savedLowererPrefix_.empty() ? name : savedLowererPrefix_ + "." + name;
+    lowerer_.sema_.namespacePrefix_ = lowerer_.namespacePrefix_;
+}
+
+/// @brief Restore both prefixes to their values before the scope was entered.
+Lowerer::NamespaceScope::~NamespaceScope() {
+    lowerer_.namespacePrefix_ = savedLowererPrefix_;
+    lowerer_.sema_.namespacePrefix_ = savedSemaPrefix_;
 }
 
 /// @brief Lower an enum declaration by registering its variant values.

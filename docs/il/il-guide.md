@@ -317,7 +317,22 @@ Running the above produces a non-zero exit.
 
 `trap` aborts execution immediately with a non‑zero status; no `ret` is needed.
 To trap with a specific error code and message, use `trap.err` to create an error value
-and `trap.from_err` to terminate with it.
+and `trap.from_err` to terminate with it. Both take a runtime **error code**, which the
+runtime maps to a trap kind ([ADR 0375](../adr/0375-trap-error-operands-are-error-codes.md)):
+
+| Error code | Trap kind |
+|------------|-----------|
+| 1 | FileNotFound |
+| 2 | EOF |
+| 3 | IOError |
+| 4 | Overflow |
+| 5 | InvalidCast |
+| 6 | DomainError |
+| 7 | Bounds |
+| 8 | InvalidOperation |
+| 9 | RuntimeError |
+| 10–19 | NetworkError |
+| any other | RuntimeError |
 
 **Gotcha:** After a `trap` the VM stops; no `ret` is required.
 
@@ -855,8 +870,8 @@ IL provides a structured error handling system with error values, handler stacks
 | Instr | Form | Notes |
 |-------|------|-------|
 | `trap` | `trap` | Unconditional trap (abort) |
-| `trap.err` | `%e = trap.err %kind, %msg` | Create an error value from i32 kind + str message; returns `Error` |
-| `trap.from_err` | `trap.from_err i32 7` | Terminator: trap with the given i32 trap-kind code (the `i32` type prefix is required before a constant) |
+| `trap.err` | `%e = trap.err %code, %msg` | Create an error value from an i32 runtime error code + str message; returns `Error` |
+| `trap.from_err` | `trap.from_err i32 7` | Terminator: trap with the given i32 runtime error code, mapped to a trap kind (the `i32` type prefix is required before a constant) |
 | `trap.kind` | `%k = trap.kind` or `%k = trap.kind %err` | Read the current trap kind, or the kind stored in an `Error`; returns `i64` |
 
 **Resume Operations:**

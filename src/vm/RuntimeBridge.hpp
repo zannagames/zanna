@@ -41,6 +41,7 @@
 #include "vm/Trap.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <span>
 #include <string>
@@ -121,6 +122,14 @@ bool unregisterExternIn(ExternRegistry &registry, std::string_view name);
 /// @param name Name of the external function to find (case-insensitive).
 /// @return Pointer to the descriptor if found; nullptr otherwise.
 const ExternDesc *findExternIn(ExternRegistry &registry, std::string_view name);
+
+/// @brief Number of changes made to @p registry so far.
+/// @details Every registration and every successful unregistration increments it,
+///          so a component that installed entries can tell whether anything has
+///          changed since by comparing a value it recorded afterwards.
+/// @param registry Registry to inspect.
+/// @return Monotonic change count.
+uint64_t externRegistryGeneration(const ExternRegistry &registry);
 
 /// @brief Resolve an external function for invocation.
 /// @param registry Target registry.

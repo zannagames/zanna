@@ -1,0 +1,82 @@
+module RuntimeTest53;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: interface dispatch honours subclass overrides (ZB-53). A class that
+// inherits an interface from its base — without re-declaring `implements` —
+// must dispatch interface calls to its own overrides, at any depth, for every
+// interface in its ancestry. Before the fix the lowerer bound itables only for
+// a class's own `implements` list, so the runtime's base-chain fallback handed
+// a subclass its base's table and every override was silently skipped.
+
+interface Greeter {
+    func greet() -> String;
+    func volume() -> Integer;
+}
+
+interface Named {
+    func name() -> String;
+}
+
+class Base implements Greeter, Named {
+    expose func greet() -> String { return "base"; }
+    expose func volume() -> Integer { return 1; }
+    expose func name() -> String { return "Base"; }
+}
+
+// Overrides one of Greeter's two methods; inherits the other and all of Named.
+class Loud extends Base {
+    override expose func greet() -> String { return "LOUD"; }
+}
+
+// Two levels down: overrides the method its parent did not.
+class Louder extends Loud {
+    override expose func volume() -> Integer { return 11; }
+    override expose func name() -> String { return "Louder"; }
+}
+
+// Overrides nothing: must still dispatch to the inherited implementations.
+class Quiet extends Base {
+}
+
+// Re-declares an interface its base already implements (the old workaround).
+class Explicit extends Base implements Greeter {
+    override expose func greet() -> String { return "explicit"; }
+}
+
+func greetOf(g: Greeter) -> String { return g.greet(); }
+func volumeOf(g: Greeter) -> Integer { return g.volume(); }
+func nameOf(n: Named) -> String { return n.name(); }
+
+func start() {
+    assertEqStr(greetOf(new Base()), "base", "base_greet");
+    assertEqInt(volumeOf(new Base()), 1, "base_volume");
+
+    assertEqStr(greetOf(new Loud()), "LOUD", "child_override_dispatches");
+    assertEqInt(volumeOf(new Loud()), 1, "child_inherited_slot");
+    assertEqStr(nameOf(new Loud()), "Base", "child_inherited_second_interface");
+
+    assertEqStr(greetOf(new Louder()), "LOUD", "grandchild_inherits_parent_override");
+    assertEqInt(volumeOf(new Louder()), 11, "grandchild_override_dispatches");
+    assertEqStr(nameOf(new Louder()), "Louder", "grandchild_second_interface_override");
+
+    assertEqStr(greetOf(new Quiet()), "base", "no_override_uses_base");
+    assertEqStr(nameOf(new Quiet()), "Base", "no_override_second_interface");
+
+    assertEqStr(greetOf(new Explicit()), "explicit", "redeclared_implements");
+
+    // Through interface-typed locals and a list, not only parameters.
+    var gs: List[Greeter] = [];
+    gs.add(new Base());
+    gs.add(new Loud());
+    gs.add(new Louder());
+    var joined = "";
+    for i in 0..gs.length() {
+        joined = joined + gs.get(i).greet() + ":" + toString(gs.get(i).volume()) + " ";
+    }
+    assertEqStr(joined, "base:1 LOUD:1 LOUD:11 ", "list_dispatch");
+
+    report();
+}

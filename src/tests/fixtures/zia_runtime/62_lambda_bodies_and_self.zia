@@ -1,0 +1,79 @@
+module RuntimeTest62;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: block-bodied lambdas return correctly, reach module variables in
+// place, and capture `self` inside methods.
+//
+// A lambda's `return` statements were checked against the ENCLOSING
+// function's return type ("expected Void" inside `start`), a block body
+// without a value was typed `Unit` so it could not be returned as
+// `() -> Void`, a module variable was captured by value (so assigning it was
+// rejected and reads saw a snapshot), a lambda naming `self` or a field of the
+// enclosing class lowered `self` as the constant 0, and a `return` inside a
+// lambda emitted the enclosing function's `defer`/`finally` cleanups.
+
+var total = 0;
+var trail = "";
+
+class Counter {
+    expose Integer count;
+    expose func init() { count = 0; }
+    expose func bump() { count = count + 1; }
+    expose func makeBumper() -> () -> Void {
+        return () => {
+            count = count + 10;     // implicit self field
+            bump();                 // implicit self method
+        };
+    }
+    expose func makeReader() -> () -> Integer { return () => self.count; }
+}
+
+func sign() -> (Integer) -> Integer {
+    return (x: Integer) => {
+        if x > 0 { return 1; }
+        if x < 0 { return -1; }
+        return 0;
+    };
+}
+
+func withDefer() -> Integer {
+    defer { trail = trail + "outer;"; }
+    var twice = (x: Integer) => { if x > 1 { return x * 2; } return x; };
+    return twice(3) + twice(1);
+}
+
+func start() {
+    // Inferred, declared and hinted block-lambda return types.
+    var inferred = (x: Integer) => { if x > 0 { return x; } return 0; };
+    var declared: (Integer) -> Integer = (x: Integer) => { return x + 1; };
+    var valued = (x: Integer) => { var y = x * 2; y };
+    assertEqInt(inferred(4) + inferred(-4) + declared(1) + valued(5), 4 + 0 + 2 + 10,
+                "block_lambda_returns");
+    var s = sign();
+    assertEqInt(s(9) + s(-9) + s(0), 0, "returned_block_lambda");
+
+    // Module variables are written in place, and reads see the current value.
+    var add = (n: Integer) => { total = total + n; };
+    add(5);
+    add(6);
+    var read = () => total;
+    total = total + 100;
+    assertEqInt(read(), 111, "module_variable_not_captured");
+
+    // `self` capture: explicit, implicit field, implicit method.
+    var c = new Counter();
+    var bumper = c.makeBumper();
+    bumper();
+    bumper();
+    assertEqInt(c.makeReader()(), 22, "self_capture");
+
+    // A lambda's `return` does not run the enclosing function's defer.
+    trail = "";
+    assertEqInt(withDefer(), 7, "lambda_return_value");
+    assertEqStr(trail, "outer;", "outer_defer_runs_once");
+
+    report();
+}

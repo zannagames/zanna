@@ -390,15 +390,63 @@ struct ExtRecord {
 
 } // namespace
 
+namespace {
+
+/// @brief ASCII lowercase of one byte; extern names are ASCII identifiers, and
+///        unlike `std::tolower` this is inline and independent of the C locale.
+/// @param c Byte to fold.
+/// @return @p c with `A`-`Z` mapped to `a`-`z`.
+constexpr char asciiLower(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+/// @brief Case-insensitive hash of an extern name, usable with any string type.
+/// @details Transparent, so a runtime call's name is looked up without first
+///          allocating its lowercase copy (every bridged call looks one up).
+struct ExternNameHash {
+    using is_transparent = void;
+
+    /// @brief FNV-1a over the ASCII-lowercased bytes of @p name.
+    std::size_t operator()(std::string_view name) const noexcept {
+        std::uint64_t h = 1469598103934665603ull;
+        for (char c : name) {
+            h ^= static_cast<unsigned char>(asciiLower(c));
+            h *= 1099511628211ull;
+        }
+        return static_cast<std::size_t>(h);
+    }
+};
+
+/// @brief Case-insensitive equality of extern names (transparent).
+struct ExternNameEqual {
+    using is_transparent = void;
+
+    /// @brief Whether @p a and @p b spell the same name ignoring ASCII case.
+    bool operator()(std::string_view a, std::string_view b) const noexcept {
+        if (a.size() != b.size())
+            return false;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (asciiLower(a[i]) != asciiLower(b[i]))
+                return false;
+        }
+        return true;
+    }
+};
+
+} // namespace
+
 /// @brief Concrete implementation of the ExternRegistry abstraction.
 /// @details This struct holds the actual storage (map + mutex) for external
 ///          function registrations. It is intentionally defined in the .cpp
-///          file to keep the header opaque.
+///          file to keep the header opaque. Keys are stored lowercased and
+///          matched case-insensitively.
 struct ExternRegistry {
-    std::mutex mutex;                                   ///< Protects concurrent access.
-    std::unordered_map<std::string, ExtRecord> entries; ///< Name -> record mapping.
+    std::mutex mutex; ///< Protects concurrent access.
+    /// Name -> record mapping.
+    std::unordered_map<std::string, ExtRecord, ExternNameHash, ExternNameEqual> entries;
     bool strictMode = false; ///< When true, reject re-registration with different signature.
     std::atomic<uint32_t> refCount{1}; ///< Intrusive lifetime refs across VMs/workers.
+    std::atomic<uint64_t> generation{0}; ///< Incremented by every change to @ref entries.
 };
 
 namespace {
@@ -486,7 +534,7 @@ static il::runtime::RuntimeSignature toRuntimeSig(const Signature &sig) {
 std::string canonicalizeExternName(std::string_view n) {
     std::string out(n);
     for (auto &ch : out)
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        ch = asciiLower(ch);
     return out;
 }
 
@@ -937,6 +985,7 @@ ExternRegisterResult registerExternIn(ExternRegistry &registry, const ExternDesc
         if (signaturesEqual(it->second.pub.signature, ext.signature)) {
             // Same signature: update silently (no-op if fn is also the same)
             it->second = std::move(rec);
+            registry.generation.fetch_add(1, std::memory_order_acq_rel);
             return ExternRegisterResult::Success;
         } else {
             // Different signature: error in strict mode, warning otherwise
@@ -945,13 +994,22 @@ ExternRegisterResult registerExternIn(ExternRegistry &registry, const ExternDesc
             }
             // Non-strict mode: overwrite and continue
             it->second = std::move(rec);
+            registry.generation.fetch_add(1, std::memory_order_acq_rel);
             return ExternRegisterResult::Success;
         }
     }
 
     // New registration
     registry.entries.emplace(key, std::move(rec));
+    registry.generation.fetch_add(1, std::memory_order_acq_rel);
     return ExternRegisterResult::Success;
+}
+
+/// @brief Number of changes made to a registry so far.
+/// @param registry Registry to inspect.
+/// @return Monotonic change count (registrations plus successful removals).
+uint64_t externRegistryGeneration(const ExternRegistry &registry) {
+    return registry.generation.load(std::memory_order_acquire);
 }
 
 /// @brief Remove an external from a specific registry.
@@ -959,9 +1017,13 @@ ExternRegisterResult registerExternIn(ExternRegistry &registry, const ExternDesc
 /// @param name Case-insensitive external name.
 /// @return @c true when an entry was erased.
 bool unregisterExternIn(ExternRegistry &registry, std::string_view name) {
-    const std::string key = canonicalizeExternName(name);
     std::lock_guard<std::mutex> lock(registry.mutex);
-    return registry.entries.erase(key) > 0;
+    auto it = registry.entries.find(name);
+    if (it == registry.entries.end())
+        return false;
+    registry.entries.erase(it);
+    registry.generation.fetch_add(1, std::memory_order_acq_rel);
+    return true;
 }
 
 /// @brief Find an external and copy its public descriptor to thread-local storage.
@@ -976,8 +1038,7 @@ const ExternDesc *findExternIn(ExternRegistry &registry, std::string_view name) 
     std::lock_guard<std::mutex> lock(registry.mutex);
     if (registry.entries.empty())
         return nullptr;
-    const std::string key = canonicalizeExternName(name);
-    auto it = registry.entries.find(key);
+    auto it = registry.entries.find(name);
     if (it == registry.entries.end())
         return nullptr;
     ExternDesc &slot = tlsExternCopies[tlsExternCopyIndex];
@@ -1000,13 +1061,12 @@ const ExternDesc *resolveExternIn(ExternRegistry &registry,
     thread_local std::array<ExternDesc, 8> tlsExternCopies{};
     thread_local size_t tlsExternCopyIndex = 0;
     std::lock_guard<std::mutex> lock(registry.mutex);
-    // Every runtime call resolves through here before the built-in table;
-    // an empty registry (the common case) must not pay the lowercase-key
-    // allocation.
+    // Every runtime call resolves through here before the built-in table, so
+    // the lookup hashes the name case-insensitively in place instead of
+    // allocating its lowercase key.
     if (registry.entries.empty())
         return nullptr;
-    const std::string key = canonicalizeExternName(name);
-    auto it = registry.entries.find(key);
+    auto it = registry.entries.find(name);
     if (it == registry.entries.end())
         return nullptr;
     if (outSig)

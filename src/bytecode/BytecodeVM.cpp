@@ -61,6 +61,7 @@
 #include "vm/err_bridge.hpp"
 #include "zanna/runtime/rt.h"
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -166,6 +167,9 @@ const char *bytecodeTrapKindName(TrapKind trapKind) {
 
 using UnifiedRuntimeHandler = void (*)(void **, void *);
 std::once_flag gUnifiedRuntimeHandlersOnce;
+/// Process-global extern registry generation right after the unified handlers
+/// were last installed with no concurrent change; UINT64_MAX before the first.
+std::atomic<uint64_t> gUnifiedRuntimeHandlersGeneration{UINT64_MAX};
 UnifiedRuntimeHandler gPriorThreadStartHandler = nullptr;
 UnifiedRuntimeHandler gPriorThreadStartOwnedHandler = nullptr;
 UnifiedRuntimeHandler gPriorThreadStartSafeHandler = nullptr;
@@ -2136,7 +2140,7 @@ void BytecodeVM::run() {
             return;
         }
 
-        if (checkBreakpoint()) {
+        if (debugPauseArmed() && checkBreakpoint()) {
             state_ = VMState::Halted;
             return;
         }
@@ -7598,11 +7602,15 @@ static void unified_result_or_else_handler(void **args, void *result) {
 }
 
 /// @brief Install the dual-engine runtime handlers for callback-taking runtime APIs.
-/// @details Captures and chains to any previously registered Thread, Async,
-///          Network, Game3D, Parallel, Lazy, Option, and Result handlers.
-///          Registration is idempotent via `std::call_once`; @ref load and
-///          @ref BytecodeVM::exec invoke it before bytecode can call a runtime
-///          API with an interpreted callback.
+/// @details Captures (once, via `std::call_once`) and chains to any previously
+///          registered Thread, Async, Network, Game3D, Parallel, Lazy, Option, and
+///          Result handlers, then installs the unified handlers. @ref load,
+///          @ref BytecodeVM::exec and every re-entrant invocation (callbacks and
+///          class destructors) call it so the unified handlers win even if another
+///          component re-registered those names; the installation itself is
+///          skipped while the process-global registry is unchanged since the last
+///          one, since it costs a registry lock, name canonicalization and a
+///          signature build per handler.
 void registerUnifiedVmRuntimeHandlers() {
     /// @brief Capture prior handlers and install all unified runtime bridges exactly once.
     std::call_once(gUnifiedRuntimeHandlersOnce, []() {
@@ -7747,50 +7755,63 @@ void registerUnifiedVmRuntimeHandlers() {
                             gPriorResultOrElseHandler);
     });
 
+    il::vm::ExternRegistry &registry = il::vm::processGlobalExternRegistry();
+    const uint64_t generationBefore = il::vm::externRegistryGeneration(registry);
+    if (generationBefore == gUnifiedRuntimeHandlersGeneration.load(std::memory_order_acquire))
+        return;
+
     using il::runtime::signatures::make_signature;
     using il::runtime::signatures::SigParam;
+
+    uint64_t installed = 0;
+    /// @brief Register one unified handler in the process-global registry.
+    /// @param ext Descriptor to install.
+    auto install = [&installed](const il::vm::ExternDesc &ext) {
+        il::vm::RuntimeBridge::registerExtern(ext);
+        ++installed;
+    };
 
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Thread.Start";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_thread_start_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Thread.StartOwned";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_thread_start_owned_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Thread.StartSafe";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_thread_start_safe_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Thread.StartSafeOwned";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_thread_start_safe_owned_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Async.Run";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_async_run_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Async.RunOwned";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_async_run_owned_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7798,7 +7819,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature = make_signature(
             ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_async_run_cancellable_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7806,7 +7827,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature = make_signature(
             ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_async_run_cancellable_owned_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7814,7 +7835,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature = make_signature(
             ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_async_map_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7822,42 +7843,42 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature = make_signature(
             ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_async_map_owned_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Network.HttpServer.BindHandler";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Str, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_http_server_bind_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Network.HttpsServer.BindHandler";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Str, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_https_server_bind_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Game3D.World3D.Run";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_game3d_run_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Game3D.World3D.RunWithOverlay";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_game3d_run_with_overlay_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Game3D.World3D.RunFixed";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::F64, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_game3d_run_fixed_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7865,7 +7886,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature =
             make_signature(ext.name, {SigParam::Ptr, SigParam::F64, SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_game3d_run_fixed_with_overlay_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7873,28 +7894,28 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature =
             make_signature(ext.name, {SigParam::Ptr, SigParam::I64, SigParam::F64, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_game3d_run_frames_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Game3D.World3D.DrawOverlay";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_game3d_draw_overlay_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "rt_obj_set_class_dtor_hook";
         ext.signature = make_signature(ext.name, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_obj_set_class_dtor_hook_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Parallel.For";
         ext.signature = make_signature(ext.name, {SigParam::I64, SigParam::I64, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_for_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7902,7 +7923,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature =
             make_signature(ext.name, {SigParam::I64, SigParam::I64, SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_for_pool_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7910,7 +7931,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature =
             make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::I1});
         ext.fn = reinterpret_cast<void *>(&unified_pool_submit_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7918,42 +7939,42 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature =
             make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::I1});
         ext.fn = reinterpret_cast<void *>(&unified_pool_submit_owned_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Parallel.Invoke";
         ext.signature = make_signature(ext.name, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_invoke_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Parallel.InvokePool";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_invoke_pool_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Parallel.ForEach";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_foreach_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Parallel.ForEachPool";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_foreach_pool_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Threads.Parallel.Map";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_map_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7961,7 +7982,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature = make_signature(
             ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_map_pool_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7969,7 +7990,7 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.signature = make_signature(
             ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_reduce_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
@@ -7978,56 +7999,56 @@ void registerUnifiedVmRuntimeHandlers() {
                                        {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr, SigParam::Ptr},
                                        {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_parallel_reduce_pool_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Functional.Lazy.New";
         ext.signature = make_signature(ext.name, {SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_lazy_new_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Functional.Lazy.Get";
         ext.signature = make_signature(ext.name, {SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_lazy_get_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Functional.Lazy.GetStr";
         ext.signature = make_signature(ext.name, {SigParam::Ptr}, {SigParam::Str});
         ext.fn = reinterpret_cast<void *>(&unified_lazy_get_str_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Functional.Lazy.GetI64";
         ext.signature = make_signature(ext.name, {SigParam::Ptr}, {SigParam::I64});
         ext.fn = reinterpret_cast<void *>(&unified_lazy_get_i64_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Functional.Lazy.Force";
         ext.signature = make_signature(ext.name, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_lazy_force_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Functional.Lazy.Map";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_lazy_map_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
     {
         il::vm::ExternDesc ext;
         ext.name = "Zanna.Functional.Lazy.AndThen";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_lazy_and_then_handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
 
     struct CombinatorExtern {
@@ -8050,8 +8071,15 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.name = entry.name;
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(entry.handler);
-        il::vm::RuntimeBridge::registerExtern(ext);
+        install(ext);
     }
+
+    // Each registration advances the generation by one; any other advance means
+    // another component changed the registry meanwhile, so the next call
+    // re-installs instead of trusting this pass.
+    const uint64_t generationAfter = il::vm::externRegistryGeneration(registry);
+    if (generationAfter - generationBefore == installed)
+        gUnifiedRuntimeHandlersGeneration.store(generationAfter, std::memory_order_release);
 }
 
 /// @brief Registers unified callback-taking handlers during static initialization.

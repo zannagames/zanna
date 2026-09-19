@@ -100,9 +100,12 @@ class ZiaReplAdapter : public ReplAdapter {
     /// @brief Build the full synthetic Zia source for compilation.
     /// @param input The current REPL input to wrap in start().
     /// @param extraTopLevel Optional declaration emitted after persisted globals.
+    /// @param userEntry A user-written `func start()` to use as the entry point
+    ///        instead of the synthesized one (@p input is then ignored).
     /// @return The complete Zia program source.
     std::string buildSource(const std::string &input,
-                            const std::string &extraTopLevel = std::string()) const;
+                            const std::string &extraTopLevel = std::string(),
+                            const std::string &userEntry = std::string()) const;
 
     /// @brief Try to compile source without execution (for expression type probing).
     /// @param source Complete synthetic Zia source.
@@ -126,7 +129,7 @@ class ZiaReplAdapter : public ReplAdapter {
     /// @return `true` when the leading keyword is `func`.
     bool isFuncDef(const std::string &input) const;
 
-    /// @brief Check if input looks like a class/struct/interface definition.
+    /// @brief Check if input looks like a class/struct/interface/enum/namespace definition.
     /// @param input Zia source fragment.
     /// @return `true` when a recognized type keyword leads the input.
     bool isTypeDef(const std::string &input) const;
@@ -156,7 +159,7 @@ class ZiaReplAdapter : public ReplAdapter {
     /// @return Parsed function name, or an empty string.
     std::string extractFuncName(const std::string &input) const;
 
-    /// @brief Extract type name from a class/struct/interface definition.
+    /// @brief Extract type name from a class/struct/interface/enum/namespace definition.
     /// @param input Type-definition source.
     /// @return Parsed type name, or an empty string.
     std::string extractTypeName(const std::string &input) const;

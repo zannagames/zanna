@@ -1,0 +1,108 @@
+module RuntimeTest54;
+
+bind "./_support";
+
+// EXPECT_OUT: RESULT: ok
+
+// Test: generic classes and structs may call methods on their collection
+// fields (ZB-58). The module pass never analyzes a generic body, and the
+// lowerer used to lower each instantiation without analyzing it, so any
+// expression that needs semantic resolution — `items_.add(v)`,
+// `self.keys_.length()` — failed with "internal: unresolved field reached
+// lowering". Each instantiation is now analyzed under its own substitutions
+// right before it is lowered.
+
+class Bag[T] {
+    hide List[T] items_;
+
+    expose func init() { items_ = []; }
+    expose func add(v: T) { items_.add(v); }
+    expose func count() -> Integer { return items_.length(); }
+    expose func at(i: Integer) -> T { return self.items_.get(i); }
+}
+
+// A bounded FIFO cache: a non-generic List[String] field inside a generic
+// class, removals, and a nullable return of the type parameter.
+class BoundedCache[T] {
+    hide List[String] keys_;
+    hide List[T] values_;
+    hide Integer limit_;
+
+    expose func init(limit: Integer) {
+        keys_ = [];
+        values_ = [];
+        limit_ = limit;
+    }
+
+    expose func put(key: String, value: T) {
+        if self.keys_.length() >= limit_ {
+            keys_.removeAt(0);
+            values_.removeAt(0);
+        }
+        keys_.add(key);
+        values_.add(value);
+    }
+
+    expose func get(key: String) -> T? {
+        for i in 0..keys_.length() {
+            if keys_.get(i) == key { return values_.get(i); }
+        }
+        return null;
+    }
+
+    expose func count() -> Integer { return keys_.length(); }
+}
+
+class Mesh {
+    expose String name;
+    expose func init(n: String) { name = n; }
+}
+
+// A generic class whose field is another generic instantiation.
+class Shelf[T] {
+    hide Bag[T] bag_;
+    expose func init() { bag_ = new Bag[T](); }
+    expose func stock(v: T) { bag_.add(v); }
+    expose func size() -> Integer { return bag_.count(); }
+}
+
+struct Pair[T] {
+    List[T] items;
+    func total() -> Integer { return items.length(); }
+}
+
+func start() {
+    // Two instantiations of one generic: each must see its own element type.
+    var words = new Bag[String]();
+    words.add("glove");
+    words.add("bat");
+    assertEqInt(words.count(), 2, "bag_string_count");
+    assertEqStr(words.at(1), "bat", "bag_string_at");
+
+    var nums = new Bag[Integer]();
+    nums.add(7);
+    nums.add(35);
+    nums.add(12);
+    assertEqInt(nums.count(), 3, "bag_int_count");
+    assertEqInt(nums.at(0) + nums.at(1), 42, "bag_int_sum");
+
+    var cache = new BoundedCache[Mesh](2);
+    cache.put("bat", new Mesh("bat"));
+    cache.put("glove", new Mesh("glove"));
+    cache.put("ball", new Mesh("ball"));
+    assertEqInt(cache.count(), 2, "cache_bounded");
+    assertTrue(cache.get("bat") == null, "cache_evicted_oldest");
+    var hit = cache.get("glove");
+    assertTrue(hit != null, "cache_hit");
+    if hit != null { assertEqStr(hit!.name, "glove", "cache_hit_value"); }
+
+    var shelf = new Shelf[String]();
+    shelf.stock("cap");
+    shelf.stock("cleats");
+    assertEqInt(shelf.size(), 2, "nested_generic_field");
+
+    var pair = Pair[Integer] { items = [1, 2, 3] };
+    assertEqInt(pair.total(), 3, "generic_struct_list_field");
+
+    report();
+}

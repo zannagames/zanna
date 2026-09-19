@@ -251,10 +251,12 @@ void printRunBuildUsage(RunMode mode, std::ostream &out = std::cerr) {
         out << "Usage: zanna check [target] [options]\n"
             << "\n"
             << "Type-check and verify a .zia file, .bas file, project directory, or\n"
-            << "zanna.project without running or emitting anything.\n"
+            << "zanna.project without running or emitting anything. The lowered IL is\n"
+            << "verified without optimizing unless -O1/-O2 or --build-profile is given.\n"
             << "\n"
             << "Check options:\n"
             << "  --diagnostic-format text|json Diagnostic output format (stderr)\n"
+            << "  -O0|-O1|-O2, --build-profile  Also optimize and verify the result\n"
             << "  --dump-tokens|--dump-ast      Print frontend debug dumps\n"
             << "  --dump-sema-ast|--dump-il     Print semantic AST or lowered IL\n"
             << "  --time-compile                Print phase timing information\n"
@@ -863,12 +865,15 @@ int verifyAndExecute(il::core::Module &module,
 /// @param sm Source manager populated during compilation.
 /// @param optimizeModule Whether the frontend should run the requested optimizer.
 /// @param captureDebugLayouts Whether debugger class-layout metadata is required.
+/// @param verifyLowered Verify the lowered module even when the optimizer runs
+///        (`check`, so optimization cannot hide invalid frontend output).
 /// @return Compiled module and verification/debug-layout state, or a diagnostic.
 il::support::Expected<CompiledProjectModule> compileZiaProject(const ProjectConfig &project,
                                                                const ilc::SharedCliOptions &shared,
                                                                il::support::SourceManager &sm,
                                                                bool optimizeModule = true,
-                                                               bool captureDebugLayouts = false) {
+                                                               bool captureDebugLayouts = false,
+                                                               bool verifyLowered = false) {
     il::frontends::zia::CompilerOptions opts;
     opts.boundsChecks = project.boundsChecks;
     opts.overflowChecks = project.overflowChecks;
@@ -911,8 +916,8 @@ il::support::Expected<CompiledProjectModule> compileZiaProject(const ProjectConf
         opts.optLevel = il::frontends::zia::OptLevel::O2;
 
     const bool optimized = opts.optLevel != il::frontends::zia::OptLevel::O0;
-    const bool needsLowerVerify = !optimized || shared.paranoidVerify || shared.verifyEachPass ||
-                                  shared.dumpIL || shared.dumpILPasses;
+    const bool needsLowerVerify = !optimized || verifyLowered || shared.paranoidVerify ||
+                                  shared.verifyEachPass || shared.dumpIL || shared.dumpILPasses;
     opts.verifyAfterLowering = needsLowerVerify;
     opts.verifyAfterOptimization = optimized || shared.paranoidVerify;
 
@@ -1227,6 +1232,13 @@ int executeRunBuildConfig(RunBuildConfig config) {
         proj.buildProfile = "debug";
         proj.optimizeLevel = "O0";
     }
+    if (mode == RunMode::Check && !config.buildProfileOverride && !config.optimizeLevelOverride) {
+        // `check` gates what the frontend produces: it verifies the lowered
+        // module and skips the optimizer, which could otherwise erase invalid
+        // IL that `run` and `build` reject. -O1/-O2 or a build profile on the
+        // command line verifies the optimized module as well.
+        proj.optimizeLevel = "O0";
+    }
 
     // Compile
     SourceManager sm;
@@ -1239,7 +1251,8 @@ int executeRunBuildConfig(RunBuildConfig config) {
                                 config.shared,
                                 sm,
                                 /*optimizeModule=*/true,
-                                /*captureDebugLayouts=*/config.debugAdapter)
+                                /*captureDebugLayouts=*/config.debugAdapter,
+                                /*verifyLowered=*/mode == RunMode::Check)
             : compileBasicProject(proj, config.noRuntimeNamespaces, config.shared, sm);
     printCompileTime(config.shared, "source-to-il", compileStart);
 

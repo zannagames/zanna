@@ -401,6 +401,76 @@ func start() {
     EXPECT_TRUE(hasStringGlobalValue(result.module, "Config.count"));
 }
 
+/// @brief ZB-47: `Type.staticMethod()` calls the method directly — the type name is never
+///        lowered as a value and no self argument is passed.
+TEST(ZiaStatic, StaticMethodCallThroughTypeNameTakesNoSelf) {
+    SourceManager sm;
+    const std::string source = R"(
+module Test;
+
+class Counter {
+    expose static func create(seed: Integer) -> Integer {
+        return seed + 41;
+    }
+}
+
+func start() {
+    Zanna.Terminal.SayInt(Counter.create(1));
+}
+)";
+
+    CompilerInput input{.source = source, .path = "test_static_method_call.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+    ASSERT_TRUE(result.succeeded());
+
+    size_t argCount = 99;
+    for (const auto &fn : result.module.functions) {
+        if (fn.name != "main")
+            continue;
+        for (const auto &block : fn.blocks) {
+            for (const auto &instr : block.instructions) {
+                if (instr.op == il::core::Opcode::Call && instr.callee == "Counter.create")
+                    argCount = instr.operands.size();
+            }
+        }
+    }
+    EXPECT_EQ(argCount, static_cast<size_t>(1)); // the seed only; no self
+    EXPECT_FALSE(hasSelfParam(result.module, "Counter.create"));
+}
+
+/// @brief ZB-48: a bare static field inside its class reads and writes the module global —
+///        the read no longer reaches lowering unresolved, and the write no longer defines a
+///        local that silently drops the store.
+TEST(ZiaStatic, BareStaticFieldInsideClassUsesModuleGlobal) {
+    SourceManager sm;
+    const std::string source = R"(
+module Test;
+
+class Counter {
+    expose static Integer bumps;
+
+    expose static func bump() -> Integer {
+        bumps = bumps + 1;
+        return bumps;
+    }
+}
+
+func start() {
+    Zanna.Terminal.SayInt(Counter.bump());
+}
+)";
+
+    CompilerInput input{.source = source, .path = "test_static_field_bare.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+    ASSERT_TRUE(result.succeeded());
+    // Read, write and the returned read all address the global.
+    EXPECT_GE(countCallsTo(result.module, "Counter.bump", "rt_modvar_addr_i64"),
+              static_cast<size_t>(3));
+    EXPECT_TRUE(hasStringGlobalValue(result.module, "Counter.bumps"));
+}
+
 TEST(ZiaStatic, InheritedPrivateFieldStaysPrivate) {
     SourceManager sm;
     const std::string source = R"(
